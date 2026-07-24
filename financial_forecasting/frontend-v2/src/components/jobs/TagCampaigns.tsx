@@ -25,7 +25,8 @@ const STAGE_LEGEND = [
   { label: "Converted", cls: "bg-green-500" },
   { label: "Contacted", cls: "bg-accent" },
   { label: "On hold", cls: "bg-amber-400" },
-  { label: "Not yet contacted", cls: "bg-stone-300" },
+  { label: "Assigned", cls: "bg-sky-400" },
+  { label: "No stage", cls: "bg-stone-300" },
 ];
 function FunnelBar({ f }: { f: TagCampaign["funnel"] }) {
   // Coalesce each field — a stale cached response may carry an older funnel
@@ -35,7 +36,8 @@ function FunnelBar({ f }: { f: TagCampaign["funnel"] }) {
     { label: "Converted", cls: "bg-green-500", n: n(f.converted) },
     { label: "Contacted", cls: "bg-accent", n: n(f.contacted) },
     { label: "On hold", cls: "bg-amber-400", n: n(f.on_hold) },
-    { label: "Not yet contacted", cls: "bg-stone-300", n: n(f.not_yet) },
+    { label: "Assigned", cls: "bg-sky-400", n: n(f.assigned) },
+    { label: "No stage", cls: "bg-stone-300", n: n(f.not_yet) },
   ];
   const d = parts.reduce((s, p) => s + p.n, 0) || 1;
   return (
@@ -45,7 +47,7 @@ function FunnelBar({ f }: { f: TagCampaign["funnel"] }) {
   );
 }
 
-const EMPTY_FUNNEL = { not_yet: 0, contacted: 0, converted: 0, on_hold: 0 };
+const EMPTY_FUNNEL = { not_yet: 0, assigned: 0, contacted: 0, converted: 0, on_hold: 0 };
 function Row({ c, rank, staffOptions }: { c: TagCampaign; rank: number; staffOptions: { value: string; label: string }[] }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: c.key });
   const setOwner = useSetCampaignOwner();

@@ -5627,7 +5627,9 @@ async def tag_campaigns(user=Depends(require_auth), conn=Depends(get_db)):
                -- membership. accounts/in_pipeline reflect that population.
                count(DISTINCT company) FILTER (WHERE is_jobs_contact) AS accounts,
                count(DISTINCT contact_id) FILTER (WHERE is_jobs_contact) AS in_pipeline,
-               -- disjoint REAL funnel stages (no placeholder 'assigned'):
+               -- disjoint funnel stages; 'assigned' is a real stage a user sets
+               -- (no stage at all = blank/not-yet, computed on the client):
+               count(DISTINCT contact_id) FILTER (WHERE is_jobs_contact AND stage = 'assigned') AS assigned,
                count(DISTINCT contact_id) FILTER (WHERE is_jobs_contact AND stage = 'initial_outreach') AS contacted,
                count(DISTINCT contact_id) FILTER (WHERE is_jobs_contact AND stage = 'converted_to_opportunity') AS converted,
                count(DISTINCT contact_id) FILTER (WHERE is_jobs_contact AND stage = 'on_hold') AS on_hold
@@ -5649,6 +5651,7 @@ async def tag_campaigns(user=Depends(require_auth), conn=Depends(get_db)):
         r = counts.get(c["key"])
         contacts = r["contacts"] if r else 0
         in_pipeline = r["in_pipeline"] if r else 0
+        assigned = r["assigned"] if r else 0
         contacted = r["contacted"] if r else 0
         converted = r["converted"] if r else 0
         on_hold = r["on_hold"] if r else 0
@@ -5657,10 +5660,11 @@ async def tag_campaigns(user=Depends(require_auth), conn=Depends(get_db)):
                     "accounts": r["accounts"] if r else 0,
                     "in_pipeline": in_pipeline,
                     # funnel over the in-pipeline (jobs-prospect) population, DISJOINT:
-                    # not_yet (prospect w/ no real stage) + contacted + converted +
-                    # on_hold = in_pipeline. No placeholder 'assigned' stage.
+                    # not_yet (no stage) + assigned + contacted + converted + on_hold
+                    # = in_pipeline.
                     "funnel": {
-                        "not_yet":   max(0, in_pipeline - contacted - converted - on_hold),
+                        "not_yet":   max(0, in_pipeline - assigned - contacted - converted - on_hold),
+                        "assigned":  assigned,
                         "contacted": contacted,
                         "converted": converted,
                         "on_hold":   on_hold,
