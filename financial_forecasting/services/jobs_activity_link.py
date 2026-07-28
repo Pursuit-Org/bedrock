@@ -106,7 +106,13 @@ async def auto_flag_jobs_prospects(conn) -> dict[str, Any]:
 
     sql = f"""
     WITH team_act AS (
-        -- Activity the jobs team sent or owned, still live
+        -- Activity the jobs team sent or owned, still live, AND classified as
+        -- jobs-relevant. The jobs-relevance gate is deliberate: a contact only
+        -- becomes a prospect off an activity that is actually about jobs work,
+        -- not any incidental email the team happened to be on. This aligns the
+        -- auto-flag with the is_jobs_contact re-curation definition (a prospect
+        -- needs a real jobs signal) so the nightly job can't re-flood the
+        -- pipeline with contacts the team merely appears alongside.
         SELECT a.id,
                a.participant_public_contact_id AS linked_cid,
                lower(a.email_from) AS from_em,
@@ -115,6 +121,7 @@ async def auto_flag_jobs_prospects(conn) -> dict[str, Any]:
         FROM bedrock.activity a
         WHERE a.deleted_at IS NULL
           AND (({sender}) OR ({owner}))
+          AND coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs'
     ),
     -- Every participant email seen on a team activity, normalized
     part_email AS (
