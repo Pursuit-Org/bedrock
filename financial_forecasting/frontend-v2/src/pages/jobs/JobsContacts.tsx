@@ -8,10 +8,11 @@
  * preview + New Contact sit above the table.
  */
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { Briefcase, CheckSquare, ExternalLink, Linkedin, Plus, Search, X, Zap } from "lucide-react";
 import { toast } from "sonner";
 
+import { PageHeader } from "@/components/PageHeader";
 import { ContactDetail, initials } from "@/components/jobs/ProspectAccountExpandPanel";
 import { ContactExpandTabs, jobsContactPath } from "@/components/jobs/jobsEntity";
 import { CompanyPicker } from "@/components/jobs/CompanyPicker";
@@ -620,6 +621,24 @@ export function JobsContacts({ initialQuery, initialContactId }: { initialQuery?
           </tbody>
         </table>
       </div>
+    </div>
+  );
+}
+
+/**
+ * /jobs/contacts — Contacts as its own routed page (2026-07 nav restructure).
+ * Deep-link params: ?q=<text> seeds the find-any search; ?contact=<id> opens
+ * that contact's detail drawer.
+ */
+export function JobsContactsPage() {
+  const [searchParams] = useSearchParams();
+  const initialQuery = searchParams.get("q") ?? undefined;
+  const contactParam = searchParams.get("contact");
+  const initialContactId = contactParam && /^\d+$/.test(contactParam) ? Number(contactParam) : undefined;
+  return (
+    <div className="flex flex-col gap-0 px-7 py-4 pb-12">
+      <PageHeader title="Contacts" subtitle="All employer contacts." />
+      <JobsContacts initialQuery={initialQuery} initialContactId={initialContactId} />
     </div>
   );
 }

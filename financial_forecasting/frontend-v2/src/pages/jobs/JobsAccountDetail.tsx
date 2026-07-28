@@ -62,7 +62,7 @@ export function JobsAccountDetailPage() {
   if (isError) {
     return (
       <div className="flex flex-col gap-3 px-7 py-6">
-        <BackLink defaultTo="/jobs" defaultLabel="Jobs" />
+        <BackLink defaultTo="/jobs/accounts" defaultLabel="Accounts" />
         <p className="text-[13px] text-red">Couldn't load accounts.</p>
         <button type="button" onClick={() => refetch()} className="self-start rounded border border-border-strong px-3 py-1 text-[12px] text-ink-2 hover:bg-surface-2">Retry</button>
       </div>
@@ -71,7 +71,7 @@ export function JobsAccountDetailPage() {
   if (!account) {
     return (
       <div className="flex flex-col gap-3 px-7 py-6">
-        <BackLink defaultTo="/jobs" defaultLabel="Jobs" />
+        <BackLink defaultTo="/jobs/accounts" defaultLabel="Accounts" />
         <p className="text-[13px] text-ink-3">Account "{key}" not found in the jobs pipeline.</p>
       </div>
     );
@@ -79,7 +79,7 @@ export function JobsAccountDetailPage() {
 
   return (
     <div className="flex flex-col gap-4 px-7 py-4 pb-12">
-      <BackLink defaultTo="/jobs" defaultLabel="Jobs" />
+      <BackLink defaultTo="/jobs/accounts" defaultLabel="Accounts" />
 
       {/* Header */}
       <div className="flex flex-wrap items-center gap-3">

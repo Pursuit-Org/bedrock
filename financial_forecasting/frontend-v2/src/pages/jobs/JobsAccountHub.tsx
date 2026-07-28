@@ -8,9 +8,10 @@
  * row reveals everything at that account via tabs.
  */
 import { Fragment, useCallback, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { Briefcase, CheckSquare, ChevronDown, ChevronRight, ExternalLink, Plus, Search, UserCheck, Users } from "lucide-react";
 
+import { PageHeader } from "@/components/PageHeader";
 import { AccountAvatar } from "@/components/AccountAvatar";
 import { withReferrer } from "@/components/detail";
 import { AccountExpandTabs } from "@/components/jobs/accountTabs";
@@ -382,6 +383,21 @@ export function JobsAccountHub({ initialQuery }: { initialQuery?: string } = {})
           </tbody>
         </table>
       </div>
+    </div>
+  );
+}
+
+/**
+ * /jobs/accounts — Accounts as its own routed page (2026-07 nav restructure).
+ * Deep-link param: ?q=<text> seeds the account search.
+ */
+export function JobsAccountsPage() {
+  const [searchParams] = useSearchParams();
+  const initialQuery = searchParams.get("q") ?? undefined;
+  return (
+    <div className="flex flex-col gap-0 px-7 py-4 pb-12">
+      <PageHeader title="Accounts" subtitle="Account-level hub — opportunities and contacts." />
+      <JobsAccountHub initialQuery={initialQuery} />
     </div>
   );
 }

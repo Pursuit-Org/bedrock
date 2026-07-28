@@ -252,7 +252,7 @@ function InterviewCard({ opp }: { opp: InterviewPipelineOpp }) {
   return (
     <div className="rounded-lg border border-border-strong bg-surface p-3">
       <div className="mb-2 flex items-center justify-between gap-2">
-        <Link to={`/jobs?view=team`} className="truncate text-[13px] font-semibold text-ink hover:text-accent">
+        <Link to="/jobs/pipeline" className="truncate text-[13px] font-semibold text-ink hover:text-accent">
           {opp.account_name}
         </Link>
         <Tag variant="accent">{STAGE_LABELS[opp.stage as JobStage] ?? opp.stage}</Tag>
@@ -484,7 +484,7 @@ function IntroRequestsZone() {
         <div className="rounded-lg border border-border-strong bg-surface px-3 py-3 text-[12px] text-ink-4">
           None yet. Open any contact and hit <span className="font-medium text-ink-2">Request intro</span> next
           to their connected staff — the request lands here for that staff member to accept, decline, or mark the intro made.
-          {" "}<Link to="/jobs?view=contacts" className="text-accent hover:underline">Browse contacts →</Link>
+          {" "}<Link to="/jobs/contacts" className="text-accent hover:underline">Browse contacts →</Link>
         </div>
       </Section>
     );

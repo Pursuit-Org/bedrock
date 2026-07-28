@@ -23,6 +23,11 @@ import { CashFlowPage } from "./pages/CashFlow";
 import { PlatformIntakePage } from "./pages/PlatformIntake";
 import { PortfolioPage } from "./pages/Portfolio";
 import { JobsPage } from "./pages/Jobs";
+import { JobsPerformancePage } from "./pages/jobs/JobsPerformance";
+import { JobsPipelinePage } from "./pages/jobs/JobsPipeline";
+import { JobsPlacementPage } from "./pages/jobs/JobsPlacement";
+import { JobsContactsPage } from "./pages/jobs/JobsContacts";
+import { JobsAccountsPage } from "./pages/jobs/JobsAccountHub";
 import { JobsCandidatesPage } from "./pages/jobs/JobsCandidates";
 import { JobsAccountDetailPage } from "./pages/jobs/JobsAccountDetail";
 import { JobsContactDetailPage } from "./pages/jobs/JobsContactDetail";
@@ -64,6 +69,11 @@ export default function App() {
         <Route path="/portfolio" element={<PortfolioPage />} />
         <Route path="/portfolio/:identifier" element={<PortfolioPage />} />
         <Route path="/jobs" element={<JobsPage />} />
+        <Route path="/jobs/performance" element={<JobsPerformancePage />} />
+        <Route path="/jobs/contacts" element={<JobsContactsPage />} />
+        <Route path="/jobs/accounts" element={<JobsAccountsPage />} />
+        <Route path="/jobs/pipeline" element={<JobsPipelinePage />} />
+        <Route path="/jobs/placement" element={<JobsPlacementPage />} />
         <Route path="/jobs/candidates" element={<JobsCandidatesPage />} />
         <Route path="/jobs/accounts/:accountKey" element={<JobsAccountDetailPage />} />
         <Route path="/jobs/contacts/:id" element={<JobsContactDetailPage />} />

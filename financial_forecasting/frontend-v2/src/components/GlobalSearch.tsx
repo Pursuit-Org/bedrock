@@ -86,7 +86,7 @@ function buildItems(results: SearchResults, bedrockContacts: BedrockContact[]): 
       id: `bedrock-${c.contact_id}`,
       label: name,
       sub: [c.current_title, c.current_company].filter(Boolean).join(" · ") || c.email || null,
-      href: `/jobs?view=contacts&q=${encodeURIComponent(c.email || name)}`,
+      href: `/jobs/contacts?q=${encodeURIComponent(c.email || name)}`,
       group: "Contacts",
       icon: <User size={13} className="text-ink-3" />,
     });
