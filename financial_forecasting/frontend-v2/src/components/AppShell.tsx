@@ -31,20 +31,16 @@ import { useCurrentUser, useSalesforceStatus, startSalesforceConnect } from "@/s
 
 const NAV_GROUPS = [
   {
-    label: "Performance",
+    label: "PBD",
     items: [
+      { to: "/portfolio", label: "PBD Home",  icon: Home },
       { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
       { to: "/cashflow",  label: "Cash Flow", icon: TrendingUp },
-    ],
-  },
-  {
-    label: "Portfolio",
-    items: [
-      { to: "/portfolio", label: "Home",     icon: Home },
-      { to: "/accounts",  label: "Accounts", icon: Building2 },
-      { to: "/contacts",  label: "Contacts", icon: Users },
-      { to: "/pipeline",  label: "Pipeline", icon: GitBranch },
-      { to: "/cleanup",   label: "Cleanup",  icon: Sparkles },
+      { to: "/contacts",  label: "Contacts",  icon: Users },
+      { to: "/accounts",  label: "Accounts",  icon: Building2 },
+      { to: "/pipeline",  label: "Pipeline",  icon: GitBranch },
+      { to: "/awards",    label: "Awards",    icon: Trophy },
+      { to: "/payments",  label: "Payments",  icon: Receipt },
       // Tasks page hidden 2026-05-04 — pending a Salesforce data-hygiene
       // pass to close the years-old open-task backlog. Tasks remain
       // visible on the per-record expand panels and detail pages, where
@@ -55,22 +51,21 @@ const NAV_GROUPS = [
     ],
   },
   {
-    label: "Awards",
-    items: [
-      { to: "/awards",   label: "Awards",   icon: Trophy },
-      { to: "/payments", label: "Payments", icon: Receipt },
-      { to: "/projects", label: "Projects", icon: FolderOpen },
-    ],
-  },
-  {
     label: "Jobs",
     items: [
-      { to: "/jobs", label: "Home", icon: Briefcase },
-      { to: "/jobs/performance", label: "Performance", icon: BarChart3 },
+      { to: "/jobs", label: "Jobs Home", icon: Briefcase },
+      { to: "/jobs/performance", label: "Dashboard", icon: BarChart3 },
       { to: "/jobs/contacts", label: "Contacts", icon: Users },
       { to: "/jobs/accounts", label: "Accounts", icon: Building2 },
       { to: "/jobs/pipeline", label: "Pipeline", icon: Kanban },
       { to: "/jobs/placement", label: "Placement", icon: GraduationCap },
+    ],
+  },
+  {
+    label: "xOrg",
+    items: [
+      { to: "/projects", label: "Projects", icon: FolderOpen },
+      { to: "/cleanup",  label: "SF Cleanup", icon: Sparkles },
       { to: "/jobs/candidates", label: "Candidates", icon: UserSearch },
     ],
   },
