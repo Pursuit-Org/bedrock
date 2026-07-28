@@ -1,4 +1,5 @@
 import { useSearchParams } from "react-router-dom";
+import { BarChart3, GraduationCap, Kanban, Send } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { ComingSoon } from "@/components/jobs/ComingSoon";
 import { cn } from "@/lib/utils";
@@ -8,11 +9,11 @@ import { JobsOpportunitiesOverview } from "./JobsOpportunitiesOverview";
 
 type TabKey = "exec" | "outreach" | "pipeline" | "placement";
 
-const TABS: { key: TabKey; label: string }[] = [
-  { key: "exec", label: "Exec view" },
-  { key: "outreach", label: "Outreach" },
-  { key: "pipeline", label: "Pipeline" },
-  { key: "placement", label: "Placement" },
+const TABS: { key: TabKey; label: string; icon: typeof BarChart3 }[] = [
+  { key: "exec", label: "Exec view", icon: BarChart3 },
+  { key: "outreach", label: "Outreach", icon: Send },
+  { key: "pipeline", label: "Pipeline", icon: Kanban },
+  { key: "placement", label: "Placement", icon: GraduationCap },
 ];
 
 const VALID_TABS = new Set<string>(TABS.map((t) => t.key));
@@ -34,40 +35,41 @@ export function JobsPerformancePage() {
       <PageHeader
         title="Performance"
         subtitle="Pipeline health, outreach, and placement metrics."
+        actions={
+          <div className="flex items-center gap-1 rounded-lg border border-border-strong bg-surface-2 p-1">
+            {TABS.map((t) => {
+              const Icon = t.icon;
+              return (
+                <button
+                  key={t.key}
+                  onClick={() => setTab(t.key)}
+                  className={cn(
+                    "flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[13px] font-medium transition-colors",
+                    activeTab === t.key
+                      ? "bg-surface text-ink shadow-sm"
+                      : "text-ink-3 hover:text-ink-2",
+                  )}
+                >
+                  <Icon size={13} />
+                  {t.label}
+                </button>
+              );
+            })}
+          </div>
+        }
       />
 
-      <div role="tablist" className="mb-5 flex gap-1 border-b border-border-strong">
-        {TABS.map((t) => {
-          const isActive = t.key === activeTab;
-          return (
-            <button
-              key={t.key}
-              role="tab"
-              aria-selected={isActive}
-              type="button"
-              onClick={() => setTab(t.key)}
-              className={cn(
-                "relative -mb-px h-9 px-4 text-[13px] font-medium transition-colors",
-                isActive
-                  ? "border-b-2 border-accent text-ink"
-                  : "border-b-2 border-transparent text-ink-3 hover:text-ink-2",
-              )}
-            >
-              {t.label}
-            </button>
-          );
-        })}
+      <div className="mt-1">
+        {activeTab === "exec" && <JobsLeadership />}
+        {activeTab === "outreach" && <JobsOutreach />}
+        {activeTab === "pipeline" && <JobsOpportunitiesOverview />}
+        {activeTab === "placement" && (
+          <ComingSoon
+            title="Placement metrics"
+            description="Placement performance reporting is coming soon."
+          />
+        )}
       </div>
-
-      {activeTab === "exec" && <JobsLeadership />}
-      {activeTab === "outreach" && <JobsOutreach />}
-      {activeTab === "pipeline" && <JobsOpportunitiesOverview />}
-      {activeTab === "placement" && (
-        <ComingSoon
-          title="Placement metrics"
-          description="Placement performance reporting is coming soon."
-        />
-      )}
     </div>
   );
 }
