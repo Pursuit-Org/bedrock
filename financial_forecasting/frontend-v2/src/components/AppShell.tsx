@@ -19,6 +19,7 @@ import {
   TrendingUp,
   Link as LinkIcon,
   Home,
+  Network,
   MessageSquarePlus,
   Receipt,
 } from "lucide-react";
@@ -67,6 +68,7 @@ const NAV_GROUPS = [
       { to: "/projects", label: "Projects", icon: FolderOpen },
       { to: "/cleanup",  label: "SF Cleanup", icon: Sparkles },
       { to: "/jobs/candidates", label: "Candidates", icon: UserSearch },
+      { to: "/jobs/network", label: "My Network", icon: Network },
     ],
   },
 ] as const;
