@@ -154,7 +154,7 @@ function ScorecardTable({
                     !isLast && "border-b border-border",
                     tierStart && "border-t-2 border-border")}
                 >
-                  <td className="px-3.5 py-2.5 text-left font-semibold">
+                  <td className="px-3.5 py-2.5 text-left font-normal text-ink">
                     <span className="mr-1 inline-block w-3.5 text-ink-4">
                       {isOpen ? <ChevronDown size={12} className="inline" /> : <ChevronRight size={12} className="inline" />}
                     </span>
@@ -650,13 +650,13 @@ export function JobsOutreach() {
           <SectionHead title="Conversion Figures" />
           <ConversionTables sc={sc} />
 
-          <SectionHead title="Origin Comparison" note="Existing vs. no relationship this period" />
+          <SectionHead title="Origin Comparison" />
           <OriginComparison sc={sc} />
 
-          {/* ── Deep-dive divider: everything above = high-level review; below = per-sender/account deep dive ── */}
+          {/* ── Divider: everything above = high-level review; below = per-sender/account detail ── */}
           <div className="mt-6 flex items-center gap-3">
             <div className="h-px flex-1 bg-border-strong" />
-            <span className="text-[11px] font-bold uppercase tracking-[.12em] text-ink-3">Deep Dive · Senders, Segments &amp; Accounts</span>
+            <span className="text-[11px] font-bold uppercase tracking-[.12em] text-ink-3">Sender segments and accounts</span>
             <div className="h-px flex-1 bg-border-strong" />
           </div>
 

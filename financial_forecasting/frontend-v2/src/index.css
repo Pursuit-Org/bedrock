@@ -79,4 +79,18 @@
   .mono {
     font-family: "JetBrains Mono", ui-monospace, monospace;
   }
+
+  /* Native <select> dropdowns — the open option list is rendered by the OS,
+     not by our tokens. Without this, options inherit an unstyled white
+     background with near-white text (invisible until hovered) on some
+     platforms. Pin the color-scheme and give options explicit ink-on-surface
+     colors so every native dropdown is readable in the open state. */
+  select {
+    color-scheme: light;
+  }
+
+  select option {
+    background-color: var(--surface);
+    color: var(--ink);
+  }
 }

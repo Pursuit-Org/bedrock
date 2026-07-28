@@ -51,6 +51,11 @@ function mostRecentSaturday(d: Date): Date {
   x.setDate(x.getDate() - ((x.getDay() - 6 + 7) % 7));
   return x;
 }
+/** The Saturday that CLOSES the week containing `d` (i.e. the upcoming Saturday).
+ *  weekEnd is the closing boundary, so the current in-progress week is selectable. */
+function weekEndFor(d: Date): Date {
+  return addDays(mostRecentSaturday(d), 7);
+}
 /** Local YYYY-MM-DD (avoids the UTC shift of toISOString). */
 function fmtDateInput(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -62,10 +67,11 @@ export function JobsOpportunitiesOverview() {
   const [owner, setOwner] = useState<string>("all");
   const [dealType, setDealType] = useState<string>("all");
   const [dim, setDim] = useState<OppBreakdownDim>("status");
-  const [weekEnd, setWeekEnd] = useState<Date>(() => mostRecentSaturday(new Date()));
+  const [weekEnd, setWeekEnd] = useState<Date>(() => weekEndFor(new Date()));
 
-  const lastSaturday = mostRecentSaturday(new Date());
-  const canGoNext = addDays(weekEnd, 7).getTime() <= lastSaturday.getTime();
+  // The current (in-progress) week is the furthest forward you can go.
+  const maxWeekEnd = weekEndFor(new Date());
+  const canGoNext = addDays(weekEnd, 7).getTime() <= maxWeekEnd.getTime();
   const weekStart = addDays(weekEnd, -7);
 
   const staffQ = useJobsStaff();
@@ -84,10 +90,7 @@ export function JobsOpportunitiesOverview() {
       {/* ── Header row ─────────────────────────────────────────────────── */}
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h2 className="text-[18px] font-semibold tracking-tight text-ink">Opportunities — Weekly Overview</h2>
-          <p className="mt-0.5 text-[12.5px] text-ink-3">
-            Employer pipeline health
-          </p>
+          <h2 className="text-[18px] font-semibold tracking-tight text-ink">Opportunities Overview</h2>
         </div>
         <div className="flex items-center gap-1 rounded-lg border border-border-strong bg-surface px-1.5 py-1 text-[12.5px]">
           <button
@@ -113,10 +116,10 @@ export function JobsOpportunitiesOverview() {
           <input
             type="date"
             value={fmtDateInput(weekEnd)}
-            max={fmtDateInput(lastSaturday)}
-            onChange={(e) => { if (e.target.value) setWeekEnd(mostRecentSaturday(new Date(`${e.target.value}T00:00:00`))); }}
+            max={fmtDateInput(maxWeekEnd)}
+            onChange={(e) => { if (e.target.value) setWeekEnd(weekEndFor(new Date(`${e.target.value}T00:00:00`))); }}
             className="ml-1 rounded border border-border-strong bg-surface px-1.5 py-0.5 text-[12px] text-ink outline-none focus:border-accent"
-            title="Jump to a week (snaps to that week's Saturday)"
+            title="Jump to the week containing a date"
           />
         </div>
       </div>
@@ -168,12 +171,11 @@ export function JobsOpportunitiesOverview() {
 
       {/* ── Aging + Breakdown ─────────────────────────────────────────── */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <Panel title="Time in pipeline" desc="Age in the current stage — flags what's stuck, not just old">
+        <Panel title="Time in Pipeline">
           <AgingBars buckets={data?.aging.buckets ?? []} isLoading={isLoading} />
         </Panel>
         <Panel
-          title="Breakdown"
-          desc="Distribution of the active set"
+          title="Active set distribution"
           action={
             <select
               value={dim}
@@ -189,10 +191,7 @@ export function JobsOpportunitiesOverview() {
       </div>
 
       {/* ── Heatmaps ──────────────────────────────────────────────────── */}
-      <Panel
-        title="Priority × Time in Pipeline"
-        desc="Where effort is concentrated vs. whether those bets are moving"
-      >
+      <Panel title="Priority × Time in Pipeline">
         {data && !data.heatmaps.priority.populated ? (
           <div className="rounded-lg border border-dashed border-border-strong bg-surface-2/40 px-4 py-6 text-center text-[12.5px] text-ink-3">
             No priority set on any of the {data.heatmaps.priority.unset} active opps yet.

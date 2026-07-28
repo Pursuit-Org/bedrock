@@ -235,6 +235,7 @@ const STAGE_COLS: { stage: AppStage; label: string }[] = [
   { stage: "accepted", label: "Accepted" },
 ];
 const NEXT_STAGE: Partial<Record<AppStage, AppStage>> = { applied: "interview", interview: "accepted" };
+const PREV_STAGE: Partial<Record<AppStage, AppStage>> = { interview: "applied", accepted: "interview" };
 
 // Per-stage tint so the interview columns read with color (like Performance).
 const STAGE_COL_STYLE: Record<AppStage, { col: string; head: string }> = {
@@ -277,9 +278,17 @@ function InterviewCard({ opp }: { opp: InterviewPipelineOpp }) {
               <div className="flex flex-col gap-1">
                 {rows.map((b) => {
                   const next = NEXT_STAGE[b.stage as AppStage];
+                  const prev = PREV_STAGE[b.stage as AppStage];
                   return (
                     <div key={b.job_application_id} className="group flex items-center justify-between gap-1 rounded bg-surface px-1.5 py-1 text-[11.5px] text-ink-2">
-                      <span className="truncate">{b.builder || "—"}</span>
+                      {prev ? (
+                        <button type="button" title={`Move back to ${prev}`}
+                          onClick={() => advance.mutate({ appId: b.job_application_id, stage: prev })}
+                          className="shrink-0 rounded px-1 text-ink-4 opacity-0 transition-opacity hover:bg-surface-2 hover:text-ink group-hover:opacity-100">←</button>
+                      ) : (
+                        <span className="shrink-0 px-1 opacity-0">←</span>
+                      )}
+                      <span className="min-w-0 flex-1 truncate">{b.builder || "—"}</span>
                       {next && (
                         <button type="button" title={`Move to ${next}`}
                           onClick={() => advance.mutate({ appId: b.job_application_id, stage: next })}

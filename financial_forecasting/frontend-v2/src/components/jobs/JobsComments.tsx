@@ -5,6 +5,7 @@ import { formatDistanceToNow } from "date-fns";
 import { cn } from "@/lib/utils";
 import { initials } from "@/lib/format";
 import { useCurrentUser } from "@/services/auth";
+import { useStaffNameResolver } from "@/services/jobs";
 import {
   useCreateJobsComment,
   useDeleteJobsComment,
@@ -155,6 +156,7 @@ function CommentItem({
   parentId: string;
 }) {
   const { data: me } = useCurrentUser();
+  const nameOf = useStaffNameResolver();
   const updateComment = useUpdateJobsComment(parentType, parentId);
   const deleteComment = useDeleteJobsComment(parentType, parentId);
   const [editing, setEditing] = useState(false);
@@ -162,7 +164,9 @@ function CommentItem({
 
   const isAuthor =
     !!comment.author_email && !!me?.email && comment.author_email === me.email;
-  const name = comment.author_email || "Unknown";
+  // Resolve the author's email to a full display name (e.g. "Kwame Assoku"),
+  // falling back to a title-cased email local-part when staff lookup misses.
+  const name = nameOf(comment.author_email);
   const when = comment.created_at
     ? formatDistanceToNow(new Date(comment.created_at), { addSuffix: true })
     : "";

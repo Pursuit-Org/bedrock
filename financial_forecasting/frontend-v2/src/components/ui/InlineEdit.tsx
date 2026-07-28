@@ -285,6 +285,10 @@ export function InlineSelect<T extends string>({
   };
 
   const display = optimistic ?? value;
+  // Show the option's LABEL, not the raw stored value — otherwise ids (e.g. a
+  // task owner's UUID) or lowercase codes (e.g. "low") leak into the UI. Falls
+  // back to the raw value when no option matches.
+  const displayLabel = display != null ? (options.find((o) => o.value === display)?.label ?? display) : null;
   const showSpinner = saving && Date.now() - startedAtRef.current > 250;
 
   return (
@@ -301,7 +305,7 @@ export function InlineSelect<T extends string>({
           renderValue(display ?? null)
         ) : (
           <span className="text-[13px] text-ink-2">
-            {display ?? <span className="italic text-ink-4">{emptyLabel}</span>}
+            {displayLabel ?? <span className="italic text-ink-4">{emptyLabel}</span>}
           </span>
         )}
       </div>

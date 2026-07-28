@@ -29,7 +29,7 @@ import {
 } from "@/services/jobs";
 
 export const DEAL_TYPE_OPTIONS = (["ft", "pt_contract", "capstone", "volunteer", "workshop", "pilot"] as DealType[])
-  .map((v) => ({ value: v, label: { ft: "FT", pt_contract: "Contract", capstone: "Capstone", volunteer: "Volunteer", workshop: "Workshop", pilot: "Pilot" }[v] }));
+  .map((v) => ({ value: v, label: { ft: "Full time", pt_contract: "PT / Contract", capstone: "Capstone", volunteer: "Volunteer", workshop: "Workshop", pilot: "Pilot" }[v] }));
 
 /** Display name for an opportunity — role title, else deal-type, else generic. */
 export function oppRoleLabel(opp: { title?: string | null; deal_type?: DealType | null }): string {
@@ -56,7 +56,7 @@ export const DEAL_STAGE_STYLE = (stage: JobStage): string => {
 };
 
 export const DEAL_TYPE_LABELS: Record<DealType, string> = {
-  ft: "FT", pt_contract: "Contract", capstone: "Capstone",
+  ft: "Full time", pt_contract: "PT / Contract", capstone: "Capstone",
   volunteer: "Volunteer", workshop: "Workshop", pilot: "Pilot",
 };
 

@@ -2225,6 +2225,7 @@ export function JobsTeam() {
       if (groupBy === "deal_type") return DEAL_TYPE_LABELS[k as DealType] ?? k;
       if (groupBy === "stage") return STAGE_LABELS[k as JobStage] ?? k;
       if (groupBy === "status") return STATUS_OPTIONS.find((s) => s.value === k)?.label ?? k;
+      if (groupBy === "likelihood") return LIKELIHOOD_OPTIONS.find((l) => l.value === k)?.label ?? k;
       return k;
     },
     [groupBy, ownerLabel],

@@ -31,7 +31,7 @@ const VALID_VIEWS = new Set<View>(["home", "accounts", "performance", "outreach"
 // (to the right of the title), replacing the top-tab row on that view.
 const OPPS_SUBS: { id: OppsSub; label: string }[] = [
   { id: "overview", label: "Overview" },
-  { id: "set", label: "Opportunities set" },
+  { id: "set", label: "Opportunities Set" },
 ];
 
 export function JobsPage() {

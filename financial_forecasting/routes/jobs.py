@@ -1816,6 +1816,12 @@ async def opportunities_overview(
     else:
         ref = datetime.now(timezone.utc)
 
+    # As-of-`ref` membership: the active set as it stood at the end of the
+    # selected week, reconstructed from created_at / closed_at so past weeks show
+    # what was open THEN (not the live set). An opp is in the set as-of `ref` when
+    # it existed by then and either (a) is still open and in a working stage, or
+    # (b) was closed only after `ref` (so it was open at the time). When `ref` is
+    # the current week this collapses to the live working set.
     rows = await conn.fetch(f"""
         SELECT o.id, o.account_name, o.stage, o.deal_type, o.segment, o.owner_email,
                o.priority, o.created_at,
@@ -1825,10 +1831,13 @@ async def opportunities_overview(
                (SELECT max(a.activity_date) FROM bedrock.activity a
                 WHERE a.jobs_opportunity_id = o.id AND a.deleted_at IS NULL) AS last_activity
         FROM bedrock.jobs_opportunity o
-        WHERE o.deleted_at IS NULL AND {_OPP_INSET}
+        WHERE o.deleted_at IS NULL
+          AND o.created_at < $3::timestamptz
+          AND (o.closed_at IS NULL OR o.closed_at >= $3::timestamptz)
+          AND ({_OPP_INSET} OR (o.closed_at IS NOT NULL AND o.closed_at >= $3::timestamptz))
           AND ($1::text IS NULL OR o.owner_email = $1)
           AND ($2::text IS NULL OR o.deal_type = $2)
-    """, owner_f, dt_f)
+    """, owner_f, dt_f, ref)
 
     # Week-over-week, anchored to `ref` (Sat–Sat): net-new = opportunities created
     # in the selected week; prev = the prior 7-day window; moved-to-committed =

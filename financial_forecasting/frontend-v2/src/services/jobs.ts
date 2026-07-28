@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { useMutation, useQuery, useQueryClient, keepPreviousData, type QueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
@@ -178,7 +179,7 @@ export const STAGE_LABELS: Record<JobStage, string> = {
 };
 
 export const DEAL_TYPE_LABELS: Record<DealType, string> = {
-  ft:          "Full-Time",
+  ft:          "Full time",
   pt_contract: "PT / Contract",
   capstone:    "Capstone",
   volunteer:   "Volunteer",
@@ -672,6 +673,32 @@ export function useJobsStaff() {
     },
     staleTime: 300_000,
   });
+}
+
+/** "avni.nahar@pursuit.org" → "Avni Nahar". Fallback when staff lookup misses. */
+export function titleCaseEmail(email: string): string {
+  return email.split("@")[0].replace(/[._-]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+/**
+ * Resolve a staff person's display name from an email OR org-user id (UUID).
+ * Backed by /api/jobs/staff. Falls back to a title-cased email local-part, and
+ * finally to the raw value — so a UUID never leaks to the UI when the person is
+ * known. Use for comment authors, task owners, activity actors, etc.
+ */
+export function useStaffNameResolver(): (idOrEmail: string | null | undefined) => string {
+  const { data } = useJobsStaff();
+  return useMemo(() => {
+    const byEmail = new Map<string, string>();
+    (data ?? []).forEach((s) => byEmail.set(s.email.toLowerCase(), s.name || titleCaseEmail(s.email)));
+    return (v: string | null | undefined) => {
+      if (!v) return "Unknown";
+      const hit = byEmail.get(v.toLowerCase());
+      if (hit) return hit;
+      if (v.includes("@")) return titleCaseEmail(v);
+      return v;
+    };
+  }, [data]);
 }
 
 export interface JobsAccountUpdate {
