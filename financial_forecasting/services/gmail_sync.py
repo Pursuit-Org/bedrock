@@ -13,6 +13,7 @@ Requires GOOGLE_SERVICE_ACCOUNT_JSON env var (see google_dwd.py).
 Attachments stored in GCS bucket: bedrock-email-content
 """
 
+import asyncio
 import base64
 import json
 import logging
@@ -452,7 +453,11 @@ async def sync_gmail_for_staff(
                 upserted += 1
                 continue
 
-            try:
+            # Deadlock-retry: the upsert races the live app's own writes to
+            # bedrock.activity (seen ~1 per few thousand threads on the
+            # historical backfill). Deadlocks are transient — retry once.
+            for upsert_attempt in range(2):
+              try:
                 await conn.execute(
                     """
                     INSERT INTO bedrock.activity (
@@ -496,9 +501,14 @@ async def sync_gmail_for_staff(
                     staff_email,
                 )
                 upserted += 1
-            except Exception as e:
+                break
+              except Exception as e:
+                if upsert_attempt == 0 and "deadlock" in str(e).lower():
+                    await asyncio.sleep(0.5)
+                    continue
                 logger.warning("activity upsert failed for thread %s: %s", meta["thread_id"], e)
                 errors += 1
+                break
 
         page_token = result.get("nextPageToken")
         if not page_token:

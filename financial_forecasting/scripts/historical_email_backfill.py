@@ -61,9 +61,11 @@ def _load_state(path: str) -> dict:
 
 
 class State:
-    """Checkpoint file — {email: {year: {upserted, errors, done_at}}}.
+    """Checkpoint file — {email: {chunk_key: {upserted, errors, done_at}}}.
 
-    Single-process; the lock serializes saves across mailbox tasks.
+    chunk_key is "2017-Q2" (quarter windows); plain "2017" keys from earlier
+    year-sized runs still count as done for the whole year. Single-process;
+    the lock serializes saves across mailbox tasks.
     """
 
     def __init__(self, path: str):
@@ -71,37 +73,56 @@ class State:
         self.data = _load_state(path)
         self._lock = asyncio.Lock()
 
-    def is_done(self, email: str, year: int) -> bool:
-        return 'done_at' in self.data.get(email, {}).get(str(year), {})
+    def is_done(self, email: str, key: str) -> bool:
+        me = self.data.get(email, {})
+        if 'done_at' in me.get(key, {}):
+            return True
+        # Legacy whole-year checkpoint covers all its quarters
+        year = key.split('-')[0]
+        return 'done_at' in me.get(year, {})
 
-    async def mark(self, email: str, year: int, result: dict) -> None:
+    async def mark(self, email: str, key: str, result: dict) -> None:
         async with self._lock:
-            self.data.setdefault(email, {})[str(year)] = result
+            self.data.setdefault(email, {})[key] = result
             tmp = self.path + '.tmp'
             with open(tmp, 'w') as f:
                 json.dump(self.data, f, indent=1, sort_keys=True)
             os.replace(tmp, self.path)
 
 
+def _quarter_windows(from_year: int, to_year: int):
+    """Yield ("2017-Q2", since, until) quarter chunks, oldest first.
+
+    Quarter-sized windows keep each chunk well under the ~1h connection
+    lifetime observed against segundo-db — a mid-chunk socket death only
+    replays weeks of mail, not a whole busy year.
+    """
+    for year in range(from_year, to_year + 1):
+        for q in range(4):
+            since = datetime(year, 1 + q * 3, 1, tzinfo=timezone.utc)
+            until = (datetime(year + 1, 1, 1, tzinfo=timezone.utc) if q == 3
+                     else datetime(year, 4 + q * 3, 1, tzinfo=timezone.utc))
+            yield f"{year}-Q{q + 1}", since, until
+
+
 async def backfill_one_staff(
     pool, sem: asyncio.Semaphore, state: State,
     email: str, from_year: int, to_year: int,
 ) -> dict:
-    """Backfill one mailbox, oldest year first. Returns summary dict."""
+    """Backfill one mailbox, oldest quarter first. Returns summary dict."""
     async with sem:
         summary = {'email': email, 'upserted': 0, 'errors': 0, 'skipped_chunks': 0}
-        for year in range(from_year, to_year + 1):
-            if state.is_done(email, year):
+        first_key = True
+        for key, since, until in _quarter_windows(from_year, to_year):
+            if state.is_done(email, key):
                 summary['skipped_chunks'] += 1
+                first_key = False
                 continue
-            since = datetime(year, 1, 1, tzinfo=timezone.utc)
-            until = datetime(year + 1, 1, 1, tzinfo=timezone.utc)
             t0 = time.monotonic()
             res = None
             last_err: Exception | None = None
-            # Hour-long chunks can lose their DB socket mid-flight
-            # (BrokenPipeError seen on jukay 2016). Chunks are idempotent, so
-            # retry the whole year on a FRESH pooled connection.
+            # Chunks can lose their DB socket mid-flight (seen on jukay 2016-18).
+            # Chunks are idempotent, so retry on a FRESH pooled connection.
             for attempt in range(3):
                 try:
                     async with pool.acquire() as conn:
@@ -111,33 +132,35 @@ async def backfill_one_staff(
                     break
                 except Exception as e:
                     last_err = e
-                    logger.warning("chunk attempt %d/3 failed %s %d: %r",
-                                   attempt + 1, email, year, e)
+                    logger.warning("chunk attempt %d/3 failed %s %s: %r",
+                                   attempt + 1, email, key, e)
                     await asyncio.sleep(10 * (attempt + 1))
             if res is None:
                 # Impersonation failures (deleted/suspended-without-access
                 # mailbox) fail every chunk the same way — record once and
-                # move on to the next mailbox rather than burning 13 attempts.
-                logger.error("chunk FAIL %s %d: %r", email, year, last_err)
-                await state.mark(email, year, {'error': repr(last_err)})
+                # move on to the next mailbox rather than burning 52 attempts.
+                logger.error("chunk FAIL %s %s: %r", email, key, last_err)
+                await state.mark(email, key, {'error': repr(last_err)})
                 summary['errors'] += 1
-                if year == from_year:
+                if first_key:
                     summary['mailbox_error'] = repr(last_err)
                     logger.error("first chunk failed for %s — skipping mailbox "
                                  "(likely inaccessible account)", email)
                     return summary
+                first_key = False
                 continue
+            first_key = False
             secs = round(time.monotonic() - t0, 1)
             upserted = res.get('upserted', 0)
             errors = res.get('errors', 0)
-            await state.mark(email, year, {
+            await state.mark(email, key, {
                 'upserted': upserted, 'errors': errors,
                 'done_at': datetime.now(timezone.utc).isoformat(),
             })
             summary['upserted'] += upserted
             summary['errors'] += errors
-            logger.info("done %s %d: upserted=%d errors=%d in %ss",
-                        email, year, upserted, errors, secs)
+            logger.info("done %s %s: upserted=%d errors=%d in %ss",
+                        email, key, upserted, errors, secs)
         return summary
 
 
