@@ -20,10 +20,9 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 from services.google_dwd import get_dwd_credentials, CALENDAR_SCOPES
+from services.org_domains import is_internal_email
 
 logger = logging.getLogger(__name__)
-
-PURSUIT_DOMAIN = "@pursuit.org"
 
 
 def _build_calendar_service(staff_email: str):
@@ -59,7 +58,7 @@ async def _resolve_emails_to_contacts(
     if not emails:
         return [], None
 
-    external = [e.lower() for e in emails if PURSUIT_DOMAIN not in e.lower()]
+    external = [e.lower() for e in emails if not is_internal_email(e)]
     if not external:
         return [], None
 
@@ -177,7 +176,7 @@ async def sync_calendar_for_staff(
                 and "resource.calendar.google.com" not in a.get("email", "")
                 and "groups.outlook.com" not in a.get("email", "")
             ]
-            external_emails = [e for e in all_emails if PURSUIT_DOMAIN not in e]
+            external_emails = [e for e in all_emails if not is_internal_email(e)]
 
             # Skip internal-only meetings
             if not external_emails:

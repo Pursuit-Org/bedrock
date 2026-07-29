@@ -240,6 +240,21 @@ async def classify_new_activity(conn, limit: Optional[int] = None,
     where_new = "" if reclassify else "AND a.jobs_relevance IS NULL"
     lim = f"LIMIT {int(limit)}" if limit else ""
     rows = await conn.fetch(f"""
+        WITH staff_email AS (
+            -- Staff roster for author matching: app-login users (org_users)
+            -- UNION the interaction-sync roster (sync_staff + aliases).
+            -- sync_staff carries staff who never logged into Bedrock and
+            -- FORMER employees whose mailboxes we sync historically —
+            -- org_users alone silently skipped 21 of 44 synced mailboxes,
+            -- leaving their sent mail unclassified (dropped by the outreach
+            -- gate). Disabled sync_staff rows are included on purpose: a
+            -- departed author's historical mail should still classify.
+            SELECT lower(email) AS email FROM public.org_users WHERE is_active
+            UNION
+            SELECT lower(email) FROM bedrock.sync_staff
+            UNION
+            SELECT lower(a) FROM bedrock.sync_staff, LATERAL unnest(aliases) AS a
+        )
         SELECT a.id, a.type, a.source, a.subject, a.email_from, a.email_to, a.email_snippet,
                a.email_body_text, coalesce(a.description,'') AS description, a.meeting_attendees,
                a.participant_public_contact_id
@@ -247,17 +262,17 @@ async def classify_new_activity(conn, limit: Optional[int] = None,
         WHERE a.deleted_at IS NULL AND a.type IN ('email','meeting') {where_new}
           AND (
             -- Salesforce-logged tasks/events are authored by Pursuit staff in SF and
-            -- carry no email_from/attendees, so the org_users actor match below can't
+            -- carry no email_from/attendees, so the staff actor match below can't
             -- see them; include them explicitly or they stay NULL forever and get
             -- dropped by the outreach gate (jobs_relevance='jobs').
             a.source = 'salesforce'
             OR
-            (a.type='email' AND EXISTS (SELECT 1 FROM public.org_users o
-                 WHERE o.is_active AND a.email_from ILIKE '%'||o.email||'%'))
+            (a.type='email' AND EXISTS (SELECT 1 FROM staff_email s
+                 WHERE a.email_from ILIKE '%'||s.email||'%'))
             OR
             (a.type='meeting' AND a.meeting_attendees IS NOT NULL AND EXISTS (
-                 SELECT 1 FROM public.org_users o
-                 WHERE o.is_active AND a.meeting_attendees::text ILIKE '%'||o.email||'%'))
+                 SELECT 1 FROM staff_email s
+                 WHERE a.meeting_attendees::text ILIKE '%'||s.email||'%'))
           )
         ORDER BY a.activity_date DESC {lim}""")
     if not rows:

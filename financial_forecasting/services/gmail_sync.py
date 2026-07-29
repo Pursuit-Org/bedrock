@@ -24,10 +24,10 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 from services.google_dwd import get_dwd_credentials, GMAIL_SCOPES
+from services.org_domains import is_internal_email
 
 logger = logging.getLogger(__name__)
 
-PURSUIT_DOMAIN = "@pursuit.org"
 GCS_BUCKET = "bedrock-email-content"
 MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024  # skip attachments > 25 MB
 
@@ -197,7 +197,7 @@ async def _resolve_emails_to_contacts(
     if not emails:
         return [], None
 
-    external = [e.lower() for e in emails if PURSUIT_DOMAIN not in e.lower()]
+    external = [e.lower() for e in emails if not is_internal_email(e)]
     if not external:
         return [], None
 
@@ -398,7 +398,7 @@ async def sync_gmail_for_staff(
             if _is_automated_sender(meta["email_from"]):
                 continue
 
-            all_external = [e for e in meta["all_emails"] if PURSUIT_DOMAIN not in e]
+            all_external = [e for e in meta["all_emails"] if not is_internal_email(e)]
             if not all_external:
                 continue
 

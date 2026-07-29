@@ -16,10 +16,6 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
-# Mirror of routes.jobs.JOBS_TEAM_EMAILS — redefined locally so this service
-# stays free of any route import. Keep in sync with routes/jobs.py.
-JOBS_TEAM_EMAILS = ["avni@pursuit.org", "damon.kornhauser@pursuit.org", "devika@pursuit.org"]
-
 
 async def relink_jobs_prospect_activity(conn, days_back: Optional[int] = None) -> dict[str, Any]:
     """Populate activity.participant_public_contact_id for jobs prospects.
@@ -83,64 +79,80 @@ async def relink_jobs_prospect_activity(conn, days_back: Optional[int] = None) -
     return {"linked": linked}
 
 
-async def auto_flag_jobs_prospects(conn) -> dict[str, Any]:
-    """Flip is_jobs_contact=true on EXISTING contacts the jobs team engaged.
+async def auto_flag_jobs_prospects(conn, dry_run: bool = False) -> dict[str, Any]:
+    """Flip is_jobs_contact=true on EXISTING contacts who appear on any
+    staff-authored, jobs-classified activity.
 
-    A contact qualifies when there is a non-deleted bedrock.activity row that
-    the jobs team (Avni or Damon) sent or owned — matched via email_from ILIKE
-    a team address OR logged_by ILIKE a team address — AND that activity has the
-    contact as a participant: either the activity already links to the contact
-    via participant_public_contact_id, or the contact's lower(email) appears in
-    the activity's recipients (parsed lower(email_from), or = ANY of the lowered
-    email_to / email_cc arrays).
+    Widened 2026-07-29 (Jac's call, with the 15-year email backfill): ANY staff
+    member's jobs conversation counts, not just the core jobs team. The
+    jobs-relevance gate — coalesce(jobs_relevance_override, jobs_relevance) =
+    'jobs' — is what keeps that safe: only activity actually classified as jobs
+    work can flag, so incidental email can't flood the pipeline the way the old
+    ungated team-only version did (the 819-prospect mess). "Staff" = active
+    org_users UNION bedrock.sync_staff (+aliases), including former employees,
+    matching the classifier's own author roster.
+
+    A contact qualifies when such an activity has them as a participant: either
+    directly linked via participant_public_contact_id, or their lower(email)
+    appears in the activity's parsed sender / email_to / email_cc.
 
     Set-based (unnest CTE over recipients, hash-joined to contacts by normalized
     email), mirroring relink_jobs_prospect_activity. Only EXISTING contacts that
     are currently not flagged (is_jobs_contact false/null) and have a non-empty
-    email are updated — this never INSERTs a contact. Returns {"flagged": n}.
-    """
-    # Build the team-address predicates inline. JOBS_TEAM_EMAILS is a fixed
-    # internal constant (not user input), matching routes/jobs.py's own pattern.
-    sender = " OR ".join(f"a.email_from ILIKE '%{e}%'" for e in JOBS_TEAM_EMAILS)
-    owner = " OR ".join(f"a.logged_by ILIKE '%{e}%'" for e in JOBS_TEAM_EMAILS)
+    email are updated — this never INSERTs a contact, only ever sets the flag
+    true, and never assigns a stage (no auto-assign; new prospects show as
+    "No stage"). Returns {"flagged": n}.
 
-    sql = f"""
-    WITH team_act AS (
-        -- Activity the jobs team sent or owned, still live, AND classified as
-        -- jobs-relevant. The jobs-relevance gate is deliberate: a contact only
+    dry_run=True runs the same candidate selection but performs NO update —
+    returns {"would_flag": n, "rows": [...]} with per-contact evidence
+    (jobs-activity count, latest date) for preview/CSV export.
+    """
+    with_block = """
+    WITH staff_email AS (
+        SELECT lower(email) AS email FROM public.org_users WHERE is_active
+        UNION
+        SELECT lower(email) FROM bedrock.sync_staff
+        UNION
+        SELECT lower(a) FROM bedrock.sync_staff, LATERAL unnest(aliases) AS a
+    ),
+    staff_act AS (
+        -- Live activity authored by any staff member AND classified as
+        -- jobs-relevant. The relevance gate is deliberate: a contact only
         -- becomes a prospect off an activity that is actually about jobs work,
-        -- not any incidental email the team happened to be on. This aligns the
-        -- auto-flag with the is_jobs_contact re-curation definition (a prospect
-        -- needs a real jobs signal) so the nightly job can't re-flood the
-        -- pipeline with contacts the team merely appears alongside.
+        -- aligning the auto-flag with the is_jobs_contact re-curation
+        -- definition (a prospect needs a real jobs signal).
         SELECT a.id,
+               a.activity_date,
                a.participant_public_contact_id AS linked_cid,
                lower(a.email_from) AS from_em,
                a.email_to,
                a.email_cc
         FROM bedrock.activity a
         WHERE a.deleted_at IS NULL
-          AND (({sender}) OR ({owner}))
           AND coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs'
+          AND EXISTS (SELECT 1 FROM staff_email s
+                      WHERE a.email_from ILIKE '%'||s.email||'%'
+                         OR a.logged_by ILIKE '%'||s.email||'%')
     ),
-    -- Every participant email seen on a team activity, normalized
+    -- Every participant email seen on a staff jobs activity, normalized,
+    -- keeping the activity id so dry-run can report evidence per contact
     part_email AS (
-        SELECT (regexp_match(from_em, '<([^>]+)>'))[1] AS em FROM team_act
+        SELECT (regexp_match(from_em, '<([^>]+)>'))[1] AS em, id FROM staff_act
             WHERE from_em IS NOT NULL AND from_em ~ '<[^>]+>'
         UNION ALL
-        SELECT from_em AS em FROM team_act
+        SELECT from_em AS em, id FROM staff_act
             WHERE from_em IS NOT NULL AND from_em !~ '<[^>]+>'
         UNION ALL
-        SELECT lower(e) AS em
-            FROM team_act, unnest(coalesce(email_to, '{{}}')) e
+        SELECT lower(e) AS em, id
+            FROM staff_act, unnest(coalesce(email_to, '{}')) e
         UNION ALL
-        SELECT lower(e) AS em
-            FROM team_act, unnest(coalesce(email_cc, '{{}}')) e
+        SELECT lower(e) AS em, id
+            FROM staff_act, unnest(coalesce(email_cc, '{}')) e
     ),
-    -- Contacts already directly linked on a team activity
+    -- Contacts already directly linked on a staff jobs activity
     linked_cid AS (
         SELECT DISTINCT linked_cid AS contact_id
-        FROM team_act
+        FROM staff_act
         WHERE linked_cid IS NOT NULL
     ),
     -- Existing, unflagged contacts that qualify
@@ -157,13 +169,30 @@ async def auto_flag_jobs_prospects(conn) -> dict[str, Any]:
               OR c.contact_id IN (SELECT contact_id FROM linked_cid)
           )
     )
+    """
+
+    if dry_run:
+        rows = await conn.fetch(with_block + """
+        SELECT c.contact_id, c.full_name, c.email, c.current_company,
+               count(DISTINCT pe.id)           AS jobs_activities,
+               max(sa.activity_date)::date     AS last_jobs_activity
+        FROM cand
+        JOIN public.contacts c USING (contact_id)
+        LEFT JOIN part_email pe ON pe.em = lower(c.email)
+        LEFT JOIN staff_act sa ON sa.id = pe.id
+        GROUP BY c.contact_id, c.full_name, c.email, c.current_company
+        ORDER BY jobs_activities DESC, last_jobs_activity DESC
+        """)
+        logger.info("auto-flag dry run: %d contacts would be flagged", len(rows))
+        return {"would_flag": len(rows), "rows": [dict(r) for r in rows]}
+
+    result = await conn.execute(with_block + """
     UPDATE public.contacts c
     SET is_jobs_contact = true,
         updated_at = now()
     FROM cand
     WHERE c.contact_id = cand.contact_id
-    """
-    result = await conn.execute(sql)
+    """)
     flagged = int(result.split()[-1]) if result and result.split()[-1].isdigit() else 0
     logger.info("auto-flagged %d existing contacts as jobs prospects", flagged)
     return {"flagged": flagged}

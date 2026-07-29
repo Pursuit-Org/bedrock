@@ -210,3 +210,6 @@ financial_forecasting/frontend/.env.production
 .DS_Store
 **/.DS_Store
 .gstack/
+
+# Historical email backfill checkpoint (scripts/historical_email_backfill.py)
+.email_backfill_state.json
