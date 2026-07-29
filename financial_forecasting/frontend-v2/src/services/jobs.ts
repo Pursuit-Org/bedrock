@@ -1366,7 +1366,12 @@ export function useCreateContact() {
       qc.invalidateQueries({ queryKey: ["jobs", "contacts"] });
       toast.success("Contact created");
     },
-    onError: () => toast.error("Failed to create contact"),
+    // Surface the server's reason (e.g. the 409 duplicate naming the existing
+    // contact) — a generic toast hid the cause through all of TKT-135.
+    onError: (e: unknown) => {
+      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      toast.error(typeof detail === "string" ? detail : "Failed to create contact");
+    },
   });
 }
 

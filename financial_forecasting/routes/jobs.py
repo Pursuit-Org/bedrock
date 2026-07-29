@@ -3612,14 +3612,30 @@ async def create_contact(
     parts = body.full_name.split(" ", 1)
     first = parts[0]
     last  = parts[1] if len(parts) > 1 else ""
-    cid = await conn.fetchval("""
-        INSERT INTO public.contacts
-            (first_name, last_name, full_name, email, current_title,
-             current_company, linkedin_url, source, airtable_id, contact_stage)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,'manual',$8,$9)
-        RETURNING contact_id
-    """, first, last, body.full_name, body.email, body.current_title,
-        body.current_company, body.linkedin_url, at_id, body.contact_stage)
+    # TKT-135: email/linkedin have UNIQUE indexes that treat '' as a value —
+    # one ''-email row made EVERY email-less create explode with a raw 500.
+    # Blanks become NULL, and duplicates come back as a friendly 409 naming
+    # the existing contact instead of an unhandled 500.
+    email = (body.email or "").strip() or None
+    linkedin = (body.linkedin_url or "").strip() or None
+    try:
+        cid = await conn.fetchval("""
+            INSERT INTO public.contacts
+                (first_name, last_name, full_name, email, current_title,
+                 current_company, linkedin_url, source, airtable_id, contact_stage)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,'manual',$8,$9)
+            RETURNING contact_id
+        """, first, last, body.full_name, email, body.current_title,
+            body.current_company, linkedin, at_id, body.contact_stage)
+    except asyncpg.exceptions.UniqueViolationError:
+        dupe = await conn.fetchrow(
+            "SELECT contact_id, full_name FROM public.contacts "
+            "WHERE ($1::text IS NOT NULL AND email = $1) OR ($2::text IS NOT NULL AND linkedin_url = $2) LIMIT 1",
+            email, linkedin)
+        detail = (f"A contact with that email or LinkedIn already exists: "
+                  f"{dupe['full_name']} (#{dupe['contact_id']})" if dupe
+                  else "A contact with that email or LinkedIn already exists.")
+        raise HTTPException(409, detail)
     row = await conn.fetchrow("SELECT * FROM public.contacts WHERE contact_id=$1", cid)
     return {"success": True, "data": dict(row)}
 
