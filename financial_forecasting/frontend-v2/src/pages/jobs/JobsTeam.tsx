@@ -14,6 +14,7 @@ import {
   useOppPlacements,
   useUnlinkedPlacements,
   useCreatePlacement,
+  useDeletePlacement,
   useLinkPlacement,
   useStaff,
   type Staff,
@@ -1771,6 +1772,7 @@ export function PlacementsModal({
   const placementsQ = useOppPlacements(deal.id);
   const placements = placementsQ.data ?? [];
   const createPlacement = useCreatePlacement();
+  const deletePlacement = useDeletePlacement();
 
   // New placement sub-form. Employment type defaults from the DEAL type — a
   // blanket full_time default mis-typed contract placements as FT (they then
@@ -1868,6 +1870,15 @@ export function PlacementsModal({
                         ${p.salary.toLocaleString("en-US")}
                       </span>
                     ) : null}
+                    <button type="button" title="Delete placement (recorded in error)"
+                      onClick={() => {
+                        if (window.confirm(`Delete ${p.builder}'s placement at ${deal.account_name}? Any role it filled reopens.`)) {
+                          deletePlacement.mutate({ placementId: String(p.id), oppId: deal.id });
+                        }
+                      }}
+                      className="shrink-0 text-ink-4 hover:text-red">
+                      <Trash2 size={13} />
+                    </button>
                   </li>
                 ))}
               </ul>

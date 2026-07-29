@@ -890,6 +890,24 @@ export function useCreatePlacement() {
   });
 }
 
+export function useDeletePlacement() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ placementId }: { placementId: string; oppId?: string }) => {
+      await api.delete(`/api/jobs/placements/${placementId}`);
+    },
+    onSuccess: (_d, vars) => {
+      if (vars.oppId) qc.invalidateQueries({ queryKey: ["jobs", "opp-placements", vars.oppId] });
+      invalidateOppDependents(qc, [["jobs", "placements"], ["jobs", "builders"], ["jobs", "metric"]]);
+      toast.success("Placement deleted");
+    },
+    onError: (e: unknown) => {
+      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      toast.error(typeof detail === "string" ? detail : "Failed to delete placement");
+    },
+  });
+}
+
 export function useLinkPlacement() {
   const qc = useQueryClient();
   return useMutation({

@@ -9,6 +9,7 @@
 """
 
 import asyncio
+import asyncpg
 import json
 import logging
 import re
@@ -308,7 +309,7 @@ async def metric_drilldown(
             "SELECT s.*, (SELECT r2.opportunity_id::text FROM bedrock.jobs_role r2 "
             "             WHERE r2.employment_record_id = s.id LIMIT 1) AS opp_id "
             "FROM bedrock.secured_jobs() s "
-            f"WHERE s.payment_amount > 0 AND s.employment_type = 'full_time' AND {where} ORDER BY s.builder"
+            f"WHERE s.payment_amount > 0 AND s.employment_type = 'full_time' AND {where} AND {_live_placement('s')} ORDER BY s.builder"
         )
         for r in placed:
             out.append({
@@ -383,7 +384,7 @@ async def metric_drilldown(
         # via the role (both stay in sync once filled).
         placed = await conn.fetch(
             "SELECT id, builder, company_name, role_title, payment_amount "
-            "FROM bedrock.secured_jobs() WHERE payment_amount > 0 AND employment_type='full_time' ORDER BY builder")
+            f"FROM bedrock.secured_jobs() WHERE payment_amount > 0 AND employment_type='full_time' AND {_live_placement()} ORDER BY builder")
         committed = await conn.fetch("""
             SELECT r.id, o.account_name, r.title, r.approx_salary
             FROM bedrock.jobs_role r JOIN bedrock.jobs_opportunity o ON o.id = r.opportunity_id
@@ -412,10 +413,11 @@ async def metric_drilldown(
         # (contract/freelance/part-time from the Pathfinder era often has no
         # amount — TKT-129: 'sometimes counted, sometimes not' depended on
         # whether someone filled the pay field). pro_bono stays excluded.
-        rows = await conn.fetch("""
+        rows = await conn.fetch(f"""
             SELECT * FROM bedrock.secured_jobs()
-            WHERE payment_amount > 0
-               OR (coalesce(payment_amount, 0) = 0 AND employment_type IN ('contract','freelance','part_time'))
+            WHERE (payment_amount > 0
+               OR (coalesce(payment_amount, 0) = 0 AND employment_type IN ('contract','freelance','part_time')))
+              AND {_live_placement()}
             ORDER BY builder""")
         # One row PER PAID ROLE: builders with several paid engagements show each
         # (the headline still counts distinct builders). Grouped by builder.
@@ -525,10 +527,11 @@ async def get_placements(
 
     # Same inclusion rule as the any_paid drill: typed paid work counts even
     # when the pay amount wasn't recorded (TKT-129); pro_bono stays excluded.
-    rows = await conn.fetch("""
+    rows = await conn.fetch(f"""
         SELECT * FROM bedrock.secured_jobs()
-        WHERE payment_amount > 0
-           OR (coalesce(payment_amount, 0) = 0 AND employment_type IN ('contract','freelance','part_time'))""")
+        WHERE (payment_amount > 0
+           OR (coalesce(payment_amount, 0) = 0 AND employment_type IN ('contract','freelance','part_time')))
+          AND {_live_placement()}""")
     if seg_uids is not None:
         rows = [r for r in rows if r["user_id"] in seg_uids]
 
@@ -903,6 +906,26 @@ async def update_placement(
             "UPDATE bedrock.jobs_role SET title=$1, updated_at=now() WHERE employment_record_id=$2",
             body.role_title.strip(), placement_id)
     return {"success": True, "data": {"id": placement_id, **fields}}
+
+
+@router.delete("/placements/{placement_id}")
+async def delete_placement(placement_id: int, user=Depends(require_auth), conn=Depends(get_db)):
+    """Hard-delete a placement recorded in error (TKT-161). Any role that was
+    filled by it reopens. Requires the bedrock_user DELETE grant
+    (db/migrations/2026-07-30-employment-records-delete.sql)."""
+    row = await conn.fetchrow("SELECT id, company_name FROM public.employment_records WHERE id=$1", placement_id)
+    if not row:
+        raise HTTPException(404, "Placement not found")
+    try:
+        async with conn.transaction():
+            await conn.execute(
+                "UPDATE bedrock.jobs_role SET status='open', filled_by_user_id=NULL, "
+                "employment_record_id=NULL, updated_at=now() WHERE employment_record_id=$1",
+                placement_id)
+            await conn.execute("DELETE FROM public.employment_records WHERE id=$1", placement_id)
+    except asyncpg.exceptions.InsufficientPrivilegeError:
+        raise HTTPException(503, "Placement deletion needs a DB grant that isn't applied yet — ask Jac to run the 2026-07-30 employment-records-delete migration.")
+    return {"success": True, "data": {"deleted": placement_id}}
 
 
 class RelevanceOverride(BaseModel):
@@ -2118,10 +2141,11 @@ async def get_roles(user=Depends(require_auth), conn=Depends(get_db)):
     # including ones with no amount yet ("show all, even with $0"), so the team
     # can see (and backfill) them. Excludes pro_bono (never paid) and pipeline
     # (not an actual placement yet).
-    plc = await conn.fetch("""
+    plc = await conn.fetch(f"""
         SELECT * FROM bedrock.secured_jobs()
         WHERE employment_type <> 'pro_bono'
           AND (engagement_stage IS NULL OR engagement_stage NOT IN ('pipeline'))
+          AND {_live_placement()}
         ORDER BY (payment_amount > 0) DESC NULLS LAST, payment_amount DESC NULLS LAST, builder
     """)
 
@@ -4305,6 +4329,14 @@ async def account_prospects(
 
 # ── Jobs contact activation (flag + funnel membership) ────────────────────────
 _MEMBERSHIP_STAGES = ('assigned', 'initial_outreach', 'converted_to_opportunity', 'on_hold', 'not_a_fit')
+
+
+# TKT-161: placements whose linked opportunity was soft-deleted (data-entry
+# errors) must not count anywhere. Self-sourced placements (no opp link) stay.
+def _live_placement(a: str = "") -> str:
+    col = f"{a}.opportunity_id" if a else "opportunity_id"
+    return (f"({col} IS NULL OR NOT EXISTS (SELECT 1 FROM bedrock.jobs_opportunity dop "
+            f"WHERE dop.id = {col} AND dop.deleted_at IS NOT NULL))")
 
 
 def _user_email(user) -> Optional[str]:
@@ -6862,7 +6894,7 @@ async def builders_board(user=Depends(require_auth), conn=Depends(get_db)):
     apps_by = {r["builder_id"]: r for r in apps}
 
     plc_by: dict = {}
-    for r in await conn.fetch("SELECT user_id, payment_amount, engagement_stage, opportunity_id FROM bedrock.secured_jobs()"):
+    for r in await conn.fetch(f"SELECT user_id, payment_amount, engagement_stage, opportunity_id FROM bedrock.secured_jobs() WHERE {_live_placement()}"):
         b = plc_by.setdefault(r["user_id"], {"count": 0, "placed": False, "deals": set()})
         b["count"] += 1
         if _is_placed(r["payment_amount"], r["engagement_stage"]):
@@ -6928,10 +6960,10 @@ async def builder_detail(user_id: int, user=Depends(require_auth), conn=Depends(
         WHERE builder_id = $1 AND source_type = 'Pursuit_referred'
         ORDER BY date_applied DESC NULLS LAST
     """, user_id)
-    placements = await conn.fetch("""
+    placements = await conn.fetch(f"""
         SELECT id, role_title, company_name, employment_type, payment_amount,
                engagement_stage, influenced, opportunity_id, start_date
-        FROM bedrock.secured_jobs() WHERE user_id = $1
+        FROM bedrock.secured_jobs() WHERE user_id = $1 AND {_live_placement()}
         ORDER BY (payment_amount > 0) DESC NULLS LAST, payment_amount DESC NULLS LAST
     """, user_id)
     deal_ids = [r["opportunity_id"] for r in placements if r["opportunity_id"]]
