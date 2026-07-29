@@ -19,7 +19,7 @@
  */
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { AlertTriangle, ChevronRight, Circle, Plus, Search } from "lucide-react";
+import { AlertTriangle, CheckCircle2, ChevronRight, Circle, Plus, Search } from "lucide-react";
 import { toast } from "sonner";
 
 import { Tag } from "@/components/ui/Tag";
@@ -67,6 +67,14 @@ const todayIso = () => {
 // React Query cache entry.
 const assignedFilters = (owner: string | null): ContactFilters => ({
   membership_stage: "assigned",
+  limit: 1000,
+  rules: owner ? [{ field: "owner", op: "equals", values: [owner] }] : undefined,
+});
+
+// Contacts already moved to Initial outreach — filtered client-side to this
+// week's stage entries for the "contacted" progress strip.
+const contactedFilters = (owner: string | null): ContactFilters => ({
+  membership_stage: "initial_outreach",
   limit: 1000,
   rules: owner ? [{ field: "owner", op: "equals", values: [owner] }] : undefined,
 });
@@ -206,30 +214,124 @@ function AssignedContactsZone({ owner }: { owner: string | null }) {
     { key: "week", label: "This week", items: thisWeek, cls: "bg-surface-2/60 text-ink-4" },
     { key: "earlier", label: "Earlier — still waiting on first outreach", items: earlier, cls: "bg-amber-soft text-amber" },
   ].filter((g) => g.items.length > 0);
+
+  // Contacts moved to Initial outreach THIS WEEK — kept visible with a green
+  // check at the bottom of the queue so progress stays on the board.
+  const { data: contactedData } = useJobsContacts(contactedFilters(owner));
+  const contacted = useMemo(() => (contactedData?.data ?? [])
+    .filter((c) => c.membership_stage_entered_at && new Date(c.membership_stage_entered_at) >= weekStart)
+    .sort((a, b) => (b.membership_stage_entered_at ?? "").localeCompare(a.membership_stage_entered_at ?? "")),
+    [contactedData, weekStart]);
+  const [showAllContacted, setShowAllContacted] = useState(false);
+  const shownContacted = showAllContacted ? contacted : contacted.slice(0, 10);
+  const total = contacts.length + contacted.length;
+  const pct = total > 0 ? Math.round((contacted.length / total) * 100) : 0;
+
   return (
-    <Section title="Assigned contacts" count={contacts.length}>
+    <Section title="Assigned contacts" count={contacts.length}
+      action={total > 0 ? (
+        <div className="flex items-center gap-2" title={`${contacted.length} of ${total} contacted this week`}>
+          <span className={cn("text-[11.5px] font-medium", contacted.length > 0 ? "text-green" : "text-ink-4")}>
+            {contacted.length} of {total} contacted
+          </span>
+          <div className="h-1.5 w-24 overflow-hidden rounded-full bg-surface-2">
+            <div className="h-full rounded-full bg-green transition-all" style={{ width: `${pct}%` }} />
+          </div>
+        </div>
+      ) : undefined}>
       <div className="flex flex-col overflow-hidden rounded-lg border border-border-strong bg-surface">
         {isLoading ? (
           <div className="px-3 py-8 text-center text-[12.5px] text-ink-3">Loading…</div>
-        ) : contacts.length === 0 ? (
+        ) : contacts.length === 0 && contacted.length === 0 ? (
           <div className="px-3 py-6 text-center text-[12.5px] text-ink-3">
             No assigned contacts. Flag prospects from{" "}
             <Link to="/jobs/contacts" className="text-accent hover:underline">Contacts</Link> to build the week's queue.
           </div>
-        ) : groups.map((g) => (
-          <div key={g.key}>
-            <div className={cn("px-3 py-1 text-[10px] font-semibold uppercase tracking-wider", g.cls)}>
-              {g.label} · {g.items.length}
-            </div>
-            {g.items.map((c) => (
-              <AssignedRow key={c.contact_id} c={c} staff={staff}
-                expanded={expandedId === c.contact_id}
-                onToggle={() => setExpandedId((p) => (p === c.contact_id ? null : c.contact_id))} />
+        ) : (
+          <>
+            {contacts.length === 0 && (
+              <div className="px-3 py-4 text-center text-[12.5px] text-green">
+                Queue clear — every assigned contact has been reached. 🎉
+              </div>
+            )}
+            {groups.map((g) => (
+              <div key={g.key}>
+                <div className={cn("px-3 py-1 text-[10px] font-semibold uppercase tracking-wider", g.cls)}>
+                  {g.label} · {g.items.length}
+                </div>
+                {g.items.map((c) => (
+                  <AssignedRow key={c.contact_id} c={c} staff={staff}
+                    expanded={expandedId === c.contact_id}
+                    onToggle={() => setExpandedId((p) => (p === c.contact_id ? null : c.contact_id))} />
+                ))}
+              </div>
             ))}
-          </div>
-        ))}
+            {contacted.length > 0 && (
+              <div>
+                <div className="bg-green-soft px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-green">
+                  Contacted this week · {contacted.length}
+                </div>
+                {shownContacted.map((c) => (
+                  <ContactedRow key={c.contact_id} c={c}
+                    expanded={expandedId === c.contact_id}
+                    onToggle={() => setExpandedId((p) => (p === c.contact_id ? null : c.contact_id))} />
+                ))}
+                {contacted.length > shownContacted.length && (
+                  <button type="button" onClick={() => setShowAllContacted(true)}
+                    className="w-full border-t border-border-strong px-3 py-1.5 text-[12px] text-accent hover:bg-surface-2/50">
+                    Show all {contacted.length} contacted
+                  </button>
+                )}
+              </div>
+            )}
+          </>
+        )}
       </div>
     </Section>
+  );
+}
+
+// A contact already moved to Initial outreach this week — the "done" state of
+// the queue. Row is deliberately quiet: green check, muted text, still
+// expandable to the full contact panel.
+function ContactedRow({ c, expanded, onToggle }: {
+  c: { contact_id: number; full_name: string | null; current_title: string | null;
+       current_company: string | null; membership_stage_entered_at?: string | null };
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <>
+      <div
+        onClick={onToggle}
+        className={cn(
+          "flex cursor-pointer items-center gap-2 border-t border-border-strong px-3 py-1.5 hover:bg-surface-2/40",
+          expanded && "bg-surface-2/40",
+        )}
+      >
+        <CheckCircle2 size={15} className="shrink-0 text-green" />
+        <ChevronRight size={12} className={cn("shrink-0 text-ink-4 transition-transform", expanded && "rotate-90")} />
+        <div className="min-w-0 flex-1">
+          <Link to={`/jobs/contacts/${c.contact_id}`} onClick={(e) => e.stopPropagation()}
+            className="truncate text-[13px] font-medium text-ink-3 hover:text-accent">
+            {c.full_name || "—"}
+          </Link>
+          <div className="truncate text-[11px] text-ink-4">
+            {[c.current_title, c.current_company].filter(Boolean).join(" · ") || "—"}
+          </div>
+        </div>
+        <span className="shrink-0 text-[10.5px] font-medium text-green">Initial outreach</span>
+        <span className="w-[52px] shrink-0 text-right text-[11.5px] tabular-nums text-ink-4"
+          title={c.membership_stage_entered_at ? `Contacted ${new Date(c.membership_stage_entered_at).toLocaleDateString()}` : undefined}>
+          {relDay(c.membership_stage_entered_at) ?? "—"}
+        </span>
+      </div>
+      {expanded && (
+        <div className="border-t border-border-strong">
+          <ContactExpandTabs contactId={c.contact_id} />
+        </div>
+      )}
+    </>
   );
 }
 
