@@ -2118,3 +2118,22 @@ export function useOpportunitiesOverview(owner?: string, dealType?: string, week
     staleTime: 30_000,
   });
 }
+
+// ── Daily digest (the morning Slack, computed) ───────────────────────────────
+export interface DailyDigest {
+  date: string;
+  outreach: { new_touches: number; existing_touches: number; new_accounts: number; existing_accounts: number; meetings: number };
+  submissions: { company: string; builders: number; roles: number }[];
+}
+
+export function useDailyDigest(date?: string) {
+  return useQuery<DailyDigest>({
+    queryKey: ["jobs", "daily-digest", date ?? "yesterday"],
+    queryFn: async () => {
+      const qs = date ? `?date=${date}` : "";
+      const { data } = await api.get<ApiResponse<DailyDigest>>(`/api/jobs/daily-digest${qs}`);
+      return data.data;
+    },
+    staleTime: 300_000,
+  });
+}

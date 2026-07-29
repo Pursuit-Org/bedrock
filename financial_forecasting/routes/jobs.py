@@ -753,8 +753,16 @@ class PlacementCreate(BaseModel):
     builder_user_id: Optional[int] = None   # link to a platform builder if known
     builder_name:    Optional[str] = None   # free-text fallback
     role_title:      Optional[str] = None
-    employment_type: str = "full_time"      # full_time | contract | freelance | pro_bono
+    # full_time | contract | freelance | pro_bono. None → derived from the
+    # opportunity's deal_type (pt_contract → contract). A hardcoded full_time
+    # default here mis-typed contract placements as FT (Sam MacFarlane / RBM).
+    employment_type: Optional[str] = None
     salary:          Optional[int] = None
+
+
+def _default_employment_type(deal_type: Optional[str]) -> str:
+    """Deal-type-aware fallback for placements missing an explicit type."""
+    return "contract" if deal_type == "pt_contract" else "full_time"
 
 
 @router.post("/opportunities/{opp_id}/placements")
@@ -767,11 +775,12 @@ async def create_opp_placement(
 ):
     """Create a new secured-job placement under this opportunity (jobs-team influenced)."""
     opp = await conn.fetchrow(
-        "SELECT account_id, account_name FROM bedrock.jobs_opportunity WHERE id=$1 AND deleted_at IS NULL",
+        "SELECT account_id, account_name, deal_type FROM bedrock.jobs_opportunity WHERE id=$1 AND deleted_at IS NULL",
         opp_id,
     )
     if not opp:
         raise HTTPException(404, "Opportunity not found")
+    emp_type = body.employment_type or _default_employment_type(opp["deal_type"])
 
     user_email = user.get("email") if isinstance(user, dict) else getattr(user, "email", None)
     # employment_records.user_id is NOT NULL — require a builder_user_id, or store name in story/notes
@@ -798,7 +807,7 @@ async def create_opp_placement(
                     payment_amount=COALESCE(payment_amount, $4),
                     updated_at=now()
                 WHERE id=$5
-            """, opp_id, role, body.employment_type, body.salary, existing["id"])
+            """, opp_id, role, emp_type, body.salary, existing["id"])
             rec_id, merged = existing["id"], True
         else:
             rec_id = await conn.fetchval("""
@@ -807,7 +816,7 @@ async def create_opp_placement(
                      payment_amount, source, opportunity_id, influenced, notes)
                 VALUES ($1,$2,$3,$4,'completed',$5,'staff_created',$6,true,$7)
                 RETURNING id
-            """, body.builder_user_id, role, opp["account_name"], body.employment_type,
+            """, body.builder_user_id, role, opp["account_name"], emp_type,
                 body.salary, opp_id, notes)
             merged = False
     else:
@@ -1134,17 +1143,20 @@ async def update_role(
         f"UPDATE bedrock.jobs_role SET {', '.join(sets)}, updated_at=now() WHERE id=${i} RETURNING *",
         *params,
     )
-    # Keep a FILLED role's placement record in sync with the role — salary AND
-    # title. Otherwise editing the role title after hiring leaves the placement
-    # (which the Builders view + FT-Roles-Secured drill read) on the old title
-    # (Acture: role "Junior Network Systems Engineer" vs placement stuck on
-    # "IT Helpdesk Technician").
+    # Keep a FILLED role's placement record in sync with the role — salary,
+    # title, AND employment type. Otherwise editing the role after hiring
+    # leaves the placement (which the Builders view + FT-Roles-Secured metric
+    # read) on the old values (Acture: stale title; Sam MacFarlane / RBM:
+    # role corrected to contract but the placement stayed full_time and kept
+    # counting as an FT role secured).
     if row["employment_record_id"]:
         er_sets, er_params = [], []
         if body.approx_salary is not None:
             er_sets.append(f"payment_amount=${len(er_params)+1}"); er_params.append(body.approx_salary)
         if body.title is not None:
             er_sets.append(f"role_title=${len(er_params)+1}"); er_params.append(body.title)
+        if body.employment_type is not None:
+            er_sets.append(f"employment_type=${len(er_params)+1}"); er_params.append(body.employment_type)
         if er_sets:
             er_params.append(row["employment_record_id"])
             await conn.execute(
@@ -1207,28 +1219,56 @@ async def hire_into_role(
     if not role:
         raise HTTPException(404, "Role not found")
     opp = await conn.fetchrow(
-        "SELECT id, account_name FROM bedrock.jobs_opportunity WHERE id=$1 AND deleted_at IS NULL",
+        "SELECT id, account_name, deal_type FROM bedrock.jobs_opportunity WHERE id=$1 AND deleted_at IS NULL",
         role["opportunity_id"],
     )
     if not opp:
         raise HTTPException(404, "Opportunity not found")
 
-    employment_type = body.employment_type or role["employment_type"] or "full_time"
+    # Fallback chain used to bottom out at 'full_time' regardless of deal type,
+    # mis-typing hires on contract deals (Sam MacFarlane / RBM Maintenance).
+    employment_type = body.employment_type or role["employment_type"] or _default_employment_type(opp["deal_type"])
     payment_amount  = body.salary if body.salary is not None else role["approx_salary"]
     start_date      = body.start_date or role["start_date"]
 
     async with conn.transaction():
-        new_id = await conn.fetchval(
-            """
-            INSERT INTO public.employment_records
-                (user_id, role_title, company_name, employment_type, engagement_stage,
-                 payment_amount, source, opportunity_id, influenced, start_date)
-            VALUES ($1,$2,$3,$4,'active',$5,'staff_created',$6,true,$7)
-            RETURNING id
-            """,
-            body.user_id, role["title"], opp["account_name"], employment_type,
-            payment_amount, opp["id"], start_date,
-        )
+        # Dedup guard (same as create_opp_placement): if this builder already
+        # has a placement at this company — e.g. recorded via the Placements
+        # modal before the role was filled — enrich THAT record instead of
+        # inserting a duplicate. A modal-then-hire sequence used to create two
+        # records, one carrying the modal's full_time default (Sam MacFarlane /
+        # RBM: dup record kept counting as an FT role secured).
+        existing_id = await conn.fetchval("""
+            SELECT id FROM public.employment_records
+            WHERE user_id = $1 AND lower(company_name) = lower($2)
+            ORDER BY id LIMIT 1
+        """, body.user_id, opp["account_name"])
+        if existing_id:
+            await conn.execute(
+                """
+                UPDATE public.employment_records
+                SET role_title=$1, employment_type=$2, engagement_stage='active',
+                    payment_amount=COALESCE($3, payment_amount),
+                    opportunity_id=$4, influenced=true,
+                    start_date=COALESCE($5, start_date), updated_at=now()
+                WHERE id=$6
+                """,
+                role["title"], employment_type, payment_amount, opp["id"],
+                start_date, existing_id,
+            )
+            new_id = existing_id
+        else:
+            new_id = await conn.fetchval(
+                """
+                INSERT INTO public.employment_records
+                    (user_id, role_title, company_name, employment_type, engagement_stage,
+                     payment_amount, source, opportunity_id, influenced, start_date)
+                VALUES ($1,$2,$3,$4,'active',$5,'staff_created',$6,true,$7)
+                RETURNING id
+                """,
+                body.user_id, role["title"], opp["account_name"], employment_type,
+                payment_amount, opp["id"], start_date,
+            )
         updated = await conn.fetchrow(
             """
             UPDATE bedrock.jobs_role
@@ -3394,6 +3434,84 @@ async def outreach_accounts(
             "comments": comments, "open_tasks": tasks, "contacts": contacts_l,
         })
     return {"success": True, "data": {"accounts": items}}
+
+
+@router.get("/daily-digest")
+async def jobs_daily_digest(date_q: Optional[str] = Query(None, alias="date"),
+                            user=Depends(require_auth), conn=Depends(get_db)):
+    """The morning-Slack digest, computed: a day's outreach split into
+    new vs existing accounts (message-level emails + manual touches +
+    jobs-relevant meetings), plus builder submissions to roles. "New account"
+    = no activity mapped to that account before the day. Defaults to
+    yesterday (UTC). Builder OUTREACH (staff→builder emails) isn't captured
+    in the activity model yet — that line is a future addition."""
+    if date_q:
+        try:
+            d = date.fromisoformat(date_q)
+        except ValueError:
+            raise HTTPException(400, "invalid date; use YYYY-MM-DD")
+    else:
+        d = (datetime.now(timezone.utc) - timedelta(days=1)).date()
+    day_start = datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
+    day_end = day_start + timedelta(days=1)
+
+    outreach = await conn.fetchrow("""
+        WITH touches AS (
+            -- message-level email sends by active staff, jobs-relevant
+            SELECT aem.sent_at AS ts, 'email' AS kind,
+                   a.account_id, a.participant_public_contact_id AS pid
+            FROM bedrock.activity a
+            JOIN bedrock.activity_email_message aem ON aem.activity_id = a.id
+            WHERE a.type = 'email' AND a.deleted_at IS NULL
+              AND coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs'
+              AND aem.sent_at >= $1 AND aem.sent_at < $2
+              AND EXISTS (SELECT 1 FROM public.org_users o
+                          WHERE o.is_active AND aem.from_email ILIKE '%'||o.email||'%')
+            UNION ALL
+            -- manual touches always count; meetings only when jobs-relevant
+            SELECT a.activity_date, a.type, a.account_id, a.participant_public_contact_id
+            FROM bedrock.activity a
+            WHERE a.type IN ('call','text','linkedin','meeting') AND a.deleted_at IS NULL
+              AND a.activity_date >= $1 AND a.activity_date < $2
+              AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type <> 'meeting')
+        ),
+        keyed AS (
+            SELECT t.*, COALESCE(t.account_id,
+                (SELECT lower(trim(c.current_company)) FROM public.contacts c
+                 WHERE c.contact_id = t.pid AND coalesce(trim(c.current_company),'') <> '')) AS akey
+            FROM touches t
+        ),
+        flagged AS (
+            SELECT k.*, (k.akey IS NOT NULL AND NOT EXISTS (
+                SELECT 1 FROM bedrock.activity p
+                LEFT JOIN public.contacts pc ON pc.contact_id = p.participant_public_contact_id
+                WHERE p.deleted_at IS NULL AND p.activity_date < $1
+                  AND COALESCE(p.account_id, lower(trim(pc.current_company))) = k.akey
+            )) AS is_new
+            FROM keyed k
+        )
+        SELECT count(*) FILTER (WHERE is_new)                                   AS new_touches,
+               count(*) FILTER (WHERE NOT is_new)                               AS existing_touches,
+               count(DISTINCT akey) FILTER (WHERE is_new)                       AS new_accounts,
+               count(DISTINCT akey) FILTER (WHERE NOT is_new AND akey IS NOT NULL) AS existing_accounts,
+               count(*) FILTER (WHERE kind = 'meeting')                         AS meetings
+        FROM flagged
+    """, day_start, day_end)
+
+    submissions = await conn.fetch("""
+        SELECT coalesce(nullif(trim(ja.company_name),''),'(unknown)') AS company,
+               count(*) AS builders,
+               count(DISTINCT coalesce(ja.jobs_role_id::text, lower(coalesce(ja.role_title,'')))) AS roles
+        FROM public.job_applications ja
+        WHERE ja.date_applied = $1 AND ja.source_type = 'Pursuit_referred'
+        GROUP BY 1 ORDER BY 2 DESC
+    """, d)
+
+    return {"success": True, "data": {
+        "date": d.isoformat(),
+        "outreach": dict(outreach) if outreach else {},
+        "submissions": [dict(r) for r in submissions],
+    }}
 
 
 @router.get("/this-week-summary")

@@ -43,7 +43,7 @@ import {
   useUpdateContact, useUpdateOpportunity,
   useIntroRequests, useRespondIntroRequest,
   STAGE_LABELS, STAGES_ORDERED, MEMBERSHIP_STAGES, MEMBERSHIP_STAGE_LABELS,
-  type ContactFilters, type IntroRequest, type JobStage, type JobsOpportunity,
+  type ContactFilters, type DealType, type IntroRequest, type JobStage, type JobsOpportunity,
   type JobsStaff, type MembershipStage, type OppNeedsRow,
 } from "@/services/jobs";
 import {
@@ -345,7 +345,7 @@ function OppTableRow({ o, needs, expanded, onToggle, showOwner, resolveName, onR
   onToggle: () => void;
   showOwner: boolean;
   resolveName: (v: string | null | undefined) => string;
-  onRecordPlacements: (deal: { id: string; account_name: string }) => void;
+  onRecordPlacements: (deal: { id: string; account_name: string; deal_type?: DealType | null }) => void;
   onClosedLost: (deal: { id: string; account_name: string }) => void;
   onCommittedRoles: (deal: { id: string; account_name: string }) => void;
 }) {
@@ -357,7 +357,7 @@ function OppTableRow({ o, needs, expanded, onToggle, showOwner, resolveName, onR
       updateOpp.mutate({ id: o.id, stage }, {
         onSuccess: () => {
           const isPlacementType = o.deal_type === "ft" || o.deal_type === "pt_contract";
-          if (stage === "closed_won" && isPlacementType) onRecordPlacements({ id: o.id, account_name: o.account_name });
+          if (stage === "closed_won" && isPlacementType) onRecordPlacements({ id: o.id, account_name: o.account_name, deal_type: o.deal_type });
           else if (stage === "closed_lost") onClosedLost({ id: o.id, account_name: o.account_name });
           else if (stage === "active_opportunity_confirmed" && (o.num_roles ?? 0) === 0) onCommittedRoles({ id: o.id, account_name: o.account_name });
           resolve();
@@ -439,7 +439,7 @@ function OpportunitiesZone({ owner }: { owner: string | null }) {
   const [attnOnly, setAttnOnly] = useSessionState<boolean>("jobsHome.opps.attn", false);
   const { sort, toggle } = useSort<OppSortKey>();
   // Stage-gating modals — mirrors JobsTeam root.
-  const [placementModalDeal, setPlacementModalDeal] = useState<{ id: string; account_name: string } | null>(null);
+  const [placementModalDeal, setPlacementModalDeal] = useState<{ id: string; account_name: string; deal_type?: DealType | null } | null>(null);
   const [committedRolesDeal, setCommittedRolesDeal] = useState<{ id: string; account_name: string } | null>(null);
   const [closedLostDeal, setClosedLostDeal] = useState<{ id: string; account_name: string } | null>(null);
 

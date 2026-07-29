@@ -1,14 +1,16 @@
 /**
  * Jobs · Opportunities — Weekly Overview.
  *
- * High-level, read-only view of the employer-deal pipeline for the Thursday
- * pipeline meeting: summary cards, time-in-stage aging, a switchable breakdown
- * (status / deal type / segment / stage / owner), the Priority×Time and
- * Stage×Time concentration heatmaps, and the needs-attention list.
+ * The Thursday-meeting agenda, top to bottom: summary cards (incl. the
+ * won-with-open-tasks stage-gate check), recent activity (the week's
+ * narrative), the per-owner walkthrough (P1s with next task, stalled with
+ * why — rows manage inline and expand to the full DealExpandPanel), then
+ * time-in-stage aging and the switchable set distribution.
  *
  * "Time in pipeline" = time in the CURRENT stage (from jobs_stage_history).
- * Backed by /api/jobs/opportunities/overview. Priority×Time renders an empty
- * state until opps carry a priority — it lights up as the team populates it.
+ * Backed by /api/jobs/opportunities/overview (+ /opportunities for the
+ * managed rows). Heatmaps + standalone needs-attention were removed in the
+ * 2026-07-30 exec review — restore from git if ever needed.
  */
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
@@ -26,7 +28,6 @@ import {
   type JobStage,
   type JobsOpportunity,
   type OppBreakdownDim,
-  type OppHeatmap,
   type OppNeedsRow,
   type OppActivityEvent,
 } from "@/services/jobs";
@@ -106,7 +107,6 @@ export function JobsOpportunitiesOverview() {
     limit: 500,
   });
   const { data: allTasks = [] } = useAllJobsTasks();
-  const oppsById = useMemo(() => new Map((oppsData?.data ?? []).map((o) => [o.id, o])), [oppsData]);
   const openOpps = useMemo(() => (oppsData?.data ?? [])
     .filter((o) => !o.stage.startsWith("closed") && !o.stage.startsWith("on_hold")), [oppsData]);
   const needsById = useMemo(
@@ -125,7 +125,7 @@ export function JobsOpportunitiesOverview() {
     [oppsData]);
   // One expand at a time across all managed tables; stage-gating modals at page root.
   const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [placementModalDeal, setPlacementModalDeal] = useState<{ id: string; account_name: string } | null>(null);
+  const [placementModalDeal, setPlacementModalDeal] = useState<{ id: string; account_name: string; deal_type?: DealType | null } | null>(null);
   const [committedRolesDeal, setCommittedRolesDeal] = useState<{ id: string; account_name: string } | null>(null);
   const [closedLostDeal, setClosedLostDeal] = useState<{ id: string; account_name: string } | null>(null);
   const rowHandlers = {
@@ -240,15 +240,8 @@ export function JobsOpportunitiesOverview() {
           nameOf={nameOf} {...rowHandlers} />
       </Panel>
 
-      {/* ── Needs attention ───────────────────────────────────────────── */}
-      <Panel
-        title="Needs attention this week"
-        desc="3+ weeks in the current stage, or gone quiet — pre-loaded for the meeting"
-        badge={data ? `${data.needs_attention.length}` : undefined}
-      >
-        <NeedsTable rows={data?.needs_attention ?? []} isLoading={isLoading} nameOf={nameOf}
-          oppsById={oppsById} nextTaskByOpp={nextTaskByOpp} {...rowHandlers} />
-      </Panel>
+      {/* Needs-attention panel removed 2026-07-30 — the walkthrough's stalled
+          groups carry the same rows, grouped by owner and manageable. */}
 
       {/* ── Aging + Breakdown ─────────────────────────────────────────── */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
@@ -271,26 +264,10 @@ export function JobsOpportunitiesOverview() {
         </Panel>
       </div>
 
-      {/* ── Heatmaps ──────────────────────────────────────────────────── */}
-      <Panel title="Priority × Time in Pipeline">
-        {data && !data.heatmaps.priority.populated ? (
-          <div className="rounded-lg border border-dashed border-border-strong bg-surface-2/40 px-4 py-6 text-center text-[12.5px] text-ink-3">
-            No priority set on any of the {data.heatmaps.priority.unset} active opps yet.
-            <div className="mt-1 text-[11.5px] text-ink-4">
-              This heatmap lights up automatically as the team sets priority on opportunities.
-            </div>
-          </div>
-        ) : (
-          <Heatmap heatmap={data?.heatmaps.priority} buckets={data?.heatmaps.buckets ?? []} rowHeader="Priority" isLoading={isLoading} />
-        )}
-      </Panel>
-
-      <Panel
-        title="Stage × Time in Pipeline"
-        desc="Real concentration today — where deals sit vs. how long they've been there"
-      >
-        <Heatmap heatmap={data?.heatmaps.stage} buckets={data?.heatmaps.buckets ?? []} rowHeader="Stage" isLoading={isLoading} />
-      </Panel>
+      {/* Heatmaps removed 2026-07-30 (exec review): Priority×Time rendered
+          empty until priorities are tagged, and Stage×Time's column totals are
+          the aging bars above. Restore from git if concentration analysis is
+          ever needed again. */}
 
       {placementModalDeal && <PlacementsModal deal={placementModalDeal} onClose={() => setPlacementModalDeal(null)} />}
       {committedRolesDeal && <CommittedRolesModal deal={committedRolesDeal} onClose={() => setCommittedRolesDeal(null)} />}
@@ -304,7 +281,7 @@ export function JobsOpportunitiesOverview() {
 interface RowHandlers {
   expandedId: string | null;
   setExpandedId: (fn: (p: string | null) => string | null) => void;
-  onRecordPlacements: (d: { id: string; account_name: string }) => void;
+  onRecordPlacements: (d: { id: string; account_name: string; deal_type?: DealType | null }) => void;
   onClosedLost: (d: { id: string; account_name: string }) => void;
   onCommittedRoles: (d: { id: string; account_name: string }) => void;
 }
@@ -325,7 +302,7 @@ function ManagedOppRow({ o, sub, detail, right, nextTask, expandedId, setExpande
       updateOpp.mutate({ id: o.id, stage }, {
         onSuccess: () => {
           const isPlacementType = o.deal_type === "ft" || o.deal_type === "pt_contract";
-          if (stage === "closed_won" && isPlacementType) onRecordPlacements({ id: o.id, account_name: o.account_name });
+          if (stage === "closed_won" && isPlacementType) onRecordPlacements({ id: o.id, account_name: o.account_name, deal_type: o.deal_type });
           else if (stage === "closed_lost") onClosedLost({ id: o.id, account_name: o.account_name });
           else if (stage === "active_opportunity_confirmed" && (o.num_roles ?? 0) === 0) onCommittedRoles({ id: o.id, account_name: o.account_name });
           resolve();
@@ -611,134 +588,6 @@ function BreakdownBars({ items, dim, isLoading }: { items: { key: string; label:
           </div>
         </div>
       ))}
-    </div>
-  );
-}
-
-// ── Heatmap ───────────────────────────────────────────────────────────────────
-
-// Colour encodes VOLUME only — a blue that deepens with the count in the cell.
-// No concern-shading or flags; the gradient is the only signal.
-function heatBlue(n: number, max: number): { background: string; color: string } {
-  if (n <= 0) return { background: "var(--surface-2)", color: "var(--ink-4)" };
-  const t = max > 0 ? n / max : 0;
-  const alpha = 0.16 + 0.84 * t; // light → deep blue as volume grows
-  return {
-    background: `rgba(47, 127, 224, ${alpha.toFixed(2)})`, // --sky base (#2F7FE0)
-    color: alpha > 0.5 ? "#ffffff" : "var(--ink)",
-  };
-}
-
-function Heatmap({
-  heatmap, buckets, rowHeader, isLoading,
-}: {
-  heatmap: OppHeatmap | undefined;
-  buckets: { key: string; label: string }[];
-  rowHeader: string;
-  isLoading: boolean;
-}) {
-  if (isLoading) return <div className="h-40 animate-pulse rounded-lg bg-surface-2" />;
-  if (!heatmap || heatmap.rows.length === 0) {
-    return <div className="py-6 text-center text-[12px] text-ink-4">No opportunities to chart.</div>;
-  }
-  const max = Math.max(1, ...heatmap.rows.flatMap((r) => r.cells));
-  return (
-    <div className="overflow-x-auto">
-      <table className="w-full min-w-[560px] border-collapse">
-        <thead>
-          <tr>
-            <th className="px-2 pb-2.5 text-left text-[10.5px] font-semibold uppercase tracking-wider text-ink-4">{rowHeader}</th>
-            {buckets.map((b) => (
-              <th key={b.key} className="px-1.5 pb-2.5 text-center text-[10.5px] font-semibold uppercase tracking-wider text-ink-4">{b.label}</th>
-            ))}
-            <th className="px-2 pb-2.5 text-right text-[10.5px] font-semibold uppercase tracking-wider text-ink-4">Total</th>
-          </tr>
-        </thead>
-        <tbody>
-          {heatmap.rows.map((row) => (
-            <tr key={row.key}>
-              <td className="whitespace-nowrap py-1 pr-2 text-[12.5px] font-semibold text-ink">{row.label}</td>
-              {row.cells.map((n, i) => {
-                const st = heatBlue(n, max);
-                return (
-                  <td key={i} className="p-1">
-                    <div
-                      className="flex h-11 items-center justify-center rounded-lg text-[14px] font-bold"
-                      style={{ background: st.background, color: st.color }}
-                    >
-                      {n}
-                    </div>
-                  </td>
-                );
-              })}
-              <td className="py-1 pl-2 text-right text-[12px] font-semibold tabular-nums text-ink-3">{row.total}</td>
-            </tr>
-          ))}
-          <tr>
-            <td className="border-t border-border-strong pt-2.5 text-[11.5px] font-semibold text-ink-4">Column total</td>
-            {heatmap.col_totals.map((n, i) => (
-              <td key={i} className="border-t border-border-strong pt-2.5 text-center text-[11.5px] font-semibold tabular-nums text-ink-4">{n}</td>
-            ))}
-            <td className="border-t border-border-strong" />
-          </tr>
-        </tbody>
-      </table>
-      <div className="mt-2.5 flex items-center gap-1.5 text-[11px] text-ink-4">
-        <span className="h-2.5 w-8 rounded-sm" style={{ background: "linear-gradient(90deg, rgba(47,127,224,0.16), rgba(47,127,224,1))" }} />
-        fewer → more opportunities
-      </div>
-    </div>
-  );
-}
-
-// ── Needs-attention table ─────────────────────────────────────────────────────
-
-function NeedsTable({ rows, isLoading, nameOf, oppsById, nextTaskByOpp, ...handlers }: {
-  rows: OppNeedsRow[];
-  isLoading: boolean;
-  nameOf: (e: string | null) => string;
-  oppsById: Map<string, JobsOpportunity>;
-  nextTaskByOpp: Map<string, { title: string; deadline: string | null }>;
-} & RowHandlers) {
-  const [showAll, setShowAll] = useState(false);
-  if (isLoading) return <div className="h-32 animate-pulse rounded-lg bg-surface-2" />;
-  if (rows.length === 0) {
-    return (
-      <div className="flex items-center justify-center gap-2 rounded-lg border border-dashed border-border-strong px-4 py-8 text-[12px] text-ink-4">
-        <Clock size={14} /> Nothing flagged — the board is moving.
-      </div>
-    );
-  }
-  const shown = showAll ? rows : rows.slice(0, 5);
-  return (
-    <div className="-mt-px flex flex-col">
-      {shown.map((r) => {
-        const o = oppsById.get(r.opportunity_id);
-        if (o) {
-          return (
-            <ManagedOppRow key={r.opportunity_id} o={o}
-              sub={`${nameOf(r.owner)}${o.title ? ` · ${o.title}` : ""}`}
-              detail={<span className="flex items-center gap-1.5"><AlertTriangle size={11} className="shrink-0 text-[var(--amber)]" />{r.why}</span>}
-              right={<span className="text-[var(--amber)]">{r.days_in_stage}d</span>}
-              nextTask={nextTaskByOpp.get(r.opportunity_id)} {...handlers} />
-          );
-        }
-        // Fallback (opp outside the fetched page): read-only link row.
-        return (
-          <div key={r.opportunity_id} className="grid grid-cols-[1fr_150px_minmax(0,220px)_70px] items-center gap-2 border-t border-border-strong px-2.5 py-2">
-            <Link to={`/jobs/opportunities/${r.opportunity_id}`} className="truncate text-[13px] font-semibold text-ink hover:text-accent">{r.account || "—"}</Link>
-            <span className="rounded-full bg-surface-2 px-2 py-0.5 text-center text-[11px] font-medium text-ink-2">{r.stage_label}</span>
-            <span className="flex items-center gap-1.5 truncate text-[11.5px] text-ink-3"><AlertTriangle size={11} className="shrink-0 text-[var(--amber)]" />{r.why}</span>
-            <span className="text-right text-[11.5px] tabular-nums text-[var(--amber)]">{r.days_in_stage}d</span>
-          </div>
-        );
-      })}
-      {rows.length > 5 ? (
-        <button type="button" onClick={() => setShowAll((v) => !v)}
-          className="mt-2 self-start text-[12px] font-medium text-accent hover:underline">
-          {showAll ? "Show less" : `Show ${rows.length - 5} more`}
-        </button>
-      ) : null}
     </div>
   );
 }

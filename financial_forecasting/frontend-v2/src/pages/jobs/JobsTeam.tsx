@@ -1364,7 +1364,7 @@ function DealRow({
   deal: JobsOpportunity;
   isExpanded: boolean;
   onToggle: () => void;
-  onRecordPlacements: (deal: { id: string; account_name: string }) => void;
+  onRecordPlacements: (deal: { id: string; account_name: string; deal_type?: DealType | null }) => void;
   onCommittedRoles: (deal: { id: string; account_name: string }) => void;
   onClosedLost: (deal: { id: string; account_name: string }) => void;
   visibleCols: OppColKey[];
@@ -1390,7 +1390,7 @@ function DealRow({
         {
           onSuccess: () => {
             if (stage === "closed_won" && isPlacementType) {
-              onRecordPlacements({ id: deal.id, account_name: deal.account_name });
+              onRecordPlacements({ id: deal.id, account_name: deal.account_name, deal_type: deal.deal_type });
             } else if (stage === "closed_lost") {
               onClosedLost({ id: deal.id, account_name: deal.account_name });
             } else if (stage === "active_opportunity_confirmed" && (deal.num_roles ?? 0) === 0) {
@@ -1765,19 +1765,21 @@ export function PlacementsModal({
   deal,
   onClose,
 }: {
-  deal: { id: string; account_name: string };
+  deal: { id: string; account_name: string; deal_type?: DealType | null };
   onClose: () => void;
 }) {
   const placementsQ = useOppPlacements(deal.id);
   const placements = placementsQ.data ?? [];
   const createPlacement = useCreatePlacement();
 
-  // New placement sub-form
+  // New placement sub-form. Employment type defaults from the DEAL type — a
+  // blanket full_time default mis-typed contract placements as FT (they then
+  // counted in "FT roles secured": Sam MacFarlane / RBM Maintenance).
   const [builderSearch, setBuilderSearch] = useState("");
   const [builderOpen, setBuilderOpen] = useState(false);
   const [builder, setBuilder] = useState<{ user_id: number; name: string } | null>(null);
   const [roleTitle, setRoleTitle] = useState("");
-  const [employmentType, setEmploymentType] = useState("full_time");
+  const [employmentType, setEmploymentType] = useState(deal.deal_type === "pt_contract" ? "contract" : "full_time");
   const [salary, setSalary] = useState("");
 
   const buildersQ = useBuilders(builderSearch || undefined);
@@ -2153,7 +2155,7 @@ export function JobsTeam() {
   const [collapsedGroups, setCollapsedGroups] = useSessionState<string[]>("jobs-opps:groupCollapsed", EMPTY_COLLAPSED);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [showNewDeal, setShowNewDeal] = useState(false);
-  const [placementModalDeal, setPlacementModalDeal] = useState<{ id: string; account_name: string } | null>(null);
+  const [placementModalDeal, setPlacementModalDeal] = useState<{ id: string; account_name: string; deal_type?: DealType | null } | null>(null);
   const [committedRolesDeal, setCommittedRolesDeal] = useState<{ id: string; account_name: string } | null>(null);
   const [closedLostDeal, setClosedLostDeal] = useState<{ id: string; account_name: string } | null>(null);
 

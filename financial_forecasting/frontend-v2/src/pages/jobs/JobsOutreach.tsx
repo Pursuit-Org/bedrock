@@ -2,6 +2,7 @@ import { Fragment, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { ChevronRight, ChevronDown, Loader2, Search, Users } from "lucide-react";
 
+import { toast } from "sonner";
 import {
   useOutreachScorecard,
   useOutreachDrill,
@@ -11,6 +12,7 @@ import {
   useJobsContacts,
   useJobsAccounts,
   useTagCampaigns,
+  useDailyDigest,
   type OutreachGranularity,
   type OutreachScopeKind,
   type OutreachDateRange,
@@ -20,6 +22,7 @@ import {
   type TargetingDim,
 } from "@/services/jobs";
 import { TagCampaigns } from "@/components/jobs/TagCampaigns";
+import { ActivityTrends } from "@/components/jobs/ActivityTrends";
 import { relDay } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
@@ -579,6 +582,73 @@ function SectionHead({ title, note }: { title: string; note?: string }) {
   );
 }
 
+// ── Daily digest — Avni's morning Slack, computed ────────────────────────────
+// "Builder outreach" (staff→builder emails) isn't in the activity model yet;
+// that line joins the digest once staff→builder email matching exists.
+
+const localISODate = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
+function digestSlackText(dg: NonNullable<ReturnType<typeof useDailyDigest>["data"]>): string {
+  const o = dg.outreach;
+  const lines = [
+    "Update on jobs team activity. Yesterday there was:",
+    `• ${o.new_touches ?? 0} outreach to new accounts`,
+    `• ${o.existing_touches ?? 0} outreach to existing accounts${(o.meetings ?? 0) > 0 ? `, including ${o.meetings} meeting${o.meetings === 1 ? "" : "s"}` : ""}`,
+  ];
+  if (dg.submissions.length > 0) {
+    const totalBuilders = dg.submissions.reduce((n, s) => n + s.builders, 0);
+    const totalRoles = dg.submissions.reduce((n, s) => n + s.roles, 0);
+    const companies = dg.submissions.map((s) => s.company).join(", ");
+    lines.push(`• ${totalBuilders} Builder${totalBuilders === 1 ? "" : "s"} submitted to ${totalRoles} role${totalRoles === 1 ? "" : "s"} at ${companies}`);
+  }
+  return lines.join("\n");
+}
+
+function DailyDigestBlock() {
+  const yesterday = useMemo(() => { const d = new Date(); d.setDate(d.getDate() - 1); return localISODate(d); }, []);
+  const [digestDate, setDigestDate] = useState<string>(yesterday);
+  const { data: dg, isLoading } = useDailyDigest(digestDate);
+  const o = dg?.outreach;
+  const copy = () => {
+    if (!dg) return;
+    navigator.clipboard.writeText(digestSlackText(dg))
+      .then(() => toast.success("Digest copied — paste into Slack"))
+      .catch(() => toast.error("Couldn't copy"));
+  };
+  return (
+    <div className="flex flex-col gap-2 rounded-xl border border-border-strong bg-surface px-4 py-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">Daily digest</span>
+        <input type="date" value={digestDate} max={yesterday}
+          onChange={(e) => { if (e.target.value) setDigestDate(e.target.value); }}
+          className="h-6 rounded border border-border-strong bg-surface px-1.5 text-[11.5px] text-ink-2 outline-none focus:border-accent" />
+        <div className="flex-1" />
+        <button type="button" onClick={copy} disabled={!dg}
+          className="h-7 rounded-md border border-border-strong bg-surface px-2.5 text-[12px] font-medium text-ink-2 hover:bg-surface-2 disabled:opacity-40">
+          Copy for Slack
+        </button>
+      </div>
+      {isLoading || !o ? (
+        <div className="h-14 animate-pulse rounded bg-surface-2" />
+      ) : (
+        <div className="flex flex-col gap-0.5 text-[13px] text-ink-2">
+          <span><b className={cn("tabular-nums", (o.new_touches ?? 0) > 0 ? "text-green" : "text-ink")}>{o.new_touches ?? 0}</b> outreach to new accounts{(o.new_accounts ?? 0) > 0 ? <span className="text-ink-4"> · {o.new_accounts} accounts</span> : null}</span>
+          <span><b className="tabular-nums text-ink">{o.existing_touches ?? 0}</b> outreach to existing accounts{(o.meetings ?? 0) > 0 ? <>, including <b className="tabular-nums">{o.meetings}</b> meeting{o.meetings === 1 ? "" : "s"}</> : null}<span className="text-ink-4"> · {o.existing_accounts ?? 0} accounts</span></span>
+          {(dg?.submissions.length ?? 0) > 0 ? (
+            <span>
+              <b className="tabular-nums text-green">{dg!.submissions.reduce((n, s) => n + s.builders, 0)}</b> Builder{dg!.submissions.reduce((n, s) => n + s.builders, 0) === 1 ? "" : "s"} submitted to{" "}
+              <b className="tabular-nums">{dg!.submissions.reduce((n, s) => n + s.roles, 0)}</b> role{dg!.submissions.reduce((n, s) => n + s.roles, 0) === 1 ? "" : "s"} at {dg!.submissions.map((s) => s.company).join(", ")}
+            </span>
+          ) : (
+            <span className="text-ink-4">No builder submissions</span>
+          )}
+          <span className="text-[11px] text-ink-4">Builder outreach isn't tracked yet — add it to the Slack post by hand.</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Monday-meeting blocks (agenda order: coverage → this week → traction → hygiene) ──
 
 // Start of the current Sun–Sat week (local) — same convention as Jobs Home.
@@ -643,37 +713,6 @@ function ThisWeekBlock({ nameOf }: { nameOf: (email: string) => string }) {
             })}
           </tbody>
         </table>
-      </div>
-    </div>
-  );
-}
-
-/** Conversion by source — converted / contacted per campaign, from the same
- *  data as the coverage table. (Response rate needs per-campaign reply counts
- *  server-side — planned upgrade; conversion is what's honest today.) */
-function TractionBlock() {
-  const { data: campaigns = [] } = useTagCampaigns();
-  const rows = useMemo(() => campaigns
-    .map((c) => {
-      const contacted = c.funnel.contacted + c.funnel.converted;
-      return { label: c.label, contacted, converted: c.funnel.converted, rate: contacted > 0 ? c.funnel.converted / contacted : null };
-    })
-    .filter((r) => r.rate != null && r.contacted >= 5) // tiny buckets make noisy rates
-    .sort((a, b) => (b.rate ?? 0) - (a.rate ?? 0))
-    .slice(0, 8), [campaigns]);
-  if (rows.length === 0) return null;
-  const max = Math.max(...rows.map((r) => r.rate ?? 0), 0.01);
-  return (
-    <div className="flex flex-col gap-3">
-      <SectionHead title="Traction — conversion by source" note="converted ÷ contacted · buckets with 5+ contacted" />
-      <div className="rounded-lg border border-border-strong bg-surface py-1.5">
-        {rows.map((r) => (
-          <div key={r.label} className="grid grid-cols-[170px_1fr_110px] items-center gap-2 px-3 py-1" title={`${r.converted} converted of ${r.contacted} contacted`}>
-            <span className="truncate text-[12px] text-ink-2">{r.label}</span>
-            <div className="h-3.5 rounded-[3px] bg-accent" style={{ width: `${Math.max(2, (100 * (r.rate ?? 0)) / max)}%` }} />
-            <span className="text-right text-[12px] tabular-nums text-ink-2">{Math.round((r.rate ?? 0) * 100)}% <span className="text-ink-4">· {r.converted}/{r.contacted}</span></span>
-          </div>
-        ))}
       </div>
     </div>
   );
@@ -790,13 +829,15 @@ export function JobsOutreach() {
 
   return (
     <div className="flex flex-col gap-6 pt-3">
-      {/* ── Monday-meeting agenda: coverage → this week → traction → hygiene ── */}
+      {/* ── Daily digest (the morning Slack) ── */}
+      <DailyDigestBlock />
+
+      {/* ── Monday-meeting agenda: coverage → this week → hygiene ── */}
       <div className="flex flex-col gap-3">
         <SectionHead title="Campaigns · coverage" note="the warm list, by source — run top-to-bottom on Mondays" />
         <TagCampaigns />
       </div>
       <ThisWeekBlock nameOf={nameOf} />
-      <TractionBlock />
       <HygieneBlock nameOf={nameOf} staffEmails={staffEmails} />
 
       {/* ── Scorecard (ops deep-dive) ── */}
@@ -877,6 +918,9 @@ export function JobsOutreach() {
           </p>
         </>
       )}
+
+      {/* ── Outreach & activation over time (moved from Exec view 2026-07-30) ── */}
+      <ActivityTrends />
     </div>
   );
 }
