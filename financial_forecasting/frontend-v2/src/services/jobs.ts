@@ -18,6 +18,7 @@ function invalidateOppDependents(qc: QueryClient, extra: string[][] = []) {
     ["jobs", "pipeline"],
     ["jobs", "funnel"],
     ["jobs", "this-week-summary"],
+    ["jobs", "interview-pipeline"],
     ...extra,
   ];
   for (const queryKey of families) qc.invalidateQueries({ queryKey });

@@ -668,7 +668,7 @@ function DealContextStrip({ deal }: { deal: JobsOpportunity }) {
  * stage history, contacts) lives in dedicated tabs; tabs lazy-render so
  * hidden tabs don't fire their queries.
  */
-function DealExpandPanel({
+export function DealExpandPanel({
   deal,
 }: {
   deal: JobsOpportunity;
@@ -1244,7 +1244,7 @@ const STAGE_OPTIONS: { value: JobStage; label: string }[] = STAGES_ORDERED.map((
 // still shows a legacy value if a deal somehow already sits there.
 const HIDDEN_OPP_STAGES = new Set<JobStage>(["lead_submitted"]);
 const OPP_STAGE_OPTIONS = STAGE_OPTIONS.filter((o) => !HIDDEN_OPP_STAGES.has(o.value));
-function stageOptionsFor(stage: JobStage): { value: JobStage; label: string }[] {
+export function stageOptionsFor(stage: JobStage): { value: JobStage; label: string }[] {
   return HIDDEN_OPP_STAGES.has(stage)
     ? [{ value: stage, label: STAGE_LABELS[stage] }, ...OPP_STAGE_OPTIONS]
     : OPP_STAGE_OPTIONS;
@@ -1761,7 +1761,7 @@ const EMPLOYMENT_TYPE_LABELS: Record<string, string> = Object.fromEntries(
   EMPLOYMENT_TYPES.map((t) => [t.value, t.label]),
 );
 
-function PlacementsModal({
+export function PlacementsModal({
   deal,
   onClose,
 }: {
@@ -2049,7 +2049,7 @@ function PlacementsModal({
 
 // ── Closed-lost reason modal ──────────────────────────────────────────────────
 
-function ClosedLostModal({
+export function ClosedLostModal({
   deal,
   onClose,
 }: {

@@ -4,38 +4,57 @@
  * A person picker (Me / staff / Everyone) scopes every zone:
  *   1. Assigned contacts — the working queue: contacts in the 'assigned'
  *      membership stage, grouped This week / Earlier by real stage-entry time
- *      (membership_stage_entered_at). ✓ moves a contact to Initial outreach.
- *   2. Opportunities — the person's open deals, with server-computed
- *      needs-attention flags (same list as Performance › Pipeline).
- *   3. Tasks — every open jobs task for the scope, inline edit + quick-add.
- *   4. Intro requests — asks addressed to me, and mine (unscoped).
- * Rows in 1–2 expand to a comments thread (JobsComments) so outreach notes
- * land on the contact/opportunity without leaving the page.
+ *      (membership_stage_entered_at). ✓ moves a contact to Initial outreach;
+ *      the row also edits membership stage + owner inline, and expands to the
+ *      full contact panel (ContactExpandTabs: activity+log, opps, listings,
+ *      tasks, comments, intro).
+ *   2. Opportunities — sortable/filterable table of the person's open deals
+ *      with needs-attention flags; inline stage edit carries the SAME modal
+ *      gating as the Pipeline tab; rows expand to the full DealExpandPanel.
+ *   3. Roles — every role on the person's open opps (role owner = opp owner;
+ *      jobs_role has no owner column); expands to the full roles editor +
+ *      builder progression for that opp.
+ *   4. Tasks — every open jobs task for the scope, inline edit + quick-add.
+ *   5. Intro requests — asks addressed to me, and mine (unscoped).
  */
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { AlertTriangle, ChevronRight, Circle, Plus } from "lucide-react";
+import { AlertTriangle, ChevronRight, Circle, Plus, Search } from "lucide-react";
 import { toast } from "sonner";
 
 import { Tag } from "@/components/ui/Tag";
-import { InlineDate } from "@/components/ui/InlineEdit";
-import { JobsComments } from "@/components/jobs/JobsComments";
+import { InlineDate, InlineSelect } from "@/components/ui/InlineEdit";
+import { RowExpandPanel } from "@/components/RowExpandPanel";
+import { SortableHeader } from "@/components/ui/SortableHeader";
+import { ContactExpandTabs, OwnerSelect } from "@/components/jobs/jobsEntity";
+import { OppRolesSection } from "@/components/jobs/OppRolesSection";
+import { OppBuilderActivity } from "@/components/jobs/OppBuilderActivity";
+import { CommittedRolesModal } from "@/components/jobs/CommittedRolesModal";
+import { DealExpandPanel, PlacementsModal, ClosedLostModal, stageOptionsFor } from "./JobsTeam";
 import { cn } from "@/lib/utils";
 import { relDay } from "@/lib/format";
+import { useSort, sortBy } from "@/lib/sort";
+import { useSessionState } from "@/lib/useSessionState";
 import { useActiveUsers } from "@/services/projects";
 import { useCurrentUser } from "@/services/auth";
 import {
   useJobsAccountNames, useJobsContacts, useJobsOpportunities, useJobsStaff,
   useOpportunitiesOverview, useStaffNameResolver, useUpdateJobsMembership,
+  useUpdateContact, useUpdateOpportunity,
   useIntroRequests, useRespondIntroRequest,
-  STAGE_LABELS,
+  STAGE_LABELS, STAGES_ORDERED, MEMBERSHIP_STAGES, MEMBERSHIP_STAGE_LABELS,
   type ContactFilters, type IntroRequest, type JobStage, type JobsOpportunity,
-  type OppNeedsRow,
+  type JobsStaff, type MembershipStage, type OppNeedsRow,
 } from "@/services/jobs";
+import {
+  useInterviewPipeline, type InterviewPipelineOpp, type InterviewPipelineRole,
+} from "@/services/jobsOpps2";
 import {
   useAllJobsTasks, useUpdateTaskById, useCreateTaskForParent, useDeleteTaskById,
   type JobsTaskEnriched,
 } from "@/services/jobsTasks";
+
+const MEMBERSHIP_STAGE_OPTIONS = MEMBERSHIP_STAGES.map((s) => ({ value: s, label: MEMBERSHIP_STAGE_LABELS[s] }));
 
 const todayIso = () => new Date().toISOString().slice(0, 10);
 
@@ -78,15 +97,16 @@ function Section({ title, count, action, children }: {
 }
 
 // ── Assigned contacts zone ────────────────────────────────────────────────────
-function AssignedRow({ c, showOwner, resolveName }: {
+function AssignedRow({ c, staff, expanded, onToggle }: {
   c: { contact_id: number; full_name: string | null; current_title: string | null;
        current_company: string | null; owner_email?: string | null;
        membership_stage_entered_at?: string | null };
-  showOwner: boolean;
-  resolveName: (v: string | null | undefined) => string;
+  staff: JobsStaff[];
+  expanded: boolean;
+  onToggle: () => void;
 }) {
   const update = useUpdateJobsMembership();
-  const [expanded, setExpanded] = useState(false);
+  const updateContact = useUpdateContact();
   const [inFlight, setInFlight] = useState(false);
   const markContacted = () => {
     setInFlight(true);
@@ -98,10 +118,26 @@ function AssignedRow({ c, showOwner, resolveName }: {
       },
     );
   };
+  // Every row here is stage 'assigned' by construction; picking another stage
+  // moves the contact and the row drops out on invalidation.
+  const moveStage = (v: string) =>
+    new Promise<void>((resolve, reject) => {
+      if (!v || v === "assigned") return resolve();
+      update.mutate(
+        { contact_id: c.contact_id, stage: v },
+        {
+          onSuccess: () => {
+            toast.success(`Moved ${c.full_name ?? "contact"} to ${MEMBERSHIP_STAGE_LABELS[v as MembershipStage] ?? v}`);
+            resolve();
+          },
+          onError: reject,
+        },
+      );
+    });
   return (
     <>
       <div
-        onClick={() => setExpanded((v) => !v)}
+        onClick={onToggle}
         className={cn(
           "flex cursor-pointer items-center gap-2 border-t border-border-strong px-3 py-1.5 hover:bg-surface-2/40",
           expanded && "bg-surface-2/40",
@@ -123,17 +159,28 @@ function AssignedRow({ c, showOwner, resolveName }: {
             {[c.current_title, c.current_company].filter(Boolean).join(" · ") || "—"}
           </div>
         </div>
-        {showOwner && (
-          <span className="shrink-0 text-[11.5px] text-ink-3">{c.owner_email ? resolveName(c.owner_email) : "Unowned"}</span>
-        )}
-        <span className="w-[60px] shrink-0 text-right text-[11.5px] tabular-nums text-ink-4"
+        <span onClick={(e) => e.stopPropagation()} className="shrink-0">
+          <InlineSelect<string>
+            value="assigned"
+            options={MEMBERSHIP_STAGE_OPTIONS}
+            onSave={moveStage}
+            renderValue={() => (
+              <span className="rounded-full bg-accent-soft px-1.5 py-0.5 text-[10.5px] font-medium text-accent-ink">Assigned</span>
+            )}
+          />
+        </span>
+        <OwnerSelect className="w-[130px] shrink-0" owner={c.owner_email ?? null} staff={staff}
+          onSave={(email) => new Promise<void>((resolve, reject) =>
+            updateContact.mutate({ id: c.contact_id, owner_email: email || null },
+              { onSuccess: () => resolve(), onError: reject }))} />
+        <span className="w-[52px] shrink-0 text-right text-[11.5px] tabular-nums text-ink-4"
           title={c.membership_stage_entered_at ? `Assigned ${new Date(c.membership_stage_entered_at).toLocaleDateString()}` : "Assignment date unknown"}>
           {relDay(c.membership_stage_entered_at) ?? "—"}
         </span>
       </div>
       {expanded && (
-        <div className="border-t border-border-strong bg-surface-2/20 px-4 py-3">
-          <JobsComments parentType="prospect" parentId={String(c.contact_id)} />
+        <div className="border-t border-border-strong">
+          <ContactExpandTabs contactId={c.contact_id} />
         </div>
       )}
     </>
@@ -142,7 +189,8 @@ function AssignedRow({ c, showOwner, resolveName }: {
 
 function AssignedContactsZone({ owner }: { owner: string | null }) {
   const { data, isLoading } = useJobsContacts(assignedFilters(owner));
-  const resolveName = useStaffNameResolver();
+  const { data: staff = [] } = useJobsStaff();
+  const [expandedId, setExpandedId] = useState<number | null>(null);
   const contacts = data?.data ?? [];
   const weekStart = startOfWeekSunday();
   const thisWeek = contacts.filter((c) =>
@@ -169,7 +217,9 @@ function AssignedContactsZone({ owner }: { owner: string | null }) {
               {g.label} · {g.items.length}
             </div>
             {g.items.map((c) => (
-              <AssignedRow key={c.contact_id} c={c} showOwner={owner === null} resolveName={resolveName} />
+              <AssignedRow key={c.contact_id} c={c} staff={staff}
+                expanded={expandedId === c.contact_id}
+                onToggle={() => setExpandedId((p) => (p === c.contact_id ? null : c.contact_id))} />
             ))}
           </div>
         ))}
@@ -179,48 +229,94 @@ function AssignedContactsZone({ owner }: { owner: string | null }) {
 }
 
 // ── Opportunities zone ────────────────────────────────────────────────────────
-function OppRow({ o, needs }: { o: JobsOpportunity; needs: OppNeedsRow | undefined }) {
-  const [expanded, setExpanded] = useState(false);
+type OppSortKey = "account" | "stage" | "attention" | "tasks" | "last_activity" | "owner";
+
+function OppTableRow({ o, needs, expanded, onToggle, showOwner, resolveName, onRecordPlacements, onClosedLost, onCommittedRoles }: {
+  o: JobsOpportunity;
+  needs: OppNeedsRow | undefined;
+  expanded: boolean;
+  onToggle: () => void;
+  showOwner: boolean;
+  resolveName: (v: string | null | undefined) => string;
+  onRecordPlacements: (deal: { id: string; account_name: string }) => void;
+  onClosedLost: (deal: { id: string; account_name: string }) => void;
+  onCommittedRoles: (deal: { id: string; account_name: string }) => void;
+}) {
+  const updateOpp = useUpdateOpportunity();
+  // Keep in sync with DealRow.saveStage (JobsTeam.tsx) — same modal gating.
+  function saveStage(stage: JobStage) {
+    if (stage === o.stage) return Promise.resolve();
+    return new Promise<void>((resolve, reject) => {
+      updateOpp.mutate({ id: o.id, stage }, {
+        onSuccess: () => {
+          const isPlacementType = o.deal_type === "ft" || o.deal_type === "pt_contract";
+          if (stage === "closed_won" && isPlacementType) onRecordPlacements({ id: o.id, account_name: o.account_name });
+          else if (stage === "closed_lost") onClosedLost({ id: o.id, account_name: o.account_name });
+          else if (stage === "active_opportunity_confirmed" && (o.num_roles ?? 0) === 0) onCommittedRoles({ id: o.id, account_name: o.account_name });
+          resolve();
+        },
+        onError: reject,
+      });
+    });
+  }
+  const colSpan = showOwner ? 6 : 5;
   return (
     <>
-      <div
-        onClick={() => setExpanded((v) => !v)}
-        className={cn(
-          "flex cursor-pointer items-center gap-2 border-t border-border-strong px-3 py-1.5 hover:bg-surface-2/40",
-          expanded && "bg-surface-2/40",
-        )}
+      <tr
+        onClick={onToggle}
+        className={cn("cursor-pointer border-t border-border-strong hover:bg-surface-2/40", expanded && "bg-surface-2/40")}
       >
-        <ChevronRight size={12} className={cn("shrink-0 text-ink-4 transition-transform", expanded && "rotate-90")} />
-        <div className="min-w-0 flex-1">
-          <Link to={`/jobs/opportunities/${o.id}`} onClick={(e) => e.stopPropagation()}
-            className="truncate text-[13px] font-medium text-ink hover:text-accent">
-            {o.account_name}
-          </Link>
-          {o.title && <div className="truncate text-[11px] text-ink-4">{o.title}</div>}
-        </div>
-        {needs && (
-          <span className="flex min-w-0 shrink items-center gap-1" title={needs.why}>
-            <Tag variant={needs.days_in_stage >= 30 ? "red" : "amber"}>
-              <AlertTriangle size={10} className="mr-0.5 inline-block" />
-              {needs.why}
-            </Tag>
-          </span>
-        )}
-        <Tag variant="accent">{STAGE_LABELS[o.stage as JobStage] ?? o.stage}</Tag>
-        {(o.open_tasks ?? 0) > 0 && (
-          <span className="shrink-0 text-[11px] tabular-nums text-ink-4" title="Open tasks">
-            {o.open_tasks} task{o.open_tasks === 1 ? "" : "s"}
-          </span>
-        )}
-        <span className="w-[60px] shrink-0 text-right text-[11.5px] tabular-nums text-ink-4"
+        <td className="px-3 py-1.5">
+          <div className="flex min-w-0 items-center gap-1.5">
+            <ChevronRight size={12} className={cn("shrink-0 text-ink-4 transition-transform", expanded && "rotate-90")} />
+            <div className="min-w-0">
+              <Link to={`/jobs/opportunities/${o.id}`} onClick={(e) => e.stopPropagation()}
+                className="block truncate text-[13px] font-medium text-ink hover:text-accent">
+                {o.account_name}
+              </Link>
+              {o.title && <div className="truncate text-[11px] text-ink-4">{o.title}</div>}
+            </div>
+          </div>
+        </td>
+        <td className="px-2 py-1.5" onClick={(e) => e.stopPropagation()}>
+          <InlineSelect<JobStage>
+            value={o.stage}
+            options={stageOptionsFor(o.stage)}
+            onSave={saveStage}
+            renderValue={(v) => (
+              <span className="flex items-center gap-1 text-[12.5px] text-ink-2">
+                <span className="truncate">{v ? STAGE_LABELS[v] : "—"}</span>
+              </span>
+            )}
+          />
+        </td>
+        <td className="px-2 py-1.5">
+          {needs ? (
+            <span className="inline-flex min-w-0 items-center" title={needs.why}>
+              <Tag variant={needs.days_in_stage >= 30 ? "red" : "amber"}>
+                <AlertTriangle size={10} className="mr-0.5 inline-block" />
+                {needs.why}
+              </Tag>
+            </span>
+          ) : <span className="text-[11.5px] text-ink-4">—</span>}
+        </td>
+        <td className="px-2 py-1.5 text-right text-[11.5px] tabular-nums text-ink-4">
+          {(o.open_tasks ?? 0) > 0 ? o.open_tasks : "—"}
+        </td>
+        <td className="px-2 py-1.5 text-right text-[11.5px] tabular-nums text-ink-4"
           title={o.last_activity_at ? `Last activity ${new Date(o.last_activity_at).toLocaleDateString()}` : "No activity"}>
           {relDay(o.last_activity_at) ?? "—"}
-        </span>
-      </div>
+        </td>
+        {showOwner && (
+          <td className="px-2 py-1.5 text-[11.5px] text-ink-3">{o.owner_email ? resolveName(o.owner_email) : "—"}</td>
+        )}
+      </tr>
       {expanded && (
-        <div className="border-t border-border-strong bg-surface-2/20 px-4 py-3">
-          <JobsComments parentType="opportunity" parentId={o.id} />
-        </div>
+        <tr>
+          <td colSpan={colSpan} className="border-t border-border-strong bg-surface-2/20 p-0">
+            <DealExpandPanel deal={o} />
+          </td>
+        </tr>
       )}
     </>
   );
@@ -229,32 +325,272 @@ function OppRow({ o, needs }: { o: JobsOpportunity; needs: OppNeedsRow | undefin
 function OpportunitiesZone({ owner }: { owner: string | null }) {
   const { data } = useJobsOpportunities({ owner_email: owner ?? undefined, limit: 500 });
   const { data: overview } = useOpportunitiesOverview(owner ?? undefined);
-  const open = (data?.data ?? []).filter(isOpenOpp);
+  const resolveName = useStaffNameResolver();
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [q, setQ] = useSessionState<string>("jobsHome.opps.q", "");
+  const [stageFilter, setStageFilter] = useSessionState<string>("jobsHome.opps.stage", "");
+  const [attnOnly, setAttnOnly] = useSessionState<boolean>("jobsHome.opps.attn", false);
+  const { sort, toggle } = useSort<OppSortKey>();
+  // Stage-gating modals — mirrors JobsTeam root.
+  const [placementModalDeal, setPlacementModalDeal] = useState<{ id: string; account_name: string } | null>(null);
+  const [committedRolesDeal, setCommittedRolesDeal] = useState<{ id: string; account_name: string } | null>(null);
+  const [closedLostDeal, setClosedLostDeal] = useState<{ id: string; account_name: string } | null>(null);
+
+  const open = useMemo(() => (data?.data ?? []).filter(isOpenOpp), [data]);
   const needsById = useMemo(
     () => new Map((overview?.needs_attention ?? []).map((n) => [n.opportunity_id, n])),
     [overview],
   );
-  const sorted = useMemo(() => [...open].sort((a, b) => {
-    const na = needsById.get(a.id); const nb = needsById.get(b.id);
-    if (Boolean(na) !== Boolean(nb)) return na ? -1 : 1;
-    if (na && nb && na.days_in_stage !== nb.days_in_stage) return nb.days_in_stage - na.days_in_stage;
-    return (b.last_activity_at ?? "").localeCompare(a.last_activity_at ?? "");
-  }), [open, needsById]);
-  const flagged = sorted.filter((o) => needsById.has(o.id)).length;
+  const flagged = open.filter((o) => needsById.has(o.id)).length;
+  const stagesPresent = useMemo(() => {
+    const present = new Set(open.map((o) => o.stage));
+    return STAGES_ORDERED.filter((s) => present.has(s));
+  }, [open]);
+
+  const filtered = useMemo(() => {
+    const ql = q.trim().toLowerCase();
+    return open.filter((o) =>
+      (!ql || (o.account_name ?? "").toLowerCase().includes(ql) || (o.title ?? "").toLowerCase().includes(ql)) &&
+      (!stageFilter || o.stage === stageFilter) &&
+      (!attnOnly || needsById.has(o.id)));
+  }, [open, q, stageFilter, attnOnly, needsById]);
+
+  const rows = useMemo(() => {
+    if (!sort.key) {
+      // Default: attention first (most days-in-stage), then most-recent activity.
+      return [...filtered].sort((a, b) => {
+        const na = needsById.get(a.id); const nb = needsById.get(b.id);
+        if (Boolean(na) !== Boolean(nb)) return na ? -1 : 1;
+        if (na && nb && na.days_in_stage !== nb.days_in_stage) return nb.days_in_stage - na.days_in_stage;
+        return (b.last_activity_at ?? "").localeCompare(a.last_activity_at ?? "");
+      });
+    }
+    return sortBy(filtered, sort, (o, key) => {
+      switch (key) {
+        case "account": return (o.account_name ?? "").toLowerCase();
+        case "stage": return STAGES_ORDERED.indexOf(o.stage);
+        case "attention": return needsById.get(o.id)?.days_in_stage ?? null;
+        case "tasks": return o.open_tasks ?? 0;
+        case "last_activity": return o.last_activity_at ?? null;
+        case "owner": return (o.owner_email ?? "").toLowerCase();
+      }
+    });
+  }, [filtered, sort, needsById]);
+
+  const showOwner = owner === null;
   return (
-    <Section title="Opportunities" count={open.length}
-      action={flagged > 0 ? (
-        <span className="text-[11.5px] font-semibold text-red">{flagged} need{flagged === 1 ? "s" : ""} attention</span>
-      ) : undefined}>
-      <div className="flex flex-col overflow-hidden rounded-lg border border-border-strong bg-surface">
-        {sorted.length === 0 ? (
-          <div className="px-3 py-6 text-center text-[12.5px] text-ink-3">
-            No open opportunities.{" "}
-            <Link to="/jobs/pipeline" className="text-accent hover:underline">See the pipeline →</Link>
-          </div>
-        ) : sorted.map((o) => <OppRow key={o.id} o={o} needs={needsById.get(o.id)} />)}
+    <Section title="Opportunities" count={filtered.length}
+      action={
+        <div className="flex flex-wrap items-center gap-2">
+          <button type="button" onClick={() => setAttnOnly(!attnOnly)}
+            className={cn(
+              "h-7 rounded-md border px-2 text-[11.5px] font-medium",
+              attnOnly ? "border-red/40 bg-red-soft text-red" : "border-border-strong bg-surface text-ink-3 hover:text-ink-2",
+            )}>
+            Needs attention{flagged > 0 ? ` · ${flagged}` : ""}
+          </button>
+          <select value={stageFilter} onChange={(e) => setStageFilter(e.target.value)}
+            className="h-7 rounded-md border border-border-strong bg-surface px-1.5 text-[12px] text-ink-2 outline-none focus:border-accent">
+            <option value="">All stages</option>
+            {stagesPresent.map((s) => <option key={s} value={s}>{STAGE_LABELS[s]}</option>)}
+          </select>
+          <span className="relative">
+            <Search size={12} className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-ink-4" />
+            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search account / title"
+              className="h-7 w-44 rounded-md border border-border-strong bg-surface pl-6 pr-2 text-[12px] text-ink outline-none focus:border-accent" />
+          </span>
+        </div>
+      }>
+      <div className="overflow-hidden rounded-lg border border-border-strong bg-surface">
+        <table className="w-full table-fixed">
+          <colgroup>
+            <col />
+            <col className="w-[150px]" />
+            <col className="w-[290px]" />
+            <col className="w-[64px]" />
+            <col className="w-[70px]" />
+            {showOwner && <col className="w-[130px]" />}
+          </colgroup>
+          <thead>
+            <tr className="bg-surface-2/60">
+              <th className="px-3 py-1.5 text-left"><SortableHeader label="Account" sortKey="account" sort={sort} onToggle={toggle} /></th>
+              <th className="px-2 py-1.5 text-left"><SortableHeader label="Stage" sortKey="stage" sort={sort} onToggle={toggle} /></th>
+              <th className="px-2 py-1.5 text-left"><SortableHeader label="Attention" sortKey="attention" sort={sort} onToggle={toggle} /></th>
+              <th className="px-2 py-1.5 text-right"><SortableHeader label="Tasks" sortKey="tasks" sort={sort} onToggle={toggle} align="right" /></th>
+              <th className="px-2 py-1.5 text-right"><SortableHeader label="Last" sortKey="last_activity" sort={sort} onToggle={toggle} align="right" /></th>
+              {showOwner && <th className="px-2 py-1.5 text-left"><SortableHeader label="Owner" sortKey="owner" sort={sort} onToggle={toggle} /></th>}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length === 0 ? (
+              <tr><td colSpan={showOwner ? 6 : 5} className="px-3 py-6 text-center text-[12.5px] text-ink-3">
+                {open.length === 0 ? (
+                  <>No open opportunities. <Link to="/jobs/pipeline" className="text-accent hover:underline">See the pipeline →</Link></>
+                ) : "No opportunities match the filters."}
+              </td></tr>
+            ) : rows.map((o) => (
+              <OppTableRow key={o.id} o={o} needs={needsById.get(o.id)}
+                expanded={expandedId === o.id}
+                onToggle={() => setExpandedId((p) => (p === o.id ? null : o.id))}
+                showOwner={showOwner} resolveName={resolveName}
+                onRecordPlacements={setPlacementModalDeal}
+                onClosedLost={setClosedLostDeal}
+                onCommittedRoles={setCommittedRolesDeal} />
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {placementModalDeal && <PlacementsModal deal={placementModalDeal} onClose={() => setPlacementModalDeal(null)} />}
+      {committedRolesDeal && <CommittedRolesModal deal={committedRolesDeal} onClose={() => setCommittedRolesDeal(null)} />}
+      {closedLostDeal && <ClosedLostModal deal={closedLostDeal} onClose={() => setClosedLostDeal(null)} />}
+    </Section>
+  );
+}
+
+// ── Roles zone ────────────────────────────────────────────────────────────────
+type RoleSortKey = "title" | "account" | "status" | "owner";
+
+const ROLE_STATUS_VARIANT: Record<string, "green" | "amber" | "accent" | "default"> = {
+  ft_placed: "green",
+  trial_active: "amber",
+  committed_open: "accent",
+};
+
+function buildersSummary(opp: InterviewPipelineOpp): string {
+  const s = opp.summary;
+  const parts = [
+    s.applied > 0 && `${s.applied} applied`,
+    s.interview > 0 && `${s.interview} interviewing`,
+    s.accepted > 0 && `${s.accepted} accepted`,
+  ].filter(Boolean);
+  return parts.length ? parts.join(" · ") : "—";
+}
+
+function RolesZone({ owner }: { owner: string | null }) {
+  const { data: pipeline = [], isLoading } = useInterviewPipeline();
+  const resolveName = useStaffNameResolver();
+  const [expandedRoleId, setExpandedRoleId] = useState<string | null>(null);
+  const { sort, toggle } = useSort<RoleSortKey>();
+
+  const scoped = useMemo(
+    () => owner === null ? pipeline
+      : pipeline.filter((o) => (o.owner_email ?? "").toLowerCase() === owner.toLowerCase()),
+    [pipeline, owner],
+  );
+  const rows = useMemo(
+    () => scoped.flatMap((opp) => opp.roles.map((role) => ({ role, opp }))),
+    [scoped],
+  );
+  const sortedRows = useMemo(() => {
+    if (!sort.key) return rows; // API order: interviewing-heavy opps first
+    return sortBy(rows, sort, (r, key) => {
+      switch (key) {
+        case "title": return (r.role.title ?? "").toLowerCase();
+        case "account": return (r.opp.account_name ?? "").toLowerCase();
+        case "status": return r.role.placement_status_label;
+        case "owner": return (r.opp.owner_email ?? "").toLowerCase();
+      }
+    });
+  }, [rows, sort]);
+  const openCount = rows.filter((r) => r.role.status === "open").length;
+  const expandedOppId = useMemo(
+    () => sortedRows.find((r) => r.role.id === expandedRoleId)?.opp.opportunity_id ?? null,
+    [sortedRows, expandedRoleId],
+  );
+  const showOwner = owner === null;
+  const colSpan = showOwner ? 5 : 4;
+
+  return (
+    <Section title="Roles" count={rows.length}
+      action={openCount > 0 ? <span className="text-[11.5px] text-ink-4">{openCount} open</span> : undefined}>
+      <div className="overflow-hidden rounded-lg border border-border-strong bg-surface">
+        <table className="w-full table-fixed">
+          <colgroup>
+            <col />
+            <col />
+            <col className="w-[150px]" />
+            <col className="w-[210px]" />
+            {showOwner && <col className="w-[130px]" />}
+          </colgroup>
+          <thead>
+            <tr className="bg-surface-2/60">
+              <th className="px-3 py-1.5 text-left"><SortableHeader label="Role" sortKey="title" sort={sort} onToggle={toggle} /></th>
+              <th className="px-2 py-1.5 text-left"><SortableHeader label="Account" sortKey="account" sort={sort} onToggle={toggle} /></th>
+              <th className="px-2 py-1.5 text-left"><SortableHeader label="Status" sortKey="status" sort={sort} onToggle={toggle} /></th>
+              <th className="px-2 py-1.5 text-left"><span className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">Builders</span></th>
+              {showOwner && <th className="px-2 py-1.5 text-left"><SortableHeader label="Owner" sortKey="owner" sort={sort} onToggle={toggle} /></th>}
+            </tr>
+          </thead>
+          <tbody>
+            {isLoading ? (
+              <tr><td colSpan={colSpan} className="px-3 py-6 text-center text-[12.5px] text-ink-3">Loading…</td></tr>
+            ) : sortedRows.length === 0 ? (
+              <tr><td colSpan={colSpan} className="px-3 py-6 text-center text-[12.5px] text-ink-3">
+                No roles yet on open opportunities — commit roles from an opportunity's Roles tab above.
+              </td></tr>
+            ) : sortedRows.map(({ role, opp }) => {
+              const expanded = expandedRoleId === role.id;
+              const sibling = !expanded && expandedOppId === opp.opportunity_id;
+              return (
+                <RoleTableRow key={role.id} role={role} opp={opp}
+                  expanded={expanded} sibling={sibling} colSpan={colSpan}
+                  showOwner={showOwner} resolveName={resolveName}
+                  onToggle={() => setExpandedRoleId((p) => (p === role.id ? null : role.id))} />
+              );
+            })}
+          </tbody>
+        </table>
       </div>
     </Section>
+  );
+}
+
+function RoleTableRow({ role, opp, expanded, sibling, colSpan, showOwner, resolveName, onToggle }: {
+  role: InterviewPipelineRole;
+  opp: InterviewPipelineOpp;
+  expanded: boolean;
+  sibling: boolean;
+  colSpan: number;
+  showOwner: boolean;
+  resolveName: (v: string | null | undefined) => string;
+  onToggle: () => void;
+}) {
+  return (
+    <>
+      <tr onClick={onToggle}
+        className={cn("cursor-pointer border-t border-border-strong hover:bg-surface-2/40", (expanded || sibling) && "bg-surface-2/40")}>
+        <td className="px-3 py-1.5">
+          <div className="flex min-w-0 items-center gap-1.5">
+            <ChevronRight size={12} className={cn("shrink-0 text-ink-4 transition-transform", expanded && "rotate-90")} />
+            <span className="truncate text-[13px] font-medium text-ink">{role.title || "Untitled role"}</span>
+          </div>
+        </td>
+        <td className="px-2 py-1.5">
+          <Link to={`/jobs/opportunities/${opp.opportunity_id}`} onClick={(e) => e.stopPropagation()}
+            className="truncate text-[12.5px] text-ink-2 hover:text-accent">
+            {opp.account_name ?? "—"}
+          </Link>
+        </td>
+        <td className="px-2 py-1.5">
+          <Tag variant={ROLE_STATUS_VARIANT[role.placement_status] ?? "default"}>{role.placement_status_label}</Tag>
+        </td>
+        <td className="truncate px-2 py-1.5 text-[11.5px] text-ink-4">{buildersSummary(opp)}</td>
+        {showOwner && (
+          <td className="px-2 py-1.5 text-[11.5px] text-ink-3">{opp.owner_email ? resolveName(opp.owner_email) : "—"}</td>
+        )}
+      </tr>
+      {expanded && (
+        <tr>
+          <td colSpan={colSpan} className="border-t border-border-strong bg-surface-2/20 p-0">
+            <RowExpandPanel defaultTab="roles" tabs={[
+              { id: "roles", label: "Roles", render: () => <div className="px-4 py-3"><OppRolesSection oppId={opp.opportunity_id} /></div> },
+              { id: "builders", label: "Builders", render: () => <div className="px-4 py-3"><OppBuilderActivity oppId={opp.opportunity_id} /></div> },
+            ]} />
+          </td>
+        </tr>
+      )}
+    </>
   );
 }
 
@@ -529,6 +865,11 @@ export function JobsHome() {
   // Same query keys as the zones — React Query dedupes, so the chips are free.
   const { data: assigned } = useJobsContacts(assignedFilters(owner || null));
   const { data: overview } = useOpportunitiesOverview(owner || undefined);
+  const { data: pipelineOpps = [] } = useInterviewPipeline();
+  const openRoles = useMemo(() => {
+    const scoped = owner ? pipelineOpps.filter((o) => (o.owner_email ?? "").toLowerCase() === owner.toLowerCase()) : pipelineOpps;
+    return scoped.reduce((n, o) => n + o.summary.open_roles, 0);
+  }, [pipelineOpps, owner]);
   const { data: tasks = [] } = useAllJobsTasks();
   const { data: users = [] } = useActiveUsers();
   const ownerId = owner ? users.find((u) => u.email?.toLowerCase() === owner.toLowerCase())?.id ?? null : null;
@@ -555,6 +896,7 @@ export function JobsHome() {
           <span className="flex flex-wrap items-baseline gap-x-2.5 text-[11.5px]">
             <span className="text-ink-4">{assigned?.total ?? 0} assigned</span>
             {attention > 0 && <span className="font-semibold text-amber">· {attention} need{attention === 1 ? "s" : ""} attention</span>}
+            {openRoles > 0 && <span className="text-ink-4">· {openRoles} open role{openRoles === 1 ? "" : "s"}</span>}
             {overdue > 0 && <span className="font-semibold text-red">· {overdue} overdue task{overdue === 1 ? "" : "s"}</span>}
           </span>
         </div>
@@ -570,6 +912,7 @@ export function JobsHome() {
 
       <AssignedContactsZone owner={owner || null} />
       <OpportunitiesZone owner={owner || null} />
+      <RolesZone owner={owner || null} />
       <TasksZone owner={owner || null} />
       <IntroRequestsZone />
     </div>
