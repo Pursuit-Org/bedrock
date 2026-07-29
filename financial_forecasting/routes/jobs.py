@@ -1816,6 +1816,14 @@ async def opportunities_overview(
             ref = datetime.now(timezone.utc)
     else:
         ref = datetime.now(timezone.utc)
+    # Ages ("Nd in stage", stalled/new status, buckets, needs-attention) are
+    # measured against the as-of instant but never against the FUTURE: the
+    # current in-progress week arrives with the upcoming Saturday's week_end,
+    # which would inflate every day-count by up to 7 days — and disagree with
+    # Jobs Home, which calls this endpoint without week_end. Past weeks keep
+    # their historical anchor. Week windows (net-new, moved, lost) stay on
+    # `ref` so they remain calendar Sun–Sat weeks.
+    age_ref = min(ref, datetime.now(timezone.utc))
 
     # As-of-`ref` membership: the active set as it stood at the end of the
     # selected week, reconstructed from created_at / closed_at so past weeks show
@@ -1829,8 +1837,11 @@ async def opportunities_overview(
                COALESCE((SELECT max(h.changed_at) FROM bedrock.jobs_stage_history h
                          WHERE h.opportunity_id = o.id AND h.to_stage = o.stage),
                         o.created_at) AS entered_stage,
+               -- clamp to the as-of instant so activity logged AFTER a selected
+               -- past week doesn't retroactively un-stall that week's view
                (SELECT max(a.activity_date) FROM bedrock.activity a
-                WHERE a.jobs_opportunity_id = o.id AND a.deleted_at IS NULL) AS last_activity
+                WHERE a.jobs_opportunity_id = o.id AND a.deleted_at IS NULL
+                  AND a.activity_date < $3::timestamptz) AS last_activity
         FROM bedrock.jobs_opportunity o
         WHERE o.deleted_at IS NULL
           AND o.created_at < $3::timestamptz
@@ -1879,7 +1890,7 @@ async def opportunities_overview(
     """, owner_f, dt_f, ref)
 
     def _days(dt):
-        return None if dt is None else max(0, (ref - dt).days)
+        return None if dt is None else max(0, (age_ref - dt).days)
 
     in_set = len(rows)
     stalled_6wk = 0  # active opps that have been an opportunity for >6 weeks (since created)
@@ -4306,8 +4317,12 @@ async def update_jobs_membership(contact_id: int, body: MembershipPatch,
         return {"success": True}
     sets.append("updated_at = now()")
     async with conn.transaction():
-        await conn.execute(
+        res = await conn.execute(
             f"UPDATE bedrock.jobs_contact_membership SET {', '.join(sets)} WHERE contact_id = $1", *params)
+        # Row can vanish between the pre-fetch and the UPDATE (unflag race) —
+        # bail before recording a phantom transition.
+        if res == "UPDATE 0":
+            raise HTTPException(404, "contact is not flagged for jobs")
         if body.stage is not None and body.stage != old_stage and await has_membership_history(conn):
             await conn.execute(
                 "INSERT INTO bedrock.jobs_membership_stage_history "

@@ -7,6 +7,13 @@
 --
 -- No FK on contact_id: jobs_contact_membership itself has none (contact-sync
 -- churn), and a CASCADE would silently wipe history.
+--
+-- MUST run in a single transaction (BEGIN/COMMIT below; `psql -f` respects it).
+-- If CREATE TABLE committed separately, a live request could write a history
+-- row before the backfill runs, making the NOT EXISTS gate skip the entire
+-- backfill silently.
+
+BEGIN;
 
 CREATE TABLE IF NOT EXISTS bedrock.jobs_membership_stage_history (
     id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -42,3 +49,5 @@ INSERT INTO bedrock.jobs_membership_stage_history
 SELECT contact_id, from_stage, to_stage, changed_by, 'backfill 2026-07-28', changed_at
 FROM seed
 WHERE NOT EXISTS (SELECT 1 FROM bedrock.jobs_membership_stage_history);
+
+COMMIT;

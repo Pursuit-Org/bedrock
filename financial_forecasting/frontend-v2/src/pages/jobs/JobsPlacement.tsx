@@ -58,7 +58,10 @@ export function JobsPlacementPage() {
 
       <div className="mt-1">
         {activeTab === "roles" && (
-          <ComingSoon title="Roles" description="Role tracking is coming soon." />
+          <ComingSoon
+            title="Roles"
+            description="A dedicated roles board is coming soon — until then, manage roles from the Roles section on Jobs Home or an opportunity's Roles tab."
+          />
         )}
         {activeTab === "builders" && <JobsBuilders />}
       </div>

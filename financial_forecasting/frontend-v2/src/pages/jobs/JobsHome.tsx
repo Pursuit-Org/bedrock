@@ -17,7 +17,7 @@
  *   4. Tasks — every open jobs task for the scope, inline edit + quick-add.
  *   5. Intro requests — asks addressed to me, and mine (unscoped).
  */
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { AlertTriangle, ChevronRight, Circle, Plus, Search } from "lucide-react";
 import { toast } from "sonner";
@@ -56,7 +56,12 @@ import {
 
 const MEMBERSHIP_STAGE_OPTIONS = MEMBERSHIP_STAGES.map((s) => ({ value: s, label: MEMBERSHIP_STAGE_LABELS[s] }));
 
-const todayIso = () => new Date().toISOString().slice(0, 10);
+// LOCAL date, not UTC — task deadlines are date-only strings compared against
+// this; toISOString() would misbucket evenings for US users (due-today → overdue).
+const todayIso = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+};
 
 // Shared filter shape so the page-level count and the zone hit the same
 // React Query cache entry.
@@ -344,8 +349,11 @@ function OpportunitiesZone({ owner }: { owner: string | null }) {
   const flagged = open.filter((o) => needsById.has(o.id)).length;
   const stagesPresent = useMemo(() => {
     const present = new Set(open.map((o) => o.stage));
+    // Keep a persisted-but-absent stage filter visible in the select — otherwise
+    // the browser silently renders "All stages" while the filter still applies.
+    if (stageFilter) present.add(stageFilter as JobStage);
     return STAGES_ORDERED.filter((s) => present.has(s));
-  }, [open]);
+  }, [open, stageFilter]);
 
   const filtered = useMemo(() => {
     const ql = q.trim().toLowerCase();
@@ -401,7 +409,7 @@ function OpportunitiesZone({ owner }: { owner: string | null }) {
           </span>
         </div>
       }>
-      <div className="overflow-hidden rounded-lg border border-border-strong bg-surface">
+      <div className="overflow-x-auto rounded-lg border border-border-strong bg-surface">
         <table className="w-full table-fixed">
           <colgroup>
             <col />
@@ -457,14 +465,18 @@ const ROLE_STATUS_VARIANT: Record<string, "green" | "amber" | "accent" | "defaul
   committed_open: "accent",
 };
 
-function buildersSummary(opp: InterviewPipelineOpp): string {
-  const s = opp.summary;
+// Per-ROLE builder progression (opp.builders carries jobs_role_id) — the
+// opp-level summary would repeat on every role row and misattribute candidates.
+function roleBuildersSummary(role: InterviewPipelineRole, opp: InterviewPipelineOpp): string {
+  const mine = opp.builders.filter((b) => b.jobs_role_id === role.id);
+  if (mine.length === 0) return "—";
+  const count = (s: string) => mine.filter((b) => b.stage === s).length;
   const parts = [
-    s.applied > 0 && `${s.applied} applied`,
-    s.interview > 0 && `${s.interview} interviewing`,
-    s.accepted > 0 && `${s.accepted} accepted`,
+    count("applied") > 0 && `${count("applied")} applied`,
+    count("interview") > 0 && `${count("interview")} interviewing`,
+    count("accepted") > 0 && `${count("accepted")} accepted`,
   ].filter(Boolean);
-  return parts.length ? parts.join(" · ") : "—";
+  return parts.length ? parts.join(" · ") : `${mine.length} linked`;
 }
 
 function RolesZone({ owner }: { owner: string | null }) {
@@ -473,11 +485,14 @@ function RolesZone({ owner }: { owner: string | null }) {
   const [expandedRoleId, setExpandedRoleId] = useState<string | null>(null);
   const { sort, toggle } = useSort<RoleSortKey>();
 
-  const scoped = useMemo(
-    () => owner === null ? pipeline
-      : pipeline.filter((o) => (o.owner_email ?? "").toLowerCase() === owner.toLowerCase()),
-    [pipeline, owner],
-  );
+  const scoped = useMemo(() => {
+    // Match the Opportunities zone's "open" definition — on-hold opps keep
+    // their roles out of the working list (interview-pipeline only excludes
+    // closed opps server-side).
+    const live = pipeline.filter((o) => !o.stage.startsWith("on_hold"));
+    return owner === null ? live
+      : live.filter((o) => (o.owner_email ?? "").toLowerCase() === owner.toLowerCase());
+  }, [pipeline, owner]);
   const rows = useMemo(
     () => scoped.flatMap((opp) => opp.roles.map((role) => ({ role, opp }))),
     [scoped],
@@ -504,7 +519,7 @@ function RolesZone({ owner }: { owner: string | null }) {
   return (
     <Section title="Roles" count={rows.length}
       action={openCount > 0 ? <span className="text-[11.5px] text-ink-4">{openCount} open</span> : undefined}>
-      <div className="overflow-hidden rounded-lg border border-border-strong bg-surface">
+      <div className="overflow-x-auto rounded-lg border border-border-strong bg-surface">
         <table className="w-full table-fixed">
           <colgroup>
             <col />
@@ -575,7 +590,7 @@ function RoleTableRow({ role, opp, expanded, sibling, colSpan, showOwner, resolv
         <td className="px-2 py-1.5">
           <Tag variant={ROLE_STATUS_VARIANT[role.placement_status] ?? "default"}>{role.placement_status_label}</Tag>
         </td>
-        <td className="truncate px-2 py-1.5 text-[11.5px] text-ink-4">{buildersSummary(opp)}</td>
+        <td className="truncate px-2 py-1.5 text-[11.5px] text-ink-4">{roleBuildersSummary(role, opp)}</td>
         {showOwner && (
           <td className="px-2 py-1.5 text-[11.5px] text-ink-3">{opp.owner_email ? resolveName(opp.owner_email) : "—"}</td>
         )}
@@ -691,6 +706,12 @@ function TasksZone({ owner }: { owner: string | null }) {
     setNewOwner(ownerId ?? "");
     setAdding((v) => !v);
   };
+  // Keep the default assignee in step if the person picker changes while the
+  // quick-add form is open — otherwise the task quietly goes to the old person.
+  useEffect(() => {
+    if (adding) setNewOwner(ownerId ?? "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ownerId]);
   const submitNew = async () => {
     if (!newTitle.trim() || !newAccount) return;
     await create.mutateAsync({
@@ -860,14 +881,40 @@ export function JobsHome() {
   const { data: staff = [] } = useJobsStaff();
   // "me" | "all" | a staff email. Resolved owner: null = Everyone.
   const [sel, setSel] = useState<string>("me");
-  const owner: string | null = sel === "all" ? null : sel === "me" ? (me?.email ?? "") : sel;
 
+  // Gate BEFORE any data hooks run (they live in HomeBody) — otherwise the
+  // first render fires org-wide assigned/overview fetches that get thrown
+  // away the moment `me` resolves.
+  if (sel === "me" && !me) {
+    return <div className="px-1 py-8 text-[12.5px] text-ink-3">Loading…</div>;
+  }
+
+  // "Me" resolves to the CANONICAL staff email (case/alias) so exact-match
+  // server filters (contacts owner rule, opportunities owner_email) behave
+  // identically to picking yourself from the dropdown. Falls back to the raw
+  // login email when the staff list hasn't loaded or doesn't include the user.
+  const owner: string | null = sel === "all" ? null
+    : sel === "me"
+      ? (staff.find((s) => s.email.toLowerCase() === me?.email?.toLowerCase())?.email ?? me?.email ?? null)
+      : sel;
+
+  return <HomeBody me={me} staff={staff} sel={sel} setSel={setSel} owner={owner} />;
+}
+
+function HomeBody({ me, staff, sel, setSel, owner }: {
+  me: { email?: string; name?: string } | null | undefined;
+  staff: JobsStaff[];
+  sel: string;
+  setSel: (v: string) => void;
+  owner: string | null;
+}) {
   // Same query keys as the zones — React Query dedupes, so the chips are free.
-  const { data: assigned } = useJobsContacts(assignedFilters(owner || null));
-  const { data: overview } = useOpportunitiesOverview(owner || undefined);
+  const { data: assigned } = useJobsContacts(assignedFilters(owner));
+  const { data: overview } = useOpportunitiesOverview(owner ?? undefined);
   const { data: pipelineOpps = [] } = useInterviewPipeline();
   const openRoles = useMemo(() => {
-    const scoped = owner ? pipelineOpps.filter((o) => (o.owner_email ?? "").toLowerCase() === owner.toLowerCase()) : pipelineOpps;
+    const live = pipelineOpps.filter((o) => !o.stage.startsWith("on_hold"));
+    const scoped = owner ? live.filter((o) => (o.owner_email ?? "").toLowerCase() === owner.toLowerCase()) : live;
     return scoped.reduce((n, o) => n + o.summary.open_roles, 0);
   }, [pipelineOpps, owner]);
   const { data: tasks = [] } = useAllJobsTasks();
@@ -883,10 +930,6 @@ export function JobsHome() {
     const first = me?.name?.split(" ")[0];
     return `Good ${tod}${first ? `, ${first}` : ""}`;
   })();
-
-  if (sel === "me" && !me) {
-    return <div className="px-1 py-8 text-[12.5px] text-ink-3">Loading…</div>;
-  }
 
   return (
     <div className="flex flex-col gap-7">
@@ -910,10 +953,10 @@ export function JobsHome() {
         </select>
       </div>
 
-      <AssignedContactsZone owner={owner || null} />
-      <OpportunitiesZone owner={owner || null} />
-      <RolesZone owner={owner || null} />
-      <TasksZone owner={owner || null} />
+      <AssignedContactsZone owner={owner} />
+      <OpportunitiesZone owner={owner} />
+      <RolesZone owner={owner} />
+      <TasksZone owner={owner} />
       <IntroRequestsZone />
     </div>
   );

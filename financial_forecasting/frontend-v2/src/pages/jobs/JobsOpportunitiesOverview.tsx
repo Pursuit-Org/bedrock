@@ -51,10 +51,12 @@ function mostRecentSaturday(d: Date): Date {
   x.setDate(x.getDate() - ((x.getDay() - 6 + 7) % 7));
   return x;
 }
-/** The Saturday that CLOSES the week containing `d` (i.e. the upcoming Saturday).
+/** The Saturday that CLOSES the week containing `d` (Sun–Sat weeks). A Saturday
+ *  closes its own week — mapping it forward would jump a whole week ahead.
  *  weekEnd is the closing boundary, so the current in-progress week is selectable. */
 function weekEndFor(d: Date): Date {
-  return addDays(mostRecentSaturday(d), 7);
+  const sat = mostRecentSaturday(d);
+  return d.getDay() === 6 ? sat : addDays(sat, 7);
 }
 /** Local YYYY-MM-DD (avoids the UTC shift of toISOString). */
 function fmtDateInput(d: Date): string {
@@ -72,7 +74,8 @@ export function JobsOpportunitiesOverview() {
   // The current (in-progress) week is the furthest forward you can go.
   const maxWeekEnd = weekEndFor(new Date());
   const canGoNext = addDays(weekEnd, 7).getTime() <= maxWeekEnd.getTime();
-  const weekStart = addDays(weekEnd, -7);
+  // The server window is [weekEnd-6 00:00, weekEnd 24:00] — a Sun–Sat week.
+  const weekStart = addDays(weekEnd, -6);
 
   const staffQ = useJobsStaff();
   const nameOf = useMemo(() => {
