@@ -66,12 +66,17 @@ dependency. The LLM call moves to OpenRouter (the project standard).
 **Forward lookup by ATS slug.** Every major ATS exposes an unauthenticated JSON
 endpoint keyed on a company "slug". One GET returns that company's whole board:
 
-| Platform | Endpoint |
-|---|---|
-| Greenhouse | `boards-api.greenhouse.io/v1/boards/{slug}/jobs?content=false` |
-| Ashby | `api.ashbyhq.com/posting-api/job-board/{slug}` |
-| Lever | `api.lever.co/v0/postings/{slug}?mode=json` |
-| Workday | `{tenant}.wd{N}.myworkdayjobs.com/wday/cxs/{tenant}/{site}/jobs` (POST) |
+| Platform | Endpoint | Notes |
+|---|---|---|
+| Greenhouse | `boards-api.greenhouse.io/v1/boards/{slug}/jobs?content=true` | `content=true` required for JD body; double-HTML-escaped. **Comp is never in the API** |
+| Ashby | `api.ashbyhq.com/posting-api/job-board/{slug}?includeCompensation=true` | On 404 the board may still exist — fall back to `window.__appData` on the rendered page, then per-job JSON-LD |
+| Lever | `api.lever.co/v0/postings/{slug}?mode=json` | Bare JSON **array**, not an object. `createdAt` is epoch **ms**. Slugs may contain URL-encoded spaces (`Loop%20AI`) — store pre-encoded |
+| Gem | `POST jobs.gem.com/api/public/graphql/batch` | Body must be a JSON **array**. `operationName` is validated against a hardcoded allowlist — only `JobBoardList` and `ExternalJobPostingQuery` work; introspection is blocked |
+| Workday | `{tenant}.wd{N}.myworkdayjobs.com/wday/cxs/{tenant}/{site}/jobs` (POST) | Not guessable — needs explicit per-company tenant/site config |
+
+Per the playbook these have run for months at 8-way concurrency with default
+user-agents and drew **zero blocks or captchas**, which is corroborating evidence
+that the 403s we see from the Claude Code sandbox are our own egress (§7).
 
 Why this fits the ask, point for point:
 
@@ -189,8 +194,45 @@ A `jobs_scan.py` entrypoint modeled on the existing `nightly_sync.py`, deployed
 as a **Cloud Run Job on Cloud Scheduler** — the established pattern here. (There
 is no `.github/workflows/` in this repo; scheduling lives in GCP.)
 
-Per-run stages: `resolve slugs → fetch boards → normalize → diff vs last run →
-keyword pre-filter → LLM score → upsert → flag warm contacts`.
+### Stage order matters more than it looks
+
+```
+resolve slugs
+  → fetch board list        (1 GET per company)
+  → normalize + diff vs last scan
+  → cheap pre-filter        (title / location — from list data only)
+  → fetch detail + comp     (only for survivors)   ← the expensive stage
+  → LLM score               (only for survivors)   ← the billable stage
+  → upsert + close missing
+  → surface warm contacts
+```
+
+**The pre-filter must run before the detail fetch, not after.** Comp is not in
+the Greenhouse API at all, so resolving it means a second GET per posting against
+the rendered page. On the playbook's measured 414-role board that is 414 extra
+requests for *one* company in *one* scan. Filtering on title and location first —
+both available free in the list response — cuts that to the handful worth pricing.
+The same ordering gates LLM spend.
+
+Two consequences for the record:
+- **Never discard the JD text.** The playbook lost 65 of 259 surviving roles to
+  this exact bug: `content` was stripped after comp regex ran, so downstream
+  judgment received empty descriptions and everything had to be re-fetched. Full
+  payload goes into a `raw` JSONB column.
+- **Record `comp_source`** (`api` > structured page data > `jd_regex` >
+  `not_found`) so a reviewer knows how much to trust a number.
+
+### Liveness, not just status codes
+
+Postings die fast — within 24h on high-volume Greenhouse boards — and they die
+*behind HTTP 200*. Aggregators and Greenhouse both serve 200 pages that say "no
+longer accepting applications". So a URL must be re-validated **in the same
+session it is promoted**, using a GET plus a closed-posting phrase list, not a
+HEAD status check.
+
+Statuses `401/403/405/429/999` are a **third state — `indeterminate`**, meaning
+the host is bot-blocking our checker, not that the job is gone. Those stay in the
+pool flagged for review. Dropping them throws away live jobs.
 
 ### Warm-contact surfacing (read-only)
 
@@ -249,6 +291,23 @@ rejection (most postings omit it); flag as `comp_unknown` and let it through.
 `MANAGER_EXCEPTIONS` preserved (Product/Project/Account/Program Manager are IC
 titles, not people-management).
 
+### Comp extraction: port the hardened parser, and its tests
+
+Naive `$X–$Y` regexes produce confident garbage. The playbook's three real
+regressions: `"$1M+ quota"` read as a $1M salary, a `"$4.6M research stipend"`,
+and a `"$50M fundraise"`. The hardened version scores candidates by context
+(salary-keyword prefix > is-a-range > salary-keyword suffix > bare singleton) and
+rejects on negative keywords in a 20-char window before the match.
+
+**Port the 14-case regression suite along with it.** Every production misparse
+became a named test. This is the one piece of the pipeline where being silently
+wrong is invisible — a bad salary just looks like a salary.
+
+One addition for our band: entry-level postings often quote comp **hourly**
+(`"$45–$55/hour"`), which the dollar regex skips as below its $50K noise floor.
+We need the hourly pattern annualized at ~2080h, or we systematically lose the
+bottom of our own $50–120K range.
+
 ### Fixing the score compression
 
 12 of 14 rows scoring exactly 80.0 means the previous rubric did not
@@ -273,12 +332,15 @@ bedrock.jobs_watch_company
   account_key      text PK        -- lower(trim(name)), matches jobs_account
   display_name     text
   domain           text
-  tier             text           -- warm_partner | monitored | prospect
+  tier             text           -- priority | secondary | archive (drives CADENCE)
+  relationship     text           -- warm_partner | monitored | prospect
   why_watched      text
   source_tags      text[]         -- tags that proposed it
   owner_email      text
   criteria_profile text           -- FK-ish → jobs_scan_criteria.name
   active           bool
+  do_not_present   bool           -- hard exclusion: never surface, ever
+  notes            text           -- slug provenance, board quirks, churn warnings
   created_at / updated_at
 
 bedrock.jobs_watch_board
@@ -295,10 +357,13 @@ bedrock.scraped_job_posting
   id               uuid PK
   account_key      text
   platform / slug / external_job_id     -- UNIQUE together
-  title / location / url / description
-  salary_min / salary_max / comp_confidence
+  title / location / is_remote / url / description
+  salary_min / salary_max
+  comp_source      text           -- api | gh_page | ashby_jsonld | jd_regex | not_found
+  raw              jsonb          -- FULL payload incl. JD text. Never stripped
   posted_at
   first_seen_at / last_seen_at / closed_at   -- diff surface
+  liveness         text           -- live | dead | indeterminate
   score / classification / matched_family / reasoning / criteria_version
   drop_reason      text           -- why it was filtered, for the counters
   triage_state     text           -- new | approved | rejected | promoted
@@ -338,9 +403,11 @@ concurrently, reports resolution rate and writes a per-probe CSV.
 > proxy (Bright Data Web Unlocker or similar). That is a fetch-layer swap, not a
 > redesign — every other part of this holds.
 
-**Phase 1 — watchlist + scan, backend.** Migration; slug resolver; the three
-fetchers; `jobs_scan.py`; Cloud Run Job. Success: a scheduled scan populates
-`scraped_job_posting` for the resolved companies with a correct new/closed diff.
+**Phase 1 — watchlist + scan, backend.** Migration; slug resolver; the
+Greenhouse/Ashby/Lever/Gem fetchers; comp parser + its regression suite;
+`jobs_scan.py`; Cloud Run Job. Success: a scheduled scan populates
+`scraped_job_posting` for the resolved companies with a correct new/closed diff,
+and prints funnel counts per drop reason.
 
 **Phase 2 — scoring + triage UI.** Port the builder profile to OpenRouter,
 DB-backed criteria, calibration fixtures, `/api/jobs/scan/*` endpoints, and a
