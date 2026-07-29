@@ -59,7 +59,7 @@ type ColKey = "account" | "status" | "owner" | "opps" | "contacts" | "listings" 
 const COLUMN_ORDER: ColKey[] = ["account", "status", "owner", "opps", "contacts", "listings", "hired", "tasks", "deal_types", "last_activity"];
 const DEFAULT_VISIBLE: ColKey[] = ["account", "status", "owner", "opps", "contacts", "listings", "hired", "tasks", "last_activity"];
 const COL_LABELS: Record<ColKey, string> = {
-  account: "Account", status: "Status", owner: "Owner", opps: "Opps",
+  account: "Account", status: "Status", owner: "Jobs owner", opps: "Opps",
   contacts: "Contacts", listings: "Roles", hired: "Hired", tasks: "Open tasks", deal_types: "Deal types", last_activity: "Last touch",
 };
 // Default pixel widths — user-resizable via drag handles (useColumnWidths),
@@ -92,7 +92,7 @@ type Field = "account" | "status" | "owner" | "industry" | "deal_type" | "has_op
 const FILTERABLE: Record<Field, FieldMeta<JobsAccount>> = {
   account:      { label: "Account",  type: "text",   getValue: (a) => a.account },
   status:       { label: "Status",   type: "select", getValue: (a) => a.account_status },
-  owner:        { label: "Owner",    type: "select", getValue: (a) => a.owner_email ?? "" },
+  owner:        { label: "Jobs owner", type: "select", getValue: (a) => a.owner_email ?? "" },
   industry:     { label: "Industry", type: "select", getValue: (a) => a.industry ?? "" },
   // An account can have several opportunities of different types; join code +
   // label so a "contains" filter matches on either ("ft", "contract", "Part-time").
