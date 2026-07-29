@@ -20,6 +20,21 @@ logger = logging.getLogger(__name__)
 # stays free of any route import. Keep in sync with routes/jobs.py.
 JOBS_TEAM_EMAILS = ["avni@pursuit.org", "damon.kornhauser@pursuit.org", "devika@pursuit.org"]
 
+# Sticky-once-true feature detect for bedrock.jobs_membership_stage_history —
+# the migration is applied out-of-band on the shared DB, so code must run both
+# before and after it exists. Re-checks while False, caches forever once True.
+_HAS_MEMBERSHIP_HISTORY: Optional[bool] = None
+
+
+async def has_membership_history(conn) -> bool:
+    global _HAS_MEMBERSHIP_HISTORY
+    if _HAS_MEMBERSHIP_HISTORY:
+        return True
+    _HAS_MEMBERSHIP_HISTORY = bool(await conn.fetchval(
+        "SELECT 1 FROM information_schema.tables "
+        "WHERE table_schema = 'bedrock' AND table_name = 'jobs_membership_stage_history'"))
+    return _HAS_MEMBERSHIP_HISTORY
+
 
 async def relink_jobs_prospect_activity(conn, days_back: Optional[int] = None) -> dict[str, Any]:
     """Populate activity.participant_public_contact_id for jobs prospects.
@@ -174,8 +189,12 @@ async def auto_advance_outreached(conn) -> dict[str, Any]:
     counts; a human can still set the stage for those. Never downgrades:
     only stage='assigned' rows move. Idempotent — runs in the nightly sync
     after the activity relink, and inline after a manual activity log.
+
+    When jobs_membership_stage_history exists, each advance also records a
+    stage-history row (note='auto_advance_outreached') via a data-modifying CTE.
     """
-    result = await conn.execute("""
+    with_history = await has_membership_history(conn)
+    sql_body = """
         WITH touches AS (
             -- Manual touches + meetings evidence at the activity level; EMAIL
             -- evidence at the MESSAGE level (thread rows carry the first
@@ -217,15 +236,28 @@ async def auto_advance_outreached(conn) -> dict[str, Any]:
                    (array_agg(author ORDER BY ts))[1] AS author
             FROM touches
             GROUP BY contact_id
-        )
+        )"""
+    update_body = """
         UPDATE bedrock.jobs_contact_membership m
         SET stage = 'initial_outreach',
             first_outreach_at = COALESCE(m.first_outreach_at, o.first_out),
             first_outreach_by = COALESCE(m.first_outreach_by, o.author),
             updated_at = now()
         FROM outreach o
-        WHERE o.contact_id = m.contact_id AND m.stage = 'assigned'
-    """)
+        WHERE o.contact_id = m.contact_id AND m.stage = 'assigned'"""
+    if with_history:
+        # Command tag is INSERT 0 n — same trailing row count as UPDATE n.
+        sql = sql_body + ",\n        adv AS (" + update_body + """
+            RETURNING m.contact_id, o.author
+        )
+        INSERT INTO bedrock.jobs_membership_stage_history
+            (contact_id, from_stage, to_stage, changed_by, note)
+        SELECT contact_id, 'assigned', 'initial_outreach', author, 'auto_advance_outreached'
+        FROM adv
+        """
+    else:
+        sql = sql_body + update_body
+    result = await conn.execute(sql)
     advanced = int(result.split()[-1]) if result and result.split()[-1].isdigit() else 0
     logger.info("auto-advanced %d flagged contacts to initial_outreach", advanced)
     return {"advanced": advanced}

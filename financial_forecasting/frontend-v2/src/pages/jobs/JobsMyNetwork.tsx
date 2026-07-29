@@ -15,12 +15,7 @@ import { ContactExpandTabs } from "@/components/jobs/jobsEntity";
 import { SortableHeader } from "@/components/ui/SortableHeader";
 import { useSort, compare } from "@/lib/sort";
 import { useMyNetwork, useSetConnectionStatus, type NetworkConnection } from "@/services/jobs";
-
-export const relDay = (iso: string | null) => {
-  if (!iso) return null;
-  const d = Math.floor((Date.now() - new Date(iso).getTime()) / 86400000);
-  return d <= 0 ? "today" : d === 1 ? "1d" : d < 30 ? `${d}d` : d < 365 ? `${Math.floor(d / 30)}mo` : `${Math.floor(d / 365)}y`;
-};
+import { relDay } from "@/lib/format";
 
 // ── Section label + bordered panel (same shell as the Jobs Home zones) ───────
 function Section({ title, count, action, children }: {

@@ -53,7 +53,7 @@ export function JobsPage() {
     <div className="flex flex-col gap-0 px-7 py-4 pb-12">
       <PageHeader
         title="Jobs"
-        subtitle="Daily command center — tasks, interviews, and triage."
+        subtitle="Your week — assigned contacts, opportunities, and tasks."
       />
       <JobsHome />
     </div>

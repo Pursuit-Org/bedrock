@@ -227,6 +227,7 @@ export interface JobContactWithDeal extends JobContact {
   // jobs activation membership + triage signals
   membership_stage?: string | null;
   membership_owner?: string | null;
+  membership_stage_entered_at?: string | null;
   first_outreach_by?: string | null;
   company_industry?: string | null;
   open_roles?: number;        // roles the team sourced at this company (job_postings)

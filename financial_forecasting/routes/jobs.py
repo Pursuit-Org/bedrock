@@ -25,6 +25,7 @@ from dependencies import get_mcp_client, require_sf_mcp_client
 from sf_errors import sf_http_error
 from services.placement_sf import sync_placement_to_sf, record_sync_error, NotEligible, AccountAmbiguous
 from services.outreach_targets import user_pipeline_target, activity_pipeline_target
+from services.jobs_activity_link import has_membership_history
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
@@ -4203,23 +4204,40 @@ async def _flag_contacts(conn, contact_ids: list[int], owner_email: Optional[str
             "IS DISTINCT FROM 'converted_to_opportunity' THEN now() ELSE jobs_contact_membership.converted_at END,")
     else:
         conflict_stage = stamp_cols = stamp_vals = conflict_stamp = ""
-    await conn.execute(
-        f"""
-        INSERT INTO bedrock.jobs_contact_membership
-            (contact_id, stage, owner_email, activation_reason, activation_note, assigned_by{stamp_cols})
-        SELECT cid, $6, $2, $3, $4, $5{stamp_vals} FROM unnest($1::int[]) AS cid
-        ON CONFLICT (contact_id) DO UPDATE SET
-            {conflict_stage}
-            {conflict_stamp}
-            owner_email       = COALESCE(jobs_contact_membership.owner_email, EXCLUDED.owner_email),
-            activation_reason = COALESCE(jobs_contact_membership.activation_reason, EXCLUDED.activation_reason),
-            updated_at        = now()
-        """,
-        contact_ids, owner_email, reason, note, by, stg,
-    )
-    await conn.execute(
-        "UPDATE public.contacts SET is_jobs_contact = true WHERE contact_id = ANY($1::int[]) AND NOT is_jobs_contact",
-        contact_ids)
+    async with conn.transaction():
+        # Snapshot pre-upsert stages so we can record only genuine transitions.
+        old = {r["contact_id"]: r["stage"] for r in await conn.fetch(
+            "SELECT contact_id, stage FROM bedrock.jobs_contact_membership WHERE contact_id = ANY($1::int[])",
+            contact_ids)}
+        await conn.execute(
+            f"""
+            INSERT INTO bedrock.jobs_contact_membership
+                (contact_id, stage, owner_email, activation_reason, activation_note, assigned_by{stamp_cols})
+            SELECT cid, $6, $2, $3, $4, $5{stamp_vals} FROM unnest($1::int[]) AS cid
+            ON CONFLICT (contact_id) DO UPDATE SET
+                {conflict_stage}
+                {conflict_stamp}
+                owner_email       = COALESCE(jobs_contact_membership.owner_email, EXCLUDED.owner_email),
+                activation_reason = COALESCE(jobs_contact_membership.activation_reason, EXCLUDED.activation_reason),
+                updated_at        = now()
+            """,
+            contact_ids, owner_email, reason, note, by, stg,
+        )
+        if await has_membership_history(conn):
+            # Fresh inserts always enter `stg`; conflicts change stage only when
+            # an explicit stage was passed (the no-stage upsert never touches it).
+            hist = [(cid, None, stg, by) for cid in contact_ids if cid not in old]
+            if stage:
+                hist += [(cid, old[cid], stage, by) for cid in contact_ids
+                         if cid in old and old[cid] != stage]
+            if hist:
+                await conn.executemany(
+                    "INSERT INTO bedrock.jobs_membership_stage_history "
+                    "(contact_id, from_stage, to_stage, changed_by) VALUES ($1, $2, $3, $4)",
+                    hist)
+        await conn.execute(
+            "UPDATE public.contacts SET is_jobs_contact = true WHERE contact_id = ANY($1::int[]) AND NOT is_jobs_contact",
+            contact_ids)
     return len(contact_ids)
 
 
@@ -4257,6 +4275,10 @@ async def update_jobs_membership(contact_id: int, body: MembershipPatch,
                                  user=Depends(require_auth), conn=Depends(get_db)):
     """Advance the funnel / reassign owner. Stamps first_outreach_by (who actually
     reached out — may differ from owner) on the → initial_outreach transition."""
+    old_stage = await conn.fetchval(
+        "SELECT stage FROM bedrock.jobs_contact_membership WHERE contact_id = $1", contact_id)
+    if old_stage is None:
+        raise HTTPException(404, "contact is not flagged for jobs")
     sets, params, i = [], [contact_id], 2
     if body.stage is not None:
         if body.stage not in _MEMBERSHIP_STAGES:
@@ -4283,17 +4305,28 @@ async def update_jobs_membership(contact_id: int, body: MembershipPatch,
     if not sets:
         return {"success": True}
     sets.append("updated_at = now()")
-    res = await conn.execute(
-        f"UPDATE bedrock.jobs_contact_membership SET {', '.join(sets)} WHERE contact_id = $1", *params)
-    if res == "UPDATE 0":
-        raise HTTPException(404, "contact is not flagged for jobs")
+    async with conn.transaction():
+        await conn.execute(
+            f"UPDATE bedrock.jobs_contact_membership SET {', '.join(sets)} WHERE contact_id = $1", *params)
+        if body.stage is not None and body.stage != old_stage and await has_membership_history(conn):
+            await conn.execute(
+                "INSERT INTO bedrock.jobs_membership_stage_history "
+                "(contact_id, from_stage, to_stage, changed_by) VALUES ($1, $2, $3, $4)",
+                contact_id, old_stage, body.stage, _user_email(user))
     return {"success": True}
 
 
 @router.delete("/contacts/{contact_id}/jobs-membership")
 async def unflag_jobs_contact(contact_id: int, user=Depends(require_auth), conn=Depends(get_db)):
     """Unflag — remove the jobs membership (leaves the legacy is_jobs_contact as-is)."""
-    await conn.execute("DELETE FROM bedrock.jobs_contact_membership WHERE contact_id = $1", contact_id)
+    async with conn.transaction():
+        old_stage = await conn.fetchval(
+            "DELETE FROM bedrock.jobs_contact_membership WHERE contact_id = $1 RETURNING stage", contact_id)
+        if old_stage is not None and await has_membership_history(conn):
+            await conn.execute(
+                "INSERT INTO bedrock.jobs_membership_stage_history "
+                "(contact_id, from_stage, to_stage, changed_by) VALUES ($1, $2, 'unflagged', $3)",
+                contact_id, old_stage, _user_email(user))
     return {"success": True}
 
 
@@ -4714,6 +4747,13 @@ async def list_contacts(
     # request's statement time (the pool resets session state on release).
     if filter_rules:
         await conn.execute("SET statement_timeout = '15000'")
+    # When the contact entered its CURRENT membership stage. Real answer comes
+    # from the stage-history table; until that migration lands, degrade to
+    # assigned_at (row creation — accurate only for never-restaged contacts).
+    entered_expr = (
+        "COALESCE((SELECT max(h.changed_at) FROM bedrock.jobs_membership_stage_history h"
+        " WHERE h.contact_id = c.contact_id AND h.to_stage = m.stage), m.assigned_at)"
+        if await has_membership_history(conn) else "m.assigned_at")
     rows = await conn.fetch(
         f"""
         SELECT
@@ -4745,6 +4785,7 @@ async def list_contacts(
             m.stage          AS membership_stage,
             m.owner_email    AS membership_owner,
             m.first_outreach_by AS first_outreach_by,
+            {entered_expr}   AS membership_stage_entered_at,
             -- signals for triage
             co.industry      AS company_industry,
             (SELECT count(*) FROM public.job_postings jp

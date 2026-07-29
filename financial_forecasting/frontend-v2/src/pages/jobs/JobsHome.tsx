@@ -1,38 +1,63 @@
 /**
- * Jobs command center — the home tab Damon & Avni manage the pipeline from.
- * Styled to match the Performance tab: full-width (inherits the page's px-7),
- * gap-7 zones, lightweight uppercase section labels, bordered surface panels.
+ * Jobs Home — personal command center (PBD-Home-style, per-person scope).
  *
- *   1. Tasks       — every open task across opps/prospects/accounts, with a
- *                    My / per-person filter, inline edit/assign/complete, and a
- *                    quick-add tied to an account.
- *   2. Interviews  — confirmed roles and the builders progressing through them,
- *                    advanceable inline (applied → interview → accepted/hired).
+ * A person picker (Me / staff / Everyone) scopes every zone:
+ *   1. Assigned contacts — the working queue: contacts in the 'assigned'
+ *      membership stage, grouped This week / Earlier by real stage-entry time
+ *      (membership_stage_entered_at). ✓ moves a contact to Initial outreach.
+ *   2. Opportunities — the person's open deals, with server-computed
+ *      needs-attention flags (same list as Performance › Pipeline).
+ *   3. Tasks — every open jobs task for the scope, inline edit + quick-add.
+ *   4. Intro requests — asks addressed to me, and mine (unscoped).
+ * Rows in 1–2 expand to a comments thread (JobsComments) so outreach notes
+ * land on the contact/opportunity without leaving the page.
  */
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { Circle, Plus, Briefcase } from "lucide-react";
+import { AlertTriangle, ChevronRight, Circle, Plus } from "lucide-react";
+import { toast } from "sonner";
 
 import { Tag } from "@/components/ui/Tag";
 import { InlineDate } from "@/components/ui/InlineEdit";
+import { JobsComments } from "@/components/jobs/JobsComments";
 import { cn } from "@/lib/utils";
+import { relDay } from "@/lib/format";
 import { useActiveUsers } from "@/services/projects";
 import { useCurrentUser } from "@/services/auth";
-import { useJobsAccountNames, STAGE_LABELS, type JobStage } from "@/services/jobs";
 import {
-  useIntroRequests, useRespondIntroRequest, type IntroRequest,
+  useJobsAccountNames, useJobsContacts, useJobsOpportunities, useJobsStaff,
+  useOpportunitiesOverview, useStaffNameResolver, useUpdateJobsMembership,
+  useIntroRequests, useRespondIntroRequest,
+  STAGE_LABELS,
+  type ContactFilters, type IntroRequest, type JobStage, type JobsOpportunity,
+  type OppNeedsRow,
 } from "@/services/jobs";
-import { relDay } from "./JobsMyNetwork";
 import {
   useAllJobsTasks, useUpdateTaskById, useCreateTaskForParent, useDeleteTaskById,
   type JobsTaskEnriched,
 } from "@/services/jobsTasks";
-import {
-  useInterviewPipeline, useAdvanceBuilderStage,
-  type InterviewPipelineOpp, type AppStage,
-} from "@/services/jobsOpps2";
 
 const todayIso = () => new Date().toISOString().slice(0, 10);
+
+// Shared filter shape so the page-level count and the zone hit the same
+// React Query cache entry.
+const assignedFilters = (owner: string | null): ContactFilters => ({
+  membership_stage: "assigned",
+  limit: 1000,
+  rules: owner ? [{ field: "owner", op: "equals", values: [owner] }] : undefined,
+});
+
+// Start of the current Sun–Sat week (local) — matches the overview/scorecard's
+// Saturday week_end convention.
+const startOfWeekSunday = () => {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() - d.getDay());
+  return d;
+};
+
+const isOpenOpp = (o: JobsOpportunity) =>
+  !o.stage.startsWith("closed") && !o.stage.startsWith("on_hold");
 
 // ── Section label + bordered panel (mirrors the Performance tab's SectionWrap) ──
 function Section({ title, count, action, children }: {
@@ -52,7 +77,190 @@ function Section({ title, count, action, children }: {
   );
 }
 
+// ── Assigned contacts zone ────────────────────────────────────────────────────
+function AssignedRow({ c, showOwner, resolveName }: {
+  c: { contact_id: number; full_name: string | null; current_title: string | null;
+       current_company: string | null; owner_email?: string | null;
+       membership_stage_entered_at?: string | null };
+  showOwner: boolean;
+  resolveName: (v: string | null | undefined) => string;
+}) {
+  const update = useUpdateJobsMembership();
+  const [expanded, setExpanded] = useState(false);
+  const [inFlight, setInFlight] = useState(false);
+  const markContacted = () => {
+    setInFlight(true);
+    update.mutate(
+      { contact_id: c.contact_id, stage: "initial_outreach" },
+      {
+        onSuccess: () => toast.success(`Moved ${c.full_name ?? "contact"} to Initial outreach`),
+        onSettled: () => setInFlight(false),
+      },
+    );
+  };
+  return (
+    <>
+      <div
+        onClick={() => setExpanded((v) => !v)}
+        className={cn(
+          "flex cursor-pointer items-center gap-2 border-t border-border-strong px-3 py-1.5 hover:bg-surface-2/40",
+          expanded && "bg-surface-2/40",
+          inFlight && "pointer-events-none opacity-40",
+        )}
+      >
+        <button type="button" title="Mark contacted → Initial outreach" disabled={inFlight}
+          onClick={(e) => { e.stopPropagation(); markContacted(); }}
+          className="shrink-0 text-ink-4 hover:text-green">
+          <Circle size={15} />
+        </button>
+        <ChevronRight size={12} className={cn("shrink-0 text-ink-4 transition-transform", expanded && "rotate-90")} />
+        <div className="min-w-0 flex-1">
+          <Link to={`/jobs/contacts/${c.contact_id}`} onClick={(e) => e.stopPropagation()}
+            className="truncate text-[13px] font-medium text-ink hover:text-accent">
+            {c.full_name || "—"}
+          </Link>
+          <div className="truncate text-[11px] text-ink-4">
+            {[c.current_title, c.current_company].filter(Boolean).join(" · ") || "—"}
+          </div>
+        </div>
+        {showOwner && (
+          <span className="shrink-0 text-[11.5px] text-ink-3">{c.owner_email ? resolveName(c.owner_email) : "Unowned"}</span>
+        )}
+        <span className="w-[60px] shrink-0 text-right text-[11.5px] tabular-nums text-ink-4"
+          title={c.membership_stage_entered_at ? `Assigned ${new Date(c.membership_stage_entered_at).toLocaleDateString()}` : "Assignment date unknown"}>
+          {relDay(c.membership_stage_entered_at) ?? "—"}
+        </span>
+      </div>
+      {expanded && (
+        <div className="border-t border-border-strong bg-surface-2/20 px-4 py-3">
+          <JobsComments parentType="prospect" parentId={String(c.contact_id)} />
+        </div>
+      )}
+    </>
+  );
+}
+
+function AssignedContactsZone({ owner }: { owner: string | null }) {
+  const { data, isLoading } = useJobsContacts(assignedFilters(owner));
+  const resolveName = useStaffNameResolver();
+  const contacts = data?.data ?? [];
+  const weekStart = startOfWeekSunday();
+  const thisWeek = contacts.filter((c) =>
+    c.membership_stage_entered_at && new Date(c.membership_stage_entered_at) >= weekStart);
+  const earlier = contacts.filter((c) =>
+    !c.membership_stage_entered_at || new Date(c.membership_stage_entered_at) < weekStart);
+  const groups = [
+    { key: "week", label: "This week", items: thisWeek, cls: "bg-surface-2/60 text-ink-4" },
+    { key: "earlier", label: "Earlier — still waiting on first outreach", items: earlier, cls: "bg-amber-soft text-amber" },
+  ].filter((g) => g.items.length > 0);
+  return (
+    <Section title="Assigned contacts" count={contacts.length}>
+      <div className="flex flex-col overflow-hidden rounded-lg border border-border-strong bg-surface">
+        {isLoading ? (
+          <div className="px-3 py-8 text-center text-[12.5px] text-ink-3">Loading…</div>
+        ) : contacts.length === 0 ? (
+          <div className="px-3 py-6 text-center text-[12.5px] text-ink-3">
+            No assigned contacts. Flag prospects from{" "}
+            <Link to="/jobs/contacts" className="text-accent hover:underline">Contacts</Link> to build the week's queue.
+          </div>
+        ) : groups.map((g) => (
+          <div key={g.key}>
+            <div className={cn("px-3 py-1 text-[10px] font-semibold uppercase tracking-wider", g.cls)}>
+              {g.label} · {g.items.length}
+            </div>
+            {g.items.map((c) => (
+              <AssignedRow key={c.contact_id} c={c} showOwner={owner === null} resolveName={resolveName} />
+            ))}
+          </div>
+        ))}
+      </div>
+    </Section>
+  );
+}
+
+// ── Opportunities zone ────────────────────────────────────────────────────────
+function OppRow({ o, needs }: { o: JobsOpportunity; needs: OppNeedsRow | undefined }) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <>
+      <div
+        onClick={() => setExpanded((v) => !v)}
+        className={cn(
+          "flex cursor-pointer items-center gap-2 border-t border-border-strong px-3 py-1.5 hover:bg-surface-2/40",
+          expanded && "bg-surface-2/40",
+        )}
+      >
+        <ChevronRight size={12} className={cn("shrink-0 text-ink-4 transition-transform", expanded && "rotate-90")} />
+        <div className="min-w-0 flex-1">
+          <Link to={`/jobs/opportunities/${o.id}`} onClick={(e) => e.stopPropagation()}
+            className="truncate text-[13px] font-medium text-ink hover:text-accent">
+            {o.account_name}
+          </Link>
+          {o.title && <div className="truncate text-[11px] text-ink-4">{o.title}</div>}
+        </div>
+        {needs && (
+          <span className="flex min-w-0 shrink items-center gap-1" title={needs.why}>
+            <Tag variant={needs.days_in_stage >= 30 ? "red" : "amber"}>
+              <AlertTriangle size={10} className="mr-0.5 inline-block" />
+              {needs.why}
+            </Tag>
+          </span>
+        )}
+        <Tag variant="accent">{STAGE_LABELS[o.stage as JobStage] ?? o.stage}</Tag>
+        {(o.open_tasks ?? 0) > 0 && (
+          <span className="shrink-0 text-[11px] tabular-nums text-ink-4" title="Open tasks">
+            {o.open_tasks} task{o.open_tasks === 1 ? "" : "s"}
+          </span>
+        )}
+        <span className="w-[60px] shrink-0 text-right text-[11.5px] tabular-nums text-ink-4"
+          title={o.last_activity_at ? `Last activity ${new Date(o.last_activity_at).toLocaleDateString()}` : "No activity"}>
+          {relDay(o.last_activity_at) ?? "—"}
+        </span>
+      </div>
+      {expanded && (
+        <div className="border-t border-border-strong bg-surface-2/20 px-4 py-3">
+          <JobsComments parentType="opportunity" parentId={o.id} />
+        </div>
+      )}
+    </>
+  );
+}
+
+function OpportunitiesZone({ owner }: { owner: string | null }) {
+  const { data } = useJobsOpportunities({ owner_email: owner ?? undefined, limit: 500 });
+  const { data: overview } = useOpportunitiesOverview(owner ?? undefined);
+  const open = (data?.data ?? []).filter(isOpenOpp);
+  const needsById = useMemo(
+    () => new Map((overview?.needs_attention ?? []).map((n) => [n.opportunity_id, n])),
+    [overview],
+  );
+  const sorted = useMemo(() => [...open].sort((a, b) => {
+    const na = needsById.get(a.id); const nb = needsById.get(b.id);
+    if (Boolean(na) !== Boolean(nb)) return na ? -1 : 1;
+    if (na && nb && na.days_in_stage !== nb.days_in_stage) return nb.days_in_stage - na.days_in_stage;
+    return (b.last_activity_at ?? "").localeCompare(a.last_activity_at ?? "");
+  }), [open, needsById]);
+  const flagged = sorted.filter((o) => needsById.has(o.id)).length;
+  return (
+    <Section title="Opportunities" count={open.length}
+      action={flagged > 0 ? (
+        <span className="text-[11.5px] font-semibold text-red">{flagged} need{flagged === 1 ? "s" : ""} attention</span>
+      ) : undefined}>
+      <div className="flex flex-col overflow-hidden rounded-lg border border-border-strong bg-surface">
+        {sorted.length === 0 ? (
+          <div className="px-3 py-6 text-center text-[12.5px] text-ink-3">
+            No open opportunities.{" "}
+            <Link to="/jobs/pipeline" className="text-accent hover:underline">See the pipeline →</Link>
+          </div>
+        ) : sorted.map((o) => <OppRow key={o.id} o={o} needs={needsById.get(o.id)} />)}
+      </div>
+    </Section>
+  );
+}
+
 // ── Tasks zone ────────────────────────────────────────────────────────────────
+// NOTE: intentionally diverges from lib/risk.ts — this UI has a distinct
+// "Due today" bucket, which riskForTask folds into its 7-day due-soon window.
 function dueBucket(deadline: string | null): "overdue" | "today" | "upcoming" | "none" {
   if (!deadline) return "none";
   const t = todayIso();
@@ -103,10 +311,9 @@ function TaskRow({
   );
 }
 
-function TasksZone() {
+function TasksZone({ owner }: { owner: string | null }) {
   const { data: tasks = [], isLoading } = useAllJobsTasks();
   const { data: users = [] } = useActiveUsers();
-  const { data: me } = useCurrentUser();
   const { data: accounts = [] } = useJobsAccountNames();
   const update = useUpdateTaskById();
   const create = useCreateTaskForParent();
@@ -116,25 +323,16 @@ function TasksZone() {
     () => users.map((u) => ({ value: u.id, label: u.display_name || u.email })),
     [users],
   );
-  const myId = useMemo(
-    () => users.find((u) => u.email?.toLowerCase() === me?.email?.toLowerCase())?.id ?? null,
-    [users, me],
+  // The page-level person picker is email-based; tasks are owned by org_users id.
+  const ownerId = useMemo(
+    () => owner ? users.find((u) => u.email?.toLowerCase() === owner.toLowerCase())?.id ?? null : null,
+    [users, owner],
   );
-  // Filter dropdown lists only people who actually have tasks (names come from
-  // the enriched owner_ids/owner_names parallel arrays).
-  const taskAssignees = useMemo(() => {
-    const m = new Map<string, string>();
-    for (const t of tasks) t.owner_ids.forEach((id, i) => m.set(id, t.owner_names[i] ?? id));
-    return [...m].map(([value, label]) => ({ value, label })).sort((a, b) => a.label.localeCompare(b.label));
-  }, [tasks]);
-
-  const [assignee, setAssignee] = useState<string>("all"); // all | me | <ownerId>
   const filtered = useMemo(() => {
-    if (assignee === "all") return tasks;
-    const target = assignee === "me" ? myId : assignee;
-    if (!target) return assignee === "me" ? [] : tasks;
-    return tasks.filter((t) => t.owner_ids.includes(target));
-  }, [tasks, assignee, myId]);
+    if (owner === null) return tasks;
+    if (!ownerId) return [];  // selected person has no org_users match → nothing to show
+    return tasks.filter((t) => t.owner_ids.includes(ownerId));
+  }, [tasks, owner, ownerId]);
 
   const groups: { key: string; label: string; items: JobsTaskEnriched[] }[] = useMemo(() => {
     const by: Record<string, JobsTaskEnriched[]> = { overdue: [], today: [], upcoming: [], none: [] };
@@ -147,12 +345,16 @@ function TasksZone() {
     ].filter((g) => g.items.length > 0);
   }, [filtered]);
 
-  // Quick-add (tied to an account).
+  // Quick-add (tied to an account). Assignee defaults to the picked person.
   const [adding, setAdding] = useState(false);
   const [newTitle, setNewTitle] = useState("");
   const [newAccount, setNewAccount] = useState("");
   const [newOwner, setNewOwner] = useState("");
   const [newDue, setNewDue] = useState("");
+  const openAdd = () => {
+    setNewOwner(ownerId ?? "");
+    setAdding((v) => !v);
+  };
   const submitNew = async () => {
     if (!newTitle.trim() || !newAccount) return;
     await create.mutateAsync({
@@ -164,18 +366,10 @@ function TasksZone() {
 
   return (
     <Section title="Tasks" count={filtered.length} action={
-      <div className="flex items-center gap-2">
-        <select value={assignee} onChange={(e) => setAssignee(e.target.value)}
-          className="h-7 rounded-md border border-border-strong bg-surface px-2 text-[12px] text-ink-2 outline-none focus:border-accent">
-          <option value="all">Everyone</option>
-          <option value="me" disabled={!myId}>My tasks</option>
-          {taskAssignees.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-        </select>
-        <button type="button" onClick={() => setAdding((v) => !v)}
-          className="inline-flex h-7 items-center gap-1 rounded-md border border-border-strong bg-surface px-2 text-[12px] text-ink-2 hover:bg-surface-2">
-          <Plus size={12} /> Add
-        </button>
-      </div>
+      <button type="button" onClick={openAdd}
+        className="inline-flex h-7 items-center gap-1 rounded-md border border-border-strong bg-surface px-2 text-[12px] text-ink-2 hover:bg-surface-2">
+        <Plus size={12} /> Add
+      </button>
     }>
       <div className="flex flex-col overflow-hidden rounded-lg border border-border-strong bg-surface">
         {adding && (
@@ -221,102 +415,6 @@ function TasksZone() {
           </div>
         ))}
       </div>
-    </Section>
-  );
-}
-
-// ── Interview tracker zone ─────────────────────────────────────────────────────
-const STAGE_COLS: { stage: AppStage; label: string }[] = [
-  { stage: "applied", label: "Applied" },
-  { stage: "interview", label: "Interviewing" },
-  { stage: "accepted", label: "Accepted" },
-];
-const NEXT_STAGE: Partial<Record<AppStage, AppStage>> = { applied: "interview", interview: "accepted" };
-const PREV_STAGE: Partial<Record<AppStage, AppStage>> = { interview: "applied", accepted: "interview" };
-
-// Per-stage tint so the interview columns read with color (like Performance).
-const STAGE_COL_STYLE: Record<AppStage, { col: string; head: string }> = {
-  applied:   { col: "border-border-strong/60 bg-surface-2/40", head: "text-ink-4" },
-  interview: { col: "border-accent/30 bg-accent-soft/50", head: "text-accent-ink" },
-  accepted:  { col: "border-green/30 bg-green-soft/50", head: "text-green" },
-  rejected:  { col: "border-border-strong/60 bg-surface-2/40", head: "text-ink-4" },
-  withdrawn: { col: "border-border-strong/60 bg-surface-2/40", head: "text-ink-4" },
-};
-
-function InterviewCard({ opp }: { opp: InterviewPipelineOpp }) {
-  const advance = useAdvanceBuilderStage();
-  const byStage = (s: AppStage) => opp.builders.filter((b) => b.stage === s);
-  return (
-    <div className="rounded-lg border border-border-strong bg-surface p-3">
-      <div className="mb-2 flex items-center justify-between gap-2">
-        <Link to="/jobs/pipeline" className="truncate text-[13px] font-semibold text-ink hover:text-accent">
-          {opp.account_name}
-        </Link>
-        <Tag variant="accent">{STAGE_LABELS[opp.stage as JobStage] ?? opp.stage}</Tag>
-      </div>
-      {opp.roles.length > 0 && (
-        <div className="mb-2 flex flex-wrap gap-1">
-          {opp.roles.map((r) => (
-            <span key={r.id} className="inline-flex items-center gap-1 rounded border border-border-strong px-1.5 py-0.5 text-[11px] text-ink-2" title={r.placement_status_label}>
-              <Briefcase size={10} className="text-ink-4" />{r.title ?? "Role"}
-              {r.placement_status === "ft_placed" && <span className="text-green">✓</span>}
-              {r.placement_status === "trial_active" && <span className="font-medium text-indigo-600">· trial</span>}
-            </span>
-          ))}
-        </div>
-      )}
-      <div className="grid grid-cols-3 gap-2">
-        {STAGE_COLS.map((col) => {
-          const rows = byStage(col.stage);
-          const c = STAGE_COL_STYLE[col.stage];
-          return (
-            <div key={col.stage} className={cn("rounded border p-1.5", c.col)}>
-              <div className={cn("mb-1 text-[10px] font-semibold uppercase tracking-wider", c.head)}>{col.label} · {rows.length}</div>
-              <div className="flex flex-col gap-1">
-                {rows.map((b) => {
-                  const next = NEXT_STAGE[b.stage as AppStage];
-                  const prev = PREV_STAGE[b.stage as AppStage];
-                  return (
-                    <div key={b.job_application_id} className="group flex items-center justify-between gap-1 rounded bg-surface px-1.5 py-1 text-[11.5px] text-ink-2">
-                      {prev ? (
-                        <button type="button" title={`Move back to ${prev}`}
-                          onClick={() => advance.mutate({ appId: b.job_application_id, stage: prev })}
-                          className="shrink-0 rounded px-1 text-ink-4 opacity-0 transition-opacity hover:bg-surface-2 hover:text-ink group-hover:opacity-100">←</button>
-                      ) : (
-                        <span className="shrink-0 px-1 opacity-0">←</span>
-                      )}
-                      <span className="min-w-0 flex-1 truncate">{b.builder || "—"}</span>
-                      {next && (
-                        <button type="button" title={`Move to ${next}`}
-                          onClick={() => advance.mutate({ appId: b.job_application_id, stage: next })}
-                          className="shrink-0 rounded px-1 text-ink-4 opacity-0 transition-opacity hover:bg-accent-soft hover:text-accent group-hover:opacity-100">→</button>
-                      )}
-                    </div>
-                  );
-                })}
-                {rows.length === 0 && <div className="px-1 py-0.5 text-[11px] text-ink-4">—</div>}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-function InterviewsZone() {
-  const { data: opps = [], isLoading } = useInterviewPipeline();
-  return (
-    <Section title="Builders in interviews" count={opps.length}>
-      {isLoading ? (
-        <div className="rounded-lg border border-border-strong bg-surface px-3 py-8 text-center text-[12.5px] text-ink-3">Loading…</div>
-      ) : opps.length === 0 ? (
-        <div className="rounded-lg border border-border-strong bg-surface px-3 py-8 text-center text-[12.5px] text-ink-3">No confirmed roles with builders yet.</div>
-      ) : (
-        <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-          {opps.map((o) => <InterviewCard key={o.opportunity_id} opp={o} />)}
-        </div>
-      )}
     </Section>
   );
 }
@@ -423,12 +521,20 @@ function IntroRequestsZone() {
 // ── Page ────────────────────────────────────────────────────────────────────
 export function JobsHome() {
   const { data: me } = useCurrentUser();
-  const { data: tasks = [] } = useAllJobsTasks();
-  const { data: pipeline = [] } = useInterviewPipeline();
+  const { data: staff = [] } = useJobsStaff();
+  // "me" | "all" | a staff email. Resolved owner: null = Everyone.
+  const [sel, setSel] = useState<string>("me");
+  const owner: string | null = sel === "all" ? null : sel === "me" ? (me?.email ?? "") : sel;
 
-  const overdue = tasks.filter((t) => dueBucket(t.deadline) === "overdue").length;
-  const dueToday = tasks.filter((t) => dueBucket(t.deadline) === "today").length;
-  const interviewing = pipeline.reduce((n, o) => n + o.summary.interview, 0);
+  // Same query keys as the zones — React Query dedupes, so the chips are free.
+  const { data: assigned } = useJobsContacts(assignedFilters(owner || null));
+  const { data: overview } = useOpportunitiesOverview(owner || undefined);
+  const { data: tasks = [] } = useAllJobsTasks();
+  const { data: users = [] } = useActiveUsers();
+  const ownerId = owner ? users.find((u) => u.email?.toLowerCase() === owner.toLowerCase())?.id ?? null : null;
+  const myTasks = owner === null ? tasks : ownerId ? tasks.filter((t) => t.owner_ids.includes(ownerId)) : [];
+  const overdue = myTasks.filter((t) => dueBucket(t.deadline) === "overdue").length;
+  const attention = overview?.needs_attention?.length ?? 0;
 
   const greeting = (() => {
     const h = new Date().getHours();
@@ -437,21 +543,35 @@ export function JobsHome() {
     return `Good ${tod}${first ? `, ${first}` : ""}`;
   })();
 
+  if (sel === "me" && !me) {
+    return <div className="px-1 py-8 text-[12.5px] text-ink-3">Loading…</div>;
+  }
+
   return (
     <div className="flex flex-col gap-7">
-      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        <h1 className="text-[15px] font-semibold text-ink">{greeting}</h1>
-        <span className="flex flex-wrap items-baseline gap-x-2.5 text-[11.5px]">
-          <span className="text-ink-4">{tasks.length} open task{tasks.length === 1 ? "" : "s"}</span>
-          {overdue > 0 && <span className="font-semibold text-red">· {overdue} overdue</span>}
-          {dueToday > 0 && <span className="font-semibold text-amber">· {dueToday} due today</span>}
-          {interviewing > 0 && <span className="font-semibold text-green">· {interviewing} interviewing</span>}
-        </span>
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+          <h1 className="text-[15px] font-semibold text-ink">{greeting}</h1>
+          <span className="flex flex-wrap items-baseline gap-x-2.5 text-[11.5px]">
+            <span className="text-ink-4">{assigned?.total ?? 0} assigned</span>
+            {attention > 0 && <span className="font-semibold text-amber">· {attention} need{attention === 1 ? "s" : ""} attention</span>}
+            {overdue > 0 && <span className="font-semibold text-red">· {overdue} overdue task{overdue === 1 ? "" : "s"}</span>}
+          </span>
+        </div>
+        <select value={sel} onChange={(e) => setSel(e.target.value)} title="Whose week to show"
+          className="h-7 rounded-md border border-border-strong bg-surface px-2 text-[12px] text-ink-2 outline-none focus:border-accent">
+          <option value="me">Me</option>
+          {staff.filter((s) => s.email.toLowerCase() !== me?.email?.toLowerCase()).map((s) => (
+            <option key={s.email} value={s.email}>{s.name}</option>
+          ))}
+          <option value="all">Everyone</option>
+        </select>
       </div>
 
+      <AssignedContactsZone owner={owner || null} />
+      <OpportunitiesZone owner={owner || null} />
+      <TasksZone owner={owner || null} />
       <IntroRequestsZone />
-      <TasksZone />
-      <InterviewsZone />
     </div>
   );
 }
