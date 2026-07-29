@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Home, BarChart3, Building2, Users, GraduationCap, Send } from "lucide-react";
+import { Home, BarChart3, Building2, Users, GraduationCap, Send, Radar } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { useSessionState } from "@/lib/useSessionState";
 import { cn } from "@/lib/utils";
@@ -10,11 +10,12 @@ import { JobsLeadership } from "./jobs/JobsLeadership";
 import { JobsContacts } from "./jobs/JobsContacts";
 import { JobsBuilders } from "./jobs/JobsBuilders";
 import { JobsOutreach } from "./jobs/JobsOutreach";
+import { JobsScan } from "./jobs/JobsScan";
 import { JobsOpportunities, type OppsSub } from "./jobs/JobsOpportunities";
 
 // "opportunities" (Overview + Opportunities set) is a valid view but lives in the
 // left nav (Jobs → Opportunities), not the top-tab row — so it's not in VIEWS.
-type View = "home" | "accounts" | "performance" | "outreach" | "opportunities" | "contacts" | "builders";
+type View = "home" | "accounts" | "performance" | "outreach" | "opportunities" | "contacts" | "builders" | "scan";
 
 const VIEWS = [
   { id: "home" as View,        label: "Home",        icon: Home,      desc: "Daily command center — tasks, interviews, triage" },
@@ -23,9 +24,10 @@ const VIEWS = [
   { id: "accounts" as View,    label: "Accounts",    icon: Building2, desc: "Account-level hub — opps + contacts" },
   { id: "contacts" as View,    label: "Contacts",    icon: Users,     desc: "All employer contacts" },
   { id: "builders" as View,    label: "Builders",    icon: GraduationCap, desc: "Per-builder job search" },
+  { id: "scan" as View,        label: "Job Scan",    icon: Radar,     desc: "Roles found on watched companies' boards — review & publish" },
 ];
 
-const VALID_VIEWS = new Set<View>(["home", "accounts", "performance", "outreach", "opportunities", "contacts", "builders"]);
+const VALID_VIEWS = new Set<View>(["home", "accounts", "performance", "outreach", "opportunities", "contacts", "builders", "scan"]);
 
 // Sub-views inside the Opportunities view; the toggle renders in the header
 // (to the right of the title), replacing the top-tab row on that view.
@@ -112,6 +114,7 @@ export function JobsPage() {
         {view === "opportunities" && <JobsOpportunities sub={oppsSub} />}
         {view === "contacts"      && <JobsContacts initialQuery={initialQuery} initialContactId={initialContactId} />}
         {view === "builders"      && <JobsBuilders />}
+        {view === "scan"          && <JobsScan />}
       </div>
     </div>
   );

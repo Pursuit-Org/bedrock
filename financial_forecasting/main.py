@@ -72,6 +72,7 @@ from routes.airtable_jobs import router as airtable_jobs_router
 from routes.sputnik import router as sputnik_router
 from routes.admin_interaction_sync import router as admin_interaction_sync_router
 from routes.jobs import router as jobs_router
+from routes.jobs_scan import router as jobs_scan_router
 from routes.jobs_tasks import router as jobs_tasks_router
 from routes.jobs_comments import router as jobs_comments_router
 from routes.jobs_intro import router as jobs_intro_router
@@ -169,6 +170,7 @@ app.include_router(airtable_jobs_router)
 app.include_router(sputnik_router)
 app.include_router(admin_interaction_sync_router)
 app.include_router(jobs_router)
+app.include_router(jobs_scan_router)
 app.include_router(jobs_tasks_router)
 app.include_router(jobs_comments_router)
 app.include_router(jobs_intro_router)
