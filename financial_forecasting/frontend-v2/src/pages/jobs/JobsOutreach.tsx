@@ -1,4 +1,5 @@
 import { Fragment, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { ChevronRight, ChevronDown, Loader2, Search, Users } from "lucide-react";
 
 import {
@@ -7,6 +8,9 @@ import {
   useOutreachTargetingMix,
   useOutreachAccounts,
   useJobsStaff,
+  useJobsContacts,
+  useJobsAccounts,
+  useTagCampaigns,
   type OutreachGranularity,
   type OutreachScopeKind,
   type OutreachDateRange,
@@ -15,6 +19,8 @@ import {
   type ScorecardCell,
   type TargetingDim,
 } from "@/services/jobs";
+import { TagCampaigns } from "@/components/jobs/TagCampaigns";
+import { relDay } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 const DRILL_PAGE = 25;
@@ -573,6 +579,188 @@ function SectionHead({ title, note }: { title: string; note?: string }) {
   );
 }
 
+// ── Monday-meeting blocks (agenda order: coverage → this week → traction → hygiene) ──
+
+// Start of the current Sun–Sat week (local) — same convention as Jobs Home.
+const startOfWeekSunday = () => {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() - d.getDay());
+  return d;
+};
+
+/** Per-owner "this week": current assigned queue + contacts moved to Initial
+ *  outreach this week — the same numbers as Jobs Home's progress strip,
+ *  rolled up per person for the meeting. */
+function ThisWeekBlock({ nameOf }: { nameOf: (email: string) => string }) {
+  const { data: assignedData } = useJobsContacts({ membership_stage: "assigned", limit: 1000 });
+  const { data: contactedData } = useJobsContacts({ membership_stage: "initial_outreach", limit: 1000 });
+  const rows = useMemo(() => {
+    const weekStart = startOfWeekSunday();
+    const by = new Map<string, { assigned: number; contacted: number }>();
+    const bump = (email: string | null | undefined, key: "assigned" | "contacted") => {
+      const k = (email ?? "").toLowerCase() || "(unowned)";
+      const r = by.get(k) ?? { assigned: 0, contacted: 0 };
+      r[key] += 1;
+      by.set(k, r);
+    };
+    for (const c of assignedData?.data ?? []) bump(c.owner_email, "assigned");
+    for (const c of contactedData?.data ?? []) {
+      if (c.membership_stage_entered_at && new Date(c.membership_stage_entered_at) >= weekStart) bump(c.owner_email, "contacted");
+    }
+    return [...by.entries()]
+      .filter(([, r]) => r.assigned + r.contacted > 0)
+      .sort((a, b) => (b[1].assigned + b[1].contacted) - (a[1].assigned + a[1].contacted));
+  }, [assignedData, contactedData]);
+  if (rows.length === 0) return null;
+  return (
+    <div className="flex flex-col gap-3">
+      <SectionHead title="This week" note="assigned queue · contacted since Sunday" />
+      <div className="overflow-hidden rounded-lg border border-border-strong bg-surface">
+        <table className="w-full text-[12.5px]">
+          <thead><tr className="bg-surface-2/60 text-left text-[10.5px] uppercase tracking-wider text-ink-3">
+            <th className="px-3 py-1.5 font-semibold">Owner</th>
+            <th className="px-2 py-1.5 text-right font-semibold">In queue</th>
+            <th className="px-2 py-1.5 text-right font-semibold">Contacted</th>
+            <th className="w-[34%] px-3 py-1.5 font-semibold">Progress</th>
+          </tr></thead>
+          <tbody>
+            {rows.map(([email, r]) => {
+              const total = r.assigned + r.contacted;
+              const pct = total ? Math.round((100 * r.contacted) / total) : 0;
+              return (
+                <tr key={email} className="border-t border-border-strong">
+                  <td className="px-3 py-1.5 font-medium text-ink">{email === "(unowned)" ? <span className="text-ink-4">Unowned</span> : nameOf(email)}</td>
+                  <td className="px-2 py-1.5 text-right tabular-nums text-ink-2">{r.assigned}</td>
+                  <td className="px-2 py-1.5 text-right tabular-nums text-green">{r.contacted}</td>
+                  <td className="px-3 py-1.5">
+                    <div className="h-1.5 overflow-hidden rounded-full border border-border-strong bg-surface-2" title={`${r.contacted} of ${total} contacted this week`}>
+                      <div className="h-full rounded-full bg-green transition-all" style={{ width: `${pct}%` }} />
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+/** Conversion by source — converted / contacted per campaign, from the same
+ *  data as the coverage table. (Response rate needs per-campaign reply counts
+ *  server-side — planned upgrade; conversion is what's honest today.) */
+function TractionBlock() {
+  const { data: campaigns = [] } = useTagCampaigns();
+  const rows = useMemo(() => campaigns
+    .map((c) => {
+      const contacted = c.funnel.contacted + c.funnel.converted;
+      return { label: c.label, contacted, converted: c.funnel.converted, rate: contacted > 0 ? c.funnel.converted / contacted : null };
+    })
+    .filter((r) => r.rate != null && r.contacted >= 5) // tiny buckets make noisy rates
+    .sort((a, b) => (b.rate ?? 0) - (a.rate ?? 0))
+    .slice(0, 8), [campaigns]);
+  if (rows.length === 0) return null;
+  const max = Math.max(...rows.map((r) => r.rate ?? 0), 0.01);
+  return (
+    <div className="flex flex-col gap-3">
+      <SectionHead title="Traction — conversion by source" note="converted ÷ contacted · buckets with 5+ contacted" />
+      <div className="rounded-lg border border-border-strong bg-surface py-1.5">
+        {rows.map((r) => (
+          <div key={r.label} className="grid grid-cols-[170px_1fr_110px] items-center gap-2 px-3 py-1" title={`${r.converted} converted of ${r.contacted} contacted`}>
+            <span className="truncate text-[12px] text-ink-2">{r.label}</span>
+            <div className="h-3.5 rounded-[3px] bg-accent" style={{ width: `${Math.max(2, (100 * (r.rate ?? 0)) / max)}%` }} />
+            <span className="text-right text-[12px] tabular-nums text-ink-2">{Math.round((r.rate ?? 0) * 100)}% <span className="text-ink-4">· {r.converted}/{r.contacted}</span></span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** Hygiene: the accountability strip + the assigned-but-no-prospect table. */
+function HygieneBlock({ nameOf, staffEmails }: { nameOf: (email: string) => string; staffEmails: Set<string> }) {
+  const { data: accounts = [] } = useJobsAccounts(undefined, "all");
+  const { data: assignedData } = useJobsContacts({ membership_stage: "assigned", limit: 1000 });
+  const { data: campaigns = [] } = useTagCampaigns();
+  const [showAll, setShowAll] = useState(false);
+
+  // Accounts someone on the jobs team owns, with nobody in the prospect list.
+  const noProspect = useMemo(() => accounts
+    .filter((a) => a.owner_email && staffEmails.has(a.owner_email.toLowerCase()) && a.prospect_count === 0)
+    .sort((a, b) => (a.owner_email ?? "").localeCompare(b.owner_email ?? "") || a.account.localeCompare(b.account)),
+    [accounts, staffEmails]);
+  const staleAssigned = useMemo(() => {
+    const cutoff = Date.now() - 7 * 86400000;
+    return (assignedData?.data ?? []).filter((c) =>
+      c.membership_stage_entered_at && new Date(c.membership_stage_entered_at).getTime() < cutoff).length;
+  }, [assignedData]);
+  const onHold = useMemo(() => campaigns.reduce((n, c) => n + c.funnel.on_hold, 0), [campaigns]);
+
+  const shown = showAll ? noProspect : noProspect.slice(0, 10);
+  return (
+    <div className="flex flex-col gap-3">
+      <SectionHead title="Hygiene" />
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <div className="rounded-lg border border-border-strong bg-surface px-4 py-3">
+          <div className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">Assigned, no prospect</div>
+          <div className={cn("mt-1 text-[24px] font-bold tabular-nums", noProspect.length > 0 ? "text-amber" : "text-ink")}>{noProspect.length}</div>
+          <div className="text-[11px] text-ink-3">owned accounts with nobody in the prospect list — table below</div>
+        </div>
+        <div className="rounded-lg border border-border-strong bg-surface px-4 py-3">
+          <div className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">Assigned &gt; 7d, untouched</div>
+          <div className={cn("mt-1 text-[24px] font-bold tabular-nums", staleAssigned > 0 ? "text-amber" : "text-ink")}>{staleAssigned}</div>
+          <div className="text-[11px] text-ink-3">still in the queue a week after assignment</div>
+        </div>
+        <div className="rounded-lg border border-border-strong bg-surface px-4 py-3">
+          <div className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">Chased, on hold</div>
+          <div className="mt-1 text-[24px] font-bold tabular-nums text-ink">{onHold}</div>
+          <div className="text-[11px] text-ink-3">asked and parked — not an untapped list</div>
+        </div>
+      </div>
+      {noProspect.length > 0 && (
+        <div className="overflow-hidden rounded-lg border border-border-strong bg-surface">
+          <div className="bg-amber-soft px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-amber">
+            Assigned, no prospect identified · {noProspect.length}
+          </div>
+          <table className="w-full text-[12.5px]">
+            <thead><tr className="bg-surface-2/60 text-left text-[10.5px] uppercase tracking-wider text-ink-3">
+              <th className="px-3 py-1.5 font-semibold">Account</th>
+              <th className="px-2 py-1.5 font-semibold">Owner</th>
+              <th className="px-2 py-1.5 font-semibold">Status</th>
+              <th className="px-2 py-1.5 text-right font-semibold">Last activity</th>
+              <th className="px-2 py-1.5"></th>
+            </tr></thead>
+            <tbody>
+              {shown.map((a) => (
+                <tr key={a.account_key} className="border-t border-border-strong">
+                  <td className="px-3 py-1.5 font-medium text-ink">{a.account}</td>
+                  <td className="px-2 py-1.5 text-ink-2">{a.owner_email ? nameOf(a.owner_email) : "—"}</td>
+                  <td className="px-2 py-1.5 text-[11.5px] text-ink-3">{a.account_status}</td>
+                  <td className="px-2 py-1.5 text-right tabular-nums text-[11.5px] text-ink-4">{relDay(a.last_activity_at) ?? "—"}</td>
+                  <td className="px-2 py-1.5 text-right">
+                    <Link to={`/jobs/contacts?q=${encodeURIComponent(a.account)}`}
+                      className="rounded-full bg-accent-soft px-2 py-0.5 text-[10.5px] font-semibold text-accent-ink hover:underline">
+                      ＋ Add prospects
+                    </Link>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {noProspect.length > shown.length && (
+            <button type="button" onClick={() => setShowAll(true)}
+              className="w-full border-t border-border-strong px-3 py-1.5 text-[12px] text-accent hover:bg-surface-2/50">
+              Show all {noProspect.length}
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Page ──────────────────────────────────────────────────────────────────────
 export function JobsOutreach() {
   const [granularity, setGranularity] = useState<OutreachGranularity>("week");
@@ -598,11 +786,20 @@ export function JobsOutreach() {
     </div>
   );
 
+  const staffEmails = useMemo(() => new Set(staff.map((s) => s.email.toLowerCase())), [staff]);
+
   return (
-    <div className="flex flex-col gap-4 pt-3">
-      <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-[12px] font-medium text-amber-900">
-        🚧 WIP — to be merged with Performance
+    <div className="flex flex-col gap-6 pt-3">
+      {/* ── Monday-meeting agenda: coverage → this week → traction → hygiene ── */}
+      <div className="flex flex-col gap-3">
+        <SectionHead title="Campaigns · coverage" note="the warm list, by source — run top-to-bottom on Mondays" />
+        <TagCampaigns />
       </div>
+      <ThisWeekBlock nameOf={nameOf} />
+      <TractionBlock />
+      <HygieneBlock nameOf={nameOf} staffEmails={staffEmails} />
+
+      {/* ── Scorecard (ops deep-dive) ── */}
       {/* Filter bar */}
       <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border-strong bg-surface-2 px-3 py-2">
         <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">Outreach</span>

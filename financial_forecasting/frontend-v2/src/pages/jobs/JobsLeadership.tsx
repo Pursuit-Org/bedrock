@@ -7,7 +7,6 @@ import {
 } from "@/services/jobs";
 import { JobsFunnels } from "@/components/jobs/JobsFunnels";
 import { ActivityTrends } from "@/components/jobs/ActivityTrends";
-import { TagCampaigns } from "@/components/jobs/TagCampaigns";
 import { MetricDrawer } from "@/components/jobs/MetricDrawer";
 import { JobsStatBubble } from "@/components/jobs/JobsStatBubble";
 
@@ -126,13 +125,10 @@ export function JobsLeadership() {
       <JobsFunnels builderSegment={segment} />
 
 
-      {/* ── ZONE 3a · Outreach & activation over time ─────────────────── */}
+      {/* ── ZONE 3 · Outreach & activation over time ──────────────────── */}
+      {/* Tag campaigns moved to the Outreach tab (2026-07-30) — it's the
+          Monday-meeting centerpiece, not an exec outcome. */}
       <ActivityTrends />
-
-      {/* ── ZONE 3b · Tag campaigns · prioritize outreach ─────────────── */}
-      <SectionWrap title="Campaigns">
-        <TagCampaigns />
-      </SectionWrap>
 
       <MetricDrawer metricKey={openMetric} onClose={() => setOpenMetric(null)} />
     </div>
