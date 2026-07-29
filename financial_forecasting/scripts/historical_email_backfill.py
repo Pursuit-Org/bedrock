@@ -84,6 +84,12 @@ class State:
         else:
             self.data = _load_state(path)
         self._lock = asyncio.Lock()
+        self._dirty = False
+        self._last_write = 0.0
+        # GCS caps mutations of a SINGLE object at ~1/sec — 44 mailboxes
+        # racing through empty quarters checkpoint several times a second
+        # and 429 the whole run. Debounce writes; call flush() at the end.
+        self._min_interval = 5.0 if self._blob is not None else 0.0
 
     def is_done(self, email: str, key: str) -> bool:
         me = self.data.get(email, {})
@@ -96,15 +102,39 @@ class State:
     async def mark(self, email: str, key: str, result: dict) -> None:
         async with self._lock:
             self.data.setdefault(email, {})[key] = result
-            payload = json.dumps(self.data, indent=1, sort_keys=True)
-            if self._blob is not None:
-                await asyncio.to_thread(
-                    self._blob.upload_from_string, payload, 'application/json')
-            else:
-                tmp = self.path + '.tmp'
-                with open(tmp, 'w') as f:
-                    f.write(payload)
-                os.replace(tmp, self.path)
+            self._dirty = True
+            await self._write_if_due()
+
+    async def flush(self) -> None:
+        async with self._lock:
+            await self._write_if_due(force=True)
+
+    async def _write_if_due(self, force: bool = False) -> None:
+        """Persist state (call while holding the lock). Debounced for GCS."""
+        if not self._dirty:
+            return
+        if not force and time.monotonic() - self._last_write < self._min_interval:
+            return
+        payload = json.dumps(self.data, indent=1, sort_keys=True)
+        if self._blob is not None:
+            for attempt in range(4):
+                try:
+                    await asyncio.to_thread(
+                        self._blob.upload_from_string, payload, 'application/json')
+                    break
+                except Exception as e:
+                    if attempt == 3:
+                        raise
+                    if '429' not in str(e) and 'rateLimit' not in str(e):
+                        raise
+                    await asyncio.sleep(2 * (attempt + 1))
+        else:
+            tmp = self.path + '.tmp'
+            with open(tmp, 'w') as f:
+                f.write(payload)
+            os.replace(tmp, self.path)
+        self._dirty = False
+        self._last_write = time.monotonic()
 
 
 def _quarter_windows(from_year: int, to_year: int):
@@ -224,14 +254,22 @@ async def main(args) -> None:
 
         sem = asyncio.Semaphore(args.concurrency)
         t0 = time.monotonic()
-        results = await asyncio.gather(
-            *(backfill_one_staff(pool, sem, state, e, args.from_year, args.to_year)
-              for e in staff),
-        )
+        try:
+            results = await asyncio.gather(
+                *(backfill_one_staff(pool, sem, state, e, args.from_year, args.to_year)
+                  for e in staff),
+                return_exceptions=True,
+            )
+        finally:
+            await state.flush()
+        crashed = [(em, r) for em, r in zip(staff, results) if isinstance(r, BaseException)]
+        for em, exc in crashed:
+            logger.error("mailbox task crashed %s: %r — resume will retry its chunks", em, exc)
+        results = [r for r in results if not isinstance(r, BaseException)]
         elapsed = round(time.monotonic() - t0, 1)
         total_upserted = sum(r['upserted'] for r in results)
         total_errors = sum(r['errors'] for r in results)
-        dead = [r['email'] for r in results if r.get('mailbox_error')]
+        dead = [r['email'] for r in results if r.get('mailbox_error')] + [em for em, _ in crashed]
         logger.info("SWEEP DONE — %d mailboxes in %ss · upserted=%d · errors=%d",
                     len(results), elapsed, total_upserted, total_errors)
         if dead:
