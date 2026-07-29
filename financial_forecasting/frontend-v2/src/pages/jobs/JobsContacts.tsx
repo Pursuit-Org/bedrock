@@ -317,9 +317,14 @@ function ContactRow({ contact, expanded, onOpen, visibleCols, selected, onToggle
   );
 }
 
-export function JobsContacts({ initialQuery, initialContactId }: { initialQuery?: string; initialContactId?: number } = {}) {
+export function JobsContacts({ initialQuery, initialContactId, initialConnectedOnly }: { initialQuery?: string; initialContactId?: number; initialConnectedOnly?: boolean } = {}) {
   const [query, setQuery] = useState(initialQuery ?? "");
-  const [rules, setRules] = useState<FilterRule<Field>[]>([]);
+  // TKT-140: the intro flow arrives with ?connected=1 — pre-seed the
+  // connected-to-staff rule (runs SQL-side over the full universe, so the
+  // page cap doesn't hide staff-network contacts). Shows as a removable chip.
+  const [rules, setRules] = useState<FilterRule<Field>[]>(() => initialConnectedOnly
+    ? [{ id: "seed-connected", field: "connected", op: "is_not_empty", values: [] }]
+    : []);
   const [groupBy, setGroupBy] = useSessionState<string>("jobs-contacts:groupBy", "");
   const [collapsedGroups, setCollapsedGroups] = useSessionState<string[]>("jobs-contacts:groupCollapsed", EMPTY);
   const [showNewContact, setShowNewContact] = useState(false);
@@ -635,10 +640,11 @@ export function JobsContactsPage() {
   const initialQuery = searchParams.get("q") ?? undefined;
   const contactParam = searchParams.get("contact");
   const initialContactId = contactParam && /^\d+$/.test(contactParam) ? Number(contactParam) : undefined;
+  const initialConnectedOnly = searchParams.get("connected") === "1";
   return (
     <div className="flex flex-col gap-0 px-7 py-4 pb-12">
       <PageHeader title="Contacts" subtitle="All employer contacts." />
-      <JobsContacts initialQuery={initialQuery} initialContactId={initialContactId} />
+      <JobsContacts initialQuery={initialQuery} initialContactId={initialContactId} initialConnectedOnly={initialConnectedOnly} />
     </div>
   );
 }

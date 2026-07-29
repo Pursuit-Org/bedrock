@@ -949,7 +949,7 @@ function IntroRequestsZone() {
         <div className="rounded-lg border border-border-strong bg-surface px-3 py-3 text-[12px] text-ink-4">
           None yet. Open any contact and hit <span className="font-medium text-ink-2">Request intro</span> next
           to their connected staff — the request lands here for that staff member to accept, decline, or mark the intro made.
-          {" "}<Link to="/jobs/contacts" className="text-accent hover:underline">Browse contacts →</Link>
+          {" "}<Link to="/jobs/contacts?connected=1" className="text-accent hover:underline">Browse staff-connected contacts →</Link>
         </div>
       </Section>
     );
