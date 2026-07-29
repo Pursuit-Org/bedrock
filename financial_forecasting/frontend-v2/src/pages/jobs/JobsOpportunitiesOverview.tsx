@@ -18,13 +18,23 @@ import { AlertTriangle, ArrowRight, ChevronLeft, ChevronRight, Clock, Minus, Plu
 import {
   useOpportunitiesOverview,
   useJobsStaff,
+  useJobsOpportunities,
+  useUpdateOpportunity,
   DEAL_TYPE_LABELS,
+  STAGE_LABELS,
   type DealType,
+  type JobStage,
+  type JobsOpportunity,
   type OppBreakdownDim,
   type OppHeatmap,
   type OppNeedsRow,
   type OppActivityEvent,
 } from "@/services/jobs";
+import { useAllJobsTasks } from "@/services/jobsTasks";
+import { InlineSelect } from "@/components/ui/InlineEdit";
+import { CommittedRolesModal } from "@/components/jobs/CommittedRolesModal";
+import { DealExpandPanel, PlacementsModal, ClosedLostModal, stageOptionsFor } from "./JobsTeam";
+import { relDay } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 const DIMS: { key: OppBreakdownDim; label: string }[] = [
@@ -87,6 +97,43 @@ export function JobsOpportunitiesOverview() {
 
   const s = data?.summary;
   const netDelta = s ? s.net_new - s.net_new_prev : 0;
+
+  // Full opportunity objects behind the managed rows (walkthrough + needs
+  // attention): stage edits inline, rows expand to the full DealExpandPanel.
+  const { data: oppsData } = useJobsOpportunities({
+    owner_email: owner !== "all" ? owner : undefined,
+    deal_type: dealType !== "all" ? (dealType as DealType) : undefined,
+    limit: 500,
+  });
+  const { data: allTasks = [] } = useAllJobsTasks();
+  const oppsById = useMemo(() => new Map((oppsData?.data ?? []).map((o) => [o.id, o])), [oppsData]);
+  const openOpps = useMemo(() => (oppsData?.data ?? [])
+    .filter((o) => !o.stage.startsWith("closed") && !o.stage.startsWith("on_hold")), [oppsData]);
+  const needsById = useMemo(
+    () => new Map((data?.needs_attention ?? []).map((n) => [n.opportunity_id, n])), [data]);
+  const nextTaskByOpp = useMemo(() => {
+    const m = new Map<string, { title: string; deadline: string | null }>();
+    for (const t of allTasks) {
+      if (t.parent_type !== "opportunity") continue;
+      const cur = m.get(t.parent_id);
+      if (!cur || (t.deadline ?? "9999") < (cur.deadline ?? "9999")) m.set(t.parent_id, { title: t.title, deadline: t.deadline });
+    }
+    return m;
+  }, [allTasks]);
+  const wonOpenTasks = useMemo(
+    () => (oppsData?.data ?? []).filter((o) => o.stage === "closed_won" && (o.open_tasks ?? 0) > 0),
+    [oppsData]);
+  // One expand at a time across all managed tables; stage-gating modals at page root.
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [placementModalDeal, setPlacementModalDeal] = useState<{ id: string; account_name: string } | null>(null);
+  const [committedRolesDeal, setCommittedRolesDeal] = useState<{ id: string; account_name: string } | null>(null);
+  const [closedLostDeal, setClosedLostDeal] = useState<{ id: string; account_name: string } | null>(null);
+  const rowHandlers = {
+    expandedId, setExpandedId,
+    onRecordPlacements: setPlacementModalDeal,
+    onClosedLost: setClosedLostDeal,
+    onCommittedRoles: setCommittedRolesDeal,
+  };
 
   return (
     <div className="flex flex-col gap-6 pt-1">
@@ -157,20 +204,51 @@ export function JobsOpportunitiesOverview() {
       </div>
 
       {/* ── Summary cards ─────────────────────────────────────────────── */}
-      <div className="grid grid-cols-2 items-stretch gap-4 lg:grid-cols-4">
+      <div className="grid grid-cols-2 items-stretch gap-4 lg:grid-cols-5">
         <SummaryCard tone="ink" label="In the set" value={s?.in_set} isLoading={isLoading}
           sub="All active opportunities" />
         <SummaryCard tone="accent" label="Net new" value={s?.net_new} isLoading={isLoading}
           delta={s ? { n: netDelta, prev: s.net_new_prev } : undefined} />
         <SummaryCard tone="amber" label="Stalled" value={s?.stalled_6wk} isLoading={isLoading}
           sub="Open opportunity 6+ weeks" />
-        {/* 4th cell: two stacked outcome boxes for the week — Closed won (the goal,
+        {/* Stacked outcome boxes for the week — Closed won (the goal,
             subtly highlighted) over Closed lost (context to understand, not a red flag). */}
         <div className="flex flex-col gap-4">
           <OutcomeBox tone="green" highlight label="Closed won" value={s?.moved_committed} isLoading={isLoading} />
           <OutcomeBox tone="ink" label="Closed lost" value={s?.closed_lost} isLoading={isLoading} />
         </div>
+        {/* Stage-gate check: won on the board but the follow-through (e.g. the
+            signed contract task) is still open — "signed contract = closed". */}
+        <SummaryCard tone="red" label="Won, open tasks" value={wonOpenTasks.length} isLoading={isLoading}
+          sub={wonOpenTasks.slice(0, 2).map((o) => o.account_name).join(" · ") || "all buttoned up"} />
       </div>
+
+      {/* ── Recent activity — the week's narrative, promoted ──────────── */}
+      <Panel
+        title="Recent activity"
+        desc="Added, moved, won/lost, or stalled this week — newest first"
+      >
+        <RecentActivity events={data?.recent_activity ?? []} isLoading={isLoading} nameOf={nameOf} />
+      </Panel>
+
+      {/* ── Owner walkthrough — the Thursday ritual, one shared screen ── */}
+      <Panel
+        title="Owner walkthrough"
+        desc="Per owner: P1 / high value with the next task, then stalled with what would unblock it — rows manage inline and expand to the full panel"
+      >
+        <OwnerWalkthrough openOpps={openOpps} needsById={needsById} nextTaskByOpp={nextTaskByOpp}
+          nameOf={nameOf} {...rowHandlers} />
+      </Panel>
+
+      {/* ── Needs attention ───────────────────────────────────────────── */}
+      <Panel
+        title="Needs attention this week"
+        desc="3+ weeks in the current stage, or gone quiet — pre-loaded for the meeting"
+        badge={data ? `${data.needs_attention.length}` : undefined}
+      >
+        <NeedsTable rows={data?.needs_attention ?? []} isLoading={isLoading} nameOf={nameOf}
+          oppsById={oppsById} nextTaskByOpp={nextTaskByOpp} {...rowHandlers} />
+      </Panel>
 
       {/* ── Aging + Breakdown ─────────────────────────────────────────── */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
@@ -214,22 +292,148 @@ export function JobsOpportunitiesOverview() {
         <Heatmap heatmap={data?.heatmaps.stage} buckets={data?.heatmaps.buckets ?? []} rowHeader="Stage" isLoading={isLoading} />
       </Panel>
 
-      {/* ── Recent activity ───────────────────────────────────────────── */}
-      <Panel
-        title="Recent activity"
-        desc="Added, moved, won/lost, or stalled this week — newest first"
-      >
-        <RecentActivity events={data?.recent_activity ?? []} isLoading={isLoading} nameOf={nameOf} />
-      </Panel>
+      {placementModalDeal && <PlacementsModal deal={placementModalDeal} onClose={() => setPlacementModalDeal(null)} />}
+      {committedRolesDeal && <CommittedRolesModal deal={committedRolesDeal} onClose={() => setCommittedRolesDeal(null)} />}
+      {closedLostDeal && <ClosedLostModal deal={closedLostDeal} onClose={() => setClosedLostDeal(null)} />}
+    </div>
+  );
+}
 
-      {/* ── Needs attention ───────────────────────────────────────────── */}
-      <Panel
-        title="Needs attention this week"
-        desc="3+ weeks in the current stage, or gone quiet — pre-loaded for the meeting"
-        badge={data ? `${data.needs_attention.length}` : undefined}
+// ── Managed opp rows (walkthrough + needs attention) ─────────────────────────
+
+interface RowHandlers {
+  expandedId: string | null;
+  setExpandedId: (fn: (p: string | null) => string | null) => void;
+  onRecordPlacements: (d: { id: string; account_name: string }) => void;
+  onClosedLost: (d: { id: string; account_name: string }) => void;
+  onCommittedRoles: (d: { id: string; account_name: string }) => void;
+}
+
+function ManagedOppRow({ o, sub, detail, right, nextTask, expandedId, setExpandedId, onRecordPlacements, onClosedLost, onCommittedRoles }: {
+  o: JobsOpportunity;
+  sub?: string | null;
+  detail?: React.ReactNode;
+  right?: React.ReactNode;
+  nextTask?: { title: string; deadline: string | null };
+} & RowHandlers) {
+  const updateOpp = useUpdateOpportunity();
+  const expanded = expandedId === o.id;
+  // Keep in sync with DealRow.saveStage (JobsTeam.tsx) — same modal gating.
+  function saveStage(stage: JobStage) {
+    if (stage === o.stage) return Promise.resolve();
+    return new Promise<void>((resolve, reject) => {
+      updateOpp.mutate({ id: o.id, stage }, {
+        onSuccess: () => {
+          const isPlacementType = o.deal_type === "ft" || o.deal_type === "pt_contract";
+          if (stage === "closed_won" && isPlacementType) onRecordPlacements({ id: o.id, account_name: o.account_name });
+          else if (stage === "closed_lost") onClosedLost({ id: o.id, account_name: o.account_name });
+          else if (stage === "active_opportunity_confirmed" && (o.num_roles ?? 0) === 0) onCommittedRoles({ id: o.id, account_name: o.account_name });
+          resolve();
+        },
+        onError: reject,
+      });
+    });
+  }
+  return (
+    <>
+      <div
+        onClick={() => setExpandedId((p) => (p === o.id ? null : o.id))}
+        className={cn(
+          "grid cursor-pointer grid-cols-[1fr_150px_minmax(0,220px)_70px] items-center gap-2 border-t border-border-strong px-2.5 py-2 hover:bg-surface-2/40",
+          expanded && "bg-surface-2/40",
+        )}
       >
-        <NeedsTable rows={data?.needs_attention ?? []} isLoading={isLoading} nameOf={nameOf} />
-      </Panel>
+        <span className="flex min-w-0 items-center gap-1.5">
+          <ChevronRight size={12} className={cn("shrink-0 text-ink-4 transition-transform", expanded && "rotate-90")} />
+          <span className="min-w-0">
+            <Link to={`/jobs/opportunities/${o.id}`} onClick={(e) => e.stopPropagation()}
+              className="block truncate text-[13px] font-semibold text-ink hover:text-accent">{o.account_name}</Link>
+            {sub && <span className="block truncate text-[11px] text-ink-4">{sub}</span>}
+          </span>
+        </span>
+        <span onClick={(e) => e.stopPropagation()}>
+          <InlineSelect<JobStage>
+            value={o.stage}
+            options={stageOptionsFor(o.stage)}
+            onSave={saveStage}
+            renderValue={(v) => (
+              <span className="rounded-full bg-surface-2 px-2 py-0.5 text-[11px] font-medium text-ink-2">{v ? STAGE_LABELS[v] : "—"}</span>
+            )}
+          />
+        </span>
+        <span className="truncate text-[11.5px] text-ink-3">
+          {detail ?? (nextTask
+            ? <>Next: <b className="font-semibold text-ink-2">{nextTask.title}</b>{nextTask.deadline ? ` · ${nextTask.deadline.slice(5)}` : ""}</>
+            : <span className="text-ink-4">no open task</span>)}
+        </span>
+        <span className="text-right text-[11.5px] tabular-nums text-ink-4"
+          title={o.last_activity_at ? `Last activity ${new Date(o.last_activity_at).toLocaleDateString()}` : "No activity"}>
+          {right ?? (relDay(o.last_activity_at) ?? "—")}
+        </span>
+      </div>
+      {expanded && (
+        <div className="border-t border-border-strong bg-surface-2/20">
+          <DealExpandPanel deal={o} />
+        </div>
+      )}
+    </>
+  );
+}
+
+function OwnerWalkthrough({ openOpps, needsById, nextTaskByOpp, nameOf, ...handlers }: {
+  openOpps: JobsOpportunity[];
+  needsById: Map<string, OppNeedsRow>;
+  nextTaskByOpp: Map<string, { title: string; deadline: string | null }>;
+  nameOf: (e: string | null) => string;
+} & RowHandlers) {
+  const groups = useMemo(() => {
+    const by = new Map<string, JobsOpportunity[]>();
+    for (const o of openOpps) {
+      const k = (o.owner_email ?? "(unassigned)").toLowerCase();
+      (by.get(k) ?? by.set(k, []).get(k)!).push(o);
+    }
+    return [...by.entries()].sort((a, b) => b[1].length - a[1].length);
+  }, [openOpps]);
+  if (groups.length === 0) {
+    return <div className="rounded-lg border border-dashed border-border-strong px-4 py-8 text-center text-[12px] text-ink-4">No open opportunities in scope.</div>;
+  }
+  return (
+    <div className="flex flex-col">
+      {groups.map(([email, opps]) => {
+        const p1 = opps.filter((o) => o.priority === 1);
+        const stalled = opps.filter((o) => needsById.has(o.id) && o.priority !== 1)
+          .sort((a, b) => (needsById.get(b.id)?.days_in_stage ?? 0) - (needsById.get(a.id)?.days_in_stage ?? 0));
+        return (
+          <div key={email} className="first:-mt-px">
+            <div className="flex items-baseline gap-2 border-t border-border-strong bg-surface-2 px-2.5 py-1.5">
+              <span className="text-[12.5px] font-bold text-ink">{email === "(unassigned)" ? "Unassigned" : nameOf(email)}</span>
+              <span className="text-[11px] text-ink-3">{opps.length} open · {p1.length} P1 · {stalled.length} flagged</span>
+            </div>
+            {p1.length > 0 && (
+              <div className="bg-[var(--accent-soft)] px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-[var(--accent-ink)]">P1 · High value</div>
+            )}
+            {p1.map((o) => (
+              <ManagedOppRow key={o.id} o={o} sub={o.title}
+                nextTask={nextTaskByOpp.get(o.id)} {...handlers} />
+            ))}
+            {stalled.length > 0 && (
+              <div className="bg-[var(--amber-soft)] px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-[var(--amber)]">Stalled — needs unblock</div>
+            )}
+            {stalled.map((o) => {
+              const n = needsById.get(o.id);
+              return (
+                <ManagedOppRow key={o.id} o={o} sub={o.title}
+                  detail={<span className="flex items-center gap-1.5"><AlertTriangle size={11} className="shrink-0 text-[var(--amber)]" />{n?.why}</span>}
+                  right={<span className="text-[var(--amber)]">{n?.days_in_stage}d</span>}
+                  nextTask={nextTaskByOpp.get(o.id)} {...handlers} />
+              );
+            })}
+            {p1.length === 0 && stalled.length === 0 && (
+              <div className="border-t border-border-strong px-2.5 py-2 text-[12px] text-ink-4">Nothing flagged — {opps.length} open opps moving normally.</div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -238,7 +442,7 @@ export function JobsOpportunitiesOverview() {
 
 const TONE: Record<string, string> = {
   ink: "text-ink", accent: "text-[var(--accent)]", sky: "text-[var(--sky)]",
-  green: "text-[var(--green)]", amber: "text-[var(--amber)]",
+  green: "text-[var(--green)]", amber: "text-[var(--amber)]", red: "text-[var(--red)]",
 };
 
 function SummaryCard({
@@ -489,7 +693,13 @@ function Heatmap({
 
 // ── Needs-attention table ─────────────────────────────────────────────────────
 
-function NeedsTable({ rows, isLoading, nameOf }: { rows: OppNeedsRow[]; isLoading: boolean; nameOf: (e: string | null) => string }) {
+function NeedsTable({ rows, isLoading, nameOf, oppsById, nextTaskByOpp, ...handlers }: {
+  rows: OppNeedsRow[];
+  isLoading: boolean;
+  nameOf: (e: string | null) => string;
+  oppsById: Map<string, JobsOpportunity>;
+  nextTaskByOpp: Map<string, { title: string; deadline: string | null }>;
+} & RowHandlers) {
   const [showAll, setShowAll] = useState(false);
   if (isLoading) return <div className="h-32 animate-pulse rounded-lg bg-surface-2" />;
   if (rows.length === 0) {
@@ -501,41 +711,31 @@ function NeedsTable({ rows, isLoading, nameOf }: { rows: OppNeedsRow[]; isLoadin
   }
   const shown = showAll ? rows : rows.slice(0, 5);
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full min-w-[560px] border-collapse text-[13px]">
-        <thead>
-          <tr className="border-b border-border-strong">
-            {["Account", "Owner", "Stage", "In stage", "Why it's flagged"].map((h) => (
-              <th key={h} className="px-2.5 pb-2 text-left text-[10.5px] font-semibold uppercase tracking-wider text-ink-4">{h}</th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {shown.map((r) => (
-            <tr key={r.opportunity_id} className="border-b border-border-strong last:border-b-0">
-              <td className="px-2.5 py-2.5 font-semibold text-ink">
-                <Link to={`/jobs/opportunities/${r.opportunity_id}`} className="hover:text-accent">
-                  {r.account || "—"}
-                </Link>
-              </td>
-              <td className="px-2.5 py-2.5 text-ink-2">{nameOf(r.owner)}</td>
-              <td className="px-2.5 py-2.5">
-                <span className="rounded-full bg-surface-2 px-2 py-0.5 text-[11px] font-medium text-ink-2">{r.stage_label}</span>
-              </td>
-              <td className="px-2.5 py-2.5 tabular-nums text-ink-2">{r.days_in_stage}d</td>
-              <td className="px-2.5 py-2.5">
-                <span className="flex items-center gap-1.5 text-[12.5px] text-ink-3">
-                  <AlertTriangle size={12} className="flex-shrink-0 text-[var(--amber)]" />
-                  {r.why}
-                </span>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+    <div className="-mt-px flex flex-col">
+      {shown.map((r) => {
+        const o = oppsById.get(r.opportunity_id);
+        if (o) {
+          return (
+            <ManagedOppRow key={r.opportunity_id} o={o}
+              sub={`${nameOf(r.owner)}${o.title ? ` · ${o.title}` : ""}`}
+              detail={<span className="flex items-center gap-1.5"><AlertTriangle size={11} className="shrink-0 text-[var(--amber)]" />{r.why}</span>}
+              right={<span className="text-[var(--amber)]">{r.days_in_stage}d</span>}
+              nextTask={nextTaskByOpp.get(r.opportunity_id)} {...handlers} />
+          );
+        }
+        // Fallback (opp outside the fetched page): read-only link row.
+        return (
+          <div key={r.opportunity_id} className="grid grid-cols-[1fr_150px_minmax(0,220px)_70px] items-center gap-2 border-t border-border-strong px-2.5 py-2">
+            <Link to={`/jobs/opportunities/${r.opportunity_id}`} className="truncate text-[13px] font-semibold text-ink hover:text-accent">{r.account || "—"}</Link>
+            <span className="rounded-full bg-surface-2 px-2 py-0.5 text-center text-[11px] font-medium text-ink-2">{r.stage_label}</span>
+            <span className="flex items-center gap-1.5 truncate text-[11.5px] text-ink-3"><AlertTriangle size={11} className="shrink-0 text-[var(--amber)]" />{r.why}</span>
+            <span className="text-right text-[11.5px] tabular-nums text-[var(--amber)]">{r.days_in_stage}d</span>
+          </div>
+        );
+      })}
       {rows.length > 5 ? (
         <button type="button" onClick={() => setShowAll((v) => !v)}
-          className="mt-2 text-[12px] font-medium text-accent hover:underline">
+          className="mt-2 self-start text-[12px] font-medium text-accent hover:underline">
           {showAll ? "Show less" : `Show ${rows.length - 5} more`}
         </button>
       ) : null}
