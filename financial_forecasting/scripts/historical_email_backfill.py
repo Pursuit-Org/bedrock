@@ -66,11 +66,23 @@ class State:
     chunk_key is "2017-Q2" (quarter windows); plain "2017" keys from earlier
     year-sized runs still count as done for the whole year. Single-process;
     the lock serializes saves across mailbox tasks.
+
+    Accepts a local path or gs://bucket/path — GCS keeps the checkpoint
+    durable across Cloud Run Job restarts (uses the DWD service-account
+    client, same as attachment uploads).
     """
 
     def __init__(self, path: str):
         self.path = path
-        self.data = _load_state(path)
+        self._blob = None
+        if path.startswith('gs://'):
+            from services.gmail_sync import _gcs
+            bucket_name, _, blob_path = path[5:].partition('/')
+            self._blob = _gcs().bucket(bucket_name).blob(blob_path)
+            self.data = (json.loads(self._blob.download_as_bytes())
+                         if self._blob.exists() else {})
+        else:
+            self.data = _load_state(path)
         self._lock = asyncio.Lock()
 
     def is_done(self, email: str, key: str) -> bool:
@@ -84,10 +96,15 @@ class State:
     async def mark(self, email: str, key: str, result: dict) -> None:
         async with self._lock:
             self.data.setdefault(email, {})[key] = result
-            tmp = self.path + '.tmp'
-            with open(tmp, 'w') as f:
-                json.dump(self.data, f, indent=1, sort_keys=True)
-            os.replace(tmp, self.path)
+            payload = json.dumps(self.data, indent=1, sort_keys=True)
+            if self._blob is not None:
+                await asyncio.to_thread(
+                    self._blob.upload_from_string, payload, 'application/json')
+            else:
+                tmp = self.path + '.tmp'
+                with open(tmp, 'w') as f:
+                    f.write(payload)
+                os.replace(tmp, self.path)
 
 
 def _quarter_windows(from_year: int, to_year: int):
