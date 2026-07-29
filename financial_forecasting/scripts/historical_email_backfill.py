@@ -97,20 +97,32 @@ async def backfill_one_staff(
             since = datetime(year, 1, 1, tzinfo=timezone.utc)
             until = datetime(year + 1, 1, 1, tzinfo=timezone.utc)
             t0 = time.monotonic()
-            try:
-                async with pool.acquire() as conn:
-                    res = await sync_gmail_for_staff(
-                        conn, email, override_since=since, override_until=until,
-                    )
-            except Exception as e:
+            res = None
+            last_err: Exception | None = None
+            # Hour-long chunks can lose their DB socket mid-flight
+            # (BrokenPipeError seen on jukay 2016). Chunks are idempotent, so
+            # retry the whole year on a FRESH pooled connection.
+            for attempt in range(3):
+                try:
+                    async with pool.acquire() as conn:
+                        res = await sync_gmail_for_staff(
+                            conn, email, override_since=since, override_until=until,
+                        )
+                    break
+                except Exception as e:
+                    last_err = e
+                    logger.warning("chunk attempt %d/3 failed %s %d: %r",
+                                   attempt + 1, email, year, e)
+                    await asyncio.sleep(10 * (attempt + 1))
+            if res is None:
                 # Impersonation failures (deleted/suspended-without-access
                 # mailbox) fail every chunk the same way — record once and
                 # move on to the next mailbox rather than burning 13 attempts.
-                logger.error("chunk FAIL %s %d: %r", email, year, e)
-                await state.mark(email, year, {'error': repr(e)})
+                logger.error("chunk FAIL %s %d: %r", email, year, last_err)
+                await state.mark(email, year, {'error': repr(last_err)})
                 summary['errors'] += 1
                 if year == from_year:
-                    summary['mailbox_error'] = repr(e)
+                    summary['mailbox_error'] = repr(last_err)
                     logger.error("first chunk failed for %s — skipping mailbox "
                                  "(likely inaccessible account)", email)
                     return summary
