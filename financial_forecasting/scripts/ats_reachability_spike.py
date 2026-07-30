@@ -302,6 +302,38 @@ def load_warm_companies(limit: int | None) -> list[Company]:
     return deduped[:limit] if limit else deduped
 
 
+def slug_confidence(company: Company, slug: str) -> str:
+    """How much to trust that `slug` really belongs to `company`.
+
+    A responding endpoint proves a board EXISTS, not that it is the right
+    company's. A live run resolved "Applied Materials" (amat.com) to the Ashby
+    board `applied` -- a different company's 268 roles, which would have been
+    attributed to a warm partner. Anything below `high` needs a human to open
+    the board and confirm before it is scanned.
+    """
+    slug_norm = re.sub(r"[^a-z0-9]", "", slug.lower())
+    if not slug_norm:
+        return "low"
+
+    domain_root = ""
+    if company.domain:
+        parts = [p for p in company.domain.lower().split(".") if p != "www"]
+        if len(parts) >= 2:
+            domain_root = re.sub(r"[^a-z0-9]", "", parts[-2])
+
+    name_norm = re.sub(r"[^a-z0-9]", "", _LEGAL_SUFFIX.sub(" ", company.name.lower()))
+
+    if domain_root and slug_norm == domain_root:
+        return "high"
+    if name_norm and slug_norm == name_norm:
+        return "high"
+    # A slug that is merely a PREFIX of the name is where the false positives
+    # live ("applied" for Applied Materials), so it never counts as confirmed.
+    if name_norm and (slug_norm in name_norm or name_norm in slug_norm):
+        return "needs_confirmation"
+    return "low"
+
+
 def summarize(report: Report, companies: list[Company], out_path: Path) -> int:
     by_company: dict[str, list[Probe]] = {}
     for p in report.probes:
@@ -330,10 +362,15 @@ def summarize(report: Report, companies: list[Company], out_path: Path) -> int:
     with out_path.open("w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["company", "platform", "slug", "outcome", "job_count",
-                    "http_status", "detail"])
+                    "http_status", "confidence", "detail"])
+        by_name = {c.name: c for c in companies}
         for p in sorted(report.probes, key=lambda p: (p.company, p.platform)):
+            conf = ""
+            if p.outcome in ("resolved_with_jobs", "resolved_empty"):
+                co = by_name.get(p.company)
+                conf = slug_confidence(co, p.slug) if co else ""
             w.writerow([p.company, p.platform, p.slug, p.outcome,
-                        p.job_count, p.http_status, p.detail])
+                        p.job_count, p.http_status, conf, p.detail])
 
     print("\n" + "=" * 68)
     print("  ATS reachability spike")
@@ -387,6 +424,23 @@ def summarize(report: Report, companies: list[Company], out_path: Path) -> int:
                        if p.outcome == "resolved_with_jobs")
             print(f"    {name:<34} {hit.platform}/{hit.slug}  "
                   f"{hit.job_count} jobs")
+
+    # A responding endpoint is not proof of identity. Surface the unconfirmed
+    # ones loudly rather than letting a stranger's board into the watchlist.
+    unconfirmed = []
+    by_name = {c.name: c for c in companies}
+    for p in report.probes:
+        if p.outcome != "resolved_with_jobs":
+            continue
+        co = by_name.get(p.company)
+        if co and slug_confidence(co, p.slug) != "high":
+            unconfirmed.append((p.company, f"{p.platform}/{p.slug}", p.job_count))
+    if unconfirmed:
+        print(f"\n  !! CONFIRM BEFORE SCANNING ({len(unconfirmed)}): the slug does not"
+              f"\n     match the domain or company name, so the board may belong to"
+              f"\n     someone else. Open each one and check.")
+        for name, board, n in sorted(unconfirmed, key=lambda x: -x[2])[:15]:
+            print(f"    {name:<28} {board:<28} {n} jobs")
 
     print(f"\n  Full report: {out_path}\n")
     return 0 if (resolved or not unreachable) else 1

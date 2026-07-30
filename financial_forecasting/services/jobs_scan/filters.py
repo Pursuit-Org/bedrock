@@ -71,8 +71,26 @@ def _seniority_kill(title: str, criteria: dict) -> Optional[str]:
     return None
 
 
+def _title_disqualifier(title: str, criteria: dict) -> Optional[str]:
+    """Return the matched out-of-scope term, or None."""
+    lowered = title.lower()
+    for term in criteria.get("title_disqualifiers") or []:
+        if re.search(rf"\b{re.escape(term.lower())}\b", lowered):
+            return term
+    return None
+
+
 def location_matches(location: Optional[str], is_remote: bool, criteria: dict) -> bool:
     geo = criteria.get("geography") or {}
+    lowered_all = (location or "").lower()
+
+    # Exclusions win over everything, including the remote flag. A global company
+    # tags roles in Sydney, Tokyo and London as "remote" -- remote *there*, not
+    # remote we can hire into. Without this, `is_remote` short-circuits the whole
+    # geography gate and international roles flood the queue.
+    for term in geo.get("exclude_terms") or []:
+        if term.lower() in lowered_all:
+            return False
 
     if is_remote and geo.get("remote_ok", True):
         return True
@@ -148,6 +166,16 @@ def prefilter(
         if killed_by:
             counts.drop("seniority")
             role.drop_reason = f"seniority:{killed_by}"
+            continue
+
+        # Title-level disqualifiers: work outside what the curriculum covers at
+        # all (ASIC validation, robotics/drone stacks, embedded firmware, PhD
+        # research). These carry no seniority word, so the seniority gate misses
+        # them entirely and they arrive looking like plausible matches.
+        dq = _title_disqualifier(title, criteria)
+        if dq:
+            counts.drop("title_scope")
+            role.drop_reason = f"title_scope:{dq}"
             continue
 
         if not location_matches(role.location, role.is_remote, criteria):

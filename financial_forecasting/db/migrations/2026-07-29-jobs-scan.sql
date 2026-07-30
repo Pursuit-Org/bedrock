@@ -127,7 +127,10 @@ INSERT INTO bedrock.jobs_scan_criteria (name, version, body, updated_by) VALUES 
   jsonb_build_object(
     'comp', jsonb_build_object(
       'min', 50000, 'max', 120000,
-      'ceiling_headroom', 160000,
+      -- Headroom above the band, not a hard max: posted ranges are wide. Set
+      -- from a live run -- at 160000 the queue filled with $153k-$200k roles
+      -- that will not hire entry-level.
+      'ceiling_headroom', 145000,
       -- Unknown comp always passes. Most postings publish none, and dropping
       -- them would gut recall.
       'unknown_passes', true,
@@ -138,7 +141,21 @@ INSERT INTO bedrock.jobs_scan_criteria (name, version, body, updated_by) VALUES 
         'bronx','staten island','jersey city','newark','hoboken','long island city'),
       'states', jsonb_build_array('ME','NH','VT','MA','RI','CT','NY','NJ','PA',
         'DE','MD','DC','VA','NC','SC','GA','FL'),
+      -- Checked BEFORE the remote flag. Global employers tag roles in Sydney or
+      -- Tokyo as remote, which otherwise short-circuits the whole geography gate.
+      'exclude_terms', jsonb_build_array('australia','japan','singapore','india',
+        'united kingdom','ireland','germany','france','netherlands','spain',
+        'poland','brazil','mexico','canada','ontario','québec','quebec',
+        'sydney','melbourne','brisbane','tokyo','london','paris','berlin',
+        'amsterdam','bengaluru','toronto','montreal','vancouver'),
       'absent_location_passes', true),
+  -- Out-of-scope work that carries no seniority word, so the seniority gate
+  -- never sees it. Derived from the curriculum-gap list in the prior scraper.
+  'title_disqualifiers', jsonb_build_array('asic','firmware','embedded',
+    'robotic','robotics','drone','autonomy','hardware-in-the-loop','hil',
+    'rtl','fpga','silicon','compiler','kernel','phd','postdoc','md',
+    'attorney','counsel','paralegal','nurse','physician','warehouse',
+    'driver','technician','machinist','welder'),
     'role_families', jsonb_build_array(
       'ai_adoption_specialist','ai_product_associate','ai_customer_success',
       'ai_native_developer','gtm_engineer','sales_sdr','data_analytics',
@@ -150,8 +167,12 @@ INSERT INTO bedrock.jobs_scan_criteria (name, version, body, updated_by) VALUES 
     'semantic_test',
       'Could someone trained to work fluently with AI tools do the core of this job, even if the posting never mentions AI?',
     'seniority', jsonb_build_object(
+      -- 'manager' belongs here, guarded by manager_exceptions below: a live run
+      -- without it surfaced Channel Sales Manager and Enterprise Account Manager
+      -- as matches. People-management roles are not entry-level.
       'kill', jsonb_build_array('senior','staff','principal','lead','director',
-        'vp','vice president','head of','chief','5+ years','7+ years','10+ years'),
+        'vp','vice president','head of','chief','manager','mgr','intern',
+        '5+ years','7+ years','10+ years'),
       'manager_exceptions', jsonb_build_array('product manager','project manager',
         'account manager','customer success manager','program manager')),
     -- Recall posture: a false drop is worse than a false include.
