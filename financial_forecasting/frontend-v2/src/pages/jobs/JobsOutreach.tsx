@@ -12,6 +12,7 @@ import {
   useJobsAccounts,
   useDailyDigest,
   useStuckContacts,
+  useRespondedContacts,
   useUpdateJobsMembership,
   MEMBERSHIP_STAGES,
   MEMBERSHIP_STAGE_LABELS,
@@ -19,12 +20,12 @@ import {
   type OutreachScopeKind,
   type OutreachDateRange,
   type ScorecardRow,
-  type TargetingDim,
   type MembershipStage,
 } from "@/services/jobs";
 import { InlineSelect } from "@/components/ui/InlineEdit";
 import { TagCampaigns } from "@/components/jobs/TagCampaigns";
 import { JobsFunnels } from "@/components/jobs/JobsFunnels";
+import { Panel, BreakdownBars } from "./JobsOpportunitiesOverview";
 import { ActivityTrends } from "@/components/jobs/ActivityTrends";
 import { relDay } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -188,56 +189,30 @@ function ScorecardTable({
     </div>
   );
 }
-// ── Targeting Mix (horizontal bar charts, 2×2) ────────────────────────────────
-function TargetingChart({ dim }: { dim: TargetingDim }) {
-  const rows = dim.rows.slice(0, 8);
-  const totalSent = dim.rows.reduce((s, r) => s + r.sent, 0);
-  const max = Math.max(1, ...rows.map((r) => r.sent));
-  return (
-    <div className="flex flex-col rounded-xl border border-border-strong bg-surface p-4">
-      <div className="mb-3 flex items-baseline justify-between">
-        <span className="text-[13px] font-bold text-ink-2">{dim.label}</span>
-        <span className="text-[11px] text-ink-4">{totalSent} sent total</span>
-      </div>
-      {rows.length === 0 && <div className="py-4 text-center text-[12.5px] text-ink-4">No contact-linked outreach in this period.</div>}
-      <div className="flex flex-col gap-2">
-        {rows.map((r) => {
-          const share = totalSent ? Math.round((r.sent / totalSent) * 100) : 0;
-          // "(unknown)" = outreach with no value tagged for this dimension; render
-          // grey so it reads clearly as untagged rather than a real segment.
-          const isUnknown = /^\(?unknown\)?$/i.test(r.bucket.trim());
-          return (
-            <div key={r.bucket} className="flex items-center gap-2">
-              <div className={cn("w-[130px] shrink-0 truncate text-right text-[12.5px]", isUnknown ? "italic text-ink-4" : "text-ink-2")} title={r.bucket}>{r.bucket}</div>
-              <div className="h-[18px] flex-1 rounded bg-surface-2">
-                <div className={cn("h-full rounded", isUnknown ? "bg-ink-4" : "bg-accent")} style={{ width: `${Math.max(2, (r.sent / max) * 100)}%`, opacity: isUnknown ? 0.55 : 0.85 }} />
-              </div>
-              <div className="w-[92px] shrink-0 text-[12px] tabular-nums text-ink-2">
-                <b>{r.sent}</b> <span className="text-ink-4">· {share}%</span>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-      {dim.rows.length > 8 && <div className="mt-2 text-[11px] text-ink-4">+{dim.rows.length - 8} smaller buckets not shown</div>}
-    </div>
-  );
-}
-
-function TargetingMix({ granularity, scope, owner, range }: {
+// ── Targeting mix (Pipeline page's "Active set distribution" idiom) ──────────
+function TargetingPanel({ granularity, scope, owner, range }: {
   granularity: OutreachGranularity; scope: OutreachScopeKind; owner?: string; range?: OutreachDateRange;
 }) {
   const { data, isLoading } = useOutreachTargetingMix(granularity, scope, owner, range);
-  if (isLoading) return (
-    <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-      {[0, 1, 2, 3].map((i) => <div key={i} className="h-48 animate-pulse rounded-xl border border-border-strong bg-surface-2" />)}
-    </div>
-  );
-  if (!data) return null;
+  const dims = data?.dims ?? [];
+  const [dimKey, setDimKey] = useState<string>("tag");
+  const dim = dims.find((d) => d.key === dimKey) ?? dims[0];
+  const items = (dim?.rows ?? []).map((r) => ({ key: r.bucket, label: r.bucket, count: r.sent }));
+  const sent = (dim?.rows ?? []).reduce((n, r) => n + r.sent, 0);
+  const replies = (dim?.rows ?? []).reduce((n, r) => n + r.responses, 0);
   return (
-    <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-      {data.dims.map((d) => <TargetingChart key={d.key} dim={d} />)}
-    </div>
+    <Panel
+      title="Targeting mix"
+      desc={`Who we reached this period${sent ? ` · ${sent} contacts, ${replies} replied` : ""}`}
+      action={
+        <select value={dimKey} onChange={(e) => setDimKey(e.target.value)}
+          className="h-7 rounded-md border border-border-strong bg-surface px-2 text-[12px] text-ink outline-none focus:border-accent">
+          {dims.map((d) => <option key={d.key} value={d.key}>{d.label}</option>)}
+        </select>
+      }
+    >
+      <BreakdownBars items={items} dim="segment" isLoading={isLoading} />
+    </Panel>
   );
 }
 
@@ -368,8 +343,8 @@ function ThisWeekBlock({ nameOf, activityPipeline, granularity, scope, owner, ra
         <table className="w-full text-[12.5px]">
           <thead><tr className="bg-surface-2 text-left text-[10.5px] uppercase tracking-wide text-ink-3">
             <th className="py-2.5 pl-3.5 pr-2 text-left font-bold">Owner</th>
-            <th className="px-2 py-2.5 text-right font-bold">Assigned</th>
-            <th className="px-2 py-2.5 text-right font-bold">Contacted</th>
+            <th className="px-2 py-2.5 text-right font-bold" title="Assigned this period (queue + already contacted)">Assigned set</th>
+            <th className="px-2 py-2.5 text-right font-bold" title="Moved to initial outreach">Contacted / assigned</th>
             <th className="w-[34%] px-3 py-2.5 text-left font-bold">Progress</th>
           </tr></thead>
           <tbody>
@@ -379,8 +354,12 @@ function ThisWeekBlock({ nameOf, activityPipeline, granularity, scope, owner, ra
               return (
                 <tr key={email} className="border-t border-border-strong">
                   <td className="px-3 py-1.5 font-medium text-ink">{email === "(unowned)" ? <span className="text-ink-4">Unowned</span> : nameOf(email)}</td>
-                  <td className="px-2 py-1.5 text-right tabular-nums text-ink-2">{r.assigned}</td>
-                  <td className="px-2 py-1.5 text-right tabular-nums text-green">{r.contacted}</td>
+                  <td className="px-2 py-1.5 text-right tabular-nums text-ink-2">{total}</td>
+                  <td className="px-2 py-1.5 text-right tabular-nums">
+                    <span className={cn("font-semibold", r.contacted > 0 ? "text-green" : "text-ink-4")}>{r.contacted}</span>
+                    <span className="text-ink-4"> / {total}</span>
+                    <span className="ml-1 text-[11px] text-ink-4">({pct}%)</span>
+                  </td>
                   <td className="px-3 py-1.5">
                     <div className="h-1.5 overflow-hidden rounded-full border border-border-strong bg-surface-2" title={`${r.contacted} of ${total} contacted this week`}>
                       <div className="h-full rounded-full bg-green transition-all" style={{ width: `${pct}%` }} />
@@ -477,6 +456,70 @@ function HygieneBlock({ nameOf, staffEmails }: { nameOf: (email: string) => stri
       )}
 
     </div>
+  );
+}
+
+/** Replied but still in initial outreach — the owner decides where each goes.
+ *  Deliberately never auto-advances: a positive reply belongs in Converted, a
+ *  neutral/negative one in On hold / Not a fit, and only a human can tell. */
+function RespondedPanel({ owner }: { owner?: string }) {
+  const { data = [], isLoading } = useRespondedContacts(owner);
+  const update = useUpdateJobsMembership();
+  const [showAll, setShowAll] = useState(false);
+  const move = (c: { contact_id: number; full_name: string | null }, stage: MembershipStage) =>
+    update.mutate({ contact_id: c.contact_id, stage }, {
+      onSuccess: () => toast.success(`${c.full_name ?? "Contact"} → ${MEMBERSHIP_STAGE_LABELS[stage]}`),
+    });
+  const shown = showAll ? data : data.slice(0, 8);
+  return (
+    <Panel title="Replied — needs a decision"
+      badge={data.length ? String(data.length) : undefined}
+      desc="They came back to us and are still in initial outreach. Read the reply, then move them — nothing advances on its own.">
+      {isLoading ? (
+        <div className="flex items-center gap-2 py-4 text-[12.5px] text-ink-3"><Loader2 size={13} className="animate-spin" /> Loading…</div>
+      ) : data.length === 0 ? (
+        <div className="rounded-lg border border-dashed border-border-strong px-4 py-6 text-center text-[12.5px] text-ink-4">
+          No replies waiting on a decision.
+        </div>
+      ) : (
+        <div className="flex flex-col divide-y divide-border-strong">
+          {shown.map((c) => (
+            <div key={c.contact_id} className="flex flex-wrap items-start gap-x-3 gap-y-1.5 py-2.5">
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-baseline gap-x-2">
+                  <Link to={`/jobs/contacts/${c.contact_id}`} className="text-[13px] font-semibold text-ink hover:text-accent">
+                    {c.full_name || "—"}
+                  </Link>
+                  <span className="text-[11.5px] text-ink-3">{c.current_company || "—"}</span>
+                  <span className="text-[11px] text-ink-4">
+                    replied {relDay(c.last_reply) ?? "—"} ago · {c.touches} touch{c.touches === 1 ? "" : "es"}
+                  </span>
+                </div>
+                {c.snippet && <p className="mt-0.5 line-clamp-2 text-[11.5px] italic text-ink-3">“{c.snippet}”</p>}
+              </div>
+              <div className="flex shrink-0 items-center gap-1">
+                <button type="button" onClick={() => move(c, "converted_to_opportunity")}
+                  className="rounded-full border border-[var(--green)]/40 bg-[var(--green-soft)] px-2 py-0.5 text-[10.5px] font-semibold text-[var(--green)] hover:brightness-95">
+                  Converted
+                </button>
+                <button type="button" onClick={() => move(c, "on_hold")}
+                  className="rounded-full border border-[var(--amber)]/40 bg-[var(--amber-soft)] px-2 py-0.5 text-[10.5px] font-semibold text-[var(--amber)] hover:brightness-95">
+                  On hold
+                </button>
+                <button type="button" onClick={() => move(c, "not_a_fit")}
+                  className="rounded-full border border-border-strong bg-surface-2 px-2 py-0.5 text-[10.5px] font-semibold text-ink-3 hover:text-ink-2">
+                  Not a fit
+                </button>
+              </div>
+            </div>
+          ))}
+          {data.length > shown.length && (
+            <button type="button" onClick={() => setShowAll(true)}
+              className="py-2 text-left text-[12px] text-accent hover:underline">Show all {data.length}</button>
+          )}
+        </div>
+      )}
+    </Panel>
   );
 }
 
@@ -610,14 +653,13 @@ export function JobsOutreach() {
 
       {/* ── Monday agenda: contacts funnel → this week (+ activity pipeline)
              → stuck → target accounts → campaigns → scorecard → targeting ── */}
-      <div className="flex flex-col gap-3">
-        <SectionHead title="Contacts funnel" note="jobs-pipeline stages with stage-to-stage conversion" />
-        <JobsFunnels only="prospects" />
-      </div>
+      <JobsFunnels only="prospects" />
 
       <ThisWeekBlock nameOf={nameOf} activityPipeline={sc?.activity_pipeline}
         granularity={granularity} scope={scope} owner={owner || undefined} range={range}
         periodLabel={rangeLabel || undefined} />
+
+      <RespondedPanel owner={owner || undefined} />
 
       <div className="flex flex-col gap-3">
         <SectionHead title="Stuck in initial outreach"
@@ -632,7 +674,8 @@ export function JobsOutreach() {
         <TagCampaigns />
       </div>
 
-      <SectionHead title="Scorecard" note={rangeLabel ? `${rangeLabel} vs. prior period` : undefined} />
+      <SectionHead title="Activity over time" note={rangeLabel ? `${rangeLabel} vs. prior period` : undefined} />
+      <ActivityTrends />
 
       {isError && <div className="rounded-lg border border-red-soft bg-red-soft px-4 py-3 text-[13px] text-red">Couldn't load the scorecard. Try again in a moment.</div>}
       {isLoading && !sc && (
@@ -660,11 +703,8 @@ export function JobsOutreach() {
         </>
       )}
 
-      {/* ── Outreach & activation over time (moved from Exec view 2026-07-30) ── */}
-      <ActivityTrends />
 
-          <SectionHead title="Targeting Mix" note={`Outreach & replies by segment${owner ? ` · ${owner.split("@")[0]}` : ""} · this period`} />
-          <TargetingMix granularity={granularity} scope={scope} owner={owner || undefined} range={range} />
+      <TargetingPanel granularity={granularity} scope={scope} owner={owner || undefined} range={range} />
 
     </div>
   );

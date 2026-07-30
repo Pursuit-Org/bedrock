@@ -40,7 +40,7 @@ import { useCurrentUser } from "@/services/auth";
 import {
   useJobsAccountNames, useJobsContacts, useJobsOpportunities, useJobsStaff,
   useOpportunitiesOverview, useStaffNameResolver, useUpdateJobsMembership,
-  useUpdateContact, useUpdateOpportunity,
+  useUpdateContact, useUpdateOpportunity, useRespondedContacts,
   useIntroRequests, useRespondIntroRequest,
   STAGE_LABELS, STAGES_ORDERED, MEMBERSHIP_STAGES, MEMBERSHIP_STAGE_LABELS,
   type ContactFilters, type DealType, type IntroRequest, type JobStage, type JobsOpportunity,
@@ -332,6 +332,53 @@ function ContactedRow({ c, expanded, onToggle }: {
         </div>
       )}
     </>
+  );
+}
+
+// ── Replied, needs a decision ────────────────────────────────────────────────
+// They answered and are still in initial outreach. Positive → Converted,
+// neutral/negative → On hold / Not a fit — the owner picks; nothing automatic.
+function RepliedZone({ owner }: { owner: string | null }) {
+  const { data = [], isLoading } = useRespondedContacts(owner ?? undefined);
+  const update = useUpdateJobsMembership();
+  const [showAll, setShowAll] = useState(false);
+  if (isLoading || data.length === 0) return null;
+  const move = (c: { contact_id: number; full_name: string | null }, stage: MembershipStage) =>
+    update.mutate({ contact_id: c.contact_id, stage }, {
+      onSuccess: () => toast.success(`${c.full_name ?? "Contact"} → ${MEMBERSHIP_STAGE_LABELS[stage]}`),
+    });
+  const shown = showAll ? data : data.slice(0, 6);
+  return (
+    <Section title="Replied — needs a decision" count={data.length}>
+      <div className="flex flex-col overflow-hidden rounded-lg border border-border-strong bg-surface">
+        {shown.map((c) => (
+          <div key={c.contact_id} className="flex flex-wrap items-start gap-x-3 gap-y-1 border-t border-border-strong px-3 py-2 first:border-t-0">
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-baseline gap-x-2">
+                <Link to={`/jobs/contacts/${c.contact_id}`} className="text-[13px] font-medium text-ink hover:text-accent">
+                  {c.full_name || "—"}
+                </Link>
+                <span className="text-[11.5px] text-ink-3">{c.current_company || "—"}</span>
+                <span className="text-[11px] text-ink-4">replied {relDay(c.last_reply) ?? "—"} ago</span>
+              </div>
+              {c.snippet && <p className="mt-0.5 line-clamp-2 text-[11.5px] italic text-ink-3">“{c.snippet}”</p>}
+            </div>
+            <div className="flex shrink-0 items-center gap-1">
+              <button type="button" onClick={() => move(c, "converted_to_opportunity")}
+                className="rounded-full border border-green/40 bg-green-soft px-2 py-0.5 text-[10.5px] font-semibold text-green hover:brightness-95">Converted</button>
+              <button type="button" onClick={() => move(c, "on_hold")}
+                className="rounded-full border border-amber/40 bg-amber-soft px-2 py-0.5 text-[10.5px] font-semibold text-amber hover:brightness-95">On hold</button>
+              <button type="button" onClick={() => move(c, "not_a_fit")}
+                className="rounded-full border border-border-strong bg-surface-2 px-2 py-0.5 text-[10.5px] font-semibold text-ink-3 hover:text-ink-2">Not a fit</button>
+            </div>
+          </div>
+        ))}
+        {data.length > shown.length && (
+          <button type="button" onClick={() => setShowAll(true)}
+            className="border-t border-border-strong px-3 py-1.5 text-[12px] text-accent hover:bg-surface-2/50">Show all {data.length}</button>
+        )}
+      </div>
+    </Section>
   );
 }
 
@@ -1056,6 +1103,7 @@ function HomeBody({ me, staff, sel, setSel, owner }: {
       </div>
 
       <AssignedContactsZone owner={owner} />
+      <RepliedZone owner={owner} />
       <OpportunitiesZone owner={owner} />
       <RolesZone owner={owner} />
       <TasksZone owner={owner} />

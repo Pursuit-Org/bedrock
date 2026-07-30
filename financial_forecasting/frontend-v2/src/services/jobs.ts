@@ -2203,3 +2203,33 @@ export function useStuckContacts(minTouches = 3, owner?: string) {
     staleTime: 60_000,
   });
 }
+
+// ── Responded, awaiting a decision (initial outreach → converted / on hold / not a fit) ──
+export interface RespondedContact {
+  contact_id: number;
+  full_name: string | null;
+  current_title: string | null;
+  current_company: string | null;
+  owner_email: string | null;
+  touches: number;
+  last_reply: string | null;
+  reply_count: number;
+  last_reply_from: string | null;
+  snippet: string | null;
+}
+
+/** Contacts who replied but are still in initial outreach — the owner decides
+ *  where they go; nothing moves automatically. */
+export function useRespondedContacts(owner?: string) {
+  return useQuery<RespondedContact[]>({
+    queryKey: ["jobs", "responded-contacts", owner ?? ""],
+    queryFn: async () => {
+      const p = new URLSearchParams();
+      if (owner) p.set("owner", owner);
+      const qs = p.toString() ? `?${p}` : "";
+      const { data } = await api.get<ApiResponse<RespondedContact[]>>(`/api/jobs/outreach/responded-contacts${qs}`);
+      return data.data;
+    },
+    staleTime: 60_000,
+  });
+}

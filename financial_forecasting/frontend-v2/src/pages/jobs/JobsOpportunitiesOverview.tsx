@@ -713,7 +713,7 @@ function OutcomeBox({
 
 // ── Panel wrapper ─────────────────────────────────────────────────────────────
 
-function Panel({
+export function Panel({
   title, desc, action, badge, children,
 }: {
   title: string; desc?: string; action?: React.ReactNode; badge?: string; children: React.ReactNode;
@@ -778,7 +778,7 @@ function breakdownLabel(dim: OppBreakdownDim, key: string, label: string): strin
   return label;
 }
 
-function BreakdownBars({ items, dim, isLoading }: { items: { key: string; label: string; count: number }[]; dim: OppBreakdownDim; isLoading: boolean }) {
+export function BreakdownBars({ items, dim, isLoading }: { items: { key: string; label: string; count: number }[]; dim: OppBreakdownDim; isLoading: boolean }) {
   if (isLoading) {
     return <div className="flex flex-col gap-3 py-1">{Array.from({ length: 4 }).map((_, i) => (
       <div key={i} className="h-3 animate-pulse rounded bg-surface-2" />

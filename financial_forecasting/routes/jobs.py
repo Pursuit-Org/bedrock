@@ -3428,6 +3428,70 @@ async def outreach_targeting_mix(
     }}
 
 
+@router.get("/outreach/responded-contacts")
+async def outreach_responded_contacts(
+    owner: Optional[str] = Query(None),
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Contacts still sitting in initial_outreach who HAVE replied — the queue
+    that needs a human decision. A positive reply belongs in
+    converted_to_opportunity, a neutral/negative one in on_hold / not_a_fit, but
+    nothing here moves automatically: the owner reads the reply and picks. Sorted
+    by how long the reply has gone un-actioned."""
+    team_aem = " OR ".join(f"aem.from_email ILIKE '%{e}%'" for e in JOBS_TEAM_EMAILS)
+    owner_where = ""
+    params: list = []
+    if owner:
+        owner_where = "AND lower(coalesce(c.owner_email,'')) = lower($1)"
+        params.append(owner)
+    rows = await conn.fetch(f"""
+        WITH sends AS (
+            SELECT a.participant_public_contact_id AS cid, aem.sent_at AS ts
+            FROM bedrock.activity a
+            JOIN bedrock.activity_email_message aem ON aem.activity_id = a.id
+            WHERE a.deleted_at IS NULL AND a.type = 'email'
+              AND a.participant_public_contact_id IS NOT NULL
+              AND ({team_aem})
+        ),
+        touch_counts AS (
+            SELECT cid, count(*) AS touches, min(ts) AS first_send FROM sends GROUP BY 1),
+        replies AS (
+            -- inbound MESSAGES on threads linked to the contact (their reply or a
+            -- colleague's), and only replies that came AFTER this outreach cycle
+            -- started — otherwise a 2020 thread reads as an un-actioned reply.
+            SELECT a.participant_public_contact_id AS cid,
+                   max(aem.sent_at) AS last_reply,
+                   count(*) AS reply_count,
+                   (array_agg(aem.from_email ORDER BY aem.sent_at DESC))[1] AS last_reply_from,
+                   (array_agg(coalesce(a.email_snippet, a.subject) ORDER BY aem.sent_at DESC))[1] AS snippet
+            FROM bedrock.activity a
+            JOIN bedrock.activity_email_message aem ON aem.activity_id = a.id
+            JOIN touch_counts tc ON tc.cid = a.participant_public_contact_id
+            JOIN bedrock.jobs_contact_membership mm
+              ON mm.contact_id = a.participant_public_contact_id
+            WHERE a.deleted_at IS NULL AND a.participant_public_contact_id IS NOT NULL
+              AND aem.from_email NOT ILIKE '%@pursuit.org%'
+              AND aem.from_email NOT ILIKE '%@pursuit.com%'
+              AND aem.sent_at >= coalesce(mm.first_outreach_at, tc.first_send)
+            GROUP BY 1
+        )
+        SELECT c.contact_id, c.full_name, c.current_title, c.current_company, c.owner_email,
+               coalesce(tc.touches, 0)::int AS touches,
+               r.last_reply, r.reply_count::int AS reply_count, r.last_reply_from,
+               left(coalesce(r.snippet, ''), 240) AS snippet
+        FROM replies r
+        JOIN public.contacts c ON c.contact_id = r.cid
+        JOIN bedrock.jobs_contact_membership m
+          ON m.contact_id = c.contact_id AND m.stage = 'initial_outreach'
+        LEFT JOIN touch_counts tc ON tc.cid = r.cid
+        WHERE true {owner_where}
+        ORDER BY r.last_reply ASC
+        LIMIT 200
+    """, *params)
+    return {"success": True, "data": [dict(r) for r in rows]}
+
+
 @router.get("/outreach/stuck-contacts")
 async def outreach_stuck_contacts(
     min_touches: int = Query(3, ge=1, le=20),
