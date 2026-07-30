@@ -3440,18 +3440,24 @@ async def outreach_responded_contacts(
     nothing here moves automatically: the owner reads the reply and picks. Sorted
     by how long the reply has gone un-actioned."""
     team_aem = " OR ".join(f"aem.from_email ILIKE '%{e}%'" for e in JOBS_TEAM_EMAILS)
-    owner_where = ""
     params: list = []
     if owner:
         owner_where = "AND lower(coalesce(c.owner_email,'')) = lower($1)"
         params.append(owner)
+    else:
+        # Default to the jobs team's own contacts. Prospects owned by PBD folks
+        # (Nick/Greg/David) surfaced replies that aren't this team's queue to
+        # triage; the per-sender select can still target anyone explicitly.
+        owner_list = ", ".join(f"'{e}'" for e in JOBS_TEAM_EMAILS)
+        owner_where = f"AND lower(coalesce(c.owner_email,'')) IN ({owner_list})"
     rows = await conn.fetch(f"""
         WITH sends AS (
-            SELECT a.participant_public_contact_id AS cid, aem.sent_at AS ts
+            SELECT a.participant_public_contact_id AS cid, aem.sent_at AS ts, a.id AS activity_id
             FROM bedrock.activity a
             JOIN bedrock.activity_email_message aem ON aem.activity_id = a.id
             WHERE a.deleted_at IS NULL AND a.type = 'email'
               AND a.participant_public_contact_id IS NOT NULL
+              AND coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs'
               AND ({team_aem})
         ),
         touch_counts AS (
@@ -3473,6 +3479,9 @@ async def outreach_responded_contacts(
             WHERE a.deleted_at IS NULL AND a.participant_public_contact_id IS NOT NULL
               AND aem.from_email NOT ILIKE '%@pursuit.org%'
               AND aem.from_email NOT ILIKE '%@pursuit.com%'
+              -- the reply has to be on a jobs-classified thread, not any old
+              -- correspondence that happens to involve this person
+              AND coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs'
               AND aem.sent_at >= coalesce(mm.first_outreach_at, tc.first_send)
             GROUP BY 1
         )
