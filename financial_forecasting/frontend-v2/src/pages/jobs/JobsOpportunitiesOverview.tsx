@@ -36,6 +36,7 @@ import { useAllJobsTasks } from "@/services/jobsTasks";
 import { useSessionState } from "@/lib/useSessionState";
 import { InlineSelect } from "@/components/ui/InlineEdit";
 import { Drawer } from "@/components/ui/Drawer";
+import { JobsFunnels } from "@/components/jobs/JobsFunnels";
 import { CommittedRolesModal } from "@/components/jobs/CommittedRolesModal";
 import { DealExpandPanel, PlacementsModal, ClosedLostModal, stageOptionsFor } from "./JobsTeam";
 import { relDay } from "@/lib/format";
@@ -101,6 +102,12 @@ export function JobsOpportunitiesOverview() {
 
   const s = data?.summary;
   const netDelta = s ? s.net_new - s.net_new_prev : 0;
+  // Wins first, then moves, then new arrivals (review order, not chronology).
+  const ACTIVITY_ORDER: Record<string, number> = { won: 0, moved: 1, added: 2, lost: 3 };
+  const orderedActivity = useMemo(() => [...(data?.recent_activity ?? [])].sort((a, b) =>
+    (ACTIVITY_ORDER[a.type] ?? 9) - (ACTIVITY_ORDER[b.type] ?? 9) || (b.at ?? "").localeCompare(a.at ?? "")),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [data]);
 
   // Full opportunity objects behind the managed rows (walkthrough + needs
   // attention): stage edits inline, rows expand to the full DealExpandPanel.
@@ -252,25 +259,16 @@ export function JobsOpportunitiesOverview() {
           onClick={() => setDrill({ title: "Won with open tasks", note: "Closed won but follow-through still open", rows: asDrillRows(wonOpenTasks) })} />
       </div>
 
+      {/* ── Pipeline funnel (same visual as Exec view) ────────────────── */}
+      <JobsFunnels />
+
       {/* ── Recent activity — the week's narrative, promoted ──────────── */}
       <Panel
         title="Recent activity"
         desc="Added, moved, won/lost, or stalled this week — newest first"
       >
-        <RecentActivity events={data?.recent_activity ?? []} isLoading={isLoading} nameOf={nameOf} />
+        <RecentActivity events={orderedActivity} isLoading={isLoading} nameOf={nameOf} />
       </Panel>
-
-      {/* ── Owner walkthrough — the Thursday ritual, one shared screen ── */}
-      <Panel
-        title="Owner walkthrough"
-        desc="Per owner: P1 / high value with the next task, then stalled with what would unblock it — rows manage inline and expand to the full panel"
-      >
-        <OwnerWalkthrough openOpps={openOpps} needsById={needsById} nextTaskByOpp={nextTaskByOpp}
-          nameOf={nameOf} {...rowHandlers} />
-      </Panel>
-
-      {/* Needs-attention panel removed 2026-07-30 — the walkthrough's stalled
-          groups carry the same rows, grouped by owner and manageable. */}
 
       {/* ── Aging + Breakdown ─────────────────────────────────────────── */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
@@ -292,6 +290,20 @@ export function JobsOpportunitiesOverview() {
           <BreakdownBars items={data?.breakdowns[dim] ?? []} dim={dim} isLoading={isLoading} />
         </Panel>
       </div>
+
+      {/* ── Pipeline details (grouped by priority; owner view = the walkthrough) ── */}
+      <Panel
+        title="Pipeline details"
+        desc="Grouped by priority (switch to owner for the walkthrough) — rows manage inline and expand to the full panel"
+      >
+        <div className="max-h-[520px] overflow-y-auto">
+          <OwnerWalkthrough openOpps={openOpps} needsById={needsById} nextTaskByOpp={nextTaskByOpp}
+            nameOf={nameOf} {...rowHandlers} />
+        </div>
+      </Panel>
+
+      {/* Needs-attention panel removed 2026-07-30 — the walkthrough's stalled
+          groups carry the same rows, grouped by owner and manageable. */}
 
       {/* Heatmaps removed 2026-07-30 (exec review): Priority×Time rendered
           empty until priorities are tagged, and Stage×Time's column totals are
@@ -316,32 +328,43 @@ function OppDrill({ title, note, rows, nameOf, onClose }: {
     <Drawer open onClose={onClose} title={title}
       subtitle={`${rows.length} opportunit${rows.length === 1 ? "y" : "ies"}${note ? ` · ${note}` : ""}`}
       width={720}>
-      <div className="flex-1 overflow-auto">
+      <div className="flex-1 overflow-auto p-4">
         {rows.length === 0 ? (
-          <div className="px-5 py-8 text-center text-[12.5px] text-ink-4">Nothing here for this window.</div>
+          <div className="rounded-lg border border-dashed border-border-strong px-4 py-10 text-center text-[12.5px] text-ink-4">
+            Nothing here for this window.
+          </div>
         ) : (
-          <table className="w-full text-[12.5px]">
-            <thead><tr className="bg-surface-2/60 text-left text-[10.5px] uppercase tracking-wider text-ink-3">
-              <th className="px-4 py-1.5 font-semibold">Account</th>
-              <th className="px-2 py-1.5 font-semibold">Stage</th>
-              <th className="px-2 py-1.5 font-semibold">Owner</th>
-              <th className="px-2 py-1.5 text-right font-semibold">When</th>
-            </tr></thead>
-            <tbody>
-              {rows.map((r) => (
-                <tr key={r.opportunity_id} className="border-t border-border-strong">
-                  <td className="px-4 py-1.5">
-                    <Link to={`/jobs/opportunities/${r.opportunity_id}`} className="font-medium text-ink hover:text-accent">
-                      {r.account || "—"}
-                    </Link>
-                  </td>
-                  <td className="px-2 py-1.5 text-ink-2">{r.stage_label}</td>
-                  <td className="px-2 py-1.5 text-ink-3">{nameOf(r.owner)}</td>
-                  <td className="px-2 py-1.5 text-right tabular-nums text-[11.5px] text-ink-4">{relDay(r.at) ?? "—"}</td>
+          <div className="overflow-hidden rounded-lg border border-border-strong">
+            <table className="w-full text-[12.5px]">
+              <thead>
+                <tr className="bg-surface-2 text-left text-[10px] uppercase tracking-wider text-ink-4">
+                  <th className="px-3 py-2 font-semibold">Account</th>
+                  <th className="px-2 py-2 font-semibold">Stage</th>
+                  <th className="px-2 py-2 font-semibold">Owner</th>
+                  <th className="px-3 py-2 text-right font-semibold">When</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {rows.map((r) => (
+                  <tr key={r.opportunity_id} className="border-t border-border-strong hover:bg-surface-2/50">
+                    <td className="px-3 py-1.5">
+                      <Link to={`/jobs/opportunities/${r.opportunity_id}`}
+                        className="font-medium text-ink hover:text-accent hover:underline">
+                        {r.account || "—"}
+                      </Link>
+                    </td>
+                    <td className="px-2 py-1.5">
+                      <span className="whitespace-nowrap rounded-full bg-surface-2 px-2 py-0.5 text-[10.5px] font-medium text-ink-2">
+                        {r.stage_label}
+                      </span>
+                    </td>
+                    <td className="truncate px-2 py-1.5 text-[11.5px] text-ink-3">{nameOf(r.owner)}</td>
+                    <td className="px-3 py-1.5 text-right tabular-nums text-[11.5px] text-ink-4">{relDay(r.at) ?? "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </div>
     </Drawer>
@@ -436,7 +459,7 @@ function OwnerWalkthrough({ openOpps, needsById, nextTaskByOpp, nameOf, ...handl
   nameOf: (e: string | null) => string;
 } & RowHandlers) {
   const [expandedRest, setExpandedRest] = useState<Set<string>>(new Set());
-  const [groupBy, setGroupBy] = useSessionState<"owner" | "priority" | "">("jobsPipeline.walkthrough.groupBy", "owner");
+  const [groupBy, setGroupBy] = useSessionState<"owner" | "priority" | "">("jobsPipeline.details.groupBy", "priority");
   const [ownerFilter, setOwnerFilter] = useSessionState<string>("jobsPipeline.walkthrough.owner", "");
   const [flaggedOnly, setFlaggedOnly] = useSessionState<boolean>("jobsPipeline.walkthrough.flagged", false);
 
