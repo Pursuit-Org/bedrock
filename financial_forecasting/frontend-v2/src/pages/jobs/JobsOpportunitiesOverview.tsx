@@ -38,7 +38,7 @@ import { InlineSelect } from "@/components/ui/InlineEdit";
 import { Drawer } from "@/components/ui/Drawer";
 import { JobsFunnels } from "@/components/jobs/JobsFunnels";
 import { CommittedRolesModal } from "@/components/jobs/CommittedRolesModal";
-import { DealExpandPanel, PlacementsModal, ClosedLostModal, stageOptionsFor } from "./JobsTeam";
+import { DealExpandPanel, PlacementsModal, ClosedLostModal, stageOptionsFor, displayPriority } from "./JobsTeam";
 import { relDay } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
@@ -574,9 +574,9 @@ function OwnerWalkthrough({ openOpps, needsById, nextTaskByOpp, nameOf, ...handl
     };
     const bands = groupBy === "priority"
       ? [
-          { label: "P1 · High value", cls: "bg-[var(--accent-soft)] text-[var(--accent-ink)]", rows: visible.filter((o) => o.priority === 1) },
-          { label: "P2", cls: "bg-[var(--sky-soft)] text-[var(--sky)]", rows: visible.filter((o) => o.priority === 2) },
-          { label: "P3+ / no priority", cls: "bg-surface-2 text-ink-3", rows: visible.filter((o) => (o.priority ?? 9) >= 3) },
+          { label: "P1 · High value", cls: "bg-[var(--accent-soft)] text-[var(--accent-ink)]", rows: visible.filter((o) => displayPriority(o.priority) === 1) },
+          { label: "P2", cls: "bg-[var(--sky-soft)] text-[var(--sky)]", rows: visible.filter((o) => displayPriority(o.priority) === 2) },
+          { label: "P3+ / no priority", cls: "bg-surface-2 text-ink-3", rows: visible.filter((o) => (displayPriority(o.priority) ?? 9) >= 3) },
         ].filter((b) => b.rows.length > 0)
       : [{ label: "", cls: "", rows: visible }];
     return (
@@ -608,13 +608,13 @@ function OwnerWalkthrough({ openOpps, needsById, nextTaskByOpp, nameOf, ...handl
     <div className="flex flex-col">
       {controls}
       {groups.map(([email, opps]) => {
-        const p1 = opps.filter((o) => o.priority === 1);
-        const p2 = opps.filter((o) => o.priority === 2);
-        const rest = opps.filter((o) => (o.priority ?? 9) >= 3);
+        const p1 = opps.filter((o) => displayPriority(o.priority) === 1);
+        const p2 = opps.filter((o) => displayPriority(o.priority) === 2);
+        const rest = opps.filter((o) => (displayPriority(o.priority) ?? 9) >= 3);
         // Flagged opps without a P1/P2 priority — the meeting's ask list.
         // P1/P2 flagged rows already carry their attention chip in-group, so
         // they're not repeated here.
-        const stalled = opps.filter((o) => needsById.has(o.id) && o.priority !== 1 && o.priority !== 2)
+        const stalled = opps.filter((o) => needsById.has(o.id) && displayPriority(o.priority) !== 1 && displayPriority(o.priority) !== 2)
           .sort((a, b) => (needsById.get(b.id)?.days_in_stage ?? 0) - (needsById.get(a.id)?.days_in_stage ?? 0));
         const restOpen = expandedRest.has(email);
         const flaggedRow = (o: JobsOpportunity) => {
