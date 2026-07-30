@@ -17,4 +17,21 @@ WHERE er.id = 76
   AND EXISTS (SELECT 1 FROM bedrock.jobs_opportunity o
               WHERE o.id = er.opportunity_id AND o.deleted_at IS NOT NULL);
 
+-- One-off: Sam MacFarlane's duplicate RBM Maintenance placement. The 2026-07-27
+-- modal-then-hire sequence created er 91 with no dedup guard, then the hire flow
+-- created er 97 and linked it to jobs_role "AI Builder" (contract). Both now read
+-- contract, so the FT count is right but he is double-counted in contract
+-- placements. 97 is canonical (it holds the role link); 91 is the orphan.
+-- The guard clauses re-prove that at run time — same user, same opportunity,
+-- no role points at 91, and a sibling record does hold the role link.
+DELETE FROM public.employment_records er
+WHERE er.id = 91
+  AND er.company_name = 'RBM Maintenance'
+  AND NOT EXISTS (SELECT 1 FROM bedrock.jobs_role r WHERE r.employment_record_id = er.id)
+  AND EXISTS (SELECT 1 FROM public.employment_records k
+              JOIN bedrock.jobs_role r ON r.employment_record_id = k.id
+              WHERE k.id <> er.id
+                AND k.user_id = er.user_id
+                AND k.opportunity_id = er.opportunity_id);
+
 COMMIT;
