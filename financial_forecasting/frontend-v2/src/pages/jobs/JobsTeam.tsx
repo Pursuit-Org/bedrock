@@ -14,6 +14,7 @@ import {
   useOppPlacements,
   useUnlinkedPlacements,
   useCreatePlacement,
+  useDeletePlacement,
   useLinkPlacement,
   useStaff,
   type Staff,
@@ -668,7 +669,7 @@ function DealContextStrip({ deal }: { deal: JobsOpportunity }) {
  * stage history, contacts) lives in dedicated tabs; tabs lazy-render so
  * hidden tabs don't fire their queries.
  */
-function DealExpandPanel({
+export function DealExpandPanel({
   deal,
 }: {
   deal: JobsOpportunity;
@@ -1244,7 +1245,7 @@ const STAGE_OPTIONS: { value: JobStage; label: string }[] = STAGES_ORDERED.map((
 // still shows a legacy value if a deal somehow already sits there.
 const HIDDEN_OPP_STAGES = new Set<JobStage>(["lead_submitted"]);
 const OPP_STAGE_OPTIONS = STAGE_OPTIONS.filter((o) => !HIDDEN_OPP_STAGES.has(o.value));
-function stageOptionsFor(stage: JobStage): { value: JobStage; label: string }[] {
+export function stageOptionsFor(stage: JobStage): { value: JobStage; label: string }[] {
   return HIDDEN_OPP_STAGES.has(stage)
     ? [{ value: stage, label: STAGE_LABELS[stage] }, ...OPP_STAGE_OPTIONS]
     : OPP_STAGE_OPTIONS;
@@ -1364,7 +1365,7 @@ function DealRow({
   deal: JobsOpportunity;
   isExpanded: boolean;
   onToggle: () => void;
-  onRecordPlacements: (deal: { id: string; account_name: string }) => void;
+  onRecordPlacements: (deal: { id: string; account_name: string; deal_type?: DealType | null }) => void;
   onCommittedRoles: (deal: { id: string; account_name: string }) => void;
   onClosedLost: (deal: { id: string; account_name: string }) => void;
   visibleCols: OppColKey[];
@@ -1390,7 +1391,7 @@ function DealRow({
         {
           onSuccess: () => {
             if (stage === "closed_won" && isPlacementType) {
-              onRecordPlacements({ id: deal.id, account_name: deal.account_name });
+              onRecordPlacements({ id: deal.id, account_name: deal.account_name, deal_type: deal.deal_type });
             } else if (stage === "closed_lost") {
               onClosedLost({ id: deal.id, account_name: deal.account_name });
             } else if (stage === "active_opportunity_confirmed" && (deal.num_roles ?? 0) === 0) {
@@ -1761,23 +1762,26 @@ const EMPLOYMENT_TYPE_LABELS: Record<string, string> = Object.fromEntries(
   EMPLOYMENT_TYPES.map((t) => [t.value, t.label]),
 );
 
-function PlacementsModal({
+export function PlacementsModal({
   deal,
   onClose,
 }: {
-  deal: { id: string; account_name: string };
+  deal: { id: string; account_name: string; deal_type?: DealType | null };
   onClose: () => void;
 }) {
   const placementsQ = useOppPlacements(deal.id);
   const placements = placementsQ.data ?? [];
   const createPlacement = useCreatePlacement();
+  const deletePlacement = useDeletePlacement();
 
-  // New placement sub-form
+  // New placement sub-form. Employment type defaults from the DEAL type — a
+  // blanket full_time default mis-typed contract placements as FT (they then
+  // counted in "FT roles secured": Sam MacFarlane / RBM Maintenance).
   const [builderSearch, setBuilderSearch] = useState("");
   const [builderOpen, setBuilderOpen] = useState(false);
   const [builder, setBuilder] = useState<{ user_id: number; name: string } | null>(null);
   const [roleTitle, setRoleTitle] = useState("");
-  const [employmentType, setEmploymentType] = useState("full_time");
+  const [employmentType, setEmploymentType] = useState(deal.deal_type === "pt_contract" ? "contract" : "full_time");
   const [salary, setSalary] = useState("");
 
   const buildersQ = useBuilders(builderSearch || undefined);
@@ -1866,6 +1870,15 @@ function PlacementsModal({
                         ${p.salary.toLocaleString("en-US")}
                       </span>
                     ) : null}
+                    <button type="button" title="Delete placement (recorded in error)"
+                      onClick={() => {
+                        if (window.confirm(`Delete ${p.builder}'s placement at ${deal.account_name}? Any role it filled reopens.`)) {
+                          deletePlacement.mutate({ placementId: String(p.id), oppId: deal.id });
+                        }
+                      }}
+                      className="shrink-0 text-ink-4 hover:text-red">
+                      <Trash2 size={13} />
+                    </button>
                   </li>
                 ))}
               </ul>
@@ -2049,7 +2062,7 @@ function PlacementsModal({
 
 // ── Closed-lost reason modal ──────────────────────────────────────────────────
 
-function ClosedLostModal({
+export function ClosedLostModal({
   deal,
   onClose,
 }: {
@@ -2153,7 +2166,7 @@ export function JobsTeam() {
   const [collapsedGroups, setCollapsedGroups] = useSessionState<string[]>("jobs-opps:groupCollapsed", EMPTY_COLLAPSED);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [showNewDeal, setShowNewDeal] = useState(false);
-  const [placementModalDeal, setPlacementModalDeal] = useState<{ id: string; account_name: string } | null>(null);
+  const [placementModalDeal, setPlacementModalDeal] = useState<{ id: string; account_name: string; deal_type?: DealType | null } | null>(null);
   const [committedRolesDeal, setCommittedRolesDeal] = useState<{ id: string; account_name: string } | null>(null);
   const [closedLostDeal, setClosedLostDeal] = useState<{ id: string; account_name: string } | null>(null);
 

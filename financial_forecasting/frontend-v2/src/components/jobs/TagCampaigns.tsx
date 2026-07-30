@@ -72,6 +72,13 @@ function Row({ c, rank, staffOptions }: { c: TagCampaign; rank: number; staffOpt
         </span>
       </div>
       <span className="w-20 shrink-0 text-right tabular-nums text-ink-2" title="accounts">{c.accounts.toLocaleString()} <span className="text-ink-4">acct</span></span>
+      {/* conversion = converted / (contacted + converted) — where traction is */}
+      <span className="w-14 shrink-0 text-right tabular-nums text-[11.5px]"
+        title={`${f.converted} converted of ${contacted + (f.converted ?? 0)} contacted`}>
+        {contacted + (f.converted ?? 0) >= 5
+          ? <span className={cn((f.converted ?? 0) > 0 ? "text-green" : "text-ink-4")}>{Math.round((100 * (f.converted ?? 0)) / (contacted + (f.converted ?? 0)))}%</span>
+          : <span className="text-ink-4">—</span>}
+      </span>
       {/* owner */}
       <span className="w-36 shrink-0" onClick={(e) => e.stopPropagation()}>
         <InlineSelect<string>
@@ -139,6 +146,7 @@ export function TagCampaigns() {
           <span className="w-40 shrink-0">Campaign</span>
           <span className="min-w-0 flex-1">Pipeline funnel (in-pipeline only)</span>
           <span className="w-20 shrink-0 text-right">Accounts</span>
+          <span className="w-14 shrink-0 text-right" title="converted ÷ contacted">Conv.</span>
           <span className="w-36 shrink-0">Owner</span>
         </div>
         {isLoading ? (

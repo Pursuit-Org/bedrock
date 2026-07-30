@@ -59,7 +59,7 @@ export function JobsOpportunityDetailPage() {
   if (isError) {
     return (
       <div className="flex flex-col gap-3 px-7 py-6">
-        <BackLink defaultTo="/jobs" defaultLabel="Jobs" />
+        <BackLink defaultTo="/jobs/pipeline" defaultLabel="Pipeline" />
         <p className="text-[13px] text-red">Couldn't load this opportunity.</p>
         <button type="button" onClick={() => refetch()} className="self-start rounded border border-border-strong px-3 py-1 text-[12px] text-ink-2 hover:bg-surface-2">Retry</button>
       </div>
@@ -68,7 +68,7 @@ export function JobsOpportunityDetailPage() {
   if (!o) {
     return (
       <div className="flex flex-col gap-3 px-7 py-6">
-        <BackLink defaultTo="/jobs" defaultLabel="Jobs" />
+        <BackLink defaultTo="/jobs/pipeline" defaultLabel="Pipeline" />
         <p className="text-[13px] text-ink-3">Opportunity not found.</p>
       </div>
     );
@@ -79,7 +79,7 @@ export function JobsOpportunityDetailPage() {
 
   return (
     <div className="flex flex-col gap-4 px-7 py-4 pb-16">
-      <BackLink defaultTo="/jobs" defaultLabel="Jobs" />
+      <BackLink defaultTo="/jobs/pipeline" defaultLabel="Pipeline" />
 
       {/* Header */}
       <div className="flex items-start gap-4">

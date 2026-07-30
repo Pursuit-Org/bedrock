@@ -8,9 +8,10 @@
  * row reveals everything at that account via tabs.
  */
 import { Fragment, useCallback, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { Briefcase, CheckSquare, ChevronDown, ChevronRight, ExternalLink, Plus, Search, UserCheck, Users } from "lucide-react";
 
+import { PageHeader } from "@/components/PageHeader";
 import { AccountAvatar } from "@/components/AccountAvatar";
 import { withReferrer } from "@/components/detail";
 import { AccountExpandTabs } from "@/components/jobs/accountTabs";
@@ -58,7 +59,7 @@ type ColKey = "account" | "status" | "owner" | "opps" | "contacts" | "listings" 
 const COLUMN_ORDER: ColKey[] = ["account", "status", "owner", "opps", "contacts", "listings", "hired", "tasks", "deal_types", "last_activity"];
 const DEFAULT_VISIBLE: ColKey[] = ["account", "status", "owner", "opps", "contacts", "listings", "hired", "tasks", "last_activity"];
 const COL_LABELS: Record<ColKey, string> = {
-  account: "Account", status: "Status", owner: "Owner", opps: "Opps",
+  account: "Account", status: "Status", owner: "Jobs owner", opps: "Opps",
   contacts: "Contacts", listings: "Roles", hired: "Hired", tasks: "Open tasks", deal_types: "Deal types", last_activity: "Last touch",
 };
 // Default pixel widths — user-resizable via drag handles (useColumnWidths),
@@ -91,7 +92,7 @@ type Field = "account" | "status" | "owner" | "industry" | "deal_type" | "has_op
 const FILTERABLE: Record<Field, FieldMeta<JobsAccount>> = {
   account:      { label: "Account",  type: "text",   getValue: (a) => a.account },
   status:       { label: "Status",   type: "select", getValue: (a) => a.account_status },
-  owner:        { label: "Owner",    type: "select", getValue: (a) => a.owner_email ?? "" },
+  owner:        { label: "Jobs owner", type: "select", getValue: (a) => a.owner_email ?? "" },
   industry:     { label: "Industry", type: "select", getValue: (a) => a.industry ?? "" },
   // An account can have several opportunities of different types; join code +
   // label so a "contains" filter matches on either ("ft", "contract", "Part-time").
@@ -382,6 +383,21 @@ export function JobsAccountHub({ initialQuery }: { initialQuery?: string } = {})
           </tbody>
         </table>
       </div>
+    </div>
+  );
+}
+
+/**
+ * /jobs/accounts — Accounts as its own routed page (2026-07 nav restructure).
+ * Deep-link param: ?q=<text> seeds the account search.
+ */
+export function JobsAccountsPage() {
+  const [searchParams] = useSearchParams();
+  const initialQuery = searchParams.get("q") ?? undefined;
+  return (
+    <div className="flex flex-col gap-0 px-7 py-4 pb-12">
+      <PageHeader title="Accounts" subtitle="Account-level hub — opportunities and contacts." />
+      <JobsAccountHub initialQuery={initialQuery} />
     </div>
   );
 }

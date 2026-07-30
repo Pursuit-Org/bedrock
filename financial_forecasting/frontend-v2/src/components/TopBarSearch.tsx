@@ -124,7 +124,7 @@ function buildItems(results: SearchResults, bedrockContacts: BedrockContact[] = 
       label: name,
       sub: [c.current_title, c.current_company].filter(Boolean).join(" · ") || c.email || null,
       // Deep-link straight to the contact's detail drawer (opens on arrival).
-      href: `/jobs?view=contacts&contact=${c.contact_id}`,
+      href: `/jobs/contacts?contact=${c.contact_id}`,
     });
   }
   for (const r of results.Opportunity ?? []) {

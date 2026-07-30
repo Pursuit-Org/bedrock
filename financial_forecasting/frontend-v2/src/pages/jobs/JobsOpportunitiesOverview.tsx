@@ -1,14 +1,16 @@
 /**
  * Jobs · Opportunities — Weekly Overview.
  *
- * High-level, read-only view of the employer-deal pipeline for the Thursday
- * pipeline meeting: summary cards, time-in-stage aging, a switchable breakdown
- * (status / deal type / segment / stage / owner), the Priority×Time and
- * Stage×Time concentration heatmaps, and the needs-attention list.
+ * The Thursday-meeting agenda, top to bottom: summary cards (incl. the
+ * won-with-open-tasks stage-gate check), recent activity (the week's
+ * narrative), the per-owner walkthrough (P1s with next task, stalled with
+ * why — rows manage inline and expand to the full DealExpandPanel), then
+ * time-in-stage aging and the switchable set distribution.
  *
  * "Time in pipeline" = time in the CURRENT stage (from jobs_stage_history).
- * Backed by /api/jobs/opportunities/overview. Priority×Time renders an empty
- * state until opps carry a priority — it lights up as the team populates it.
+ * Backed by /api/jobs/opportunities/overview (+ /opportunities for the
+ * managed rows). Heatmaps + standalone needs-attention were removed in the
+ * 2026-07-30 exec review — restore from git if ever needed.
  */
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
@@ -18,13 +20,26 @@ import { AlertTriangle, ArrowRight, ChevronLeft, ChevronRight, Clock, Minus, Plu
 import {
   useOpportunitiesOverview,
   useJobsStaff,
+  useJobsOpportunities,
+  useUpdateOpportunity,
   DEAL_TYPE_LABELS,
+  STAGE_LABELS,
   type DealType,
+  type JobStage,
+  type JobsOpportunity,
   type OppBreakdownDim,
-  type OppHeatmap,
+  type OppDrillRow,
   type OppNeedsRow,
   type OppActivityEvent,
 } from "@/services/jobs";
+import { useAllJobsTasks } from "@/services/jobsTasks";
+import { useSessionState } from "@/lib/useSessionState";
+import { InlineSelect } from "@/components/ui/InlineEdit";
+import { Drawer } from "@/components/ui/Drawer";
+import { JobsFunnels } from "@/components/jobs/JobsFunnels";
+import { CommittedRolesModal } from "@/components/jobs/CommittedRolesModal";
+import { DealExpandPanel, PlacementsModal, ClosedLostModal, stageOptionsFor } from "./JobsTeam";
+import { relDay } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 const DIMS: { key: OppBreakdownDim; label: string }[] = [
@@ -45,20 +60,37 @@ const ownerShort = (e: string | null) => (e ? e.split("@")[0] : "—");
 const titleCaseEmail = (e: string) =>
   e.split("@")[0].replace(/[._-]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 
-/** The most recent Saturday on or before `d` (weeks run Saturday-to-Saturday). */
-function mostRecentSaturday(d: Date): Date {
-  const x = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-  x.setDate(x.getDate() - ((x.getDay() - 6 + 7) % 7));
-  return x;
-}
-/** The Saturday that CLOSES the week containing `d` (i.e. the upcoming Saturday).
- *  weekEnd is the closing boundary, so the current in-progress week is selectable. */
-function weekEndFor(d: Date): Date {
-  return addDays(mostRecentSaturday(d), 7);
-}
 /** Local YYYY-MM-DD (avoids the UTC shift of toISOString). */
 function fmtDateInput(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+const dayOnly = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+const parseDateInput = (v: string) => dayOnly(new Date(`${v}T00:00:00`));
+/** Whole days from a to b (both floored to midnight). */
+const dayDiff = (a: Date, b: Date) => Math.round((dayOnly(b).getTime() - dayOnly(a).getTime()) / 86400000);
+/** The most recent `dow` (0=Sun) on or before `d`. */
+function mostRecentDow(d: Date, dow: number): Date {
+  const x = dayOnly(d);
+  x.setDate(x.getDate() - ((x.getDay() - dow + 7) % 7));
+  return x;
+}
+const THURSDAY = 4;
+/** The pipeline meeting runs Thursdays, so the default window is the Thursday-
+ *  aligned week: on meeting day that's the completed cycle just reviewed
+ *  (last Thu → Wed), any other day it's the in-progress cycle (Thu → today).
+ *  Both bounds are inclusive, so the cycle is a clean 7 days with no overlap
+ *  between consecutive weeks. Any range is selectable via the two date inputs. */
+function thursdayCycle(today: Date): { start: Date; end: Date } {
+  const t = dayOnly(today);
+  return t.getDay() === THURSDAY
+    ? { start: addDays(t, -7), end: addDays(t, -1) }
+    : { start: mostRecentDow(t, THURSDAY), end: t };
+}
+/** Sun–Sat week containing `d`, clamped to today (the previous default). */
+function calendarWeek(today: Date): { start: Date; end: Date } {
+  const t = dayOnly(today);
+  const sun = mostRecentDow(t, 0);
+  return { start: sun, end: t };
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
@@ -67,12 +99,37 @@ export function JobsOpportunitiesOverview() {
   const [owner, setOwner] = useState<string>("all");
   const [dealType, setDealType] = useState<string>("all");
   const [dim, setDim] = useState<OppBreakdownDim>("status");
-  const [weekEnd, setWeekEnd] = useState<Date>(() => weekEndFor(new Date()));
-
-  // The current (in-progress) week is the furthest forward you can go.
-  const maxWeekEnd = weekEndFor(new Date());
-  const canGoNext = addDays(weekEnd, 7).getTime() <= maxWeekEnd.getTime();
-  const weekStart = addDays(weekEnd, -7);
+  // Free-form window: both bounds inclusive, no snapping. Defaults to the
+  // Thursday-aligned meeting cycle; presets and the two date inputs set it.
+  const today = useMemo(() => dayOnly(new Date()), []);
+  const [range, setRange] = useState<{ start: Date; end: Date }>(() => thursdayCycle(new Date()));
+  const weekStart = range.start;
+  const weekEnd = range.end;
+  const spanDays = Math.max(1, dayDiff(weekStart, weekEnd) + 1);
+  const canGoNext = dayDiff(weekEnd, today) >= 1;
+  /** Step the whole window by its own length, so a Thursday-aligned week stays
+   *  Thursday-aligned. Forward steps clamp at today rather than overshooting. */
+  const shiftRange = (dir: -1 | 1) => setRange(({ start, end }) => {
+    const s = addDays(start, dir * spanDays);
+    const e = addDays(end, dir * spanDays);
+    if (dir === 1 && dayDiff(e, today) < 0) return { start: addDays(today, -(spanDays - 1)), end: today };
+    return { start: s, end: e };
+  });
+  // Both setters clamp at today (a future window is always empty) and keep
+  // start <= end by dragging the other bound along.
+  const setStart = (v: string) => setRange(({ end }) => {
+    const p = parseDateInput(v);
+    const s = dayDiff(p, today) < 0 ? today : p;
+    return { start: s, end: dayDiff(s, end) < 0 ? s : end };
+  });
+  const setEnd = (v: string) => setRange(({ start }) => {
+    const p = parseDateInput(v);
+    const e = dayDiff(p, today) < 0 ? today : p;
+    return { start: dayDiff(start, e) < 0 ? e : start, end: e };
+  });
+  const rangeLabel = weekStart.getFullYear() === weekEnd.getFullYear()
+    ? `${format(weekStart, "MMM d")} – ${format(weekEnd, "MMM d")}`
+    : `${format(weekStart, "MMM d, yyyy")} – ${format(weekEnd, "MMM d, yyyy")}`;
 
   const staffQ = useJobsStaff();
   const nameOf = useMemo(() => {
@@ -80,10 +137,62 @@ export function JobsOpportunitiesOverview() {
     (staffQ.data ?? []).forEach((st) => m.set(st.email, st.name));
     return (email: string | null) => (email ? m.get(email) ?? titleCaseEmail(email) : "—");
   }, [staffQ.data]);
-  const { data, isLoading } = useOpportunitiesOverview(owner, dealType, fmtDateInput(weekEnd));
+  const { data, isLoading } = useOpportunitiesOverview(
+    owner, dealType, fmtDateInput(weekEnd), fmtDateInput(weekStart));
 
   const s = data?.summary;
   const netDelta = s ? s.net_new - s.net_new_prev : 0;
+  // Wins first, then moves, then new arrivals (review order, not chronology).
+  const ACTIVITY_ORDER: Record<string, number> = { won: 0, moved: 1, added: 2, lost: 3 };
+  const orderedActivity = useMemo(() => [...(data?.recent_activity ?? [])].sort((a, b) =>
+    (ACTIVITY_ORDER[a.type] ?? 9) - (ACTIVITY_ORDER[b.type] ?? 9) || (b.at ?? "").localeCompare(a.at ?? "")),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [data]);
+
+  // Full opportunity objects behind the managed rows (walkthrough + needs
+  // attention): stage edits inline, rows expand to the full DealExpandPanel.
+  const { data: oppsData } = useJobsOpportunities({
+    owner_email: owner !== "all" ? owner : undefined,
+    deal_type: dealType !== "all" ? (dealType as DealType) : undefined,
+    limit: 500,
+  });
+  const { data: allTasks = [] } = useAllJobsTasks();
+  const openOpps = useMemo(() => (oppsData?.data ?? [])
+    .filter((o) => !o.stage.startsWith("closed") && !o.stage.startsWith("on_hold")), [oppsData]);
+  const needsById = useMemo(
+    () => new Map((data?.needs_attention ?? []).map((n) => [n.opportunity_id, n])), [data]);
+  const nextTaskByOpp = useMemo(() => {
+    const m = new Map<string, { title: string; deadline: string | null }>();
+    for (const t of allTasks) {
+      if (t.parent_type !== "opportunity") continue;
+      const cur = m.get(t.parent_id);
+      if (!cur || (t.deadline ?? "9999") < (cur.deadline ?? "9999")) m.set(t.parent_id, { title: t.title, deadline: t.deadline });
+    }
+    return m;
+  }, [allTasks]);
+  const wonOpenTasks = useMemo(
+    () => (oppsData?.data ?? []).filter((o) => o.stage === "closed_won" && (o.open_tasks ?? 0) > 0),
+    [oppsData]);
+  // Summary-card drill — rows come from the SAME query as the count (server
+  // `drills`), so a card and its list can't disagree.
+  const [drill, setDrill] = useState<{ title: string; note?: string; rows: OppDrillRow[] } | null>(null);
+  const asDrillRows = (opps: JobsOpportunity[]): OppDrillRow[] => opps.map((o) => ({
+    opportunity_id: o.id, account: o.account_name, stage: o.stage,
+    stage_label: STAGE_LABELS[o.stage as JobStage] ?? o.stage,
+    owner: o.owner_email ?? null, at: o.last_activity_at ?? null,
+  }));
+
+  // One expand at a time across all managed tables; stage-gating modals at page root.
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [placementModalDeal, setPlacementModalDeal] = useState<{ id: string; account_name: string; deal_type?: DealType | null } | null>(null);
+  const [committedRolesDeal, setCommittedRolesDeal] = useState<{ id: string; account_name: string } | null>(null);
+  const [closedLostDeal, setClosedLostDeal] = useState<{ id: string; account_name: string } | null>(null);
+  const rowHandlers = {
+    expandedId, setExpandedId,
+    onRecordPlacements: setPlacementModalDeal,
+    onClosedLost: setClosedLostDeal,
+    onCommittedRoles: setCommittedRolesDeal,
+  };
 
   return (
     <div className="flex flex-col gap-6 pt-1">
@@ -92,35 +201,67 @@ export function JobsOpportunitiesOverview() {
         <div>
           <h2 className="text-[18px] font-semibold tracking-tight text-ink">Opportunities Overview</h2>
         </div>
-        <div className="flex items-center gap-1 rounded-lg border border-border-strong bg-surface px-1.5 py-1 text-[12.5px]">
+        <div className="flex flex-wrap items-center gap-1 rounded-lg border border-border-strong bg-surface px-1.5 py-1 text-[12.5px]">
           <button
             type="button"
-            onClick={() => setWeekEnd(addDays(weekEnd, -7))}
+            onClick={() => shiftRange(-1)}
             className="rounded p-1 text-ink-4 hover:bg-surface-2 hover:text-ink"
-            title="Previous week"
+            title={`Back ${spanDays} days`}
           >
             <ChevronLeft size={15} />
           </button>
-          <span className="whitespace-nowrap px-1 font-semibold text-ink">
-            {format(weekStart, "MMM d")} – {format(weekEnd, "MMM d")}
-          </span>
+          <span className="whitespace-nowrap px-1 font-semibold text-ink">{rangeLabel}</span>
+          <span className="whitespace-nowrap text-[11px] text-ink-4">{spanDays}d</span>
           <button
             type="button"
-            onClick={() => setWeekEnd(addDays(weekEnd, 7))}
+            onClick={() => shiftRange(1)}
             disabled={!canGoNext}
             className="rounded p-1 text-ink-4 hover:bg-surface-2 hover:text-ink disabled:opacity-30 disabled:hover:bg-transparent"
-            title="Next week"
+            title={`Forward ${spanDays} days`}
           >
             <ChevronRight size={15} />
           </button>
-          <input
-            type="date"
-            value={fmtDateInput(weekEnd)}
-            max={fmtDateInput(maxWeekEnd)}
-            onChange={(e) => { if (e.target.value) setWeekEnd(weekEndFor(new Date(`${e.target.value}T00:00:00`))); }}
-            className="ml-1 rounded border border-border-strong bg-surface px-1.5 py-0.5 text-[12px] text-ink outline-none focus:border-accent"
-            title="Jump to the week containing a date"
-          />
+          <span className="ml-1 flex items-center gap-1">
+            <input
+              type="date"
+              value={fmtDateInput(weekStart)}
+              max={fmtDateInput(weekEnd)}
+              onChange={(e) => { if (e.target.value) setStart(e.target.value); }}
+              className="rounded border border-border-strong bg-surface px-1.5 py-0.5 text-[12px] text-ink outline-none focus:border-accent"
+              title="First day of the window (inclusive)"
+            />
+            <span className="text-ink-4">→</span>
+            <input
+              type="date"
+              value={fmtDateInput(weekEnd)}
+              max={fmtDateInput(today)}
+              onChange={(e) => { if (e.target.value) setEnd(e.target.value); }}
+              className="rounded border border-border-strong bg-surface px-1.5 py-0.5 text-[12px] text-ink outline-none focus:border-accent"
+              title="Last day of the window (inclusive)"
+            />
+          </span>
+          <span className="ml-1 flex items-center gap-1 border-l border-border pl-1.5">
+            {([
+              { label: "Thu week", title: "The Thursday-to-Thursday meeting cycle", get: () => thursdayCycle(new Date()) },
+              { label: "Week", title: "This calendar week so far (Sun–today)", get: () => calendarWeek(new Date()) },
+              { label: "30d", title: "The last 30 days", get: () => ({ start: addDays(today, -29), end: today }) },
+            ] as const).map((p) => {
+              const r = p.get();
+              const active = fmtDateInput(r.start) === fmtDateInput(weekStart) && fmtDateInput(r.end) === fmtDateInput(weekEnd);
+              return (
+                <button
+                  key={p.label}
+                  type="button"
+                  title={p.title}
+                  onClick={() => setRange(p.get())}
+                  className={`rounded px-1.5 py-0.5 text-[11.5px] font-medium ${
+                    active ? "bg-accent-soft text-accent" : "text-ink-4 hover:bg-surface-2 hover:text-ink"}`}
+                >
+                  {p.label}
+                </button>
+              );
+            })}
+          </span>
         </div>
       </div>
 
@@ -154,20 +295,41 @@ export function JobsOpportunitiesOverview() {
       </div>
 
       {/* ── Summary cards ─────────────────────────────────────────────── */}
-      <div className="grid grid-cols-2 items-stretch gap-4 lg:grid-cols-4">
+      <div className="grid grid-cols-2 items-stretch gap-4 lg:grid-cols-5">
         <SummaryCard tone="ink" label="In the set" value={s?.in_set} isLoading={isLoading}
-          sub="All active opportunities" />
-        <SummaryCard tone="accent" label="Net new" value={s?.net_new} isLoading={isLoading}
-          delta={s ? { n: netDelta, prev: s.net_new_prev } : undefined} />
+          sub="All active opportunities"
+          onClick={() => setDrill({ title: "In the set", note: "All active opportunities", rows: data?.drills.in_set ?? [] })} />
+        <SummaryCard tone="accent" label="Net new" value={s?.net_new} sub={rangeLabel} isLoading={isLoading}
+          delta={s ? { n: netDelta, prev: s.net_new_prev, priorLabel: spanDays === 7 ? "last wk" : `prior ${spanDays}d` } : undefined}
+          onClick={() => setDrill({ title: "Net new", note: `Created ${rangeLabel}`, rows: data?.drills.net_new ?? [] })} />
         <SummaryCard tone="amber" label="Stalled" value={s?.stalled_6wk} isLoading={isLoading}
-          sub="Open opportunity 6+ weeks" />
-        {/* 4th cell: two stacked outcome boxes for the week — Closed won (the goal,
+          sub="Open opportunity 6+ weeks"
+          onClick={() => setDrill({ title: "Stalled 6+ weeks", note: "Open, created more than 6 weeks ago", rows: data?.drills.stalled ?? [] })} />
+        {/* Stacked outcome boxes for the week — Closed won (the goal,
             subtly highlighted) over Closed lost (context to understand, not a red flag). */}
         <div className="flex flex-col gap-4">
-          <OutcomeBox tone="green" highlight label="Closed won" value={s?.moved_committed} isLoading={isLoading} />
-          <OutcomeBox tone="ink" label="Closed lost" value={s?.closed_lost} isLoading={isLoading} />
+          <OutcomeBox tone="green" highlight label="Closed won" value={s?.moved_committed} sub={rangeLabel} isLoading={isLoading}
+            onClick={() => setDrill({ title: "Closed won", note: rangeLabel, rows: data?.drills.won ?? [] })} />
+          <OutcomeBox tone="ink" label="Closed lost" value={s?.closed_lost} sub={rangeLabel} isLoading={isLoading}
+            onClick={() => setDrill({ title: "Closed lost", note: rangeLabel, rows: data?.drills.lost ?? [] })} />
         </div>
+        {/* Stage-gate check: won on the board but the follow-through (e.g. the
+            signed contract task) is still open — "signed contract = closed". */}
+        <SummaryCard tone="red" label="Won, open tasks" value={wonOpenTasks.length} isLoading={isLoading}
+          sub={wonOpenTasks.slice(0, 2).map((o) => o.account_name).join(" · ") || "all buttoned up"}
+          onClick={() => setDrill({ title: "Won with open tasks", note: "Closed won but follow-through still open", rows: asDrillRows(wonOpenTasks) })} />
       </div>
+
+      {/* ── Pipeline funnel (same visual as Exec view) ────────────────── */}
+      <JobsFunnels only="opportunities" />
+
+      {/* ── Recent activity — the week's narrative, promoted ──────────── */}
+      <Panel
+        title="Recent activity"
+        desc={`Added, moved, won or lost between ${rangeLabel} — newest first`}
+      >
+        <RecentActivity events={orderedActivity} isLoading={isLoading} nameOf={nameOf} />
+      </Panel>
 
       {/* ── Aging + Breakdown ─────────────────────────────────────────── */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
@@ -190,43 +352,328 @@ export function JobsOpportunitiesOverview() {
         </Panel>
       </div>
 
-      {/* ── Heatmaps ──────────────────────────────────────────────────── */}
-      <Panel title="Priority × Time in Pipeline">
-        {data && !data.heatmaps.priority.populated ? (
-          <div className="rounded-lg border border-dashed border-border-strong bg-surface-2/40 px-4 py-6 text-center text-[12.5px] text-ink-3">
-            No priority set on any of the {data.heatmaps.priority.unset} active opps yet.
-            <div className="mt-1 text-[11.5px] text-ink-4">
-              This heatmap lights up automatically as the team sets priority on opportunities.
-            </div>
+      {/* ── Pipeline details (grouped by priority; owner view = the walkthrough) ── */}
+      <Panel
+        title="Pipeline details"
+        desc="Grouped by priority (switch to owner for the walkthrough) — rows manage inline and expand to the full panel"
+      >
+        <div className="max-h-[520px] overflow-y-auto">
+          <OwnerWalkthrough openOpps={openOpps} needsById={needsById} nextTaskByOpp={nextTaskByOpp}
+            nameOf={nameOf} {...rowHandlers} />
+        </div>
+      </Panel>
+
+      {/* Needs-attention panel removed 2026-07-30 — the walkthrough's stalled
+          groups carry the same rows, grouped by owner and manageable. */}
+
+      {/* Heatmaps removed 2026-07-30 (exec review): Priority×Time rendered
+          empty until priorities are tagged, and Stage×Time's column totals are
+          the aging bars above. Restore from git if concentration analysis is
+          ever needed again. */}
+
+      {drill && <OppDrill title={drill.title} note={drill.note} rows={drill.rows} nameOf={nameOf} onClose={() => setDrill(null)} />}
+      {placementModalDeal && <PlacementsModal deal={placementModalDeal} onClose={() => setPlacementModalDeal(null)} />}
+      {committedRolesDeal && <CommittedRolesModal deal={committedRolesDeal} onClose={() => setCommittedRolesDeal(null)} />}
+      {closedLostDeal && <ClosedLostModal deal={closedLostDeal} onClose={() => setClosedLostDeal(null)} />}
+    </div>
+  );
+}
+
+// ── Summary-card drill-down ──────────────────────────────────────────────────
+
+function OppDrill({ title, note, rows, nameOf, onClose }: {
+  title: string; note?: string; rows: OppDrillRow[];
+  nameOf: (e: string | null) => string; onClose: () => void;
+}) {
+  return (
+    <Drawer open onClose={onClose} title={title}
+      subtitle={`${rows.length} opportunit${rows.length === 1 ? "y" : "ies"}${note ? ` · ${note}` : ""}`}
+      width={720}>
+      <div className="flex-1 overflow-auto p-4">
+        {rows.length === 0 ? (
+          <div className="rounded-lg border border-dashed border-border-strong px-4 py-10 text-center text-[12.5px] text-ink-4">
+            Nothing here for this window.
           </div>
         ) : (
-          <Heatmap heatmap={data?.heatmaps.priority} buckets={data?.heatmaps.buckets ?? []} rowHeader="Priority" isLoading={isLoading} />
+          <div className="overflow-hidden rounded-lg border border-border-strong">
+            <table className="w-full text-[12.5px]">
+              <thead>
+                <tr className="bg-surface-2 text-left text-[10px] uppercase tracking-wider text-ink-4">
+                  <th className="px-3 py-2 font-semibold">Account</th>
+                  <th className="px-2 py-2 font-semibold">Stage</th>
+                  <th className="px-2 py-2 font-semibold">Owner</th>
+                  <th className="px-3 py-2 text-right font-semibold">When</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r) => (
+                  <tr key={r.opportunity_id} className="border-t border-border-strong hover:bg-surface-2/50">
+                    <td className="px-3 py-1.5">
+                      <Link to={`/jobs/opportunities/${r.opportunity_id}`}
+                        className="font-medium text-ink hover:text-accent hover:underline">
+                        {r.account || "—"}
+                      </Link>
+                    </td>
+                    <td className="px-2 py-1.5">
+                      <span className="whitespace-nowrap rounded-full bg-surface-2 px-2 py-0.5 text-[10.5px] font-medium text-ink-2">
+                        {r.stage_label}
+                      </span>
+                    </td>
+                    <td className="truncate px-2 py-1.5 text-[11.5px] text-ink-3">{nameOf(r.owner)}</td>
+                    <td className="px-3 py-1.5 text-right tabular-nums text-[11.5px] text-ink-4">{relDay(r.at) ?? "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
-      </Panel>
+      </div>
+    </Drawer>
+  );
+}
 
-      <Panel
-        title="Stage × Time in Pipeline"
-        desc="Real concentration today — where deals sit vs. how long they've been there"
-      >
-        <Heatmap heatmap={data?.heatmaps.stage} buckets={data?.heatmaps.buckets ?? []} rowHeader="Stage" isLoading={isLoading} />
-      </Panel>
+// ── Managed opp rows (walkthrough + needs attention) ─────────────────────────
 
-      {/* ── Recent activity ───────────────────────────────────────────── */}
-      <Panel
-        title="Recent activity"
-        desc="Added, moved, won/lost, or stalled this week — newest first"
-      >
-        <RecentActivity events={data?.recent_activity ?? []} isLoading={isLoading} nameOf={nameOf} />
-      </Panel>
+interface RowHandlers {
+  expandedId: string | null;
+  setExpandedId: (fn: (p: string | null) => string | null) => void;
+  onRecordPlacements: (d: { id: string; account_name: string; deal_type?: DealType | null }) => void;
+  onClosedLost: (d: { id: string; account_name: string }) => void;
+  onCommittedRoles: (d: { id: string; account_name: string }) => void;
+}
 
-      {/* ── Needs attention ───────────────────────────────────────────── */}
-      <Panel
-        title="Needs attention this week"
-        desc="3+ weeks in the current stage, or gone quiet — pre-loaded for the meeting"
-        badge={data ? `${data.needs_attention.length}` : undefined}
+function ManagedOppRow({ o, sub, detail, right, nextTask, expandedId, setExpandedId, onRecordPlacements, onClosedLost, onCommittedRoles }: {
+  o: JobsOpportunity;
+  sub?: string | null;
+  detail?: React.ReactNode;
+  right?: React.ReactNode;
+  nextTask?: { title: string; deadline: string | null };
+} & RowHandlers) {
+  const updateOpp = useUpdateOpportunity();
+  const expanded = expandedId === o.id;
+  // Keep in sync with DealRow.saveStage (JobsTeam.tsx) — same modal gating.
+  function saveStage(stage: JobStage) {
+    if (stage === o.stage) return Promise.resolve();
+    return new Promise<void>((resolve, reject) => {
+      updateOpp.mutate({ id: o.id, stage }, {
+        onSuccess: () => {
+          const isPlacementType = o.deal_type === "ft" || o.deal_type === "pt_contract";
+          if (stage === "closed_won" && isPlacementType) onRecordPlacements({ id: o.id, account_name: o.account_name, deal_type: o.deal_type });
+          else if (stage === "closed_lost") onClosedLost({ id: o.id, account_name: o.account_name });
+          else if (stage === "active_opportunity_confirmed" && (o.num_roles ?? 0) === 0) onCommittedRoles({ id: o.id, account_name: o.account_name });
+          resolve();
+        },
+        onError: reject,
+      });
+    });
+  }
+  return (
+    <>
+      <div
+        onClick={() => setExpandedId((p) => (p === o.id ? null : o.id))}
+        className={cn(
+          "grid cursor-pointer grid-cols-[1fr_150px_minmax(0,220px)_70px] items-center gap-2 border-t border-border-strong px-2.5 py-2 hover:bg-surface-2/40",
+          expanded && "bg-surface-2/40",
+        )}
       >
-        <NeedsTable rows={data?.needs_attention ?? []} isLoading={isLoading} nameOf={nameOf} />
-      </Panel>
+        <span className="flex min-w-0 items-center gap-1.5">
+          <ChevronRight size={12} className={cn("shrink-0 text-ink-4 transition-transform", expanded && "rotate-90")} />
+          <span className="min-w-0">
+            <Link to={`/jobs/opportunities/${o.id}`} onClick={(e) => e.stopPropagation()}
+              className="block truncate text-[13px] font-semibold text-ink hover:text-accent">{o.account_name}</Link>
+            {sub && <span className="block truncate text-[11px] text-ink-4">{sub}</span>}
+          </span>
+        </span>
+        <span onClick={(e) => e.stopPropagation()}>
+          <InlineSelect<JobStage>
+            value={o.stage}
+            options={stageOptionsFor(o.stage)}
+            onSave={saveStage}
+            renderValue={(v) => (
+              <span className="rounded-full bg-surface-2 px-2 py-0.5 text-[11px] font-medium text-ink-2">{v ? STAGE_LABELS[v] : "—"}</span>
+            )}
+          />
+        </span>
+        <span className="truncate text-[11.5px] text-ink-3">
+          {detail ?? (nextTask
+            ? <>Next: <b className="font-semibold text-ink-2">{nextTask.title}</b>{nextTask.deadline ? ` · ${nextTask.deadline.slice(5)}` : ""}</>
+            : <span className="text-ink-4">no open task</span>)}
+        </span>
+        <span className="text-right text-[11.5px] tabular-nums text-ink-4"
+          title={o.last_activity_at ? `Last activity ${new Date(o.last_activity_at).toLocaleDateString()}` : "No activity"}>
+          {right ?? (relDay(o.last_activity_at) ?? "—")}
+        </span>
+      </div>
+      {expanded && (
+        <div className="border-t border-border-strong bg-surface-2/20">
+          <DealExpandPanel deal={o} />
+        </div>
+      )}
+    </>
+  );
+}
+
+function OwnerWalkthrough({ openOpps, needsById, nextTaskByOpp, nameOf, ...handlers }: {
+  openOpps: JobsOpportunity[];
+  needsById: Map<string, OppNeedsRow>;
+  nextTaskByOpp: Map<string, { title: string; deadline: string | null }>;
+  nameOf: (e: string | null) => string;
+} & RowHandlers) {
+  const [expandedRest, setExpandedRest] = useState<Set<string>>(new Set());
+  const [groupBy, setGroupBy] = useSessionState<"owner" | "priority" | "">("jobsPipeline.details.groupBy", "priority");
+  const [ownerFilter, setOwnerFilter] = useSessionState<string>("jobsPipeline.walkthrough.owner", "");
+  const [flaggedOnly, setFlaggedOnly] = useSessionState<boolean>("jobsPipeline.walkthrough.flagged", false);
+
+  const owners = useMemo(() => [...new Set(openOpps.map((o) => (o.owner_email ?? "").toLowerCase()))]
+    .filter(Boolean).sort(), [openOpps]);
+  const visible = useMemo(() => openOpps.filter((o) =>
+    (!ownerFilter || (o.owner_email ?? "").toLowerCase() === ownerFilter) &&
+    (!flaggedOnly || needsById.has(o.id))), [openOpps, ownerFilter, flaggedOnly, needsById]);
+
+  const controls = (
+    <div className="mb-2 flex flex-wrap items-center gap-2">
+      <select value={ownerFilter} onChange={(e) => setOwnerFilter(e.target.value)}
+        className="h-7 rounded-md border border-border-strong bg-surface px-2 text-[12px] text-ink-2 outline-none focus:border-accent">
+        <option value="">All owners</option>
+        {owners.map((o) => <option key={o} value={o}>{nameOf(o)}</option>)}
+      </select>
+      <select value={groupBy} onChange={(e) => setGroupBy(e.target.value as "owner" | "priority" | "")}
+        className="h-7 rounded-md border border-border-strong bg-surface px-2 text-[12px] text-ink-2 outline-none focus:border-accent">
+        <option value="owner">Group by owner</option>
+        <option value="priority">Group by priority</option>
+        <option value="">No grouping</option>
+      </select>
+      <button type="button" onClick={() => setFlaggedOnly(!flaggedOnly)}
+        className={cn("h-7 rounded-md border px-2 text-[11.5px] font-medium",
+          flaggedOnly ? "border-[var(--amber)]/40 bg-[var(--amber-soft)] text-[var(--amber)]"
+                      : "border-border-strong bg-surface text-ink-3 hover:text-ink-2")}>
+        Needs attention only
+      </button>
+      <span className="text-[11.5px] text-ink-4">{visible.length} shown</span>
+    </div>
+  );
+
+  const groups = useMemo(() => {
+    const by = new Map<string, JobsOpportunity[]>();
+    for (const o of visible) {
+      const k = (o.owner_email ?? "(unassigned)").toLowerCase();
+      (by.get(k) ?? by.set(k, []).get(k)!).push(o);
+    }
+    return [...by.entries()].sort((a, b) => b[1].length - a[1].length);
+  }, [visible]);
+
+  // Flat table (no grouping) or grouped by priority — the by-owner walkthrough
+  // below stays the meeting default.
+  if (groupBy !== "owner") {
+    const flagged = (o: JobsOpportunity) => {
+      const n = needsById.get(o.id);
+      return n ? {
+        detail: <span className="flex items-center gap-1.5"><AlertTriangle size={11} className="shrink-0 text-[var(--amber)]" />{n.why}</span>,
+        right: <span className="text-[var(--amber)]">{n.days_in_stage}d</span>,
+      } : {};
+    };
+    const bands = groupBy === "priority"
+      ? [
+          { label: "P1 · High value", cls: "bg-[var(--accent-soft)] text-[var(--accent-ink)]", rows: visible.filter((o) => o.priority === 1) },
+          { label: "P2", cls: "bg-[var(--sky-soft)] text-[var(--sky)]", rows: visible.filter((o) => o.priority === 2) },
+          { label: "P3+ / no priority", cls: "bg-surface-2 text-ink-3", rows: visible.filter((o) => (o.priority ?? 9) >= 3) },
+        ].filter((b) => b.rows.length > 0)
+      : [{ label: "", cls: "", rows: visible }];
+    return (
+      <div className="flex flex-col">
+        {controls}
+        {bands.map((b) => (
+          <div key={b.label}>
+            {b.label && <div className={cn("px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider", b.cls)}>{b.label} · {b.rows.length}</div>}
+            {b.rows.map((o) => (
+              <ManagedOppRow key={o.id} o={o} sub={o.title ?? nameOf(o.owner_email)} {...flagged(o)}
+                nextTask={nextTaskByOpp.get(o.id)} {...handlers} />
+            ))}
+          </div>
+        ))}
+        {visible.length === 0 && (
+          <div className="border-t border-border-strong px-2.5 py-3 text-[12px] text-ink-4">Nothing matches the filters.</div>
+        )}
+      </div>
+    );
+  }
+
+
+  if (groups.length === 0) {
+    return <div className="flex flex-col">{controls}
+      <div className="rounded-lg border border-dashed border-border-strong px-4 py-8 text-center text-[12px] text-ink-4">Nothing matches the filters.</div>
+    </div>;
+  }
+  return (
+    <div className="flex flex-col">
+      {controls}
+      {groups.map(([email, opps]) => {
+        const p1 = opps.filter((o) => o.priority === 1);
+        const p2 = opps.filter((o) => o.priority === 2);
+        const rest = opps.filter((o) => (o.priority ?? 9) >= 3);
+        // Flagged opps without a P1/P2 priority — the meeting's ask list.
+        // P1/P2 flagged rows already carry their attention chip in-group, so
+        // they're not repeated here.
+        const stalled = opps.filter((o) => needsById.has(o.id) && o.priority !== 1 && o.priority !== 2)
+          .sort((a, b) => (needsById.get(b.id)?.days_in_stage ?? 0) - (needsById.get(a.id)?.days_in_stage ?? 0));
+        const restOpen = expandedRest.has(email);
+        const flaggedRow = (o: JobsOpportunity) => {
+          const n = needsById.get(o.id);
+          return n ? {
+            detail: <span className="flex items-center gap-1.5"><AlertTriangle size={11} className="shrink-0 text-[var(--amber)]" />{n.why}</span>,
+            right: <span className="text-[var(--amber)]">{n.days_in_stage}d</span>,
+          } : {};
+        };
+        return (
+          <div key={email} className="first:-mt-px">
+            <div className="flex items-baseline gap-2 border-t border-border-strong bg-surface-2 px-2.5 py-1.5">
+              <span className="text-[12.5px] font-bold text-ink">{email === "(unassigned)" ? "Unassigned" : nameOf(email)}</span>
+              <span className="text-[11px] text-ink-3">
+                {opps.length} open · {p1.length} P1 · {p2.length} P2 · {opps.filter((o) => needsById.has(o.id)).length} flagged
+              </span>
+            </div>
+            {p1.length > 0 && (
+              <div className="bg-[var(--accent-soft)] px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-[var(--accent-ink)]">P1 · High value</div>
+            )}
+            {p1.map((o) => (
+              <ManagedOppRow key={o.id} o={o} sub={o.title} {...flaggedRow(o)}
+                nextTask={nextTaskByOpp.get(o.id)} {...handlers} />
+            ))}
+            {p2.length > 0 && (
+              <div className="bg-[var(--sky-soft)] px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-[var(--sky)]">P2</div>
+            )}
+            {p2.map((o) => (
+              <ManagedOppRow key={o.id} o={o} sub={o.title} {...flaggedRow(o)}
+                nextTask={nextTaskByOpp.get(o.id)} {...handlers} />
+            ))}
+            {stalled.length > 0 && (
+              <div className="bg-[var(--amber-soft)] px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-[var(--amber)]">Stalled — needs unblock</div>
+            )}
+            {stalled.map((o) => (
+              <ManagedOppRow key={o.id} o={o} sub={o.title} {...flaggedRow(o)}
+                nextTask={nextTaskByOpp.get(o.id)} {...handlers} />
+            ))}
+            {rest.length > 0 && (
+              <>
+                <button type="button"
+                  onClick={() => setExpandedRest((prev) => {
+                    const n = new Set(prev);
+                    n.has(email) ? n.delete(email) : n.add(email);
+                    return n;
+                  })}
+                  className="flex w-full items-center gap-1.5 border-t border-border-strong bg-surface-2/50 px-2.5 py-1 text-left text-[10px] font-bold uppercase tracking-wider text-ink-3 hover:text-ink-2">
+                  <ChevronRight size={11} className={cn("transition-transform", restOpen && "rotate-90")} />
+                  P3+ / no priority · {rest.length}
+                </button>
+                {restOpen && rest.map((o) => (
+                  <ManagedOppRow key={o.id} o={o} sub={o.title} {...flaggedRow(o)}
+                    nextTask={nextTaskByOpp.get(o.id)} {...handlers} />
+                ))}
+              </>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -235,22 +682,30 @@ export function JobsOpportunitiesOverview() {
 
 const TONE: Record<string, string> = {
   ink: "text-ink", accent: "text-[var(--accent)]", sky: "text-[var(--sky)]",
-  green: "text-[var(--green)]", amber: "text-[var(--amber)]",
+  green: "text-[var(--green)]", amber: "text-[var(--amber)]", red: "text-[var(--red)]",
 };
 
 function SummaryCard({
-  tone, label, value, sub, delta, isLoading,
+  tone, label, value, sub, delta, isLoading, onClick,
 }: {
   tone: keyof typeof TONE | string;
   label: string;
   value: number | undefined;
   sub?: string;
-  delta?: { n: number; prev: number };
+  delta?: { n: number; prev: number; priorLabel: string };
   isLoading: boolean;
+  onClick?: () => void;
 }) {
   return (
-    <div className="rounded-2xl border border-border-strong bg-surface px-5 py-4">
-      <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">{label}</div>
+    <div
+      onClick={onClick}
+      role={onClick ? "button" : undefined}
+      tabIndex={onClick ? 0 : undefined}
+      onKeyDown={onClick ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onClick(); } } : undefined}
+      className={cn("rounded-2xl border border-border-strong bg-surface px-5 py-4",
+        onClick && "cursor-pointer transition-colors hover:border-accent focus:outline-none focus-visible:border-accent")}
+    >
+      <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">{label}{onClick ? " ›" : ""}</div>
       {isLoading ? (
         <div className="mt-2 h-8 w-16 animate-pulse rounded bg-surface-2" />
       ) : (
@@ -266,7 +721,7 @@ function SummaryCard({
               : "bg-surface-2 text-ink-3",
         )}>
           {delta.n > 0 ? <TrendingUp size={11} /> : delta.n < 0 ? <TrendingDown size={11} /> : <Minus size={11} />}
-          {delta.n === 0 ? `same as ${delta.prev} last wk` : `${delta.n > 0 ? "↑" : "↓"} vs ${delta.prev} last wk`}
+          {delta.n === 0 ? `same as ${delta.prev} ${delta.priorLabel}` : `${delta.n > 0 ? "↑" : "↓"} vs ${delta.prev} ${delta.priorLabel}`}
         </div>
       ) : !isLoading && sub ? (
         <div className="mt-2 text-[11.5px] text-ink-4">{sub}</div>
@@ -278,19 +733,26 @@ function SummaryCard({
 // ── Outcome box (half-height; stacked for won / lost) ─────────────────────────
 
 function OutcomeBox({
-  tone, label, value, highlight, isLoading,
+  tone, label, value, sub, highlight, isLoading, onClick,
 }: {
   tone: keyof typeof TONE | string;
   label: string;
   value: number | undefined;
+  sub?: string;
   highlight?: boolean;
   isLoading: boolean;
+  onClick?: () => void;
 }) {
   return (
     <div
+      onClick={onClick}
+      role={onClick ? "button" : undefined}
+      tabIndex={onClick ? 0 : undefined}
+      onKeyDown={onClick ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onClick(); } } : undefined}
       className={cn(
         "flex flex-1 items-center justify-between rounded-xl border border-border-strong px-4 py-2.5",
         highlight ? "bg-[var(--green-soft)]" : "bg-surface",
+        onClick && "cursor-pointer transition-colors hover:border-accent focus:outline-none focus-visible:border-accent",
       )}
     >
       <div>
@@ -298,7 +760,7 @@ function OutcomeBox({
           {highlight ? <Trophy size={11} className="text-[var(--green)]" /> : null}
           {label}
         </div>
-        <div className="text-[10.5px] text-ink-4">this week</div>
+        <div className="text-[10.5px] text-ink-4">{sub ?? "this week"}</div>
       </div>
       {isLoading ? (
         <div className="h-6 w-8 animate-pulse rounded bg-surface-2" />
@@ -313,7 +775,7 @@ function OutcomeBox({
 
 // ── Panel wrapper ─────────────────────────────────────────────────────────────
 
-function Panel({
+export function Panel({
   title, desc, action, badge, children,
 }: {
   title: string; desc?: string; action?: React.ReactNode; badge?: string; children: React.ReactNode;
@@ -378,7 +840,7 @@ function breakdownLabel(dim: OppBreakdownDim, key: string, label: string): strin
   return label;
 }
 
-function BreakdownBars({ items, dim, isLoading }: { items: { key: string; label: string; count: number }[]; dim: OppBreakdownDim; isLoading: boolean }) {
+export function BreakdownBars({ items, dim, isLoading }: { items: { key: string; label: string; count: number }[]; dim: OppBreakdownDim; isLoading: boolean }) {
   if (isLoading) {
     return <div className="flex flex-col gap-3 py-1">{Array.from({ length: 4 }).map((_, i) => (
       <div key={i} className="h-3 animate-pulse rounded bg-surface-2" />
@@ -408,138 +870,6 @@ function BreakdownBars({ items, dim, isLoading }: { items: { key: string; label:
   );
 }
 
-// ── Heatmap ───────────────────────────────────────────────────────────────────
-
-// Colour encodes VOLUME only — a blue that deepens with the count in the cell.
-// No concern-shading or flags; the gradient is the only signal.
-function heatBlue(n: number, max: number): { background: string; color: string } {
-  if (n <= 0) return { background: "var(--surface-2)", color: "var(--ink-4)" };
-  const t = max > 0 ? n / max : 0;
-  const alpha = 0.16 + 0.84 * t; // light → deep blue as volume grows
-  return {
-    background: `rgba(47, 127, 224, ${alpha.toFixed(2)})`, // --sky base (#2F7FE0)
-    color: alpha > 0.5 ? "#ffffff" : "var(--ink)",
-  };
-}
-
-function Heatmap({
-  heatmap, buckets, rowHeader, isLoading,
-}: {
-  heatmap: OppHeatmap | undefined;
-  buckets: { key: string; label: string }[];
-  rowHeader: string;
-  isLoading: boolean;
-}) {
-  if (isLoading) return <div className="h-40 animate-pulse rounded-lg bg-surface-2" />;
-  if (!heatmap || heatmap.rows.length === 0) {
-    return <div className="py-6 text-center text-[12px] text-ink-4">No opportunities to chart.</div>;
-  }
-  const max = Math.max(1, ...heatmap.rows.flatMap((r) => r.cells));
-  return (
-    <div className="overflow-x-auto">
-      <table className="w-full min-w-[560px] border-collapse">
-        <thead>
-          <tr>
-            <th className="px-2 pb-2.5 text-left text-[10.5px] font-semibold uppercase tracking-wider text-ink-4">{rowHeader}</th>
-            {buckets.map((b) => (
-              <th key={b.key} className="px-1.5 pb-2.5 text-center text-[10.5px] font-semibold uppercase tracking-wider text-ink-4">{b.label}</th>
-            ))}
-            <th className="px-2 pb-2.5 text-right text-[10.5px] font-semibold uppercase tracking-wider text-ink-4">Total</th>
-          </tr>
-        </thead>
-        <tbody>
-          {heatmap.rows.map((row) => (
-            <tr key={row.key}>
-              <td className="whitespace-nowrap py-1 pr-2 text-[12.5px] font-semibold text-ink">{row.label}</td>
-              {row.cells.map((n, i) => {
-                const st = heatBlue(n, max);
-                return (
-                  <td key={i} className="p-1">
-                    <div
-                      className="flex h-11 items-center justify-center rounded-lg text-[14px] font-bold"
-                      style={{ background: st.background, color: st.color }}
-                    >
-                      {n}
-                    </div>
-                  </td>
-                );
-              })}
-              <td className="py-1 pl-2 text-right text-[12px] font-semibold tabular-nums text-ink-3">{row.total}</td>
-            </tr>
-          ))}
-          <tr>
-            <td className="border-t border-border-strong pt-2.5 text-[11.5px] font-semibold text-ink-4">Column total</td>
-            {heatmap.col_totals.map((n, i) => (
-              <td key={i} className="border-t border-border-strong pt-2.5 text-center text-[11.5px] font-semibold tabular-nums text-ink-4">{n}</td>
-            ))}
-            <td className="border-t border-border-strong" />
-          </tr>
-        </tbody>
-      </table>
-      <div className="mt-2.5 flex items-center gap-1.5 text-[11px] text-ink-4">
-        <span className="h-2.5 w-8 rounded-sm" style={{ background: "linear-gradient(90deg, rgba(47,127,224,0.16), rgba(47,127,224,1))" }} />
-        fewer → more opportunities
-      </div>
-    </div>
-  );
-}
-
-// ── Needs-attention table ─────────────────────────────────────────────────────
-
-function NeedsTable({ rows, isLoading, nameOf }: { rows: OppNeedsRow[]; isLoading: boolean; nameOf: (e: string | null) => string }) {
-  const [showAll, setShowAll] = useState(false);
-  if (isLoading) return <div className="h-32 animate-pulse rounded-lg bg-surface-2" />;
-  if (rows.length === 0) {
-    return (
-      <div className="flex items-center justify-center gap-2 rounded-lg border border-dashed border-border-strong px-4 py-8 text-[12px] text-ink-4">
-        <Clock size={14} /> Nothing flagged — the board is moving.
-      </div>
-    );
-  }
-  const shown = showAll ? rows : rows.slice(0, 5);
-  return (
-    <div className="overflow-x-auto">
-      <table className="w-full min-w-[560px] border-collapse text-[13px]">
-        <thead>
-          <tr className="border-b border-border-strong">
-            {["Account", "Owner", "Stage", "In stage", "Why it's flagged"].map((h) => (
-              <th key={h} className="px-2.5 pb-2 text-left text-[10.5px] font-semibold uppercase tracking-wider text-ink-4">{h}</th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {shown.map((r) => (
-            <tr key={r.opportunity_id} className="border-b border-border-strong last:border-b-0">
-              <td className="px-2.5 py-2.5 font-semibold text-ink">
-                <Link to={`/jobs/opportunities/${r.opportunity_id}`} className="hover:text-accent">
-                  {r.account || "—"}
-                </Link>
-              </td>
-              <td className="px-2.5 py-2.5 text-ink-2">{nameOf(r.owner)}</td>
-              <td className="px-2.5 py-2.5">
-                <span className="rounded-full bg-surface-2 px-2 py-0.5 text-[11px] font-medium text-ink-2">{r.stage_label}</span>
-              </td>
-              <td className="px-2.5 py-2.5 tabular-nums text-ink-2">{r.days_in_stage}d</td>
-              <td className="px-2.5 py-2.5">
-                <span className="flex items-center gap-1.5 text-[12.5px] text-ink-3">
-                  <AlertTriangle size={12} className="flex-shrink-0 text-[var(--amber)]" />
-                  {r.why}
-                </span>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      {rows.length > 5 ? (
-        <button type="button" onClick={() => setShowAll((v) => !v)}
-          className="mt-2 text-[12px] font-medium text-accent hover:underline">
-          {showAll ? "Show less" : `Show ${rows.length - 5} more`}
-        </button>
-      ) : null}
-    </div>
-  );
-}
-
 // ── Recent activity feed ──────────────────────────────────────────────────────
 
 const ACTIVITY_META: Record<OppActivityEvent["type"], { label: string; color: string; icon: React.ReactNode }> = {
@@ -556,7 +886,7 @@ function RecentActivity({ events, isLoading, nameOf }: { events: OppActivityEven
   if (events.length === 0) {
     return (
       <div className="flex items-center justify-center rounded-lg border border-dashed border-border-strong px-4 py-8 text-[12px] text-ink-4">
-        No activity in this week.
+        No activity in the selected range.
       </div>
     );
   }

@@ -131,3 +131,10 @@ export function fmtDuration(ms: number): string {
   const yr = day / 365;
   return yr >= 10 ? `${Math.round(yr)}yr` : `${yr.toFixed(1)}yr`;
 }
+
+/** Compact relative day: "today", "3d", "2mo", "1y". Null-safe. */
+export const relDay = (iso: string | null | undefined): string | null => {
+  if (!iso) return null;
+  const d = Math.floor((Date.now() - new Date(iso).getTime()) / 86400000);
+  return d <= 0 ? "today" : d === 1 ? "1d" : d < 30 ? `${d}d` : d < 365 ? `${Math.floor(d / 30)}mo` : `${Math.floor(d / 365)}y`;
+};

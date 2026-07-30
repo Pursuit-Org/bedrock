@@ -18,6 +18,7 @@ function invalidateOppDependents(qc: QueryClient, extra: string[][] = []) {
     ["jobs", "pipeline"],
     ["jobs", "funnel"],
     ["jobs", "this-week-summary"],
+    ["jobs", "interview-pipeline"],
     ...extra,
   ];
   for (const queryKey of families) qc.invalidateQueries({ queryKey });
@@ -227,6 +228,7 @@ export interface JobContactWithDeal extends JobContact {
   // jobs activation membership + triage signals
   membership_stage?: string | null;
   membership_owner?: string | null;
+  membership_stage_entered_at?: string | null;
   first_outreach_by?: string | null;
   company_industry?: string | null;
   open_roles?: number;        // roles the team sourced at this company (job_postings)
@@ -495,6 +497,10 @@ export interface JobsAccount {
    *  lazily per account via useAccountProspects. Only the count ships here. */
   opp_count: number;
   prospect_count: number;
+  /** Everyone on file at the company, flagged or not (PFNYC had 11 with 0 flagged). */
+  contact_count?: number;
+  /** Same company under another spelling that DOES hold prospects (email-domain match). */
+  prospect_sibling?: { account: string; prospects: number } | null;
   job_listings?: number;    // roles sourced + open-market roles builders applied to
   roles_sourced?: number;
   roles_applied?: number;
@@ -885,6 +891,24 @@ export function useCreatePlacement() {
       toast.success("Placement recorded");
     },
     onError: () => toast.error("Failed to record placement"),
+  });
+}
+
+export function useDeletePlacement() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ placementId }: { placementId: string; oppId?: string }) => {
+      await api.delete(`/api/jobs/placements/${placementId}`);
+    },
+    onSuccess: (_d, vars) => {
+      if (vars.oppId) qc.invalidateQueries({ queryKey: ["jobs", "opp-placements", vars.oppId] });
+      invalidateOppDependents(qc, [["jobs", "placements"], ["jobs", "builders"], ["jobs", "metric"]]);
+      toast.success("Placement deleted");
+    },
+    onError: (e: unknown) => {
+      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      toast.error(typeof detail === "string" ? detail : "Failed to delete placement");
+    },
   });
 }
 
@@ -1346,7 +1370,12 @@ export function useCreateContact() {
       qc.invalidateQueries({ queryKey: ["jobs", "contacts"] });
       toast.success("Contact created");
     },
-    onError: () => toast.error("Failed to create contact"),
+    // Surface the server's reason (e.g. the 409 duplicate naming the existing
+    // contact) — a generic toast hid the cause through all of TKT-135.
+    onError: (e: unknown) => {
+      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      toast.error(typeof detail === "string" ? detail : "Failed to create contact");
+    },
   });
 }
 
@@ -2081,6 +2110,15 @@ export interface OppActivityEvent {
   actor: string | null;
 }
 
+export interface OppDrillRow {
+  opportunity_id: string;
+  account: string | null;
+  stage: string;
+  stage_label: string;
+  owner: string | null;
+  at: string | null;
+}
+
 export interface OpportunitiesOverview {
   filters: { owner: string | null; deal_type: string | null; week_end: string | null };
   aging_basis: string;
@@ -2096,23 +2134,106 @@ export interface OpportunitiesOverview {
     stage: OppHeatmap;
   };
   needs_attention: OppNeedsRow[];
+  /** Rows behind each summary card — same query as the count, so they agree. */
+  drills: { in_set: OppDrillRow[]; stalled: OppDrillRow[]; net_new: OppDrillRow[]; won: OppDrillRow[]; lost: OppDrillRow[] };
   recent_activity: OppActivityEvent[];
 }
 
-export function useOpportunitiesOverview(owner?: string, dealType?: string, weekEnd?: string) {
+/** `weekEnd`/`start` are inclusive YYYY-MM-DD bounds of the window. Omit `start`
+ *  for the server default (a 7-day window back from weekEnd); pass it for any
+ *  custom span — the Pipeline page runs Thursday-aligned weeks off it. */
+export function useOpportunitiesOverview(owner?: string, dealType?: string, weekEnd?: string, start?: string) {
   const o = owner && owner !== "all" ? owner : undefined;
   const dt = dealType && dealType !== "all" ? dealType : undefined;
   return useQuery<OpportunitiesOverview>({
-    queryKey: ["jobs", "opportunities", "overview", o ?? "all", dt ?? "all", weekEnd ?? "current"],
+    queryKey: ["jobs", "opportunities", "overview", o ?? "all", dt ?? "all", weekEnd ?? "current", start ?? "7d"],
     queryFn: async () => {
       const p = new URLSearchParams();
       if (o) p.set("owner", o);
       if (dt) p.set("deal_type", dt);
       if (weekEnd) p.set("week_end", weekEnd);
+      if (start) p.set("start", start);
       const qs = p.toString() ? `?${p}` : "";
       const { data } = await api.get<ApiResponse<OpportunitiesOverview>>(`/api/jobs/opportunities/overview${qs}`);
       return data.data;
     },
     staleTime: 30_000,
+  });
+}
+
+// ── Daily digest (the morning Slack, computed) ───────────────────────────────
+export interface DailyDigest {
+  date: string;
+  outreach: { new_touches: number; existing_touches: number; new_accounts: number; existing_accounts: number; meetings: number };
+  submissions: { company: string; builders: number; roles: number }[];
+}
+
+export function useDailyDigest(date?: string) {
+  return useQuery<DailyDigest>({
+    queryKey: ["jobs", "daily-digest", date ?? "yesterday"],
+    queryFn: async () => {
+      const qs = date ? `?date=${date}` : "";
+      const { data } = await api.get<ApiResponse<DailyDigest>>(`/api/jobs/daily-digest${qs}`);
+      return data.data;
+    },
+    staleTime: 300_000,
+  });
+}
+
+// ── Stuck in initial outreach (replaces the account working list) ─────────────
+export interface StuckContact {
+  contact_id: number;
+  full_name: string | null;
+  current_title: string | null;
+  current_company: string | null;
+  owner_email: string | null;
+  touches: number;
+  last_touch: string | null;
+  first_outreach_at: string | null;
+  other_contacts_at_account: number;
+}
+
+/** Contacts with N+ touches in initial outreach and no reply — the cue to work
+ *  a different contact at that account. */
+export function useStuckContacts(minTouches = 3, owner?: string) {
+  return useQuery<StuckContact[]>({
+    queryKey: ["jobs", "stuck-contacts", minTouches, owner ?? ""],
+    queryFn: async () => {
+      const p = new URLSearchParams({ min_touches: String(minTouches) });
+      if (owner) p.set("owner", owner);
+      const { data } = await api.get<ApiResponse<StuckContact[]>>(`/api/jobs/outreach/stuck-contacts?${p}`);
+      return data.data;
+    },
+    staleTime: 60_000,
+  });
+}
+
+// ── Responded, awaiting a decision (initial outreach → converted / on hold / not a fit) ──
+export interface RespondedContact {
+  contact_id: number;
+  full_name: string | null;
+  current_title: string | null;
+  current_company: string | null;
+  owner_email: string | null;
+  touches: number;
+  last_reply: string | null;
+  reply_count: number;
+  last_reply_from: string | null;
+  snippet: string | null;
+}
+
+/** Contacts who replied but are still in initial outreach — the owner decides
+ *  where they go; nothing moves automatically. */
+export function useRespondedContacts(owner?: string) {
+  return useQuery<RespondedContact[]>({
+    queryKey: ["jobs", "responded-contacts", owner ?? ""],
+    queryFn: async () => {
+      const p = new URLSearchParams();
+      if (owner) p.set("owner", owner);
+      const qs = p.toString() ? `?${p}` : "";
+      const { data } = await api.get<ApiResponse<RespondedContact[]>>(`/api/jobs/outreach/responded-contacts${qs}`);
+      return data.data;
+    },
+    staleTime: 60_000,
   });
 }
