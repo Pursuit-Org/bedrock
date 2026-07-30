@@ -52,11 +52,12 @@ const DEAL_TYPE_FILTERS: { value: string; label: string }[] = [
   ),
 ];
 
-export function JobsFunnels({ builderSegment }: { builderSegment?: string } = {}) {
-  const [funnel, setFunnel] = useState<FunnelType>("opportunities");
-  // Deal-type lens, defaults to Full-Time. Scopes the funnel (and its recent
-  // movement) to that deal type across opportunities/prospects/builders.
-  const [dealType, setDealType] = useState<string>("ft");
+export function JobsFunnels({ builderSegment, only }: { builderSegment?: string; only?: FunnelType } = {}) {
+  const [funnel, setFunnel] = useState<FunnelType>(only ?? "opportunities");
+  // Deal-type lens. Defaults to ALL: defaulting to Full-Time silently scoped the
+  // Contacts funnel to people at companies that happen to hold an FT
+  // opportunity, so "Assigned" read 18 when 267 contacts are assigned.
+  const [dealType, setDealType] = useState<string>("all");
   // The builders funnel is the L3+ job-ready pool — scope it by the dashboard's
   // L3-cohort segment instead of deal type.
   const { data, isLoading } = useJobsFunnel(
@@ -68,8 +69,9 @@ export function JobsFunnels({ builderSegment }: { builderSegment?: string } = {}
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        {/* Funnel-type switcher — bubbly pill toggle */}
-        <div className="inline-flex w-fit rounded-full border border-border-strong bg-surface-2 p-1">
+        {/* Funnel-type switcher — bubbly pill toggle. Hidden when the page
+            pinned a single funnel (`only`). */}
+        <div className={cn("inline-flex w-fit rounded-full border border-border-strong bg-surface-2 p-1", only && "hidden")}>
           {FUNNEL_TABS.map((tab) => {
             const active = tab.type === funnel;
             return (

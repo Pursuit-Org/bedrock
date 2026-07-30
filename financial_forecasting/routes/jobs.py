@@ -1772,6 +1772,22 @@ async def get_funnel(
         by_stage = {}
         for r in rows:
             by_stage.setdefault(r["stage"], []).append({"name": r["name"], "company": r["company"]})
+        # Ever-reached counts (stage-entry stamps), so conversion is a real
+        # cohort rate: of everyone who entered a stage, how many got to the next.
+        reach = await conn.fetchrow("""
+            SELECT count(*) FILTER (WHERE assigned_at IS NOT NULL)       AS reached_assigned,
+                   count(*) FILTER (WHERE first_outreach_at IS NOT NULL) AS reached_outreach,
+                   count(*) FILTER (WHERE converted_at IS NOT NULL)      AS reached_converted
+            FROM bedrock.jobs_contact_membership
+        """)
+        cohort_conv = {
+            "assigned": round(100 * reach["reached_outreach"] / reach["reached_assigned"])
+                        if reach["reached_assigned"] else None,
+            "initial_outreach": round(100 * reach["reached_converted"] / reach["reached_outreach"])
+                        if reach["reached_outreach"] else None,
+            # On Hold is a parking state, not the step after Converted — no rate.
+            "converted_to_opportunity": None,
+        }
 
     elif ftype == "builders":
         # Job-ready pipeline keyed off the L3+ pool + actual paid placements
@@ -1806,6 +1822,7 @@ async def get_funnel(
         raise HTTPException(404, f"Unknown funnel: {ftype}")
 
     stages = []
+    cohort_conv = locals().get("cohort_conv") or {}
     counts = [len(by_stage.get(k, [])) for k, _ in stage_order]
     max_count = max(counts) if counts else 1
     for i, (k, label) in enumerate(stage_order):
@@ -1813,6 +1830,11 @@ async def get_funnel(
         cnt = len(recs)
         nxt = counts[i + 1] if i + 1 < len(counts) else None
         conv = round(100 * nxt / cnt) if (nxt is not None and cnt > 0) else None
+        # Contacts funnel: use the cohort rate, and never show a >100% ratio.
+        if k in cohort_conv:
+            conv = cohort_conv[k]
+        elif conv is not None and conv > 100:
+            conv = None
         mv = movement_by_stage.get(k, [])
         stages.append({
             "key": k, "label": label, "count": cnt,

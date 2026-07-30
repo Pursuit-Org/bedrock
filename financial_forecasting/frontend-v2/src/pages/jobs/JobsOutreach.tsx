@@ -10,7 +10,6 @@ import {
   useJobsStaff,
   useJobsContacts,
   useJobsAccounts,
-  useTagCampaigns,
   useDailyDigest,
   useStuckContacts,
   useUpdateJobsMembership,
@@ -25,6 +24,7 @@ import {
 } from "@/services/jobs";
 import { InlineSelect } from "@/components/ui/InlineEdit";
 import { TagCampaigns } from "@/components/jobs/TagCampaigns";
+import { JobsFunnels } from "@/components/jobs/JobsFunnels";
 import { ActivityTrends } from "@/components/jobs/ActivityTrends";
 import { relDay } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -335,7 +335,14 @@ const startOfWeekSunday = () => {
 /** Per-owner "this week": current assigned queue + contacts moved to Initial
  *  outreach this week — the same numbers as Jobs Home's progress strip,
  *  rolled up per person for the meeting. */
-function ThisWeekBlock({ nameOf }: { nameOf: (email: string) => string }) {
+function ThisWeekBlock({ nameOf, activityPipeline, granularity, scope, owner, range }: {
+  nameOf: (email: string) => string;
+  activityPipeline?: ScorecardRow[];
+  granularity: OutreachGranularity;
+  scope: OutreachScopeKind;
+  owner?: string;
+  range?: OutreachDateRange;
+}) {
   const { data: assignedData } = useJobsContacts({ membership_stage: "assigned", limit: 1000 });
   const { data: contactedData } = useJobsContacts({ membership_stage: "initial_outreach", limit: 1000 });
   const rows = useMemo(() => {
@@ -387,6 +394,14 @@ function ThisWeekBlock({ nameOf }: { nameOf: (email: string) => string }) {
           </tbody>
         </table>
       </div>
+
+      {/* Activity pipeline lives here now: it answers "what did we do this
+          period", the same question as the queue above. */}
+      {activityPipeline && activityPipeline.length > 0 && (
+        <ScorecardTable title="Activity Pipeline" firstColHeader="Activity" rows={activityPipeline}
+          idPrefix="act" drillKind="activity" granularity={granularity} scope={scope}
+          owner={owner} range={range} />
+      )}
     </div>
   );
 }
@@ -394,8 +409,6 @@ function ThisWeekBlock({ nameOf }: { nameOf: (email: string) => string }) {
 /** Hygiene: the accountability strip + the assigned-but-no-prospect table. */
 function HygieneBlock({ nameOf, staffEmails }: { nameOf: (email: string) => string; staffEmails: Set<string> }) {
   const { data: accounts = [] } = useJobsAccounts(undefined, "all");
-  const { data: assignedData } = useJobsContacts({ membership_stage: "assigned", limit: 1000 });
-  const { data: campaigns = [] } = useTagCampaigns();
   const [showAll, setShowAll] = useState(false);
 
   // Accounts someone on the jobs team owns, with nobody in the prospect list.
@@ -403,12 +416,6 @@ function HygieneBlock({ nameOf, staffEmails }: { nameOf: (email: string) => stri
     .filter((a) => a.owner_email && staffEmails.has(a.owner_email.toLowerCase()) && a.prospect_count === 0)
     .sort((a, b) => (a.owner_email ?? "").localeCompare(b.owner_email ?? "") || a.account.localeCompare(b.account)),
     [accounts, staffEmails]);
-  const staleAssigned = useMemo(() => {
-    const cutoff = Date.now() - 7 * 86400000;
-    return (assignedData?.data ?? []).filter((c) =>
-      c.membership_stage_entered_at && new Date(c.membership_stage_entered_at).getTime() < cutoff).length;
-  }, [assignedData]);
-  const onHold = useMemo(() => campaigns.reduce((n, c) => n + c.funnel.on_hold, 0), [campaigns]);
 
   // Two different problems: contacts exist but nobody's been flagged into the
   // pipeline (just activate one) vs genuinely nobody on file (go find someone).
@@ -471,22 +478,6 @@ function HygieneBlock({ nameOf, staffEmails }: { nameOf: (email: string) => stri
         </div>
       )}
 
-      {/* Contact-level hygiene — kept separate from the accounts list above. */}
-      <div className="mt-3">
-        <SectionHead title="Hygiene" note="contact-level" />
-        <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <div className="rounded-lg border border-border-strong bg-surface px-4 py-3">
-            <div className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">Assigned contacts &gt; 7d, no outreach</div>
-            <div className={cn("mt-1 text-[24px] font-bold tabular-nums", staleAssigned > 0 ? "text-amber" : "text-ink")}>{staleAssigned}</div>
-            <div className="text-[11px] text-ink-3">contacts still in the assigned queue a week later</div>
-          </div>
-          <div className="rounded-lg border border-border-strong bg-surface px-4 py-3">
-            <div className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">Chased, on hold</div>
-            <div className="mt-1 text-[24px] font-bold tabular-nums text-ink">{onHold}</div>
-            <div className="text-[11px] text-ink-3">asked and parked — not an untapped list</div>
-          </div>
-        </div>
-      </div>
     </div>
   );
 }
@@ -603,13 +594,28 @@ export function JobsOutreach() {
       {/* ── Daily digest (the morning Slack) ── */}
       <DailyDigestBlock />
 
-      {/* ── Monday-meeting agenda: coverage → this week → hygiene ── */}
+      {/* ── Monday agenda: contacts funnel → this week (+ activity pipeline)
+             → stuck → target accounts → campaigns → scorecard → targeting ── */}
       <div className="flex flex-col gap-3">
-        <SectionHead title="Campaigns · coverage" note="the warm list, by source — run top-to-bottom on Mondays" />
+        <SectionHead title="Contacts funnel" note="jobs-pipeline stages with stage-to-stage conversion" />
+        <JobsFunnels only="prospects" />
+      </div>
+
+      <ThisWeekBlock nameOf={nameOf} activityPipeline={sc?.activity_pipeline}
+        granularity={granularity} scope={scope} owner={owner || undefined} range={range} />
+
+      <div className="flex flex-col gap-3">
+        <SectionHead title="Stuck in initial outreach"
+          note="3+ touches, no reply — time to work a different contact at the account" />
+        <StuckContactsPanel owner={owner || undefined} />
+      </div>
+
+      <HygieneBlock nameOf={nameOf} staffEmails={staffEmails} />
+
+      <div className="flex flex-col gap-3">
+        <SectionHead title="Campaigns · coverage" note="the warm list, by source" />
         <TagCampaigns />
       </div>
-      <ThisWeekBlock nameOf={nameOf} />
-      <HygieneBlock nameOf={nameOf} staffEmails={staffEmails} />
 
       {/* ── Scorecard (ops deep-dive) ── */}
       {/* Filter bar */}
@@ -652,7 +658,6 @@ export function JobsOutreach() {
       {sc && (
         <>
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-            <ScorecardTable title="Activity Pipeline" firstColHeader="Activity" rows={sc.activity_pipeline} idPrefix="act" drillKind="activity" granularity={granularity} scope={scope} owner={owner || undefined} range={range} />
           </div>
 
           {/* ── Divider: everything above = high-level review; below = per-sender/account detail ── */}
@@ -663,12 +668,8 @@ export function JobsOutreach() {
           </div>
 
 
-          <SectionHead title="Targeting Mix" note={`Outreach & replies by segment${owner ? ` · ${owner.split("@")[0]}` : ""} · this period`} />
-          <TargetingMix granularity={granularity} scope={scope} owner={owner || undefined} range={range} />
 
-          <SectionHead title="Stuck in initial outreach"
-            note="3+ touches, no reply — time to work a different contact at the account" />
-          <StuckContactsPanel owner={owner || undefined} />
+
 
           <p className="text-[11px] italic text-ink-4">
             Warm = outreach to a company Bedrock already knew before the contact's first touch; Cold = the company's first appearance.
@@ -684,6 +685,10 @@ export function JobsOutreach() {
 
       {/* ── Outreach & activation over time (moved from Exec view 2026-07-30) ── */}
       <ActivityTrends />
+
+          <SectionHead title="Targeting Mix" note={`Outreach & replies by segment${owner ? ` · ${owner.split("@")[0]}` : ""} · this period`} />
+          <TargetingMix granularity={granularity} scope={scope} owner={owner || undefined} range={range} />
+
     </div>
   );
 }

@@ -260,7 +260,7 @@ export function JobsOpportunitiesOverview() {
       </div>
 
       {/* ── Pipeline funnel (same visual as Exec view) ────────────────── */}
-      <JobsFunnels />
+      <JobsFunnels only="opportunities" />
 
       {/* ── Recent activity — the week's narrative, promoted ──────────── */}
       <Panel
