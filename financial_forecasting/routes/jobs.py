@@ -3273,7 +3273,10 @@ async def outreach_scorecard_detail(
 
 
 _TARGETING_DIMS = [
-    ("lead_source",   "By Lead Source"),
+    # Tag replaced lead source (2026-07-30): source is an import artifact
+    # ("linkedin_import"), while the curated campaign tags are how the team
+    # actually chooses who to work.
+    ("tag",           "By Tag"),
     ("industry",      "By Industry"),
     ("size_bucket",   "By Company Size"),
     ("company_stage", "By Company Stage"),
@@ -3325,19 +3328,31 @@ async def outreach_targeting_mix(
     replies AS (SELECT cid FROM first_reply WHERE reply_date >= $1 AND reply_date < $2 AND cid IS NOT NULL),
     contact_dims AS (
         SELECT c.contact_id,
-               coalesce(nullif(trim(c.source),''), '(unknown)')      AS lead_source,
                coalesce(co.industry, '(unknown)')                    AS industry,
                coalesce(co.size_bucket, '(unknown)')                 AS size_bucket,
                coalesce(co.stage, '(unknown)')                       AS company_stage
         FROM public.contacts c
         LEFT JOIN public.companies co ON co.company_id = c.company_id
     ),
+    -- One row per (contact, curated tag); a contact with 3 tags counts in all
+    -- three buckets, and untagged contacts land in '(untagged)'.
+    contact_tags AS (
+        SELECT c.contact_id,
+               coalesce((SELECT tc.label FROM bedrock.contact_tag_catalog tc WHERE tc.slug = t), t) AS tag
+        FROM public.contacts c
+        LEFT JOIN LATERAL unnest(
+            CASE WHEN EXISTS (SELECT 1 FROM unnest(coalesce(c.tags,'{{}}'::text[])) x
+                              WHERE x IN (SELECT slug FROM bedrock.contact_tag_catalog))
+                 THEN ARRAY(SELECT x FROM unnest(c.tags) x
+                            WHERE x IN (SELECT slug FROM bedrock.contact_tag_catalog))
+                 ELSE ARRAY['(untagged)'] END) AS t ON true
+    ),
     agg AS (
-        SELECT 'lead_source' AS dim, cd.lead_source AS bucket, count(*) AS sent, 0 AS resp FROM outreach o JOIN contact_dims cd ON cd.contact_id=o.cid GROUP BY 2
+        SELECT 'tag' AS dim, ct.tag AS bucket, count(*) AS sent, 0 AS resp FROM outreach o JOIN contact_tags ct ON ct.contact_id=o.cid GROUP BY 2
         UNION ALL SELECT 'industry', cd.industry, count(*), 0 FROM outreach o JOIN contact_dims cd ON cd.contact_id=o.cid GROUP BY 2
         UNION ALL SELECT 'size_bucket', cd.size_bucket, count(*), 0 FROM outreach o JOIN contact_dims cd ON cd.contact_id=o.cid GROUP BY 2
         UNION ALL SELECT 'company_stage', cd.company_stage, count(*), 0 FROM outreach o JOIN contact_dims cd ON cd.contact_id=o.cid GROUP BY 2
-        UNION ALL SELECT 'lead_source', cd.lead_source, 0, count(*) FROM replies r JOIN contact_dims cd ON cd.contact_id=r.cid GROUP BY 2
+        UNION ALL SELECT 'tag', ct.tag, 0, count(*) FROM replies r JOIN contact_tags ct ON ct.contact_id=r.cid GROUP BY 2
         UNION ALL SELECT 'industry', cd.industry, 0, count(*) FROM replies r JOIN contact_dims cd ON cd.contact_id=r.cid GROUP BY 2
         UNION ALL SELECT 'size_bucket', cd.size_bucket, 0, count(*) FROM replies r JOIN contact_dims cd ON cd.contact_id=r.cid GROUP BY 2
         UNION ALL SELECT 'company_stage', cd.company_stage, 0, count(*) FROM replies r JOIN contact_dims cd ON cd.contact_id=r.cid GROUP BY 2
@@ -3354,6 +3369,68 @@ async def outreach_targeting_mix(
     return {"success": True, "data": {
         "dims": [{"key": d, "label": lbl, "rows": by_dim.get(d, [])} for d, lbl in _TARGETING_DIMS],
     }}
+
+
+@router.get("/outreach/stuck-contacts")
+async def outreach_stuck_contacts(
+    min_touches: int = Query(3, ge=1, le=20),
+    owner: Optional[str] = Query(None),
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Contacts stuck in initial outreach: N+ touches from the jobs team and no
+    reply. The signal that this person isn't the way in and the team should work
+    a different contact at that account — so each row carries how many OTHER
+    jobs prospects exist at the same company. Replaces the account working list."""
+    team_aem = " OR ".join(f"aem.from_email ILIKE '%{e}%'" for e in JOBS_TEAM_EMAILS)
+    team_sender = " OR ".join(f"a.email_from ILIKE '%{e}%'" for e in JOBS_TEAM_EMAILS)
+    owner_where = ""
+    params: list = [min_touches]
+    if owner:
+        owner_where = "AND lower(coalesce(c.owner_email,'')) = lower($2)"
+        params.append(owner)
+    rows = await conn.fetch(f"""
+        WITH sends AS (
+            -- one row per outbound MESSAGE (thread-level rows undercount follow-ups)
+            SELECT a.participant_public_contact_id AS cid, aem.sent_at AS ts
+            FROM bedrock.activity a
+            JOIN bedrock.activity_email_message aem ON aem.activity_id = a.id
+            WHERE a.deleted_at IS NULL AND a.type = 'email'
+              AND coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs'
+              AND a.participant_public_contact_id IS NOT NULL
+              AND ({team_aem})
+            UNION ALL
+            SELECT a.participant_public_contact_id, a.activity_date
+            FROM bedrock.activity a
+            WHERE a.deleted_at IS NULL AND a.type IN ('call','text','linkedin')
+              AND a.participant_public_contact_id IS NOT NULL
+        ),
+        agg AS (SELECT cid, count(*) AS touches, max(ts) AS last_touch FROM sends GROUP BY 1),
+        replied AS (
+            -- any inbound email, or a meeting/call that happened at all
+            SELECT DISTINCT a.participant_public_contact_id AS cid
+            FROM bedrock.activity a
+            WHERE a.deleted_at IS NULL AND a.participant_public_contact_id IS NOT NULL
+              AND (a.type IN ('meeting','call') OR (a.type = 'email' AND NOT ({team_sender})))
+        )
+        SELECT c.contact_id, c.full_name, c.current_title, c.current_company,
+               c.owner_email, agg.touches::int AS touches, agg.last_touch,
+               m.first_outreach_at,
+               (SELECT count(*) FROM public.contacts oc
+                 WHERE oc.is_jobs_contact AND oc.contact_id <> c.contact_id
+                   AND coalesce(trim(oc.current_company),'') <> ''
+                   AND lower(trim(oc.current_company)) = lower(trim(c.current_company)))::int
+                 AS other_contacts_at_account
+        FROM agg
+        JOIN public.contacts c ON c.contact_id = agg.cid
+        JOIN bedrock.jobs_contact_membership m
+          ON m.contact_id = c.contact_id AND m.stage = 'initial_outreach'
+        LEFT JOIN replied r ON r.cid = agg.cid
+        WHERE agg.touches >= $1 AND r.cid IS NULL {owner_where}
+        ORDER BY agg.touches DESC, agg.last_touch DESC NULLS LAST
+        LIMIT 200
+    """, *params)
+    return {"success": True, "data": [dict(r) for r in rows]}
 
 
 @router.get("/outreach/accounts")
@@ -3479,9 +3556,16 @@ async def jobs_daily_digest(date_q: Optional[str] = Query(None, alias="date"),
     day_start = datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
     day_end = day_start + timedelta(days=1)
 
-    outreach = await conn.fetchrow("""
+    # Scope to the JOBS TEAM, not all of Pursuit: the digest mirrors Avni's
+    # morning post, which counts her team's outreach. Counting every active
+    # mailbox pulled in Rebecca/Kirstie/Nick/Jukay's unrelated email and
+    # overstated the day (7/27: 15 touches vs her 11).
+    team_aem = " OR ".join(f"aem.from_email ILIKE '%{e}%'" for e in JOBS_TEAM_EMAILS)
+    team_act = " OR ".join(
+        f"a.email_from ILIKE '%{e}%' OR a.logged_by ILIKE '%{e}%'" for e in JOBS_TEAM_EMAILS)
+    outreach = await conn.fetchrow(f"""
         WITH touches AS (
-            -- message-level email sends by active staff, jobs-relevant
+            -- message-level email sends by the jobs team, jobs-relevant
             SELECT aem.sent_at AS ts, 'email' AS kind,
                    a.account_id, a.participant_public_contact_id AS pid
             FROM bedrock.activity a
@@ -3489,15 +3573,21 @@ async def jobs_daily_digest(date_q: Optional[str] = Query(None, alias="date"),
             WHERE a.type = 'email' AND a.deleted_at IS NULL
               AND coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs'
               AND aem.sent_at >= $1 AND aem.sent_at < $2
-              AND EXISTS (SELECT 1 FROM public.org_users o
-                          WHERE o.is_active AND aem.from_email ILIKE '%'||o.email||'%')
+              AND ({team_aem})
             UNION ALL
-            -- manual touches always count; meetings only when jobs-relevant
+            -- manual touches by the team; a meeting counts when it's classified
+            -- jobs-relevant OR the person sitting in it is a jobs prospect (the
+            -- classifier misses meetings, which cost Avni a meeting on 7/27).
             SELECT a.activity_date, a.type, a.account_id, a.participant_public_contact_id
             FROM bedrock.activity a
             WHERE a.type IN ('call','text','linkedin','meeting') AND a.deleted_at IS NULL
               AND a.activity_date >= $1 AND a.activity_date < $2
-              AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type <> 'meeting')
+              AND ({team_act})
+              AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs'
+                   OR a.type <> 'meeting'
+                   OR EXISTS (SELECT 1 FROM public.contacts jc
+                              WHERE jc.contact_id = a.participant_public_contact_id
+                                AND jc.is_jobs_contact))
         ),
         keyed AS (
             SELECT t.*, COALESCE(t.account_id,

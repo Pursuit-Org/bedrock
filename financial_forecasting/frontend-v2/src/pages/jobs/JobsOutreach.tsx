@@ -1,24 +1,23 @@
 import { Fragment, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { ChevronRight, ChevronDown, Loader2, Search, Users } from "lucide-react";
+import { ChevronRight, ChevronDown, Loader2 } from "lucide-react";
 
 import { toast } from "sonner";
 import {
   useOutreachScorecard,
   useOutreachDrill,
   useOutreachTargetingMix,
-  useOutreachAccounts,
   useJobsStaff,
   useJobsContacts,
   useJobsAccounts,
   useTagCampaigns,
   useDailyDigest,
+  useStuckContacts,
   type OutreachGranularity,
   type OutreachScopeKind,
   type OutreachDateRange,
   type OutreachScorecard,
   type ScorecardRow,
-  type ScorecardCell,
   type TargetingDim,
 } from "@/services/jobs";
 import { TagCampaigns } from "@/components/jobs/TagCampaigns";
@@ -27,7 +26,6 @@ import { relDay } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 const DRILL_PAGE = 25;
-const ACCOUNTS_PAGE = 10;
 
 // ── Toggles ───────────────────────────────────────────────────────────────────
 const SCOPES: { id: OutreachScopeKind; label: string }[] = [
@@ -190,149 +188,6 @@ function ScorecardTable({
   );
 }
 
-// ── Conversion Figures + Origin Comparison (computed from the scorecard) ──────
-function byKey(rows: ScorecardRow[], k: "stage" | "metric") {
-  const m: Record<string, ScorecardRow> = {};
-  for (const r of rows) { const key = r[k]; if (key) m[key] = r; }
-  return m;
-}
-const EMPTY: ScorecardCell = { warm: 0, cold: 0, total: 0 };
-
-function ConversionTables({ sc }: { sc: OutreachScorecard }) {
-  const u = byKey(sc.user_pipeline, "stage");
-  const a = byKey(sc.activity_pipeline, "metric");
-  const leads = u.assigned ?? { this_period: EMPTY, last_period: EMPTY } as ScorecardRow;
-  const out = u.initial_outreach ?? { this_period: EMPTY, last_period: EMPTY } as ScorecardRow;
-  const comm = u.converted_to_opportunity ?? { this_period: EMPTY, last_period: EMPTY } as ScorecardRow;
-  const email = a.direct_email_sent ?? { this_period: EMPTY, last_period: EMPTY } as ScorecardRow;
-  const resp = a.direct_email_response ?? { this_period: EMPTY, last_period: EMPTY } as ScorecardRow;
-  const eng = a.engagement ?? { this_period: EMPTY, last_period: EMPTY } as ScorecardRow;
-  const li = a.linkedin_message_sent ?? { this_period: EMPTY, last_period: EMPTY } as ScorecardRow;
-  const intro = a.facilitated_intro_sent ?? { this_period: EMPTY, last_period: EMPTY } as ScorecardRow;
-  // All outreach sent (level 1 of the funnel) = email + linkedin + facilitated intro.
-  const sentTotal = (w: "this_period" | "last_period") => email[w].total + li[w].total + intro[w].total;
-  const engRate = (w: "this_period" | "last_period") => { const d = sentTotal(w); return d ? eng[w].total / d : null; };
-
-  const ratio = (numRow: ScorecardRow, denRow: ScorecardRow, when: "this_period" | "last_period") => {
-    const d = denRow[when].total; return d ? numRow[when].total / d : null;
-  };
-  const convRows = [
-    { label: "Leads → Outreached", n: out, d: leads },
-    { label: "Outreached → Converted", n: comm, d: out },
-    { label: "Leads → Converted (Overall)", n: comm, d: leads, overall: true },
-  ];
-
-  const RatioTable = ({ title, children }: { title: string; children: React.ReactNode }) => (
-    <div className="flex flex-col overflow-hidden rounded-xl border border-border-strong bg-surface">
-      <div className="border-b border-border-strong bg-surface-2 px-4 py-2.5 text-[12.5px] font-bold text-ink-2">{title}</div>
-      <table className="w-full border-collapse">
-        <thead>
-          <tr className="text-[10.5px] uppercase tracking-wide text-ink-3">
-            <th className="px-3.5 py-2 text-left font-bold">Ratio</th>
-            <th className="px-3.5 py-2 text-right font-bold">This</th>
-            <th className="px-3.5 py-2 text-right font-bold">Last</th>
-            <th className="px-3.5 py-2 text-right font-bold">Trend</th>
-          </tr>
-        </thead>
-        <tbody>{children}</tbody>
-      </table>
-    </div>
-  );
-  const fmt = (v: number | null) => (v == null ? "—" : `${(v * 100).toFixed(1)}%`);
-
-  return (
-    <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-      <RatioTable title="User Pipeline">
-        {convRows.map((r, i) => {
-          const t = ratio(r.n, r.d, "this_period"), l = ratio(r.n, r.d, "last_period");
-          return (
-            <tr key={i} className={cn("text-[13px] border-t border-border", r.overall && "font-bold bg-surface-2")}>
-              <td className="px-3.5 py-2 text-left">{r.label}</td>
-              <td className="px-3.5 py-2 text-right tabular-nums">{fmt(t)}</td>
-              <td className="px-3.5 py-2 text-right tabular-nums">{fmt(l)}</td>
-              <td className="px-3.5 py-2 text-right text-[12px]">{t != null && l != null ? <Trend current={t} prior={l} unit="pt" /> : <span className="text-ink-4">—</span>}</td>
-            </tr>
-          );
-        })}
-      </RatioTable>
-      <RatioTable title="Activity">
-        {(() => {
-          const rows = [
-            { label: "Engagements / Touches Sent", t: engRate("this_period"), l: engRate("last_period") },
-            { label: "Direct Email Responses / Emails Sent", t: ratio(resp, email, "this_period"), l: ratio(resp, email, "last_period") },
-          ];
-          return rows.map((r, i) => (
-            <tr key={i} className="text-[13px] border-t border-border">
-              <td className="px-3.5 py-2 text-left">{r.label}</td>
-              <td className="px-3.5 py-2 text-right tabular-nums">{fmt(r.t)}</td>
-              <td className="px-3.5 py-2 text-right tabular-nums">{fmt(r.l)}</td>
-              <td className="px-3.5 py-2 text-right text-[12px]">{r.t != null && r.l != null ? <Trend current={r.t} prior={r.l} unit="pt" /> : <span className="text-ink-4">—</span>}</td>
-            </tr>
-          ));
-        })()}
-      </RatioTable>
-    </div>
-  );
-}
-
-function OriginComparison({ sc }: { sc: OutreachScorecard }) {
-  const u = byKey(sc.user_pipeline, "stage");
-  const a = byKey(sc.activity_pipeline, "metric");
-  const assigned = (u.assigned ?? { this_period: EMPTY } as ScorecardRow).this_period;
-  const email = (a.direct_email_sent ?? { this_period: EMPTY } as ScorecardRow).this_period;
-  const resp = (a.direct_email_response ?? { this_period: EMPTY } as ScorecardRow).this_period;
-  const conv = (u.converted_to_opportunity ?? { this_period: EMPTY } as ScorecardRow).this_period;
-
-  const rate = (num: number, den: number) => (den ? `${Math.round((num / den) * 100)}%` : "—");
-  const rows: { l: string; warm: string; cold: string }[] = [
-    { l: "Sourced", warm: String(assigned.warm), cold: String(assigned.cold) },
-    { l: "Sent", warm: String(email.warm), cold: String(email.cold) },
-    { l: "Response rate", warm: rate(resp.warm, email.warm), cold: rate(resp.cold, email.cold) },
-    { l: "Conv. rate", warm: rate(conv.warm, assigned.warm), cold: rate(conv.cold, assigned.cold) },
-  ];
-
-  // One stacked bar: share of sends that are warm vs cold.
-  const totalSent = email.warm + email.cold;
-  const warmShare = totalSent ? (email.warm / totalSent) * 100 : 0;
-  const coldShare = 100 - warmShare;
-
-  return (
-    <div className="rounded-xl border border-border-strong bg-surface p-4">
-      {/* Single stacked warm/cold bar */}
-      <div className="mx-auto flex h-8 w-[72%] overflow-hidden rounded-lg bg-surface-2">
-        {warmShare > 0 && (
-          <div className="flex h-full items-center justify-center overflow-hidden whitespace-nowrap bg-amber text-[12px] font-bold text-white" style={{ width: `${warmShare}%` }}>
-            {warmShare >= 8 && `${Math.round(warmShare)}%`}
-          </div>
-        )}
-        {coldShare > 0 && (
-          <div className="flex h-full items-center justify-center overflow-hidden whitespace-nowrap bg-ink-3 text-[12px] font-bold text-white" style={{ width: `${coldShare}%` }}>
-            {coldShare >= 8 && `${Math.round(coldShare)}%`}
-          </div>
-        )}
-      </div>
-
-      {/* Origin details table */}
-      <div className="mt-4">
-        <div className="grid grid-cols-[1fr_11rem_11rem_1fr] items-center gap-x-6 border-b border-border pb-2">
-          <span className="text-[13px] font-bold text-ink">Origin Details</span>
-          <span className="flex items-center justify-center gap-1.5 text-center text-[12px] text-ink-2"><span className="h-2.5 w-2.5 flex-shrink-0 rounded-sm bg-amber" />Existing Relationship</span>
-          <span className="flex items-center justify-center gap-1.5 text-center text-[12px] text-ink-2"><span className="h-2.5 w-2.5 flex-shrink-0 rounded-sm bg-ink-3" />No Relationship</span>
-          <span />
-        </div>
-        {rows.map((r) => (
-          <div key={r.l} className="grid grid-cols-[1fr_11rem_11rem_1fr] items-center gap-x-6 border-b border-border py-2 last:border-b-0">
-            <span className="text-[13px] text-ink-2">{r.l}</span>
-            <span className="text-center text-[13.5px] font-semibold tabular-nums text-ink">{r.warm}</span>
-            <span className="text-center text-[13.5px] font-semibold tabular-nums text-ink">{r.cold}</span>
-            <span />
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
 function BySenderTable({ sc, selectedOwner, onPick, nameOf }: {
   sc: OutreachScorecard;
   selectedOwner: string;
@@ -440,134 +295,6 @@ function TargetingMix({ granularity, scope, owner, range }: {
   return (
     <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
       {data.dims.map((d) => <TargetingChart key={d.key} dim={d} />)}
-    </div>
-  );
-}
-
-// ── Account working list (comments + open tasks per account) ──────────────────
-function AccountsPanel({ owner }: { owner?: string }) {
-  const { data, isLoading } = useOutreachAccounts(owner);
-  const [showAll, setShowAll] = useState(false);
-  const [open, setOpen] = useState<Set<string>>(new Set());
-  const [q, setQ] = useState("");
-
-  if (isLoading) return <div className="h-40 animate-pulse rounded-xl border border-border-strong bg-surface-2" />;
-  const accounts = data?.accounts ?? [];
-  const fmtD = (iso: string | null) => (iso ? new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "");
-
-  const filtered = q.trim()
-    ? accounts.filter((a) => a.account.toLowerCase().includes(q.trim().toLowerCase()))
-    : accounts;
-  const shown = showAll ? filtered : filtered.slice(0, ACCOUNTS_PAGE);
-
-  const searchBar = (
-    <div className="flex items-center gap-2 border-b border-border bg-surface-2 px-3 py-2">
-      <Search size={14} className="text-ink-4" />
-      <input
-        value={q}
-        onChange={(e) => { setQ(e.target.value); setShowAll(true); }}
-        placeholder="Search accounts…"
-        className="w-full bg-transparent text-[13px] text-ink outline-none placeholder:text-ink-4"
-      />
-      {q && <button onClick={() => setQ("")} className="text-[11.5px] text-ink-4 hover:text-ink">clear</button>}
-    </div>
-  );
-
-  if (accounts.length === 0) return <div className="rounded-xl border border-border-strong bg-surface px-4 py-6 text-center text-[13px] text-ink-4">{owner ? `No accounts with notes or open tasks for ${owner.split("@")[0]} yet.` : "No accounts with comments or open tasks yet."}</div>;
-
-  return (
-    <div className="flex flex-col overflow-hidden rounded-xl border border-border-strong bg-surface">
-      {searchBar}
-      {shown.length === 0 && <div className="px-4 py-6 text-center text-[13px] text-ink-4">No accounts match “{q}”.</div>}
-      {shown.map((a, idx) => {
-        const isOpen = open.has(a.account);
-        const latest = a.comments[0];
-        return (
-          <div key={a.account} className={cn(idx > 0 && "border-t border-border")}>
-            <button
-              onClick={() => setOpen((prev) => { const n = new Set(prev); n.has(a.account) ? n.delete(a.account) : n.add(a.account); return n; })}
-              className="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-surface-2"
-            >
-              <span className="w-3.5 shrink-0 text-ink-4">{isOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}</span>
-              <div className="min-w-0 flex-1">
-                <div className="flex items-baseline gap-2">
-                  <span className="text-[13.5px] font-semibold text-ink">{a.account}</span>
-                  <span className="text-[11.5px] text-ink-4">{a.owner ? a.owner.split("@")[0] : "unowned"}</span>
-                </div>
-                {!isOpen && latest && (
-                  <div className="mt-0.5 truncate text-[12px] text-ink-3">
-                    “{latest.content}” <span className="text-ink-4">— {latest.author?.split("@")[0]}, {fmtD(latest.date)}</span>
-                  </div>
-                )}
-              </div>
-              <div className="flex shrink-0 items-center gap-2">
-                {a.open_task_count > 0 && (
-                  <span className="rounded-full bg-amber-soft px-2 py-0.5 text-[11px] font-semibold text-amber">
-                    {a.open_task_count} open task{a.open_task_count === 1 ? "" : "s"}
-                  </span>
-                )}
-                <span className="rounded-full bg-surface-2 px-2 py-0.5 text-[11px] font-semibold text-ink-3">
-                  {a.comment_count} note{a.comment_count === 1 ? "" : "s"}
-                </span>
-                {a.contact_count > 0 && (
-                  <span className="inline-flex items-center gap-1 rounded-full bg-accent-soft px-2 py-0.5 text-[11px] font-semibold text-accent-ink">
-                    <Users size={11} /> {a.contact_count}
-                  </span>
-                )}
-                <span className="w-[52px] text-right text-[11.5px] tabular-nums text-ink-4">{fmtD(a.last_activity)}</span>
-              </div>
-            </button>
-            {isOpen && (
-              <div className="flex flex-col gap-3 border-t border-border bg-bg px-4 py-3 pl-10">
-                {a.open_tasks.length > 0 && (
-                  <div>
-                    <div className="mb-1 text-[10.5px] font-bold uppercase tracking-wide text-amber">Open tasks</div>
-                    {a.open_tasks.map((t, i) => (
-                      <div key={i} className="flex items-baseline gap-2 py-0.5 text-[12.5px]">
-                        <span className="text-ink">{t.title}</span>
-                        <span className="text-[11.5px] text-ink-4">
-                          {t.owner || "unassigned"}{t.deadline ? ` · due ${fmtD(t.deadline)}` : ""}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-                {a.comments.length > 0 && (
-                  <div>
-                    <div className="mb-1 text-[10.5px] font-bold uppercase tracking-wide text-ink-3">Notes</div>
-                    {a.comments.map((c, i) => (
-                      <div key={i} className="py-1 text-[12.5px] leading-relaxed text-ink-2">
-                        {c.content}
-                        <span className="ml-1.5 text-[11.5px] text-ink-4">— {c.author?.split("@")[0]}, {fmtD(c.date)}</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-                {a.contacts.length > 0 && (
-                  <div>
-                    <div className="mb-1 text-[10.5px] font-bold uppercase tracking-wide text-accent-ink">Contacts ({a.contact_count})</div>
-                    <div className="flex flex-wrap gap-1.5">
-                      {a.contacts.map((c, i) => (
-                        <span key={i} className="rounded-md border border-border bg-surface px-2 py-1 text-[12px] text-ink-2" title={c.title || ""}>
-                          {c.name || "—"}{c.title ? <span className="text-ink-4"> · {c.title}</span> : null}
-                        </span>
-                      ))}
-                      {a.contact_count > a.contacts.length && (
-                        <span className="px-1 py-1 text-[11.5px] text-ink-4">+{a.contact_count - a.contacts.length} more</span>
-                      )}
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        );
-      })}
-      {!showAll && filtered.length > ACCOUNTS_PAGE && (
-        <button onClick={() => setShowAll(true)} className="border-t border-border px-4 py-2.5 text-left text-[12.5px] font-medium text-accent-ink hover:underline">
-          Show more ({filtered.length - ACCOUNTS_PAGE} more accounts)
-        </button>
-      )}
     </div>
   );
 }
@@ -690,7 +417,7 @@ function ThisWeekBlock({ nameOf }: { nameOf: (email: string) => string }) {
         <table className="w-full text-[12.5px]">
           <thead><tr className="bg-surface-2/60 text-left text-[10.5px] uppercase tracking-wider text-ink-3">
             <th className="px-3 py-1.5 font-semibold">Owner</th>
-            <th className="px-2 py-1.5 text-right font-semibold">In queue</th>
+            <th className="px-2 py-1.5 text-right font-semibold">Assigned</th>
             <th className="px-2 py-1.5 text-right font-semibold">Contacted</th>
             <th className="w-[34%] px-3 py-1.5 font-semibold">Progress</th>
           </tr></thead>
@@ -740,28 +467,12 @@ function HygieneBlock({ nameOf, staffEmails }: { nameOf: (email: string) => stri
   const shown = showAll ? noProspect : noProspect.slice(0, 10);
   return (
     <div className="flex flex-col gap-3">
-      <SectionHead title="Hygiene" />
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-        <div className="rounded-lg border border-border-strong bg-surface px-4 py-3">
-          <div className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">Assigned, no prospect</div>
-          <div className={cn("mt-1 text-[24px] font-bold tabular-nums", noProspect.length > 0 ? "text-amber" : "text-ink")}>{noProspect.length}</div>
-          <div className="text-[11px] text-ink-3">owned accounts with nobody in the prospect list — table below</div>
-        </div>
-        <div className="rounded-lg border border-border-strong bg-surface px-4 py-3">
-          <div className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">Assigned &gt; 7d, untouched</div>
-          <div className={cn("mt-1 text-[24px] font-bold tabular-nums", staleAssigned > 0 ? "text-amber" : "text-ink")}>{staleAssigned}</div>
-          <div className="text-[11px] text-ink-3">still in the queue a week after assignment</div>
-        </div>
-        <div className="rounded-lg border border-border-strong bg-surface px-4 py-3">
-          <div className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">Chased, on hold</div>
-          <div className="mt-1 text-[24px] font-bold tabular-nums text-ink">{onHold}</div>
-          <div className="text-[11px] text-ink-3">asked and parked — not an untapped list</div>
-        </div>
-      </div>
+      <SectionHead title="Target accounts awaiting activation"
+        note={`${noProspect.length} accounts assigned to the team with no contact identified — nobody to reach out to yet`} />
       {noProspect.length > 0 && (
         <div className="overflow-hidden rounded-lg border border-border-strong bg-surface">
           <div className="bg-amber-soft px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-amber">
-            Assigned, no prospect identified · {noProspect.length}
+            Assigned, no contact identified · {noProspect.length}
           </div>
           <table className="w-full text-[12.5px]">
             <thead><tr className="bg-surface-2/60 text-left text-[10.5px] uppercase tracking-wider text-ink-3">
@@ -795,6 +506,80 @@ function HygieneBlock({ nameOf, staffEmails }: { nameOf: (email: string) => stri
             </button>
           )}
         </div>
+      )}
+
+      {/* Contact-level hygiene — kept separate from the accounts list above. */}
+      <div className="mt-3">
+        <SectionHead title="Hygiene" note="contact-level" />
+        <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div className="rounded-lg border border-border-strong bg-surface px-4 py-3">
+            <div className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">Assigned contacts &gt; 7d, no outreach</div>
+            <div className={cn("mt-1 text-[24px] font-bold tabular-nums", staleAssigned > 0 ? "text-amber" : "text-ink")}>{staleAssigned}</div>
+            <div className="text-[11px] text-ink-3">contacts still in the assigned queue a week later</div>
+          </div>
+          <div className="rounded-lg border border-border-strong bg-surface px-4 py-3">
+            <div className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">Chased, on hold</div>
+            <div className="mt-1 text-[24px] font-bold tabular-nums text-ink">{onHold}</div>
+            <div className="text-[11px] text-ink-3">asked and parked — not an untapped list</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Contacts stuck in initial outreach — 3+ touches, no reply. The cue to find a
+ *  different contact at that account (replaced the account working list). */
+function StuckContactsPanel({ owner }: { owner?: string }) {
+  const { data = [], isLoading } = useStuckContacts(3, owner);
+  const [showAll, setShowAll] = useState(false);
+  if (isLoading) return <div className="flex items-center gap-2 px-1 py-4 text-[12.5px] text-ink-3"><Loader2 size={13} className="animate-spin" /> Loading…</div>;
+  if (data.length === 0) {
+    return <div className="rounded-lg border border-dashed border-border-strong px-4 py-6 text-center text-[12.5px] text-ink-4">
+      Nobody stuck — every contact in initial outreach has replied or is under 3 touches.
+    </div>;
+  }
+  const shown = showAll ? data : data.slice(0, 15);
+  return (
+    <div className="overflow-hidden rounded-lg border border-border-strong bg-surface">
+      <table className="w-full text-[12.5px]">
+        <thead><tr className="bg-surface-2/60 text-left text-[10.5px] uppercase tracking-wider text-ink-3">
+          <th className="px-3 py-1.5 font-semibold">Contact</th>
+          <th className="px-2 py-1.5 font-semibold">Company</th>
+          <th className="px-2 py-1.5 text-right font-semibold">Touches</th>
+          <th className="px-2 py-1.5 text-right font-semibold">Last touch</th>
+          <th className="px-2 py-1.5 text-right font-semibold" title="Other jobs prospects already identified at this company">Others at account</th>
+        </tr></thead>
+        <tbody>
+          {shown.map((c) => (
+            <tr key={c.contact_id} className="border-t border-border-strong">
+              <td className="px-3 py-1.5">
+                <Link to={`/jobs/contacts/${c.contact_id}`} className="font-medium text-ink hover:text-accent">{c.full_name || "—"}</Link>
+                {c.current_title && <span className="block truncate text-[11px] text-ink-4">{c.current_title}</span>}
+              </td>
+              <td className="px-2 py-1.5 text-ink-2">{c.current_company || "—"}</td>
+              <td className={cn("px-2 py-1.5 text-right tabular-nums font-semibold", c.touches >= 5 ? "text-red" : "text-amber")}>{c.touches}</td>
+              <td className="px-2 py-1.5 text-right tabular-nums text-[11.5px] text-ink-4">{relDay(c.last_touch) ?? "—"}</td>
+              <td className="px-2 py-1.5 text-right">
+                {c.other_contacts_at_account > 0 ? (
+                  <Link to={`/jobs/contacts?q=${encodeURIComponent(c.current_company ?? "")}`}
+                    className="rounded-full bg-accent-soft px-2 py-0.5 text-[10.5px] font-semibold text-accent-ink hover:underline">
+                    {c.other_contacts_at_account} other{c.other_contacts_at_account === 1 ? "" : "s"} →
+                  </Link>
+                ) : (
+                  <Link to={`/jobs/accounts?q=${encodeURIComponent(c.current_company ?? "")}`}
+                    className="text-[10.5px] font-semibold text-amber hover:underline">find a contact →</Link>
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {data.length > shown.length && (
+        <button type="button" onClick={() => setShowAll(true)}
+          className="w-full border-t border-border-strong px-3 py-1.5 text-[12px] text-accent hover:bg-surface-2/50">
+          Show all {data.length}
+        </button>
       )}
     </div>
   );
@@ -885,12 +670,6 @@ export function JobsOutreach() {
             <ScorecardTable title="Activity Pipeline" firstColHeader="Activity" rows={sc.activity_pipeline} idPrefix="act" drillKind="activity" granularity={granularity} scope={scope} owner={owner || undefined} range={range} />
           </div>
 
-          <SectionHead title="Conversion Figures" />
-          <ConversionTables sc={sc} />
-
-          <SectionHead title="Origin Comparison" />
-          <OriginComparison sc={sc} />
-
           {/* ── Divider: everything above = high-level review; below = per-sender/account detail ── */}
           <div className="mt-6 flex items-center gap-3">
             <div className="h-px flex-1 bg-border-strong" />
@@ -904,8 +683,9 @@ export function JobsOutreach() {
           <SectionHead title="Targeting Mix" note={`Outreach & replies by segment${owner ? ` · ${owner.split("@")[0]}` : ""} · this period`} />
           <TargetingMix granularity={granularity} scope={scope} owner={owner || undefined} range={range} />
 
-          <SectionHead title="Account Working List" note={owner ? `${owner.split("@")[0]}'s accounts · notes & open tasks` : "Accounts with notes & open tasks — most recently touched first"} />
-          <AccountsPanel owner={owner || undefined} />
+          <SectionHead title="Stuck in initial outreach"
+            note="3+ touches, no reply — time to work a different contact at the account" />
+          <StuckContactsPanel owner={owner || undefined} />
 
           <p className="text-[11px] italic text-ink-4">
             Warm = outreach to a company Bedrock already knew before the contact's first touch; Cold = the company's first appearance.
