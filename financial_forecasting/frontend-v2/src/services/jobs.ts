@@ -499,6 +499,8 @@ export interface JobsAccount {
   prospect_count: number;
   /** Everyone on file at the company, flagged or not (PFNYC had 11 with 0 flagged). */
   contact_count?: number;
+  /** Same company under another spelling that DOES hold prospects (email-domain match). */
+  prospect_sibling?: { account: string; prospects: number } | null;
   job_listings?: number;    // roles sourced + open-market roles builders applied to
   roles_sourced?: number;
   roles_applied?: number;
@@ -2108,6 +2110,15 @@ export interface OppActivityEvent {
   actor: string | null;
 }
 
+export interface OppDrillRow {
+  opportunity_id: string;
+  account: string | null;
+  stage: string;
+  stage_label: string;
+  owner: string | null;
+  at: string | null;
+}
+
 export interface OpportunitiesOverview {
   filters: { owner: string | null; deal_type: string | null; week_end: string | null };
   aging_basis: string;
@@ -2123,6 +2134,8 @@ export interface OpportunitiesOverview {
     stage: OppHeatmap;
   };
   needs_attention: OppNeedsRow[];
+  /** Rows behind each summary card — same query as the count, so they agree. */
+  drills: { in_set: OppDrillRow[]; stalled: OppDrillRow[]; net_new: OppDrillRow[]; won: OppDrillRow[]; lost: OppDrillRow[] };
   recent_activity: OppActivityEvent[];
 }
 

@@ -1922,13 +1922,16 @@ async def opportunities_overview(
     # Week-over-week, anchored to `ref` (Sat–Sat): net-new = opportunities created
     # in the selected week; prev = the prior 7-day window; moved-to-committed =
     # →closed_won in the week.
-    net_new = await conn.fetchval(f"""
-        SELECT count(*) FROM bedrock.jobs_opportunity o
+    net_new_rows = await conn.fetch(f"""
+        SELECT o.id, o.account_name, o.stage, o.owner_email, o.created_at AS at
+        FROM bedrock.jobs_opportunity o
         WHERE o.deleted_at IS NULL
           AND o.created_at >= $3::timestamptz - interval '7 days' AND o.created_at < $3::timestamptz
           AND ($1::text IS NULL OR o.owner_email = $1)
           AND ($2::text IS NULL OR o.deal_type = $2)
+        ORDER BY o.created_at DESC
     """, owner_f, dt_f, ref)
+    net_new = len(net_new_rows)
     net_new_prev = await conn.fetchval(f"""
         SELECT count(*) FROM bedrock.jobs_opportunity o
         WHERE o.deleted_at IS NULL
@@ -1936,8 +1939,9 @@ async def opportunities_overview(
           AND ($1::text IS NULL OR o.owner_email = $1)
           AND ($2::text IS NULL OR o.deal_type = $2)
     """, owner_f, dt_f, ref)
-    moved_committed = await conn.fetchval(f"""
-        SELECT count(DISTINCT h.opportunity_id)
+    won_rows = await conn.fetch(f"""
+        SELECT DISTINCT o.id, o.account_name, o.stage, o.owner_email,
+               max(h.changed_at) AS at
         FROM bedrock.jobs_stage_history h
         JOIN bedrock.jobs_opportunity o ON o.id = h.opportunity_id
         WHERE h.to_stage = 'closed_won'
@@ -1945,9 +1949,13 @@ async def opportunities_overview(
           AND o.deleted_at IS NULL
           AND ($1::text IS NULL OR o.owner_email = $1)
           AND ($2::text IS NULL OR o.deal_type = $2)
+        GROUP BY o.id, o.account_name, o.stage, o.owner_email
+        ORDER BY max(h.changed_at) DESC
     """, owner_f, dt_f, ref)
-    closed_lost = await conn.fetchval(f"""
-        SELECT count(DISTINCT h.opportunity_id)
+    moved_committed = len(won_rows)
+    lost_rows = await conn.fetch(f"""
+        SELECT DISTINCT o.id, o.account_name, o.stage, o.owner_email,
+               max(h.changed_at) AS at
         FROM bedrock.jobs_stage_history h
         JOIN bedrock.jobs_opportunity o ON o.id = h.opportunity_id
         WHERE h.to_stage = 'closed_lost'
@@ -1955,10 +1963,23 @@ async def opportunities_overview(
           AND o.deleted_at IS NULL
           AND ($1::text IS NULL OR o.owner_email = $1)
           AND ($2::text IS NULL OR o.deal_type = $2)
+        GROUP BY o.id, o.account_name, o.stage, o.owner_email
+        ORDER BY max(h.changed_at) DESC
     """, owner_f, dt_f, ref)
+    closed_lost = len(lost_rows)
 
     def _days(dt):
         return None if dt is None else max(0, (age_ref - dt).days)
+
+    def _drill_row(r, at):
+        return {
+            "opportunity_id": str(r["id"]),
+            "account": r["account_name"],
+            "stage": r["stage"],
+            "stage_label": STAGE_LABELS.get(r["stage"], r["stage"]),
+            "owner": r["owner_email"],
+            "at": at.isoformat() if at else None,
+        }
 
     in_set = len(rows)
     stalled_6wk = 0  # active opps that have been an opportunity for >6 weeks (since created)
@@ -2119,6 +2140,17 @@ async def opportunities_overview(
         },
         "needs_attention": needs[:30],
         "recent_activity": recent_activity,
+        # Rows behind each summary card — the card count and its drill list are
+        # the same query, so they can never disagree (closed-won showed 10 but a
+        # closed_at-based client drill found 1: those opps never got closed_at).
+        "drills": {
+            "in_set":  [_drill_row(r, r["entered_stage"]) for r in rows],
+            "stalled": [_drill_row(r, r["created_at"]) for r in rows
+                        if (_days(r["created_at"]) or 0) > 42],
+            "net_new": [_drill_row(r, r["at"]) for r in net_new_rows],
+            "won":     [_drill_row(r, r["at"]) for r in won_rows],
+            "lost":    [_drill_row(r, r["at"]) for r in lost_rows],
+        },
     }}
 
 
@@ -3941,7 +3973,7 @@ async def jobs_accounts(
         opp_rows, prospect_rows, ja_rows, task_rows,
         act1_rows, act2_rows, role_resp_rows, er_resp_rows,
         hires_rows, name_sf_rows, flagged_rows, listings_rows,
-        industry_rows, contact_total_rows,
+        industry_rows, contact_total_rows, domain_rows,
     ) = await asyncio.gather(
         pool.fetch(
             """
@@ -4089,6 +4121,23 @@ async def jobs_accounts(
             WHERE coalesce(trim(current_company), '') <> ''
             GROUP BY 1
             """),
+        # Company-name variants that share an email domain — the same real
+        # company filed under 2-3 spellings ("PFNYC" holds the opportunity while
+        # the flagged prospects sit under "Partnership For NYC"). Lets the UI say
+        # where the prospects actually are instead of "nobody identified".
+        pool.fetch(
+            """
+            SELECT lower(trim(c.current_company)) AS key,
+                   lower(split_part(c.email, '@', 2)) AS domain,
+                   count(*) AS n,
+                   count(*) FILTER (WHERE c.is_jobs_contact) AS prospects,
+                   min(c.current_company) AS display
+            FROM public.contacts c
+            WHERE coalesce(c.email,'') LIKE '%@%' AND coalesce(trim(c.current_company),'') <> ''
+              AND lower(split_part(c.email, '@', 2)) NOT IN
+                  ('gmail.com','yahoo.com','hotmail.com','outlook.com','icloud.com','aol.com','me.com','msn.com','comcast.net','pursuit.org')
+            GROUP BY 1, 2
+            """),
     )
 
     accounts: dict = {}
@@ -4145,6 +4194,25 @@ async def jobs_accounts(
     ja = {r["account_key"]: r for r in ja_rows}
     industry_by_key = {r["key"]: r["industry"] for r in industry_rows}
     contact_totals = {r["key"]: r["n"] for r in contact_total_rows}
+    # domain → the name variant that actually holds flagged prospects
+    _by_domain: dict = {}
+    for r in domain_rows:
+        _by_domain.setdefault(r["domain"], []).append(r)
+    sibling_hint: dict = {}
+    for variants in _by_domain.values():
+        if len(variants) < 2:
+            continue
+        best = max(variants, key=lambda v: v["prospects"])
+        domain_total = sum(int(v["n"]) for v in variants)
+        # High-precision only: the sibling must hold 3+ flagged prospects on the
+        # shared domain. Looser rules produced junk hints from single
+        # miscategorized rows (one "@uber.com but company=Pursuit" contact made
+        # Uber look like a duplicate of Pursuit).
+        if int(best["prospects"]) < 3 or int(best["n"]) < 3:
+            continue
+        for v in variants:
+            if v["key"] != best["key"] and not v["prospects"]:
+                sibling_hint[v["key"]] = {"account": best["display"], "prospects": int(best["prospects"])}
     # Manually-created accounts (a jobs_account row with no opps/prospects yet)
     # still need to appear on the hub, so seed a bucket for each.
     for k, rec in ja.items():
@@ -4237,6 +4305,7 @@ async def jobs_accounts(
         # Everyone on file at this company, flagged or not — "no prospects" and
         # "no people at all" are different problems with different fixes.
         g["contact_count"] = contact_totals.get(key, 0)
+        g["prospect_sibling"] = sibling_hint.get(key)
         g["industry"] = industry_by_key.get(key)
         _src, _app = listings_by_key.get(key, (0, 0))
         g["roles_sourced"] = _src

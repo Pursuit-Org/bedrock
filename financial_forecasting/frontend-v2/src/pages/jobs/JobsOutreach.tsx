@@ -13,19 +13,24 @@ import {
   useTagCampaigns,
   useDailyDigest,
   useStuckContacts,
+  useUpdateJobsMembership,
+  MEMBERSHIP_STAGES,
+  MEMBERSHIP_STAGE_LABELS,
   type OutreachGranularity,
   type OutreachScopeKind,
   type OutreachDateRange,
-  type OutreachScorecard,
   type ScorecardRow,
   type TargetingDim,
+  type MembershipStage,
 } from "@/services/jobs";
+import { InlineSelect } from "@/components/ui/InlineEdit";
 import { TagCampaigns } from "@/components/jobs/TagCampaigns";
 import { ActivityTrends } from "@/components/jobs/ActivityTrends";
 import { relDay } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 const DRILL_PAGE = 25;
+const MEMBERSHIP_STAGE_OPTIONS = MEMBERSHIP_STAGES.map((s) => ({ value: s, label: MEMBERSHIP_STAGE_LABELS[s] }));
 
 // ── Toggles ───────────────────────────────────────────────────────────────────
 const SCOPES: { id: OutreachScopeKind; label: string }[] = [
@@ -187,65 +192,6 @@ function ScorecardTable({
     </div>
   );
 }
-
-function BySenderTable({ sc, selectedOwner, onPick, nameOf }: {
-  sc: OutreachScorecard;
-  selectedOwner: string;
-  onPick: (email: string) => void;
-  nameOf: (email: string) => string;
-}) {
-  if (sc.by_sender.length === 0) return <div className="rounded-xl border border-border-strong bg-surface px-4 py-6 text-center text-[13px] text-ink-4">No sends by this group in the period.</div>;
-  return (
-    <div className="overflow-hidden rounded-xl border border-border-strong bg-surface">
-      <table className="w-full border-collapse">
-        <thead>
-          <tr className="bg-surface-2 text-[10.5px] uppercase tracking-wide text-ink-3">
-            <th className="px-3.5 py-2.5 text-left font-bold">Staff</th>
-            <th className="px-3.5 py-2.5 text-right font-bold">Sent</th>
-            <th className="px-3.5 py-2.5 text-right font-bold">Trend</th>
-            <th className="px-3.5 py-2.5 text-left font-bold">Warm / Cold split</th>
-          </tr>
-        </thead>
-        <tbody>
-          {sc.by_sender.map((s) => {
-            const total = s.warm + s.cold;
-            const wp = total ? (s.warm / total) * 100 : 0;
-            const active = selectedOwner === s.staff;
-            return (
-              <tr
-                key={s.staff}
-                onClick={() => onPick(active ? "" : s.staff)}
-                title={active ? "Click to clear the sender filter" : "Click to filter the whole deep-dive to this sender"}
-                className={cn("cursor-pointer border-t border-border text-[13.5px] hover:bg-surface-2",
-                  active && "bg-accent-soft")}
-              >
-                <td className="px-3.5 py-2.5 text-left font-medium">
-                  {nameOf(s.staff)}
-                  {active && <span className="ml-2 rounded bg-surface px-1.5 py-0.5 text-[10px] font-bold uppercase text-accent-ink">filtering</span>}
-                </td>
-                <td className="px-3.5 py-2.5 text-right tabular-nums">{s.sent.this}</td>
-                <td className="px-3.5 py-2.5 text-right text-[12.5px]"><Trend current={s.sent.this} prior={s.sent.last} /></td>
-                <td className="px-3.5 py-2.5 text-left">
-                  <div className="flex items-center gap-2 text-[12px] text-ink-3">
-                    <div className="flex h-1.5 w-16 overflow-hidden rounded bg-surface-2">
-                      <div className="h-full bg-amber" style={{ width: `${wp}%` }} />
-                      <div className="h-full bg-ink-3" style={{ width: `${100 - wp}%` }} />
-                    </div>
-                    {s.warm} / {s.cold}
-                  </div>
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-      <div className="border-t border-border bg-surface-2 px-3.5 py-1.5 text-[11px] text-ink-4">
-        Click a row to filter everything below to that sender.
-      </div>
-    </div>
-  );
-}
-
 // ── Targeting Mix (horizontal bar charts, 2×2) ────────────────────────────────
 function TargetingChart({ dim }: { dim: TargetingDim }) {
   const rows = dim.rows.slice(0, 8);
@@ -489,7 +435,16 @@ function HygieneBlock({ nameOf, staffEmails }: { nameOf: (email: string) => stri
             <tbody>
               {shown.map((a) => (
                 <tr key={a.account_key} className="border-t border-border-strong">
-                  <td className="px-3 py-1.5 font-medium text-ink">{a.account}</td>
+                  <td className="px-3 py-1.5">
+                    <span className="font-medium text-ink">{a.account}</span>
+                    {a.prospect_sibling && (
+                      <Link to={`/jobs/accounts?q=${encodeURIComponent(a.prospect_sibling.account)}`}
+                        className="block truncate text-[10.5px] text-amber hover:underline"
+                        title="Same company filed under another name — the prospects are over there">
+                        ⤳ {a.prospect_sibling.prospects} prospects under “{a.prospect_sibling.account}” — likely the same company
+                      </Link>
+                    )}
+                  </td>
                   <td className="px-2 py-1.5 text-ink-2">{a.owner_email ? nameOf(a.owner_email) : "—"}</td>
                   <td className="px-2 py-1.5 text-[11.5px] text-ink-3">{a.account_status}</td>
                   <td className={cn("px-2 py-1.5 text-right tabular-nums text-[11.5px]", (a.contact_count ?? 0) > 0 ? "text-ink-2" : "text-ink-4")}>
@@ -540,6 +495,9 @@ function HygieneBlock({ nameOf, staffEmails }: { nameOf: (email: string) => stri
  *  different contact at that account (replaced the account working list). */
 function StuckContactsPanel({ owner }: { owner?: string }) {
   const { data = [], isLoading } = useStuckContacts(3, owner);
+  // Stage editable in place: the usual next move here is On hold / Not a fit,
+  // or Converted if the account came good through another contact.
+  const updateMembership = useUpdateJobsMembership();
   const [showAll, setShowAll] = useState(false);
   if (isLoading) return <div className="flex items-center gap-2 px-1 py-4 text-[12.5px] text-ink-3"><Loader2 size={13} className="animate-spin" /> Loading…</div>;
   if (data.length === 0) {
@@ -556,6 +514,7 @@ function StuckContactsPanel({ owner }: { owner?: string }) {
           <th className="px-2 py-1.5 font-semibold">Company</th>
           <th className="px-2 py-1.5 text-right font-semibold">Touches</th>
           <th className="px-2 py-1.5 text-right font-semibold">Last touch</th>
+          <th className="px-2 py-1.5 font-semibold">Stage</th>
           <th className="px-2 py-1.5 text-right font-semibold" title="Other jobs prospects already identified at this company">Others at account</th>
         </tr></thead>
         <tbody>
@@ -568,6 +527,25 @@ function StuckContactsPanel({ owner }: { owner?: string }) {
               <td className="px-2 py-1.5 text-ink-2">{c.current_company || "—"}</td>
               <td className={cn("px-2 py-1.5 text-right tabular-nums font-semibold", c.touches >= 5 ? "text-red" : "text-amber")}>{c.touches}</td>
               <td className="px-2 py-1.5 text-right tabular-nums text-[11.5px] text-ink-4">{relDay(c.last_touch) ?? "—"}</td>
+              <td className="px-2 py-1.5">
+                <InlineSelect<string>
+                  value="initial_outreach"
+                  options={MEMBERSHIP_STAGE_OPTIONS}
+                  onSave={(v) => new Promise<void>((resolve, reject) => {
+                    if (!v || v === "initial_outreach") return resolve();
+                    updateMembership.mutate({ contact_id: c.contact_id, stage: v }, {
+                      onSuccess: () => {
+                        toast.success(`Moved ${c.full_name ?? "contact"} to ${MEMBERSHIP_STAGE_LABELS[v as MembershipStage] ?? v}`);
+                        resolve();
+                      },
+                      onError: reject,
+                    });
+                  })}
+                  renderValue={() => (
+                    <span className="rounded-full bg-surface-2 px-1.5 py-0.5 text-[10.5px] font-medium text-ink-3">Initial outreach</span>
+                  )}
+                />
+              </td>
               <td className="px-2 py-1.5 text-right">
                 {c.other_contacts_at_account > 0 ? (
                   <Link to={`/jobs/contacts?q=${encodeURIComponent(c.current_company ?? "")}`}
@@ -674,7 +652,6 @@ export function JobsOutreach() {
       {sc && (
         <>
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-            <ScorecardTable title="User Pipeline" firstColHeader="Stage" rows={sc.user_pipeline} idPrefix="user" drillKind="user" granularity={granularity} scope={scope} owner={owner || undefined} range={range} />
             <ScorecardTable title="Activity Pipeline" firstColHeader="Activity" rows={sc.activity_pipeline} idPrefix="act" drillKind="activity" granularity={granularity} scope={scope} owner={owner || undefined} range={range} />
           </div>
 
@@ -685,8 +662,6 @@ export function JobsOutreach() {
             <div className="h-px flex-1 bg-border-strong" />
           </div>
 
-          <SectionHead title="By Sender" note="Sent volume & warm/cold, per staff — click a row to filter" />
-          <BySenderTable sc={sc} selectedOwner={owner} onPick={setOwner} nameOf={nameOf} />
 
           <SectionHead title="Targeting Mix" note={`Outreach & replies by segment${owner ? ` · ${owner.split("@")[0]}` : ""} · this period`} />
           <TargetingMix granularity={granularity} scope={scope} owner={owner || undefined} range={range} />
