@@ -393,7 +393,23 @@ def summarize(report: Report, companies: list[Company], out_path: Path) -> int:
 
 
 async def main_async(args) -> int:
-    if args.smoke:
+    if args.csv:
+        # For probing a list you already have without DB credentials. Expects
+        # header `name,domain` (extra columns ignored).
+        companies = []
+        with open(args.csv, newline="") as fh:
+            for row in csv.DictReader(fh):
+                name = (row.get("name") or "").strip()
+                if name:
+                    companies.append(Company(
+                        name=name,
+                        domain=(row.get("domain") or "").strip(),
+                        contacts=int(row.get("contacts") or 0),
+                    ))
+        if args.limit:
+            companies = companies[:args.limit]
+        print(f"Loaded {len(companies)} companies from {args.csv}.")
+    elif args.smoke:
         companies = [Company(name=n, domain=d) for n, d in SMOKE_SLUGS]
         print(f"Smoke mode: {len(companies)} known companies, no DB.")
     else:
@@ -432,6 +448,7 @@ def main() -> int:
     ap.add_argument("--limit", type=int, help="probe only the top N companies")
     ap.add_argument("--smoke", action="store_true",
                     help="skip the DB; probe 6 known companies")
+    ap.add_argument("--csv", help="probe companies from a CSV (header: name,domain)")
     ap.add_argument("--platforms", default="greenhouse,ashby,lever")
     ap.add_argument("--out", default="ats_spike_report.csv")
     return asyncio.run(main_async(ap.parse_args()))
