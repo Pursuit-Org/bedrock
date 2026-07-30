@@ -30,19 +30,15 @@ import { relDay } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 const DRILL_PAGE = 25;
+/** [startISO, endISO] for the current Sun–Sat week (local dates). */
+function currentWeek(): [string, string] {
+  const iso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const start = new Date(); start.setHours(0, 0, 0, 0); start.setDate(start.getDate() - start.getDay());
+  const end = new Date(start); end.setDate(start.getDate() + 6);
+  return [iso(start), iso(end)];
+}
 const MEMBERSHIP_STAGE_OPTIONS = MEMBERSHIP_STAGES.map((s) => ({ value: s, label: MEMBERSHIP_STAGE_LABELS[s] }));
 
-// ── Toggles ───────────────────────────────────────────────────────────────────
-const SCOPES: { id: OutreachScopeKind; label: string }[] = [
-  { id: "pursuit", label: "Pursuit" },
-  { id: "team", label: "Core team" },
-  { id: "staff", label: "Other staff" },
-];
-const PERIODS: { id: OutreachGranularity; label: string }[] = [
-  { id: "day", label: "Daily" },
-  { id: "week", label: "Weekly" },
-  { id: "month", label: "Monthly" },
-];
 
 // ── Formatting helpers ────────────────────────────────────────────────────────
 function fmtDate(iso: string) {
@@ -335,7 +331,8 @@ const startOfWeekSunday = () => {
 /** Per-owner "this week": current assigned queue + contacts moved to Initial
  *  outreach this week — the same numbers as Jobs Home's progress strip,
  *  rolled up per person for the meeting. */
-function ThisWeekBlock({ nameOf, activityPipeline, granularity, scope, owner, range }: {
+function ThisWeekBlock({ nameOf, activityPipeline, granularity, scope, owner, range, periodLabel }: {
+  periodLabel?: string;
   nameOf: (email: string) => string;
   activityPipeline?: ScorecardRow[];
   granularity: OutreachGranularity;
@@ -365,14 +362,15 @@ function ThisWeekBlock({ nameOf, activityPipeline, granularity, scope, owner, ra
   if (rows.length === 0) return null;
   return (
     <div className="flex flex-col gap-3">
-      <SectionHead title="This week" note="assigned queue · contacted since Sunday" />
-      <div className="overflow-hidden rounded-lg border border-border-strong bg-surface">
+      <SectionHead title="This week" note={periodLabel ? `${periodLabel} · assigned queue and contacts reached` : "assigned queue · contacts reached"} />
+      <div className="flex flex-col overflow-hidden rounded-xl border border-border-strong bg-surface">
+        <div className="border-b border-border-strong bg-surface-2 px-4 py-3 text-[13px] font-bold text-ink-2">Assigned &amp; Contacted</div>
         <table className="w-full text-[12.5px]">
-          <thead><tr className="bg-surface-2/60 text-left text-[10.5px] uppercase tracking-wider text-ink-3">
-            <th className="px-3 py-1.5 font-semibold">Owner</th>
-            <th className="px-2 py-1.5 text-right font-semibold">Assigned</th>
-            <th className="px-2 py-1.5 text-right font-semibold">Contacted</th>
-            <th className="w-[34%] px-3 py-1.5 font-semibold">Progress</th>
+          <thead><tr className="bg-surface-2 text-left text-[10.5px] uppercase tracking-wide text-ink-3">
+            <th className="py-2.5 pl-3.5 pr-2 text-left font-bold">Owner</th>
+            <th className="px-2 py-2.5 text-right font-bold">Assigned</th>
+            <th className="px-2 py-2.5 text-right font-bold">Contacted</th>
+            <th className="w-[34%] px-3 py-2.5 text-left font-bold">Progress</th>
           </tr></thead>
           <tbody>
             {rows.map(([email, r]) => {
@@ -564,11 +562,12 @@ function StuckContactsPanel({ owner }: { owner?: string }) {
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 export function JobsOutreach() {
-  const [granularity, setGranularity] = useState<OutreachGranularity>("week");
-  const [scope, setScope] = useState<OutreachScopeKind>("team");
+  // Fixed internals now that the pill bar is gone: the jobs team, weekly buckets.
+  const granularity: OutreachGranularity = "week";
+  const scope: OutreachScopeKind = "team";
   const [owner, setOwner] = useState<string>("");   // "" = whole scope
-  const [from, setFrom] = useState("");
-  const [to, setTo] = useState("");
+  const [from, setFrom] = useState(() => currentWeek()[0]);
+  const [to, setTo] = useState(() => currentWeek()[1]);
   const range: OutreachDateRange | undefined = from && to ? { from, to } : undefined;
 
   const { data: staff = [] } = useJobsStaff();
@@ -576,21 +575,36 @@ export function JobsOutreach() {
   const { data: sc, isLoading, isError } = useOutreachScorecard(granularity, scope, owner || undefined, range);
   const rangeLabel = useMemo(() => (sc ? fmtRange(sc.period.this_start, sc.period.this_end) : ""), [sc]);
 
-  const Seg = <T extends string>({ items, value, onChange }: { items: { id: T; label: string }[]; value: T; onChange: (v: T) => void }) => (
-    <div className="flex rounded-lg border border-border-strong bg-surface p-1">
-      {items.map((it) => (
-        <button key={it.id} onClick={() => onChange(it.id)}
-          className={cn("rounded-md px-3 py-1.5 text-[13px] transition-colors", value === it.id ? "bg-surface-2 font-semibold text-ink" : "text-ink-3 hover:text-ink-2")}>
-          {it.label}
-        </button>
-      ))}
-    </div>
-  );
 
   const staffEmails = useMemo(() => new Set(staff.map((s) => s.email.toLowerCase())), [staff]);
 
   return (
     <div className="flex flex-col gap-6 pt-3">
+      {/* ── Page period + sender: one filter for the whole page, so "this
+             week" always means the dates shown here ── */}
+      <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border-strong bg-surface-2 px-3 py-2">
+        <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">Period</span>
+        <input type="date" value={from} max={to || undefined}
+          onChange={(e) => setFrom(e.target.value)}
+          className="h-7 rounded-md border border-border-strong bg-surface px-2 text-[12.5px] text-ink outline-none focus:border-accent" />
+        <span className="text-ink-4">→</span>
+        <input type="date" value={to} min={from || undefined}
+          onChange={(e) => setTo(e.target.value)}
+          className="h-7 rounded-md border border-border-strong bg-surface px-2 text-[12.5px] text-ink outline-none focus:border-accent" />
+        <button type="button" onClick={() => { const [f, t] = currentWeek(); setFrom(f); setTo(t); }}
+          className="h-7 rounded-md border border-border-strong bg-surface px-2 text-[12px] text-ink-2 hover:bg-surface-2">
+          This week
+        </button>
+        <div className="flex-1" />
+        <select value={owner} onChange={(e) => setOwner(e.target.value)}
+          className="h-7 rounded-md border border-border-strong bg-surface px-2 text-[12.5px] text-ink-2 outline-none focus:border-accent"
+          title="Filter every section to one person">
+          <option value="">All senders</option>
+          {[...staff].sort((a, b) => (a.name || a.email).localeCompare(b.name || b.email))
+            .map((st) => <option key={st.email} value={st.email}>{st.name || st.email}</option>)}
+        </select>
+      </div>
+
       {/* ── Daily digest (the morning Slack) ── */}
       <DailyDigestBlock />
 
@@ -602,7 +616,8 @@ export function JobsOutreach() {
       </div>
 
       <ThisWeekBlock nameOf={nameOf} activityPipeline={sc?.activity_pipeline}
-        granularity={granularity} scope={scope} owner={owner || undefined} range={range} />
+        granularity={granularity} scope={scope} owner={owner || undefined} range={range}
+        periodLabel={rangeLabel || undefined} />
 
       <div className="flex flex-col gap-3">
         <SectionHead title="Stuck in initial outreach"
@@ -615,35 +630,6 @@ export function JobsOutreach() {
       <div className="flex flex-col gap-3">
         <SectionHead title="Campaigns · coverage" note="the warm list, by source" />
         <TagCampaigns />
-      </div>
-
-      {/* ── Scorecard (ops deep-dive) ── */}
-      {/* Filter bar */}
-      <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border-strong bg-surface-2 px-3 py-2">
-        <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">Outreach</span>
-        <div className={cn(owner && "opacity-40 pointer-events-none")}>
-          <Seg items={SCOPES} value={scope} onChange={setScope} />
-        </div>
-        <select
-          value={owner}
-          onChange={(e) => setOwner(e.target.value)}
-          className="rounded-md border border-border-strong bg-surface px-2 py-1.5 text-[12.5px] text-ink outline-none focus:border-accent"
-          title="Filter to one sender (overrides scope)"
-        >
-          <option value="">All senders</option>
-          {[...staff].sort((a, b) => (a.name || a.email).localeCompare(b.name || b.email))
-            .map((s) => <option key={s.email} value={s.email}>{s.name || s.email}</option>)}
-        </select>
-        <div className="flex-1" />
-        <Seg items={PERIODS} value={granularity} onChange={setGranularity} />
-        <div className="flex items-center gap-1 text-[12.5px] text-ink-3">
-          <input type="date" value={from} onChange={(e) => setFrom(e.target.value)}
-            className="rounded-md border border-border-strong bg-surface px-2 py-1 text-[12.5px] text-ink outline-none focus:border-accent" />
-          <span>→</span>
-          <input type="date" value={to} onChange={(e) => setTo(e.target.value)}
-            className="rounded-md border border-border-strong bg-surface px-2 py-1 text-[12.5px] text-ink outline-none focus:border-accent" />
-          {range && <button onClick={() => { setFrom(""); setTo(""); }} className="ml-1 text-[12px] text-ink-3 underline hover:text-ink">clear</button>}
-        </div>
       </div>
 
       <SectionHead title="Scorecard" note={rangeLabel ? `${rangeLabel} vs. prior period` : undefined} />
@@ -671,15 +657,6 @@ export function JobsOutreach() {
 
 
 
-          <p className="text-[11px] italic text-ink-4">
-            Warm = outreach to a company Bedrock already knew before the contact's first touch; Cold = the company's first appearance.
-            <strong> Lead Sourced</strong> = contacts newly assigned into the pipeline; <strong>Outreached</strong> = distinct contacts who
-            received a jobs outreach email this period (activity-driven). <strong>Engagements</strong> = meetings, calls, or inbound emails
-            from outside Pursuit. <strong>Direct Email Responses</strong> = external addresses that replied for the first time after we
-            emailed them. <strong>Facilitated Intro</strong> = a warm intro (someone introduced us). Activity is gated to jobs-classified
-            touches, so counts will rise as the nightly classifier catches up. Scope/sender filter the activity side; Qualified Lead &amp;
-            Committed populate once stage-entry tracking is live.
-          </p>
         </>
       )}
 

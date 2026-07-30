@@ -3017,16 +3017,16 @@ async def outreach_scorecard(
     ),
     activity_counts AS (
         SELECT 'activity' AS kind, ae.metric AS key, coalesce(cw.warmth,'cold') AS warmth,
-               count(*) FILTER (WHERE ae.ts >= $1 AND ae.ts < $2) AS this_period,
-               count(*) FILTER (WHERE ae.ts >= $3 AND ae.ts < $4) AS last_period
+               count(DISTINCT ae.contact_id) FILTER (WHERE ae.ts >= $1 AND ae.ts < $2) AS this_period,
+               count(DISTINCT ae.contact_id) FILTER (WHERE ae.ts >= $3 AND ae.ts < $4) AS last_period
         FROM activity_events ae
         LEFT JOIN contact_warmth cw ON cw.contact_id = ae.contact_id
         GROUP BY ae.metric, coalesce(cw.warmth,'cold')
     ),
     engagement_counts AS (
         SELECT 'activity' AS kind, 'engagement' AS key, coalesce(cw.warmth,'cold') AS warmth,
-               count(*) FILTER (WHERE ee.ts >= $1 AND ee.ts < $2) AS this_period,
-               count(*) FILTER (WHERE ee.ts >= $3 AND ee.ts < $4) AS last_period
+               count(DISTINCT ee.contact_id) FILTER (WHERE ee.ts >= $1 AND ee.ts < $2) AS this_period,
+               count(DISTINCT ee.contact_id) FILTER (WHERE ee.ts >= $3 AND ee.ts < $4) AS last_period
         FROM engagement_events ee
         LEFT JOIN contact_warmth cw ON cw.contact_id = ee.contact_id
         GROUP BY coalesce(cw.warmth,'cold')
@@ -3440,7 +3440,6 @@ async def outreach_stuck_contacts(
     a different contact at that account — so each row carries how many OTHER
     jobs prospects exist at the same company. Replaces the account working list."""
     team_aem = " OR ".join(f"aem.from_email ILIKE '%{e}%'" for e in JOBS_TEAM_EMAILS)
-    team_sender = " OR ".join(f"a.email_from ILIKE '%{e}%'" for e in JOBS_TEAM_EMAILS)
     owner_where = ""
     params: list = [min_touches]
     if owner:
@@ -3464,11 +3463,20 @@ async def outreach_stuck_contacts(
         ),
         agg AS (SELECT cid, count(*) AS touches, max(ts) AS last_touch FROM sends GROUP BY 1),
         replied AS (
-            -- any inbound email, or a meeting/call that happened at all
+            -- a meeting/call at all, OR any inbound MESSAGE on a thread linked to
+            -- the contact (their own reply or a colleague's — either way the
+            -- account engaged).
             SELECT DISTINCT a.participant_public_contact_id AS cid
             FROM bedrock.activity a
             WHERE a.deleted_at IS NULL AND a.participant_public_contact_id IS NOT NULL
-              AND (a.type IN ('meeting','call') OR (a.type = 'email' AND NOT ({team_sender})))
+              AND a.type IN ('meeting','call')
+            UNION
+            SELECT DISTINCT a.participant_public_contact_id AS cid
+            FROM bedrock.activity a
+            JOIN bedrock.activity_email_message aem ON aem.activity_id = a.id
+            WHERE a.deleted_at IS NULL AND a.participant_public_contact_id IS NOT NULL
+              AND aem.from_email NOT ILIKE '%@pursuit.org%'
+              AND aem.from_email NOT ILIKE '%@pursuit.com%'
         )
         SELECT c.contact_id, c.full_name, c.current_title, c.current_company,
                c.owner_email, agg.touches::int AS touches, agg.last_touch,
@@ -5130,10 +5138,19 @@ async def list_contacts(
     # When the contact entered its CURRENT membership stage. Real answer comes
     # from the stage-history table; until that migration lands, degrade to
     # assigned_at (row creation — accurate only for never-restaged contacts).
+    # Per-stage entry time. Falls back to the stage's OWN stamp before
+    # assigned_at: a contact in initial_outreach entered that stage at
+    # first_outreach_at, and using assigned_at made "contacted this week" read 0
+    # while 6 contacts had actually been reached (2026-07-30).
+    _stamp_fallback = ("CASE m.stage"
+                       " WHEN 'initial_outreach' THEN m.first_outreach_at"
+                       " WHEN 'converted_to_opportunity' THEN m.converted_at"
+                       " END")
     entered_expr = (
-        "COALESCE((SELECT max(h.changed_at) FROM bedrock.jobs_membership_stage_history h"
-        " WHERE h.contact_id = c.contact_id AND h.to_stage = m.stage), m.assigned_at)"
-        if await has_membership_history(conn) else "m.assigned_at")
+        f"COALESCE((SELECT max(h.changed_at) FROM bedrock.jobs_membership_stage_history h"
+        f" WHERE h.contact_id = c.contact_id AND h.to_stage = m.stage), {_stamp_fallback}, m.assigned_at)"
+        if await has_membership_history(conn)
+        else f"COALESCE({_stamp_fallback}, m.assigned_at)")
     rows = await conn.fetch(
         f"""
         SELECT
