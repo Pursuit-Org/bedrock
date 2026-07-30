@@ -60,22 +60,37 @@ const ownerShort = (e: string | null) => (e ? e.split("@")[0] : "—");
 const titleCaseEmail = (e: string) =>
   e.split("@")[0].replace(/[._-]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 
-/** The most recent Saturday on or before `d` (weeks run Saturday-to-Saturday). */
-function mostRecentSaturday(d: Date): Date {
-  const x = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-  x.setDate(x.getDate() - ((x.getDay() - 6 + 7) % 7));
-  return x;
-}
-/** The Saturday that CLOSES the week containing `d` (Sun–Sat weeks). A Saturday
- *  closes its own week — mapping it forward would jump a whole week ahead.
- *  weekEnd is the closing boundary, so the current in-progress week is selectable. */
-function weekEndFor(d: Date): Date {
-  const sat = mostRecentSaturday(d);
-  return d.getDay() === 6 ? sat : addDays(sat, 7);
-}
 /** Local YYYY-MM-DD (avoids the UTC shift of toISOString). */
 function fmtDateInput(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+const dayOnly = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+const parseDateInput = (v: string) => dayOnly(new Date(`${v}T00:00:00`));
+/** Whole days from a to b (both floored to midnight). */
+const dayDiff = (a: Date, b: Date) => Math.round((dayOnly(b).getTime() - dayOnly(a).getTime()) / 86400000);
+/** The most recent `dow` (0=Sun) on or before `d`. */
+function mostRecentDow(d: Date, dow: number): Date {
+  const x = dayOnly(d);
+  x.setDate(x.getDate() - ((x.getDay() - dow + 7) % 7));
+  return x;
+}
+const THURSDAY = 4;
+/** The pipeline meeting runs Thursdays, so the default window is the Thursday-
+ *  aligned week: on meeting day that's the completed cycle just reviewed
+ *  (last Thu → Wed), any other day it's the in-progress cycle (Thu → today).
+ *  Both bounds are inclusive, so the cycle is a clean 7 days with no overlap
+ *  between consecutive weeks. Any range is selectable via the two date inputs. */
+function thursdayCycle(today: Date): { start: Date; end: Date } {
+  const t = dayOnly(today);
+  return t.getDay() === THURSDAY
+    ? { start: addDays(t, -7), end: addDays(t, -1) }
+    : { start: mostRecentDow(t, THURSDAY), end: t };
+}
+/** Sun–Sat week containing `d`, clamped to today (the previous default). */
+function calendarWeek(today: Date): { start: Date; end: Date } {
+  const t = dayOnly(today);
+  const sun = mostRecentDow(t, 0);
+  return { start: sun, end: t };
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
@@ -84,13 +99,36 @@ export function JobsOpportunitiesOverview() {
   const [owner, setOwner] = useState<string>("all");
   const [dealType, setDealType] = useState<string>("all");
   const [dim, setDim] = useState<OppBreakdownDim>("status");
-  const [weekEnd, setWeekEnd] = useState<Date>(() => weekEndFor(new Date()));
-
-  // The current (in-progress) week is the furthest forward you can go.
-  const maxWeekEnd = weekEndFor(new Date());
-  const canGoNext = addDays(weekEnd, 7).getTime() <= maxWeekEnd.getTime();
-  // The server window is [weekEnd-6 00:00, weekEnd 24:00] — a Sun–Sat week.
-  const weekStart = addDays(weekEnd, -6);
+  // Free-form window: both bounds inclusive, no snapping. Defaults to the
+  // Thursday-aligned meeting cycle; presets and the two date inputs set it.
+  const today = useMemo(() => dayOnly(new Date()), []);
+  const [range, setRange] = useState<{ start: Date; end: Date }>(() => thursdayCycle(new Date()));
+  const weekStart = range.start;
+  const weekEnd = range.end;
+  const spanDays = Math.max(1, dayDiff(weekStart, weekEnd) + 1);
+  const canGoNext = dayDiff(weekEnd, today) >= 1;
+  /** Step the whole window by its own length, so a Thursday-aligned week stays
+   *  Thursday-aligned. Forward steps clamp at today rather than overshooting. */
+  const shiftRange = (dir: -1 | 1) => setRange(({ start, end }) => {
+    const s = addDays(start, dir * spanDays);
+    const e = addDays(end, dir * spanDays);
+    if (dir === 1 && dayDiff(e, today) < 0) return { start: addDays(today, -(spanDays - 1)), end: today };
+    return { start: s, end: e };
+  });
+  // Both setters clamp at today (a future window is always empty) and keep
+  // start <= end by dragging the other bound along.
+  const setStart = (v: string) => setRange(({ end }) => {
+    const p = parseDateInput(v);
+    const s = dayDiff(p, today) < 0 ? today : p;
+    return { start: s, end: dayDiff(s, end) < 0 ? s : end };
+  });
+  const setEnd = (v: string) => setRange(({ start }) => {
+    const e = dayDiff(parseDateInput(v), today) > 0 ? today : parseDateInput(v);
+    return { start: dayDiff(start, e) < 0 ? e : start, end: e };
+  });
+  const rangeLabel = weekStart.getFullYear() === weekEnd.getFullYear()
+    ? `${format(weekStart, "MMM d")} – ${format(weekEnd, "MMM d")}`
+    : `${format(weekStart, "MMM d, yyyy")} – ${format(weekEnd, "MMM d, yyyy")}`;
 
   const staffQ = useJobsStaff();
   const nameOf = useMemo(() => {
@@ -98,7 +136,8 @@ export function JobsOpportunitiesOverview() {
     (staffQ.data ?? []).forEach((st) => m.set(st.email, st.name));
     return (email: string | null) => (email ? m.get(email) ?? titleCaseEmail(email) : "—");
   }, [staffQ.data]);
-  const { data, isLoading } = useOpportunitiesOverview(owner, dealType, fmtDateInput(weekEnd));
+  const { data, isLoading } = useOpportunitiesOverview(
+    owner, dealType, fmtDateInput(weekEnd), fmtDateInput(weekStart));
 
   const s = data?.summary;
   const netDelta = s ? s.net_new - s.net_new_prev : 0;
@@ -161,24 +200,23 @@ export function JobsOpportunitiesOverview() {
         <div>
           <h2 className="text-[18px] font-semibold tracking-tight text-ink">Opportunities Overview</h2>
         </div>
-        <div className="flex items-center gap-1 rounded-lg border border-border-strong bg-surface px-1.5 py-1 text-[12.5px]">
+        <div className="flex flex-wrap items-center gap-1 rounded-lg border border-border-strong bg-surface px-1.5 py-1 text-[12.5px]">
           <button
             type="button"
-            onClick={() => setWeekEnd(addDays(weekEnd, -7))}
+            onClick={() => shiftRange(-1)}
             className="rounded p-1 text-ink-4 hover:bg-surface-2 hover:text-ink"
-            title="Previous week"
+            title={`Back ${spanDays} days`}
           >
             <ChevronLeft size={15} />
           </button>
-          <span className="whitespace-nowrap px-1 font-semibold text-ink">
-            {format(weekStart, "MMM d")} – {format(weekEnd, "MMM d")}
-          </span>
+          <span className="whitespace-nowrap px-1 font-semibold text-ink">{rangeLabel}</span>
+          <span className="whitespace-nowrap text-[11px] text-ink-4">{spanDays}d</span>
           <button
             type="button"
-            onClick={() => setWeekEnd(addDays(weekEnd, 7))}
+            onClick={() => shiftRange(1)}
             disabled={!canGoNext}
             className="rounded p-1 text-ink-4 hover:bg-surface-2 hover:text-ink disabled:opacity-30 disabled:hover:bg-transparent"
-            title="Next week"
+            title={`Forward ${spanDays} days`}
           >
             <ChevronRight size={15} />
           </button>
@@ -186,20 +224,42 @@ export function JobsOpportunitiesOverview() {
             <input
               type="date"
               value={fmtDateInput(weekStart)}
-              max={fmtDateInput(maxWeekEnd)}
-              onChange={(e) => { if (e.target.value) setWeekEnd(weekEndFor(new Date(`${e.target.value}T00:00:00`))); }}
+              max={fmtDateInput(weekEnd)}
+              onChange={(e) => { if (e.target.value) setStart(e.target.value); }}
               className="rounded border border-border-strong bg-surface px-1.5 py-0.5 text-[12px] text-ink outline-none focus:border-accent"
-              title="Start date — snaps to the week containing it"
+              title="First day of the window (inclusive)"
             />
             <span className="text-ink-4">→</span>
             <input
               type="date"
               value={fmtDateInput(weekEnd)}
-              max={fmtDateInput(maxWeekEnd)}
-              onChange={(e) => { if (e.target.value) setWeekEnd(weekEndFor(new Date(`${e.target.value}T00:00:00`))); }}
+              max={fmtDateInput(today)}
+              onChange={(e) => { if (e.target.value) setEnd(e.target.value); }}
               className="rounded border border-border-strong bg-surface px-1.5 py-0.5 text-[12px] text-ink outline-none focus:border-accent"
-              title="End date — snaps to the week containing it"
+              title="Last day of the window (inclusive)"
             />
+          </span>
+          <span className="ml-1 flex items-center gap-1 border-l border-border pl-1.5">
+            {([
+              { label: "Thu week", title: "The Thursday-to-Thursday meeting cycle", get: () => thursdayCycle(new Date()) },
+              { label: "Week", title: "This calendar week so far (Sun–today)", get: () => calendarWeek(new Date()) },
+              { label: "30d", title: "The last 30 days", get: () => ({ start: addDays(today, -29), end: today }) },
+            ] as const).map((p) => {
+              const r = p.get();
+              const active = fmtDateInput(r.start) === fmtDateInput(weekStart) && fmtDateInput(r.end) === fmtDateInput(weekEnd);
+              return (
+                <button
+                  key={p.label}
+                  type="button"
+                  title={p.title}
+                  onClick={() => setRange(p.get())}
+                  className={`rounded px-1.5 py-0.5 text-[11.5px] font-medium ${
+                    active ? "bg-accent-soft text-accent" : "text-ink-4 hover:bg-surface-2 hover:text-ink"}`}
+                >
+                  {p.label}
+                </button>
+              );
+            })}
           </span>
         </div>
       </div>
@@ -238,19 +298,19 @@ export function JobsOpportunitiesOverview() {
         <SummaryCard tone="ink" label="In the set" value={s?.in_set} isLoading={isLoading}
           sub="All active opportunities"
           onClick={() => setDrill({ title: "In the set", note: "All active opportunities", rows: data?.drills.in_set ?? [] })} />
-        <SummaryCard tone="accent" label="Net new" value={s?.net_new} isLoading={isLoading}
-          delta={s ? { n: netDelta, prev: s.net_new_prev } : undefined}
-          onClick={() => setDrill({ title: "Net new this week", note: `Created ${format(weekStart, "MMM d")} – ${format(weekEnd, "MMM d")}`, rows: data?.drills.net_new ?? [] })} />
+        <SummaryCard tone="accent" label="Net new" value={s?.net_new} sub={rangeLabel} isLoading={isLoading}
+          delta={s ? { n: netDelta, prev: s.net_new_prev, priorLabel: spanDays === 7 ? "last wk" : `prior ${spanDays}d` } : undefined}
+          onClick={() => setDrill({ title: "Net new", note: `Created ${rangeLabel}`, rows: data?.drills.net_new ?? [] })} />
         <SummaryCard tone="amber" label="Stalled" value={s?.stalled_6wk} isLoading={isLoading}
           sub="Open opportunity 6+ weeks"
           onClick={() => setDrill({ title: "Stalled 6+ weeks", note: "Open, created more than 6 weeks ago", rows: data?.drills.stalled ?? [] })} />
         {/* Stacked outcome boxes for the week — Closed won (the goal,
             subtly highlighted) over Closed lost (context to understand, not a red flag). */}
         <div className="flex flex-col gap-4">
-          <OutcomeBox tone="green" highlight label="Closed won" value={s?.moved_committed} isLoading={isLoading}
-            onClick={() => setDrill({ title: "Closed won this week", rows: data?.drills.won ?? [] })} />
-          <OutcomeBox tone="ink" label="Closed lost" value={s?.closed_lost} isLoading={isLoading}
-            onClick={() => setDrill({ title: "Closed lost this week", rows: data?.drills.lost ?? [] })} />
+          <OutcomeBox tone="green" highlight label="Closed won" value={s?.moved_committed} sub={rangeLabel} isLoading={isLoading}
+            onClick={() => setDrill({ title: "Closed won", note: rangeLabel, rows: data?.drills.won ?? [] })} />
+          <OutcomeBox tone="ink" label="Closed lost" value={s?.closed_lost} sub={rangeLabel} isLoading={isLoading}
+            onClick={() => setDrill({ title: "Closed lost", note: rangeLabel, rows: data?.drills.lost ?? [] })} />
         </div>
         {/* Stage-gate check: won on the board but the follow-through (e.g. the
             signed contract task) is still open — "signed contract = closed". */}
@@ -265,7 +325,7 @@ export function JobsOpportunitiesOverview() {
       {/* ── Recent activity — the week's narrative, promoted ──────────── */}
       <Panel
         title="Recent activity"
-        desc="Added, moved, won/lost, or stalled this week — newest first"
+        desc={`Added, moved, won or lost between ${rangeLabel} — newest first`}
       >
         <RecentActivity events={orderedActivity} isLoading={isLoading} nameOf={nameOf} />
       </Panel>
@@ -631,7 +691,7 @@ function SummaryCard({
   label: string;
   value: number | undefined;
   sub?: string;
-  delta?: { n: number; prev: number };
+  delta?: { n: number; prev: number; priorLabel: string };
   isLoading: boolean;
   onClick?: () => void;
 }) {
@@ -660,7 +720,7 @@ function SummaryCard({
               : "bg-surface-2 text-ink-3",
         )}>
           {delta.n > 0 ? <TrendingUp size={11} /> : delta.n < 0 ? <TrendingDown size={11} /> : <Minus size={11} />}
-          {delta.n === 0 ? `same as ${delta.prev} last wk` : `${delta.n > 0 ? "↑" : "↓"} vs ${delta.prev} last wk`}
+          {delta.n === 0 ? `same as ${delta.prev} ${delta.priorLabel}` : `${delta.n > 0 ? "↑" : "↓"} vs ${delta.prev} ${delta.priorLabel}`}
         </div>
       ) : !isLoading && sub ? (
         <div className="mt-2 text-[11.5px] text-ink-4">{sub}</div>
@@ -672,11 +732,12 @@ function SummaryCard({
 // ── Outcome box (half-height; stacked for won / lost) ─────────────────────────
 
 function OutcomeBox({
-  tone, label, value, highlight, isLoading, onClick,
+  tone, label, value, sub, highlight, isLoading, onClick,
 }: {
   tone: keyof typeof TONE | string;
   label: string;
   value: number | undefined;
+  sub?: string;
   highlight?: boolean;
   isLoading: boolean;
   onClick?: () => void;
@@ -698,7 +759,7 @@ function OutcomeBox({
           {highlight ? <Trophy size={11} className="text-[var(--green)]" /> : null}
           {label}
         </div>
-        <div className="text-[10.5px] text-ink-4">this week</div>
+        <div className="text-[10.5px] text-ink-4">{sub ?? "this week"}</div>
       </div>
       {isLoading ? (
         <div className="h-6 w-8 animate-pulse rounded bg-surface-2" />
@@ -824,7 +885,7 @@ function RecentActivity({ events, isLoading, nameOf }: { events: OppActivityEven
   if (events.length === 0) {
     return (
       <div className="flex items-center justify-center rounded-lg border border-dashed border-border-strong px-4 py-8 text-[12px] text-ink-4">
-        No activity in this week.
+        No activity in the selected range.
       </div>
     );
   }

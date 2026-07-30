@@ -2139,16 +2139,20 @@ export interface OpportunitiesOverview {
   recent_activity: OppActivityEvent[];
 }
 
-export function useOpportunitiesOverview(owner?: string, dealType?: string, weekEnd?: string) {
+/** `weekEnd`/`start` are inclusive YYYY-MM-DD bounds of the window. Omit `start`
+ *  for the server default (a 7-day window back from weekEnd); pass it for any
+ *  custom span — the Pipeline page runs Thursday-aligned weeks off it. */
+export function useOpportunitiesOverview(owner?: string, dealType?: string, weekEnd?: string, start?: string) {
   const o = owner && owner !== "all" ? owner : undefined;
   const dt = dealType && dealType !== "all" ? dealType : undefined;
   return useQuery<OpportunitiesOverview>({
-    queryKey: ["jobs", "opportunities", "overview", o ?? "all", dt ?? "all", weekEnd ?? "current"],
+    queryKey: ["jobs", "opportunities", "overview", o ?? "all", dt ?? "all", weekEnd ?? "current", start ?? "7d"],
     queryFn: async () => {
       const p = new URLSearchParams();
       if (o) p.set("owner", o);
       if (dt) p.set("deal_type", dt);
       if (weekEnd) p.set("week_end", weekEnd);
+      if (start) p.set("start", start);
       const qs = p.toString() ? `?${p}` : "";
       const { data } = await api.get<ApiResponse<OpportunitiesOverview>>(`/api/jobs/opportunities/overview${qs}`);
       return data.data;

@@ -1879,7 +1879,8 @@ def _opp_age_bucket(days: int) -> int:
 async def opportunities_overview(
     owner: Optional[str] = Query(None),
     deal_type: Optional[str] = Query(None),
-    week_end: Optional[str] = Query(None, description="Week-ending Saturday (YYYY-MM-DD). Anchors the Sat–Sat week and time-in-stage ages. Defaults to now."),
+    week_end: Optional[str] = Query(None, description="Last day of the window (YYYY-MM-DD), inclusive. Anchors the as-of view. Defaults to now."),
+    start: Optional[str] = Query(None, description="First day of the window (YYYY-MM-DD), inclusive. Defaults to week_end - 6 days, i.e. a 7-day window. Lets the Thursday meeting run Thu→Thu."),
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
@@ -1909,6 +1910,20 @@ async def opportunities_overview(
     # their historical anchor. Week windows (net-new, moved, lost) stay on
     # `ref` so they remain calendar Sun–Sat weeks.
     age_ref = min(ref, datetime.now(timezone.utc))
+    # Window = [win_start, ref). Defaults to 7 days back from ref so existing
+    # callers are unchanged; an explicit `start` gives any span (Thu→Thu, a
+    # month, a quarter). `prev_start` is the same span immediately before.
+    win_start = ref - timedelta(days=7)
+    if start:
+        try:
+            sd = date.fromisoformat(start)
+            cand = datetime(sd.year, sd.month, sd.day, tzinfo=timezone.utc)
+            if cand < ref:
+                win_start = cand
+        except ValueError:
+            pass
+    span = ref - win_start
+    prev_start = win_start - span
 
     # As-of-`ref` membership: the active set as it stood at the end of the
     # selected week, reconstructed from created_at / closed_at so past weeks show
@@ -1948,32 +1963,32 @@ async def opportunities_overview(
         SELECT o.id, o.account_name, o.stage, o.owner_email, o.created_at AS at
         FROM bedrock.jobs_opportunity o
         WHERE o.deleted_at IS NULL
-          AND o.created_at >= $3::timestamptz - interval '7 days' AND o.created_at < $3::timestamptz
+          AND o.created_at >= $4::timestamptz AND o.created_at < $3::timestamptz
           AND ($1::text IS NULL OR o.owner_email = $1)
           AND ($2::text IS NULL OR o.deal_type = $2)
         ORDER BY o.created_at DESC
-    """, owner_f, dt_f, ref)
+    """, owner_f, dt_f, ref, win_start)
     net_new = len(net_new_rows)
     net_new_prev = await conn.fetchval(f"""
         SELECT count(*) FROM bedrock.jobs_opportunity o
         WHERE o.deleted_at IS NULL
-          AND o.created_at >= $3::timestamptz - interval '14 days' AND o.created_at < $3::timestamptz - interval '7 days'
+          AND o.created_at >= $4::timestamptz AND o.created_at < $3::timestamptz
           AND ($1::text IS NULL OR o.owner_email = $1)
           AND ($2::text IS NULL OR o.deal_type = $2)
-    """, owner_f, dt_f, ref)
+    """, owner_f, dt_f, win_start, prev_start)
     won_rows = await conn.fetch(f"""
         SELECT DISTINCT o.id, o.account_name, o.stage, o.owner_email,
                max(h.changed_at) AS at
         FROM bedrock.jobs_stage_history h
         JOIN bedrock.jobs_opportunity o ON o.id = h.opportunity_id
         WHERE h.to_stage = 'closed_won'
-          AND h.changed_at >= $3::timestamptz - interval '7 days' AND h.changed_at < $3::timestamptz
+          AND h.changed_at >= $4::timestamptz AND h.changed_at < $3::timestamptz
           AND o.deleted_at IS NULL
           AND ($1::text IS NULL OR o.owner_email = $1)
           AND ($2::text IS NULL OR o.deal_type = $2)
         GROUP BY o.id, o.account_name, o.stage, o.owner_email
         ORDER BY max(h.changed_at) DESC
-    """, owner_f, dt_f, ref)
+    """, owner_f, dt_f, ref, win_start)
     moved_committed = len(won_rows)
     lost_rows = await conn.fetch(f"""
         SELECT DISTINCT o.id, o.account_name, o.stage, o.owner_email,
@@ -1981,13 +1996,13 @@ async def opportunities_overview(
         FROM bedrock.jobs_stage_history h
         JOIN bedrock.jobs_opportunity o ON o.id = h.opportunity_id
         WHERE h.to_stage = 'closed_lost'
-          AND h.changed_at >= $3::timestamptz - interval '7 days' AND h.changed_at < $3::timestamptz
+          AND h.changed_at >= $4::timestamptz AND h.changed_at < $3::timestamptz
           AND o.deleted_at IS NULL
           AND ($1::text IS NULL OR o.owner_email = $1)
           AND ($2::text IS NULL OR o.deal_type = $2)
         GROUP BY o.id, o.account_name, o.stage, o.owner_email
         ORDER BY max(h.changed_at) DESC
-    """, owner_f, dt_f, ref)
+    """, owner_f, dt_f, ref, win_start)
     closed_lost = len(lost_rows)
 
     def _days(dt):
@@ -2090,20 +2105,20 @@ async def opportunities_overview(
                          ORDER BY h.changed_at ASC LIMIT 1), o.owner_email) AS actor
         FROM bedrock.jobs_opportunity o
         WHERE o.deleted_at IS NULL
-          AND o.created_at >= $3::timestamptz - interval '7 days' AND o.created_at < $3::timestamptz
+          AND o.created_at >= $4::timestamptz AND o.created_at < $3::timestamptz
           AND ($1::text IS NULL OR o.owner_email = $1)
           AND ($2::text IS NULL OR o.deal_type = $2)
-    """, owner_f, dt_f, ref)
+    """, owner_f, dt_f, ref, win_start)
     moved_rows = await conn.fetch(f"""
         SELECT o.id, o.account_name, o.deal_type, h.from_stage, h.to_stage,
                h.changed_at AS at, h.changed_by AS actor
         FROM bedrock.jobs_stage_history h
         JOIN bedrock.jobs_opportunity o ON o.id = h.opportunity_id
         WHERE o.deleted_at IS NULL AND h.from_stage IS NOT NULL
-          AND h.changed_at >= $3::timestamptz - interval '7 days' AND h.changed_at < $3::timestamptz
+          AND h.changed_at >= $4::timestamptz AND h.changed_at < $3::timestamptz
           AND ($1::text IS NULL OR o.owner_email = $1)
           AND ($2::text IS NULL OR o.deal_type = $2)
-    """, owner_f, dt_f, ref)
+    """, owner_f, dt_f, ref, win_start)
     stalled_rows = await conn.fetch(f"""
         SELECT o.id, o.account_name, o.deal_type, o.stage, o.created_at, o.owner_email AS actor
         FROM bedrock.jobs_opportunity o
