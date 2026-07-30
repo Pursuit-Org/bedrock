@@ -123,6 +123,22 @@ export function JobsOpportunitiesOverview() {
   const wonOpenTasks = useMemo(
     () => (oppsData?.data ?? []).filter((o) => o.stage === "closed_won" && (o.open_tasks ?? 0) > 0),
     [oppsData]);
+  // Summary-card drill: each card opens the opportunities behind its number.
+  const [drill, setDrill] = useState<{ title: string; note?: string; rows: JobsOpportunity[] } | null>(null);
+  const weekStartISO = fmtDateInput(addDays(weekEnd, -6));
+  const weekEndISO = fmtDateInput(addDays(weekEnd, 1));
+  const inWeek = (iso: string | null | undefined) =>
+    !!iso && iso.slice(0, 10) >= weekStartISO && iso.slice(0, 10) < weekEndISO;
+  const all = oppsData?.data ?? [];
+  const drillSets = {
+    in_set: openOpps,
+    net_new: all.filter((o) => inWeek(o.created_at)),
+    stalled: openOpps.filter((o) => o.created_at && (Date.now() - new Date(o.created_at).getTime()) / 86400000 > 42),
+    won: all.filter((o) => o.stage === "closed_won" && inWeek(o.closed_at)),
+    lost: all.filter((o) => o.stage === "closed_lost" && inWeek(o.closed_at)),
+    won_open_tasks: wonOpenTasks,
+  };
+
   // One expand at a time across all managed tables; stage-gating modals at page root.
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [placementModalDeal, setPlacementModalDeal] = useState<{ id: string; account_name: string; deal_type?: DealType | null } | null>(null);
@@ -206,21 +222,27 @@ export function JobsOpportunitiesOverview() {
       {/* ── Summary cards ─────────────────────────────────────────────── */}
       <div className="grid grid-cols-2 items-stretch gap-4 lg:grid-cols-5">
         <SummaryCard tone="ink" label="In the set" value={s?.in_set} isLoading={isLoading}
-          sub="All active opportunities" />
+          sub="All active opportunities"
+          onClick={() => setDrill({ title: "In the set", note: "All active opportunities", rows: drillSets.in_set })} />
         <SummaryCard tone="accent" label="Net new" value={s?.net_new} isLoading={isLoading}
-          delta={s ? { n: netDelta, prev: s.net_new_prev } : undefined} />
+          delta={s ? { n: netDelta, prev: s.net_new_prev } : undefined}
+          onClick={() => setDrill({ title: "Net new this week", note: `Created ${format(weekStart, "MMM d")} – ${format(weekEnd, "MMM d")}`, rows: drillSets.net_new })} />
         <SummaryCard tone="amber" label="Stalled" value={s?.stalled_6wk} isLoading={isLoading}
-          sub="Open opportunity 6+ weeks" />
+          sub="Open opportunity 6+ weeks"
+          onClick={() => setDrill({ title: "Stalled 6+ weeks", note: "Open, created more than 6 weeks ago", rows: drillSets.stalled })} />
         {/* Stacked outcome boxes for the week — Closed won (the goal,
             subtly highlighted) over Closed lost (context to understand, not a red flag). */}
         <div className="flex flex-col gap-4">
-          <OutcomeBox tone="green" highlight label="Closed won" value={s?.moved_committed} isLoading={isLoading} />
-          <OutcomeBox tone="ink" label="Closed lost" value={s?.closed_lost} isLoading={isLoading} />
+          <OutcomeBox tone="green" highlight label="Closed won" value={s?.moved_committed} isLoading={isLoading}
+            onClick={() => setDrill({ title: "Closed won this week", rows: drillSets.won })} />
+          <OutcomeBox tone="ink" label="Closed lost" value={s?.closed_lost} isLoading={isLoading}
+            onClick={() => setDrill({ title: "Closed lost this week", rows: drillSets.lost })} />
         </div>
         {/* Stage-gate check: won on the board but the follow-through (e.g. the
             signed contract task) is still open — "signed contract = closed". */}
         <SummaryCard tone="red" label="Won, open tasks" value={wonOpenTasks.length} isLoading={isLoading}
-          sub={wonOpenTasks.slice(0, 2).map((o) => o.account_name).join(" · ") || "all buttoned up"} />
+          sub={wonOpenTasks.slice(0, 2).map((o) => o.account_name).join(" · ") || "all buttoned up"}
+          onClick={() => setDrill({ title: "Won with open tasks", note: "Closed won but follow-through still open", rows: drillSets.won_open_tasks })} />
       </div>
 
       {/* ── Recent activity — the week's narrative, promoted ──────────── */}
@@ -269,9 +291,59 @@ export function JobsOpportunitiesOverview() {
           the aging bars above. Restore from git if concentration analysis is
           ever needed again. */}
 
+      {drill && <OppDrill title={drill.title} note={drill.note} rows={drill.rows} nameOf={nameOf} onClose={() => setDrill(null)} />}
       {placementModalDeal && <PlacementsModal deal={placementModalDeal} onClose={() => setPlacementModalDeal(null)} />}
       {committedRolesDeal && <CommittedRolesModal deal={committedRolesDeal} onClose={() => setCommittedRolesDeal(null)} />}
       {closedLostDeal && <ClosedLostModal deal={closedLostDeal} onClose={() => setClosedLostDeal(null)} />}
+    </div>
+  );
+}
+
+// ── Summary-card drill-down ──────────────────────────────────────────────────
+
+function OppDrill({ title, note, rows, nameOf, onClose }: {
+  title: string; note?: string; rows: JobsOpportunity[];
+  nameOf: (e: string | null) => string; onClose: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="flex max-h-[80vh] w-full max-w-2xl flex-col rounded-xl border border-border-strong bg-surface shadow-xl">
+        <div className="flex items-baseline justify-between gap-3 border-b border-border-strong px-5 py-3">
+          <div>
+            <div className="text-[14px] font-bold text-ink">{title} <span className="tabular-nums text-ink-3">{rows.length}</span></div>
+            {note && <div className="text-[11.5px] text-ink-3">{note}</div>}
+          </div>
+          <button type="button" onClick={onClose} className="text-[18px] leading-none text-ink-4 hover:text-ink">×</button>
+        </div>
+        <div className="overflow-y-auto">
+          {rows.length === 0 ? (
+            <div className="px-5 py-8 text-center text-[12.5px] text-ink-4">Nothing here this week.</div>
+          ) : (
+            <table className="w-full text-[12.5px]">
+              <thead><tr className="bg-surface-2/60 text-left text-[10.5px] uppercase tracking-wider text-ink-3">
+                <th className="px-4 py-1.5 font-semibold">Account</th>
+                <th className="px-2 py-1.5 font-semibold">Stage</th>
+                <th className="px-2 py-1.5 font-semibold">Owner</th>
+                <th className="px-2 py-1.5 text-right font-semibold">Last activity</th>
+              </tr></thead>
+              <tbody>
+                {rows.map((o) => (
+                  <tr key={o.id} className="border-t border-border-strong">
+                    <td className="px-4 py-1.5">
+                      <Link to={`/jobs/opportunities/${o.id}`} className="font-medium text-ink hover:text-accent">{o.account_name}</Link>
+                      {o.title && <span className="block truncate text-[11px] text-ink-4">{o.title}</span>}
+                    </td>
+                    <td className="px-2 py-1.5 text-ink-2">{STAGE_LABELS[o.stage as JobStage] ?? o.stage}</td>
+                    <td className="px-2 py-1.5 text-ink-3">{nameOf(o.owner_email)}</td>
+                    <td className="px-2 py-1.5 text-right tabular-nums text-[11.5px] text-ink-4">{relDay(o.last_activity_at) ?? "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -363,6 +435,7 @@ function OwnerWalkthrough({ openOpps, needsById, nextTaskByOpp, nameOf, ...handl
   nextTaskByOpp: Map<string, { title: string; deadline: string | null }>;
   nameOf: (e: string | null) => string;
 } & RowHandlers) {
+  const [expandedRest, setExpandedRest] = useState<Set<string>>(new Set());
   const groups = useMemo(() => {
     const by = new Map<string, JobsOpportunity[]>();
     for (const o of openOpps) {
@@ -378,35 +451,67 @@ function OwnerWalkthrough({ openOpps, needsById, nextTaskByOpp, nameOf, ...handl
     <div className="flex flex-col">
       {groups.map(([email, opps]) => {
         const p1 = opps.filter((o) => o.priority === 1);
-        const stalled = opps.filter((o) => needsById.has(o.id) && o.priority !== 1)
+        const p2 = opps.filter((o) => o.priority === 2);
+        const rest = opps.filter((o) => (o.priority ?? 9) >= 3);
+        // Flagged opps without a P1/P2 priority — the meeting's ask list.
+        // P1/P2 flagged rows already carry their attention chip in-group, so
+        // they're not repeated here.
+        const stalled = opps.filter((o) => needsById.has(o.id) && o.priority !== 1 && o.priority !== 2)
           .sort((a, b) => (needsById.get(b.id)?.days_in_stage ?? 0) - (needsById.get(a.id)?.days_in_stage ?? 0));
+        const restOpen = expandedRest.has(email);
+        const flaggedRow = (o: JobsOpportunity) => {
+          const n = needsById.get(o.id);
+          return n ? {
+            detail: <span className="flex items-center gap-1.5"><AlertTriangle size={11} className="shrink-0 text-[var(--amber)]" />{n.why}</span>,
+            right: <span className="text-[var(--amber)]">{n.days_in_stage}d</span>,
+          } : {};
+        };
         return (
           <div key={email} className="first:-mt-px">
             <div className="flex items-baseline gap-2 border-t border-border-strong bg-surface-2 px-2.5 py-1.5">
               <span className="text-[12.5px] font-bold text-ink">{email === "(unassigned)" ? "Unassigned" : nameOf(email)}</span>
-              <span className="text-[11px] text-ink-3">{opps.length} open · {p1.length} P1 · {stalled.length} flagged</span>
+              <span className="text-[11px] text-ink-3">
+                {opps.length} open · {p1.length} P1 · {p2.length} P2 · {opps.filter((o) => needsById.has(o.id)).length} flagged
+              </span>
             </div>
             {p1.length > 0 && (
               <div className="bg-[var(--accent-soft)] px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-[var(--accent-ink)]">P1 · High value</div>
             )}
             {p1.map((o) => (
-              <ManagedOppRow key={o.id} o={o} sub={o.title}
+              <ManagedOppRow key={o.id} o={o} sub={o.title} {...flaggedRow(o)}
+                nextTask={nextTaskByOpp.get(o.id)} {...handlers} />
+            ))}
+            {p2.length > 0 && (
+              <div className="bg-[var(--sky-soft)] px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-[var(--sky)]">P2</div>
+            )}
+            {p2.map((o) => (
+              <ManagedOppRow key={o.id} o={o} sub={o.title} {...flaggedRow(o)}
                 nextTask={nextTaskByOpp.get(o.id)} {...handlers} />
             ))}
             {stalled.length > 0 && (
               <div className="bg-[var(--amber-soft)] px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-[var(--amber)]">Stalled — needs unblock</div>
             )}
-            {stalled.map((o) => {
-              const n = needsById.get(o.id);
-              return (
-                <ManagedOppRow key={o.id} o={o} sub={o.title}
-                  detail={<span className="flex items-center gap-1.5"><AlertTriangle size={11} className="shrink-0 text-[var(--amber)]" />{n?.why}</span>}
-                  right={<span className="text-[var(--amber)]">{n?.days_in_stage}d</span>}
-                  nextTask={nextTaskByOpp.get(o.id)} {...handlers} />
-              );
-            })}
-            {p1.length === 0 && stalled.length === 0 && (
-              <div className="border-t border-border-strong px-2.5 py-2 text-[12px] text-ink-4">Nothing flagged — {opps.length} open opps moving normally.</div>
+            {stalled.map((o) => (
+              <ManagedOppRow key={o.id} o={o} sub={o.title} {...flaggedRow(o)}
+                nextTask={nextTaskByOpp.get(o.id)} {...handlers} />
+            ))}
+            {rest.length > 0 && (
+              <>
+                <button type="button"
+                  onClick={() => setExpandedRest((prev) => {
+                    const n = new Set(prev);
+                    n.has(email) ? n.delete(email) : n.add(email);
+                    return n;
+                  })}
+                  className="flex w-full items-center gap-1.5 border-t border-border-strong bg-surface-2/50 px-2.5 py-1 text-left text-[10px] font-bold uppercase tracking-wider text-ink-3 hover:text-ink-2">
+                  <ChevronRight size={11} className={cn("transition-transform", restOpen && "rotate-90")} />
+                  P3+ / no priority · {rest.length}
+                </button>
+                {restOpen && rest.map((o) => (
+                  <ManagedOppRow key={o.id} o={o} sub={o.title} {...flaggedRow(o)}
+                    nextTask={nextTaskByOpp.get(o.id)} {...handlers} />
+                ))}
+              </>
             )}
           </div>
         );
@@ -423,7 +528,7 @@ const TONE: Record<string, string> = {
 };
 
 function SummaryCard({
-  tone, label, value, sub, delta, isLoading,
+  tone, label, value, sub, delta, isLoading, onClick,
 }: {
   tone: keyof typeof TONE | string;
   label: string;
@@ -431,10 +536,18 @@ function SummaryCard({
   sub?: string;
   delta?: { n: number; prev: number };
   isLoading: boolean;
+  onClick?: () => void;
 }) {
   return (
-    <div className="rounded-2xl border border-border-strong bg-surface px-5 py-4">
-      <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">{label}</div>
+    <div
+      onClick={onClick}
+      role={onClick ? "button" : undefined}
+      tabIndex={onClick ? 0 : undefined}
+      onKeyDown={onClick ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onClick(); } } : undefined}
+      className={cn("rounded-2xl border border-border-strong bg-surface px-5 py-4",
+        onClick && "cursor-pointer transition-colors hover:border-accent focus:outline-none focus-visible:border-accent")}
+    >
+      <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">{label}{onClick ? " ›" : ""}</div>
       {isLoading ? (
         <div className="mt-2 h-8 w-16 animate-pulse rounded bg-surface-2" />
       ) : (
@@ -462,19 +575,25 @@ function SummaryCard({
 // ── Outcome box (half-height; stacked for won / lost) ─────────────────────────
 
 function OutcomeBox({
-  tone, label, value, highlight, isLoading,
+  tone, label, value, highlight, isLoading, onClick,
 }: {
   tone: keyof typeof TONE | string;
   label: string;
   value: number | undefined;
   highlight?: boolean;
   isLoading: boolean;
+  onClick?: () => void;
 }) {
   return (
     <div
+      onClick={onClick}
+      role={onClick ? "button" : undefined}
+      tabIndex={onClick ? 0 : undefined}
+      onKeyDown={onClick ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onClick(); } } : undefined}
       className={cn(
         "flex flex-1 items-center justify-between rounded-xl border border-border-strong px-4 py-2.5",
         highlight ? "bg-[var(--green-soft)]" : "bg-surface",
+        onClick && "cursor-pointer transition-colors hover:border-accent focus:outline-none focus-visible:border-accent",
       )}
     >
       <div>

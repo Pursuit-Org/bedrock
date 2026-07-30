@@ -497,6 +497,8 @@ export interface JobsAccount {
    *  lazily per account via useAccountProspects. Only the count ships here. */
   opp_count: number;
   prospect_count: number;
+  /** Everyone on file at the company, flagged or not (PFNYC had 11 with 0 flagged). */
+  contact_count?: number;
   job_listings?: number;    // roles sourced + open-market roles builders applied to
   roles_sourced?: number;
   roles_applied?: number;

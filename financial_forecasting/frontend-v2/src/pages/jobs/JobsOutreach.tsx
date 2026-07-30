@@ -464,11 +464,14 @@ function HygieneBlock({ nameOf, staffEmails }: { nameOf: (email: string) => stri
   }, [assignedData]);
   const onHold = useMemo(() => campaigns.reduce((n, c) => n + c.funnel.on_hold, 0), [campaigns]);
 
+  // Two different problems: contacts exist but nobody's been flagged into the
+  // pipeline (just activate one) vs genuinely nobody on file (go find someone).
+  const withPeople = useMemo(() => noProspect.filter((a) => (a.contact_count ?? 0) > 0).length, [noProspect]);
   const shown = showAll ? noProspect : noProspect.slice(0, 10);
   return (
     <div className="flex flex-col gap-3">
       <SectionHead title="Target accounts awaiting activation"
-        note={`${noProspect.length} accounts assigned to the team with no contact identified — nobody to reach out to yet`} />
+        note={`${noProspect.length} owned accounts with nobody in the prospect list — ${withPeople} have contacts on file to flag, ${noProspect.length - withPeople} have nobody yet`} />
       {noProspect.length > 0 && (
         <div className="overflow-hidden rounded-lg border border-border-strong bg-surface">
           <div className="bg-amber-soft px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-amber">
@@ -479,6 +482,7 @@ function HygieneBlock({ nameOf, staffEmails }: { nameOf: (email: string) => stri
               <th className="px-3 py-1.5 font-semibold">Account</th>
               <th className="px-2 py-1.5 font-semibold">Owner</th>
               <th className="px-2 py-1.5 font-semibold">Status</th>
+              <th className="px-2 py-1.5 text-right font-semibold" title="Contacts on file at this company, flagged or not">On file</th>
               <th className="px-2 py-1.5 text-right font-semibold">Last activity</th>
               <th className="px-2 py-1.5"></th>
             </tr></thead>
@@ -488,11 +492,15 @@ function HygieneBlock({ nameOf, staffEmails }: { nameOf: (email: string) => stri
                   <td className="px-3 py-1.5 font-medium text-ink">{a.account}</td>
                   <td className="px-2 py-1.5 text-ink-2">{a.owner_email ? nameOf(a.owner_email) : "—"}</td>
                   <td className="px-2 py-1.5 text-[11.5px] text-ink-3">{a.account_status}</td>
+                  <td className={cn("px-2 py-1.5 text-right tabular-nums text-[11.5px]", (a.contact_count ?? 0) > 0 ? "text-ink-2" : "text-ink-4")}>
+                    {a.contact_count ?? 0}
+                  </td>
                   <td className="px-2 py-1.5 text-right tabular-nums text-[11.5px] text-ink-4">{relDay(a.last_activity_at) ?? "—"}</td>
                   <td className="px-2 py-1.5 text-right">
                     <Link to={`/jobs/contacts?q=${encodeURIComponent(a.account)}`}
-                      className="rounded-full bg-accent-soft px-2 py-0.5 text-[10.5px] font-semibold text-accent-ink hover:underline">
-                      ＋ Add prospects
+                      className={cn("rounded-full px-2 py-0.5 text-[10.5px] font-semibold hover:underline",
+                        (a.contact_count ?? 0) > 0 ? "bg-accent-soft text-accent-ink" : "bg-surface-2 text-ink-3")}>
+                      {(a.contact_count ?? 0) > 0 ? `Flag one of ${a.contact_count} →` : "Find contacts →"}
                     </Link>
                   </td>
                 </tr>

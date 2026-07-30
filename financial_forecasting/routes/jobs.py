@@ -1900,6 +1900,11 @@ async def opportunities_overview(
                COALESCE((SELECT max(h.changed_at) FROM bedrock.jobs_stage_history h
                          WHERE h.opportunity_id = o.id AND h.to_stage = o.stage),
                         o.created_at) AS entered_stage,
+               -- No history row for the current stage (pre-tracking / imported
+               -- opps): the age below is time SINCE CREATION, not time in stage.
+               (SELECT max(h.changed_at) FROM bedrock.jobs_stage_history h
+                 WHERE h.opportunity_id = o.id AND h.to_stage = o.stage) IS NULL
+                 AS stage_from_created,
                -- clamp to the as-of instant so activity logged AFTER a selected
                -- past week doesn't retroactively un-stall that week's view
                (SELECT max(a.activity_date) FROM bedrock.activity a
@@ -2000,13 +2005,16 @@ async def opportunities_overview(
             act_days = _days(r["last_activity"])
             why_bits = []
             if stage_days >= 21:
-                why_bits.append(f"{stage_days}d in {STAGE_LABELS.get(r['stage'], r['stage'])}")
+                why_bits.append(
+                    f"{stage_days}d old, no stage change logged" if r["stage_from_created"]
+                    else f"{stage_days}d in {STAGE_LABELS.get(r['stage'], r['stage'])}")
             why_bits.append("no logged activity" if act_days is None else f"last activity {act_days}d ago")
             needs.append({
                 "opportunity_id": str(r["id"]),
                 "account": r["account_name"], "owner": r["owner_email"],
                 "stage": r["stage"], "stage_label": STAGE_LABELS.get(r["stage"], r["stage"]),
                 "days_in_stage": stage_days, "days_since_activity": act_days,
+                "stage_from_created": bool(r["stage_from_created"]),
                 "why": " · ".join(why_bits),
             })
 
@@ -2079,14 +2087,9 @@ async def opportunities_overview(
             "detail": f"{STAGE_LABELS.get(r['from_stage'], r['from_stage'])} → {STAGE_LABELS.get(to, to)}",
             "at": r["at"].isoformat() if r["at"] else None, "actor": r["actor"],
         })
-    for r in stalled_rows:
-        crossed = (r["created_at"] + timedelta(days=42)) if r["created_at"] else None
-        recent_activity.append({
-            "type": "stalled", "opportunity_id": str(r["id"]), "account": r["account_name"],
-            "deal_type": r["deal_type"], "stage_label": STAGE_LABELS.get(r["stage"], r["stage"]),
-            "detail": "Became stalled — 6+ weeks in the set",
-            "at": crossed.isoformat() if crossed else None, "actor": r["actor"],
-        })
+    # 'Stalled' events deliberately NOT in this feed (2026-07-30 review): the
+    # feed answers "what MOVED this week", and stalling is the absence of
+    # movement — it's covered by the walkthrough's stalled groups instead.
     recent_activity = sorted((e for e in recent_activity if e["at"]), key=lambda e: e["at"], reverse=True)
 
     return {"success": True, "data": {
@@ -3938,7 +3941,7 @@ async def jobs_accounts(
         opp_rows, prospect_rows, ja_rows, task_rows,
         act1_rows, act2_rows, role_resp_rows, er_resp_rows,
         hires_rows, name_sf_rows, flagged_rows, listings_rows,
-        industry_rows,
+        industry_rows, contact_total_rows,
     ) = await asyncio.gather(
         pool.fetch(
             """
@@ -4075,6 +4078,17 @@ async def jobs_accounts(
             WHERE coalesce(trim(name),'') <> '' AND coalesce(industry,'') <> ''
             GROUP BY 1
             """),
+        # ALL contacts per company (not just flagged prospects). Lookup only —
+        # it never seeds an account. Lets the UI distinguish "nobody exists
+        # here" from "11 people on file, none activated into the pipeline"
+        # (PFNYC read as empty while 11 contacts sat under it).
+        pool.fetch(
+            """
+            SELECT lower(trim(current_company)) AS key, count(*) AS n
+            FROM public.contacts
+            WHERE coalesce(trim(current_company), '') <> ''
+            GROUP BY 1
+            """),
     )
 
     accounts: dict = {}
@@ -4130,6 +4144,7 @@ async def jobs_accounts(
 
     ja = {r["account_key"]: r for r in ja_rows}
     industry_by_key = {r["key"]: r["industry"] for r in industry_rows}
+    contact_totals = {r["key"]: r["n"] for r in contact_total_rows}
     # Manually-created accounts (a jobs_account row with no opps/prospects yet)
     # still need to appear on the hub, so seed a bucket for each.
     for k, rec in ja.items():
@@ -4219,6 +4234,9 @@ async def jobs_accounts(
         g["account_status"] = status
         g["opp_count"] = len(opps)
         g["prospect_count"] = prospect_counts.get(key, 0)
+        # Everyone on file at this company, flagged or not — "no prospects" and
+        # "no people at all" are different problems with different fixes.
+        g["contact_count"] = contact_totals.get(key, 0)
         g["industry"] = industry_by_key.get(key)
         _src, _app = listings_by_key.get(key, (0, 0))
         g["roles_sourced"] = _src
