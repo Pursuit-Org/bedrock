@@ -20,6 +20,7 @@ Design: docs/jobs-scan-design.md
 
 import json
 import logging
+import os
 from typing import Any, Optional
 from uuid import UUID
 
@@ -56,6 +57,16 @@ NON_CORPORATE_DOMAINS = [
 # jobs_opportunity.account_id is NOT NULL and holds a Salesforce Account id.
 # 'UNKNOWN' is the established sentinel for "no SF account yet" (161 of 178 rows).
 NO_SF_ACCOUNT = "UNKNOWN"
+
+# Temporary: serve the triage queue from in-memory fixtures so the tab can be
+# reviewed locally before the migration creates its tables. Read-only — the
+# promotion endpoints refuse rather than pretend to write. Remove with
+# services/jobs_scan/fixtures.py once the migration is applied.
+FIXTURE_MODE = os.getenv("JOBS_SCAN_FIXTURES") == "1"
+if FIXTURE_MODE:  # pragma: no cover - local preview only
+    logger.warning(
+        "JOBS_SCAN_FIXTURES=1 — /api/jobs/scan is serving fixture data, not the database"
+    )
 
 
 def _actor(user) -> Optional[str]:
@@ -145,6 +156,15 @@ async def list_results(
     if state and state not in VALID_TRIAGE:
         raise HTTPException(400, f"Invalid state: {state}")
 
+    if FIXTURE_MODE:
+        from services.jobs_scan.fixtures import filter_results
+        return {
+            "results": filter_results(state=state, platform=platform,
+                                      has_warm_contact=has_warm_contact, q=q,
+                                      limit=limit, offset=offset),
+            "limit": limit, "offset": offset, "fixture": True,
+        }
+
     where = ["NOT COALESCE(w.do_not_present, false)"]
     # $1 is the warm-tag array used by the LEFT JOIN, so it seeds args here and
     # every filter placeholder numbers itself from the real list length.
@@ -208,6 +228,10 @@ async def list_results(
 @router.get("/summary")
 async def scan_summary(user=Depends(require_auth), conn=Depends(get_db)):
     """Counts for the tab header: open queue depth, promoted, board health."""
+    if FIXTURE_MODE:
+        from services.jobs_scan.fixtures import FIXTURE_SUMMARY
+        return {**FIXTURE_SUMMARY, "fixture": True}
+
     states = await conn.fetch(
         """
         SELECT sp.triage_state, count(*) AS n
@@ -289,6 +313,12 @@ async def promote_to_pathfinder(
     because bedrock_user cannot write public.job_postings directly. Idempotent:
     re-promoting updates the same posting rather than creating another.
     """
+    if FIXTURE_MODE:
+        raise HTTPException(
+            501,
+            {"error": "fixture_mode",
+             "message": "Preview mode: promotion is disabled until the migration is applied."},
+        )
     row = await conn.fetchrow(
         "SELECT action, posting_id FROM bedrock.promote_scan_to_pathfinder($1, $2, $3)",
         scan_id, _actor(user), body.share,
@@ -323,6 +353,12 @@ async def create_opportunity_from_scan(
     to that posting so bedrock.sync_role_to_pathfinder takes its UPDATE branch —
     otherwise the same job would appear on the builder board twice.
     """
+    if FIXTURE_MODE:
+        raise HTTPException(
+            501,
+            {"error": "fixture_mode",
+             "message": "Preview mode: promotion is disabled until the migration is applied."},
+        )
     if body.deal_type and body.deal_type not in VALID_DEAL_TYPES:
         raise HTTPException(400, f"Invalid deal_type: {body.deal_type}")
 
