@@ -88,12 +88,37 @@ if (-not $active) {
 }
 if (-not $active) { Fail "gcloud sign-in did not complete." }
 $active = ([string]$active).Trim()
-Ok ("signed in as " + $active)
+Ok ("listed account: " + $active)
 if ($active -notlike "*@pursuit.org") {
     Warn ($active + " is not a @pursuit.org account; the secret fetch will probably be denied.")
 }
 
-& gcloud config set project $Project 2>$null | Out-Null
+# `gcloud auth list` reads a cached account name, which survives long after the
+# token behind it has expired -- so it says "signed in" when nothing works.
+# Force an actual token mint to find out. Never pipe this to Out-Null: gcloud
+# treats a redirected stream as non-interactive and refuses to prompt for
+# reauth, which turns an ordinary expiry into a confusing hard failure.
+Write-Host "  checking the token is still valid ..."
+& gcloud auth print-access-token 1>$null 2>$null
+if ($LASTEXITCODE -ne 0) {
+    Warn "cached credentials have expired and need reauthentication."
+    Warn "A browser window will open - sign in again as $active."
+    & gcloud auth login
+    & gcloud auth print-access-token 1>$null 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host ""
+        Write-Host "  [x] Still cannot mint a token. Run this by hand, then re-run me:" -ForegroundColor Red
+        Write-Host "        gcloud auth login"
+        Write-Host "        gcloud config set project $Project"
+        exit 1
+    }
+}
+Ok "token is valid"
+
+& gcloud config set project $Project
+if ($LASTEXITCODE -ne 0) {
+    Fail ("Could not set the project. Run: gcloud config set project " + $Project)
+}
 Ok ("project set to " + $Project)
 
 # --- 3. Secret -> .env ------------------------------------------------------
