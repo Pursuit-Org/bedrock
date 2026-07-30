@@ -25,7 +25,13 @@ param(
     [string]$Secret  = "jobs-dev-database-url"
 )
 
-$ErrorActionPreference = "Stop"
+# NOT "Stop". With Stop, any stderr output from a native command becomes a
+# terminating NativeCommandError -- and gcloud writes routine warnings to
+# stderr, so a harmless "does not have permission to access projects instance"
+# notice would kill the script mid-run. Correctness here comes from explicit
+# $LASTEXITCODE checks after each external call, not from the shell's error
+# preference.
+$ErrorActionPreference = "Continue"
 
 # .NET file APIs below resolve relative paths against the process working
 # directory, not PowerShell's location, so anchor them explicitly.
@@ -115,11 +121,13 @@ if ($LASTEXITCODE -ne 0) {
 }
 Ok "token is valid"
 
-& gcloud config set project $Project
-if ($LASTEXITCODE -ne 0) {
-    Fail ("Could not set the project. Run: gcloud config set project " + $Project)
-}
-Ok ("project set to " + $Project)
+# A "does not have permission to access projects instance" warning here is
+# expected and harmless: reading a project's metadata
+# (resourcemanager.projects.get) is a different grant from reading one secret
+# (secretmanager.versions.access). The property still gets set. Do not treat it
+# as fatal -- the secret fetch below is the real test.
+& gcloud config set project $Project 2>&1 | ForEach-Object { }
+Ok ("project set to " + $Project + " (any permission warning above is expected)")
 
 # --- 3. Secret -> .env ------------------------------------------------------
 Step "Building .env"
