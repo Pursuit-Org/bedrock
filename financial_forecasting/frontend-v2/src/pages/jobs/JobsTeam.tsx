@@ -121,6 +121,14 @@ function RecentActivityDot({ recent, last }: { recent: number | undefined; last:
 }
 
 // priority stored 1–5 (5 = highest). Display as P1 (highest) … P5 (lowest).
+//
+// Exported because the Pipeline dashboard groups deals into P1/P2/P3+ bands and
+// MUST use this mapping. Filtering on the raw stored value inverts the scale —
+// "P1 · High value" then shows the weakest deals and buries the strongest in
+// "P3+ / no priority". Never compare `opp.priority` to a P-number directly.
+export const displayPriority = (stored: number | null | undefined): number | null =>
+  stored == null ? null : 6 - stored;
+
 const PRIORITY_BADGE: Record<number, { label: string; className: string }> = {
   5: { label: "P1", className: "bg-red-100 text-red-700" },
   4: { label: "P2", className: "bg-orange-100 text-orange-700" },
