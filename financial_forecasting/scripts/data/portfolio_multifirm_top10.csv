@@ -1,0 +1,161 @@
+firm,firm_type,company,account_key,sheet_company,majority_stake
+AlleyCorp,VC,Alice,alice,Alice,
+AlleyCorp,VC,Maven Clinic,maven clinic,Maven,
+AlleyCorp,VC,Nomad Health,nomad health,Nomad Health,
+AlleyCorp,VC,RippleMatch,ripplematch,RippleMatch,
+AlleyCorp,VC,SecurityScorecard,securityscorecard,SecurityScorecard,
+AlleyCorp,VC,ShopMy,shopmy,ShopMy,
+AlleyCorp,VC,Stepful,stepful,Stepful,
+AlleyCorp,VC,Thyme Care,thyme care,Thyme Care,
+AlleyCorp,VC,Valon,valon,Valon,
+AlleyCorp,VC,Zola,zola,Zola,
+Apollo,PE,Barnes Group,barnes group,Barnes Group,Yes
+Apollo,PE,Cox Media Group,cox media group,Cox Media Group,Yes
+Apollo,PE,IGT (International Game Technology),igt (international game technology),IGT (International Game Technology),Yes
+Apollo,PE,Invited (ClubCorp),invited (clubcorp),Invited (ClubCorp),Yes
+Apollo,PE,Novolex,novolex,Novolex,Yes
+Apollo,PE,Rackspace Technology,rackspace technology,Rackspace Technology,Yes
+Apollo,PE,Shutterfly,shutterfly,Shutterfly,Yes
+Apollo,PE,Univar Solutions,univar solutions,Univar Solutions,Yes
+Apollo,PE,Wheels,wheels,Wheels,Yes
+Apollo,PE,Yahoo,yahoo,Yahoo,Yes
+Assured Healthcare Partners,PE,Allied Digestive Health,allied digestive health,Allied Digestive Health,Yes
+Assured Healthcare Partners,PE,Clear Health Strategies,clear health strategies,Clear Health Strategies,Yes
+Assured Healthcare Partners,PE,Collabrios Health,collabrios health,Collabrios Health,Yes
+Assured Healthcare Partners,PE,DeliverHealth,deliverhealth,DeliverHealth,Yes
+Assured Healthcare Partners,PE,Pharma Logistics,pharma logistics,Pharma Logistics,Yes
+Ballistic Ventures,VC,Aembit,aembit,Aembit,
+Ballistic Ventures,VC,ArmorCode,armorcode,ArmorCode,
+Ballistic Ventures,VC,BreachRx,breachrx,BreachRx,
+Ballistic Ventures,VC,GetReal,getreal,GetReal,
+Ballistic Ventures,VC,Gomboc AI,gomboc ai,Gomboc AI,
+Ballistic Ventures,VC,SpecterOps,specterops,SpecterOps,
+Ballistic Ventures,VC,WitnessAI,witnessai,WitnessAI,
+Ballistic Ventures,VC,Zip Security,zip security,Zip Security,
+Benchstrength,VC,AdeptID,adeptid,AdeptID,N/A
+Benchstrength,VC,Alta,alta,Alta,N/A
+Benchstrength,VC,Cashmere,cashmere,Cashmere,N/A
+Benchstrength,VC,Garage,garage,Garage,N/A
+Benchstrength,VC,Heva,heva,Heva,N/A
+Benchstrength,VC,Kangaroo Health,kangaroo health,Kangaroo Health,N/A
+Benchstrength,VC,Rentana,rentana,Rentana,N/A
+Benchstrength,VC,Slide,slide,Slide,N/A
+Benchstrength,VC,The Folklore,the folklore,The Folklore,N/A
+Benchstrength,VC,Zeteo Health,zeteo health,Zeteo Health,N/A
+Blackstone,PE,Bumble,bumble,Bumble,No
+Blackstone,PE,CoreWeave,coreweave,CoreWeave,No
+Blackstone,PE,Cvent,cvent,Cvent,Yes
+Blackstone,PE,Encore,encore,Encore (PSAV),Yes
+Blackstone,PE,HealthEdge,healthedge,HealthEdge,Yes
+Blackstone,PE,Jersey Mike's Subs,jersey mike's subs,Jersey Mike's Subs,Yes
+Blackstone,PE,Liftoff,liftoff,Liftoff,Yes
+Blackstone,PE,Optiv,optiv,Optiv,Yes
+Blackstone,PE,Simpli.fi,simpli.fi,Simpli.fi,Yes
+Blackstone,PE,UKG (Ultimate Kronos Group),ukg (ultimate kronos group),UKG (Ultimate Kronos Group),No
+KKR,PE,Alliant Insurance Services,alliant insurance services,Alliant Insurance Services,No
+KKR,PE,Cotiviti,cotiviti,Cotiviti,Yes
+KKR,PE,Crowe,crowe,Crowe,Yes
+KKR,PE,Focus Financial Partners,focus financial partners,Focus Financial Partners,Yes
+KKR,PE,Global Atlantic Financial Group,global atlantic financial group,Global Atlantic Financial Group,Yes
+KKR,PE,Internet Brands / WebMD,internet brands / webmd,Internet Brands / WebMD,Yes
+KKR,PE,Janney Montgomery Scott,janney montgomery scott,Janney Montgomery Scott,Yes
+KKR,PE,Nielsen,nielsen,Nielsen,No
+KKR,PE,Simon & Schuster,simon & schuster,Simon & Schuster,Yes
+KKR,PE,USI Insurance Services,usi insurance services,USI Insurance Services,Yes
+Kohlberg,PE,AWP Safety,awp safety,AWP Safety,Yes
+Kohlberg,PE,BluSky Restoration Contractors,blusky restoration contractors,BluSky Restoration Contractors,Yes
+Kohlberg,PE,CLEAResult,clearesult,CLEAResult,Yes
+Kohlberg,PE,Engage PEO,engage peo,Engage PEO,Yes
+Kohlberg,PE,MarketCast Group,marketcast group,MarketCast Group,Yes
+Kohlberg,PE,Parts Authority,parts authority,Parts Authority,Yes
+Kohlberg,PE,RESA Power,resa power,RESA Power,Yes
+Kohlberg,PE,Riveron,riveron,Riveron,Yes
+Kohlberg,PE,Spire Orthopedic Partners,spire orthopedic partners,Spire Orthopedic Partners,Yes
+Kohlberg,PE,Trinity Life Sciences,trinity life sciences,Trinity Life Sciences,Yes
+Maverick Capital,VC,Centivo,centivo,Centivo,
+Maverick Capital,VC,Chapter,chapter,Chapter,
+Maverick Capital,VC,Cityblock Health,cityblock health,Cityblock Health,
+Maverick Capital,VC,Claim Health,claim health,Claim Health,
+Maverick Capital,VC,Coherent,coherent,Coherent,
+Maverick Capital,VC,Garner Health,garner health,Garner Health,
+Maverick Capital,VC,KUDO,kudo,KUDO,
+Maverick Capital,VC,Nourish,nourish,Nourish,
+Maverick Capital,VC,Oula,oula,Oula,
+Maverick Capital,VC,Vetcove,vetcove,Vetcove,
+Oak HC/FT,VC,Bloom,bloom,Bloom,
+Oak HC/FT,VC,Curana Health,curana health,Curana Health,
+Oak HC/FT,VC,Devoted Health,devoted health,Devoted Health,
+Oak HC/FT,VC,Galileo,galileo,Galileo,
+Oak HC/FT,VC,Harmony Cares,harmony cares,Harmony Cares,
+Oak HC/FT,VC,LetsGetChecked,letsgetchecked,LetsGetChecked,
+Oak HC/FT,VC,Marathon Health,marathon health,Marathon Health,
+Oak HC/FT,VC,Maven Clinic,maven clinic,Maven Clinic,
+Oak HC/FT,VC,Unified Women's Healthcare,unified women's healthcare,Unified Women's Healthcare,
+Oak HC/FT,VC,Unite Us,unite us,Unite Us,
+Primary Ventures,VC,Alloy,alloy,Alloy,
+Primary Ventures,VC,Dandy,dandy,Dandy,
+Primary Ventures,VC,Electric AI,electric ai,Electric AI,
+Primary Ventures,VC,Kinetic,kinetic,Kinetic,
+Primary Ventures,VC,Lili,lili,Lili,
+Primary Ventures,VC,Slice,slice,Slice,
+Primary Ventures,VC,Spark Advisors,spark advisors,Spark Advisors,
+Primary Ventures,VC,Stellar Health,stellar health,Stellar Health,
+Primary Ventures,VC,Teleskope,teleskope,Teleskope,
+Primary Ventures,VC,Vestwell,vestwell,Vestwell,
+Princeton Equity Group,PE,1-800-Packouts,1-800-packouts,1-800-Packouts,Yes
+Princeton Equity Group,PE,Barry's,barry's,Barry's,Yes
+Princeton Equity Group,PE,Bio-One,bio-one,Bio-One,Yes
+Princeton Equity Group,PE,Card My Yard,card my yard,Card My Yard,Yes
+Princeton Equity Group,PE,D1 Training,d1 training,D1 Training,Yes
+Princeton Equity Group,PE,Five Star Franchising,five star franchising,Five Star Franchising,Yes
+Princeton Equity Group,PE,KidStrong,kidstrong,KidStrong,Yes
+Princeton Equity Group,PE,Pirtek,pirtek,Pirtek,Yes
+Princeton Equity Group,PE,Princeton Medspa Partners,princeton medspa partners,Princeton Medspa Partners,Yes
+Princeton Equity Group,PE,Pronexis,pronexis,Pronexis,Yes
+Silver Lake,PE,A Place for Mom,a place for mom,A Place for Mom,Yes
+Silver Lake,PE,AVI-SPL,avi-spl,AVI-SPL,Yes
+Silver Lake,PE,Cast & Crew,cast & crew,Cast & Crew,Yes
+Silver Lake,PE,Diamond Baseball Holdings,diamond baseball holdings,Diamond Baseball Holdings,Yes
+Silver Lake,PE,Equinox,equinox,Equinox Group,No
+Silver Lake,PE,Fanatics,fanatics,"Fanatics, Inc.",No
+Silver Lake,PE,Gerson Lehrman Group,gerson lehrman group,Gerson Lehrman Group,No
+Silver Lake,PE,MultiPlan (Claritev),multiplan (claritev),MultiPlan (Claritev),No
+Silver Lake,PE,Nasdaq,nasdaq,Nasdaq,No
+Silver Lake,PE,Oak View Group,oak view group,Oak View Group,No
+TPG,PE,Crunch Fitness,crunch fitness,Crunch Fitness,Yes
+TPG,PE,Cushman & Wakefield,cushman & wakefield,Cushman & Wakefield,No
+TPG,PE,GoHealth Urgent Care,gohealth urgent care,GoHealth Urgent Care,No
+TPG,PE,Greenhouse Software,greenhouse software,Greenhouse Software,Yes
+TPG,PE,Human Interest,human interest,Human Interest,No
+TPG,PE,Life Time,life time,Life Time,No
+TPG,PE,LifeStance Health,lifestance health,LifeStance Health,No
+TPG,PE,Toast,toast,Toast Inc.,No
+TPG,PE,Trumid,trumid,Trumid,No
+TPG,PE,Zenoti,zenoti,Zenoti,No
+Trajectory Capital,PE,Flex,flex,Flex,No
+Trajectory Capital,PE,Flexport,flexport,Flexport,No
+Trajectory Capital,PE,Jeeves,jeeves,Jeeves,No
+Trajectory Capital,PE,Notion,notion,Notion,No
+Trajectory Capital,PE,OpenFortune,openfortune,OpenFortune,No
+Trajectory Capital,PE,SeatGeek,seatgeek,SeatGeek,No
+Trajectory Capital,PE,customer.io,customer.io,customer.io,No
+Union Square Ventures,VC,Clarifai,clarifai,Clarifai,
+Union Square Ventures,VC,Hume AI,hume ai,Hume AI,
+Union Square Ventures,VC,Justworks,justworks,Justworks,
+Union Square Ventures,VC,Pilot,pilot,Pilot,
+Union Square Ventures,VC,Simulmedia,simulmedia,Simulmedia,
+Union Square Ventures,VC,Skillshare,skillshare,Skillshare,
+Union Square Ventures,VC,Splice,splice,Splice,
+Union Square Ventures,VC,Stash,stash,Stash,
+Union Square Ventures,VC,Viam,viam,Viam,
+Union Square Ventures,VC,Yieldmo,yieldmo,Yieldmo,
+a16z,VC,Cedar,cedar,Cedar,
+a16z,VC,Coinbase,coinbase,Coinbase,
+a16z,VC,Databricks,databricks,Databricks,
+a16z,VC,Deel,deel,Deel,
+a16z,VC,Devoted Health,devoted health,Devoted Health,
+a16z,VC,Headway,headway,Headway,
+a16z,VC,OpenSea,opensea,OpenSea,
+a16z,VC,Ramp,ramp,Ramp,
+a16z,VC,Uniswap Labs,uniswap labs,Uniswap Labs,
+a16z,VC,Whatnot,whatnot,Whatnot,

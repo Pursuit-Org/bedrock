@@ -202,6 +202,9 @@ financial_forecasting/frontend/test-results/
 # Data files (financial data, exports)
 *.csv
 *.zip
+# ...except curated reference data that loader scripts depend on. These are code
+# inputs (small, reviewable, checked in on purpose), not financial exports.
+!financial_forecasting/scripts/data/*.csv
 
 # Production environment
 financial_forecasting/frontend/.env.production

@@ -3678,7 +3678,7 @@ async def jobs_accounts(
         opp_rows, prospect_rows, ja_rows, task_rows,
         act1_rows, act2_rows, role_resp_rows, er_resp_rows,
         hires_rows, name_sf_rows, flagged_rows, listings_rows,
-        industry_rows,
+        industry_rows, investor_rows,
     ) = await asyncio.gather(
         pool.fetch(
             """
@@ -3815,6 +3815,22 @@ async def jobs_accounts(
             WHERE coalesce(trim(name),'') <> '' AND coalesce(industry,'') <> ''
             GROUP BY 1
             """),
+        # Current investors per account. Joined through jobs_account.company_id
+        # (the entity), NOT the name key — our data has same-named companies that
+        # are genuinely different (Flex/Flextronics), and a name join would hand
+        # the wrong account a firm. Accounts with no company_id simply get no
+        # firms, which is the honest answer rather than a guess.
+        pool.fetch(
+            """
+            SELECT ja.account_key AS key,
+                   array_agg(DISTINCT fc.name ORDER BY fc.name) AS firms
+            FROM bedrock.jobs_account ja
+            JOIN bedrock.company_investor ci ON ci.company_id = ja.company_id
+                                            AND ci.until IS NULL
+            JOIN public.companies fc ON fc.company_id = ci.firm_company_id
+            WHERE ja.company_id IS NOT NULL AND coalesce(trim(fc.name),'') <> ''
+            GROUP BY 1
+            """),
     )
 
     accounts: dict = {}
@@ -3870,6 +3886,7 @@ async def jobs_accounts(
 
     ja = {r["account_key"]: r for r in ja_rows}
     industry_by_key = {r["key"]: r["industry"] for r in industry_rows}
+    investors_by_key = {r["key"]: list(r["firms"] or []) for r in investor_rows}
     # Manually-created accounts (a jobs_account row with no opps/prospects yet)
     # still need to appear on the hub, so seed a bucket for each.
     for k, rec in ja.items():
@@ -3960,6 +3977,10 @@ async def jobs_accounts(
         g["opp_count"] = len(opps)
         g["prospect_count"] = prospect_counts.get(key, 0)
         g["industry"] = industry_by_key.get(key)
+        # Portfolio company = held by ≥1 investor. Derived, never hand-tagged, so
+        # it cannot drift from the firm data.
+        g["investor_firms"] = investors_by_key.get(key, [])
+        g["is_portco"] = bool(g["investor_firms"])
         _src, _app = listings_by_key.get(key, (0, 0))
         g["roles_sourced"] = _src
         g["roles_applied"] = _app

@@ -490,6 +490,10 @@ export interface JobsAccount {
   owner_email: string | null;
   account_status: JobsAccountStatus;
   industry?: string | null;
+  /** Current VC/PE holders, resolved via the company entity (not the name key). */
+  investor_firms?: string[];
+  /** Derived from investor_firms — a portfolio company is one that HAS an investor. */
+  is_portco?: boolean;
   opportunities: JobsAccountOpp[];
   /** Prospects are NOT nested in the list payload (~38k rows) — fetch them
    *  lazily per account via useAccountProspects. Only the count ships here. */

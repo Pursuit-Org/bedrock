@@ -87,12 +87,17 @@ function extract(a: JobsAccount, key: ColKey): string | number {
 }
 
 // ── filters + grouping ───────────────────────────────────────────────────────
-type Field = "account" | "status" | "owner" | "industry" | "deal_type" | "has_opps" | "has_contacts" | "last_activity" | "first_contact_date" | "last_contact_date";
+type Field = "account" | "status" | "owner" | "industry" | "investor_firm" | "portco" | "deal_type" | "has_opps" | "has_contacts" | "last_activity" | "first_contact_date" | "last_contact_date";
 const FILTERABLE: Record<Field, FieldMeta<JobsAccount>> = {
   account:      { label: "Account",  type: "text",   getValue: (a) => a.account },
   status:       { label: "Status",   type: "select", getValue: (a) => a.account_status },
   owner:        { label: "Owner",    type: "select", getValue: (a) => a.owner_email ?? "" },
   industry:     { label: "Industry", type: "select", getValue: (a) => a.industry ?? "" },
+  // A company can be held by more than one firm (Devoted Health: a16z + Oak
+  // HC/FT), so this is a "tags" field — multi-select with overlap semantics,
+  // i.e. filtering a16z still matches a company a16z co-holds.
+  investor_firm: { label: "Investor firm", type: "tags", getValue: (a) => (a.investor_firms ?? []).join(",") },
+  portco:       { label: "Portfolio company", type: "select", getValue: (a) => (a.is_portco ? "yes" : "no") },
   // An account can have several opportunities of different types; join code +
   // label so a "contains" filter matches on either ("ft", "contract", "Part-time").
   deal_type:    { label: "Deal type", type: "text", getValue: (a) => dealTypesOf(a).map((t) => `${t} ${DEAL_TYPE_LABELS[t as keyof typeof DEAL_TYPE_LABELS] ?? ""}`).join(" | ") },
@@ -108,6 +113,7 @@ const GROUP_OPTIONS = [
   { value: "", label: "No grouping" },
   { value: "status", label: "Group by Status" },
   { value: "owner", label: "Group by Owner" },
+  { value: "investor_firm", label: "Group by Investor firm" },
   { value: "has_opps", label: "Group by Has opportunities" },
 ];
 const STATUSES: JobsAccountStatus[] = ["Pursuing", "Stewarding", "Re-activating", "Activating", "Prospect", "Dormant"];
@@ -231,13 +237,19 @@ export function JobsAccountHub({ initialQuery }: { initialQuery?: string } = {})
     const vals = [...new Set(accounts.map((a) => a.industry).filter(Boolean) as string[])].sort();
     return vals.map((v) => ({ value: v, label: v }));
   }, [accounts]);
+  const firmOptions = useMemo(() => {
+    const vals = [...new Set(accounts.flatMap((a) => a.investor_firms ?? []))].sort();
+    return vals.map((v) => ({ value: v, label: v }));
+  }, [accounts]);
   const selectOptions: Partial<Record<Field, { value: string; label: string }[]>> = useMemo(() => ({
     status: STATUSES.map((s) => ({ value: s, label: s })),
     owner: ownerOptions,
     industry: industryOptions,
+    investor_firm: firmOptions,
+    portco: YESNO,
     has_opps: YESNO, has_contacts: YESNO,
     last_activity: RECENCY_OPTIONS,
-  }), [ownerOptions, industryOptions]);
+  }), [ownerOptions, industryOptions, firmOptions]);
 
   const collapsedSet = useMemo(() => new Set(collapsedGroups), [collapsedGroups]);
   const toggleGroup = useCallback((k: string) => setCollapsedGroups((p) => p.includes(k) ? p.filter((x) => x !== k) : [...p, k]), [setCollapsedGroups]);
@@ -258,9 +270,12 @@ export function JobsAccountHub({ initialQuery }: { initialQuery?: string } = {})
   }, [accounts, q, rules, sort]);
 
   const groupLabel = useCallback((k: string) => {
-    if (k === "") return "—";
+    if (k === "") return groupBy === "investor_firm" ? "No investor" : "—";
     if (groupBy === "owner") return staff.find((s) => s.email === k)?.name ?? k;
     if (groupBy === "has_opps") return k === "yes" ? "Has opportunities" : "No opportunities";
+    // Co-held companies (a16z + Oak HC/FT) group under the pair rather than
+    // appearing twice — duplicating rows would double the group counts.
+    if (groupBy === "investor_firm") return k.split(",").join(" + ");
     return k;
   }, [groupBy, staff]);
 
