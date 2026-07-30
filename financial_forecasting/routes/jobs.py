@@ -3536,7 +3536,7 @@ async def outreach_stuck_contacts(
     rows = await conn.fetch(f"""
         WITH sends AS (
             -- one row per outbound MESSAGE (thread-level rows undercount follow-ups)
-            SELECT a.participant_public_contact_id AS cid, aem.sent_at AS ts
+            SELECT a.participant_public_contact_id AS cid, aem.sent_at AS ts, TRUE AS is_email
             FROM bedrock.activity a
             JOIN bedrock.activity_email_message aem ON aem.activity_id = a.id
             WHERE a.deleted_at IS NULL AND a.type = 'email'
@@ -3544,27 +3544,46 @@ async def outreach_stuck_contacts(
               AND a.participant_public_contact_id IS NOT NULL
               AND ({team_aem})
             UNION ALL
-            SELECT a.participant_public_contact_id, a.activity_date
+            SELECT a.participant_public_contact_id, a.activity_date, FALSE
             FROM bedrock.activity a
             WHERE a.deleted_at IS NULL AND a.type IN ('call','text','linkedin')
               AND a.participant_public_contact_id IS NOT NULL
         ),
-        agg AS (SELECT cid, count(*) AS touches, max(ts) AS last_touch FROM sends GROUP BY 1),
+        agg AS (
+            SELECT cid, count(*) AS touches, max(ts) AS last_touch,
+                   -- email-only floor, to match /outreach/responded-contacts exactly
+                   min(ts) FILTER (WHERE is_email) AS first_email_send
+            FROM sends GROUP BY 1),
         replied AS (
-            -- a meeting/call at all, OR any inbound MESSAGE on a thread linked to
+            -- a meeting at all, OR any inbound MESSAGE on a thread linked to
             -- the contact (their own reply or a colleague's — either way the
             -- account engaged).
+            -- 'call' is deliberately NOT here: bedrock.activity has no direction
+            -- column and the only writer of type='call' is log_jobs_activity, i.e.
+            -- OUR outbound touch — already counted in `sends` above. Treating it as
+            -- engagement disqualified every call-only contact from this queue, which
+            -- is exactly the population the panel exists to surface.
             SELECT DISTINCT a.participant_public_contact_id AS cid
             FROM bedrock.activity a
             WHERE a.deleted_at IS NULL AND a.participant_public_contact_id IS NOT NULL
-              AND a.type IN ('meeting','call')
+              AND a.type = 'meeting'
             UNION
             SELECT DISTINCT a.participant_public_contact_id AS cid
             FROM bedrock.activity a
             JOIN bedrock.activity_email_message aem ON aem.activity_id = a.id
+            JOIN agg ON agg.cid = a.participant_public_contact_id
+            JOIN bedrock.jobs_contact_membership mm
+              ON mm.contact_id = a.participant_public_contact_id
             WHERE a.deleted_at IS NULL AND a.participant_public_contact_id IS NOT NULL
               AND aem.from_email NOT ILIKE '%@pursuit.org%'
               AND aem.from_email NOT ILIKE '%@pursuit.com%'
+              -- These two predicates MUST match /outreach/responded-contacts
+              -- (search: "the reply has to be on a jobs-classified thread").
+              -- Without them a stale or non-jobs inbound message excluded a
+              -- contact from Stuck without admitting them to Replied, so they
+              -- appeared in neither queue on the same page.
+              AND coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs'
+              AND aem.sent_at >= coalesce(mm.first_outreach_at, agg.first_email_send)
         )
         SELECT c.contact_id, c.full_name, c.current_title, c.current_company,
                c.owner_email, agg.touches::int AS touches, agg.last_touch,

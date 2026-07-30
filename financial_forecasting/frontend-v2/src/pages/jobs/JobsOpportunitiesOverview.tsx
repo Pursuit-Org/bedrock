@@ -123,7 +123,8 @@ export function JobsOpportunitiesOverview() {
     return { start: s, end: dayDiff(s, end) < 0 ? s : end };
   });
   const setEnd = (v: string) => setRange(({ start }) => {
-    const e = dayDiff(parseDateInput(v), today) > 0 ? today : parseDateInput(v);
+    const p = parseDateInput(v);
+    const e = dayDiff(p, today) < 0 ? today : p;
     return { start: dayDiff(start, e) < 0 ? e : start, end: e };
   });
   const rangeLabel = weekStart.getFullYear() === weekEnd.getFullYear()
