@@ -259,6 +259,15 @@ async def startup_event():
         except Exception as e:
             logger.warning(f"sf_notification_poller failed to start: {e}")
 
+    # Builder intro requests written by Sputnik into public.intro_requests.
+    # Postgres-only — no SF dependency, so this starts unconditionally.
+    try:
+        from services.intro_notification_poller import run_forever as _intro_notif_loop
+        asyncio.create_task(_intro_notif_loop())
+        logger.info("intro_notification_poller started")
+    except Exception as e:
+        logger.warning(f"intro_notification_poller failed to start: {e}")
+
     logger.info(f"API started — connected services: {client.connected_services or ['none']}")
 
 

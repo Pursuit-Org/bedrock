@@ -926,9 +926,15 @@ function TasksZone({ owner }: { owner: string | null }) {
 }
 
 // ── Intro requests — asks addressed to me (staff + Sputnik builder), and mine ─
+// Union of both vocabularies — Bedrock's own staff→staff asks plus every value
+// allowed by the CHECK constraint on Sputnik's public.intro_requests. Keep in
+// sync with routes/jobs_intro.ASK_LABELS.
 const ASK_LABELS: Record<string, string> = {
   hiring_intro: "Hiring intro", industry_advice: "Industry advice",
   job_referral: "Job referral", mock_interview: "Mock interview",
+  informational_interview: "Informational interview",
+  introductory_call: "Intro call", demo_feedback: "Demo feedback",
+  other: "Other",
 };
 const askLabel = (a: string | null) => (a ? ASK_LABELS[a] ?? a.replace(/_/g, " ") : "Intro");
 
@@ -939,14 +945,23 @@ function IntroRequestCard({ r, mine }: { r: IntroRequest; mine: boolean }) {
     respond.mutate({ id: r.id, status, response_note: note.trim() || undefined, source: r.source });
   const isPending = r.status === "pending";
   const isAccepted = r.status === "accepted" || r.status === "approved";
+  // Who is asking — the signal Avni asked to make obvious. Carried by a
+  // dedicated tag + a left border, not by the ask-type tag's colour (which
+  // used to smuggle it and was easy to miss while scanning).
+  const fromBuilder = r.source === "builder";
   return (
-    <div className="flex flex-col gap-1.5 border-t border-border-strong px-3 py-2 text-[12.5px]">
+    <div className={cn(
+      "flex flex-col gap-1.5 border-t border-l-2 border-border-strong px-3 py-2 text-[12.5px]",
+      fromBuilder ? "border-l-sky" : "border-l-accent",
+    )}>
       <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+        <Tag variant={fromBuilder ? "sky" : "accent"}>{fromBuilder ? "Builder" : "Jobs team"}</Tag>
         <Link to={`/jobs/contacts/${r.contact_id}`} className="font-medium text-ink hover:text-accent">{r.contact_name || "—"}</Link>
         {r.contact_company && <span className="text-[11.5px] text-ink-3">{r.contact_company}</span>}
-        <Tag variant={r.source === "builder" ? "default" : "accent"}>{askLabel(r.specific_ask)}</Tag>
+        <Tag>{askLabel(r.specific_ask)}</Tag>
         <span className="text-[11px] text-ink-4">
-          {mine ? `via ${r.connector_name || r.connector_email || "—"}` : `from ${r.requested_by_name || r.requested_by || "—"}${r.source === "builder" ? " (builder)" : ""}`}
+          {mine ? `via ${r.connector_name || r.connector_email || "—"}` : `from ${r.requested_by_name || r.requested_by || "—"}`}
+          {fromBuilder && r.builder_cohort ? ` · ${r.builder_cohort}` : ""}
           {r.created_at ? ` · ${relDay(r.created_at)}` : ""}
         </span>
         {!isPending && (
@@ -965,7 +980,9 @@ function IntroRequestCard({ r, mine }: { r: IntroRequest; mine: boolean }) {
             className="rounded border border-red/40 px-2 py-0.5 text-[11px] font-medium text-red hover:bg-red/10">Decline</button>
         </div>
       )}
-      {!mine && isAccepted && r.source === "staff" && (
+      {/* Builder asks can be completed too now that BUILDER_STATUS_MAP stops
+          collapsing completed→approved. */}
+      {!mine && isAccepted && (
         <div>
           <button type="button" disabled={respond.isPending} onClick={() => act("completed")}
             className="rounded border border-border-strong px-2 py-0.5 text-[11px] font-medium text-ink-3 hover:border-accent hover:text-accent">Mark intro made</button>

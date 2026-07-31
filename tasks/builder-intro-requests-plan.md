@@ -3,7 +3,10 @@
 Source: Slack thread 2026-07-30 (Joanna, Avni, Jac) — screenshot of an intro
 request card reading `from — (builder) · 1mo`.
 
-Status: **plan for review — nothing built yet.**
+Status: **built.** Scope as confirmed: (1) put the builder in the messages and
+route builder asks through the one Bedrock bot, (2) colour-code builder vs
+jobs-team. The richer card work (demo URL, prep notes, readiness checks) is
+specced below but deliberately **not** built — see "Not built".
 
 ---
 
@@ -135,55 +138,86 @@ the payload, so **no CHECK-constraint migration is needed**.
 
 ---
 
-## Plan
+## Built
 
-### 1. Fix the builder identity (P0 — the actual reported bug)
-- [ ] `jobs_intro.py`: replace the `LEFT JOIN public.users` with
-      `LEFT JOIN LATERAL bedrock.builder_by_id(ir.builder_id) b ON true`
-- [ ] Return `builder_id` in the payload so the card can link to the builder
-- [ ] Fallback chain that can never render a bare dash:
-      `full_name → email → 'Builder #<id>'`
-- [ ] Add `requested_by_name` to `_staff_row()` too — staff asks currently show a
-      raw email because the key is simply absent
+**No migrations.** `bedrock.builder_by_id` already exists and is already granted
+to `bedrock_user`; the poller seeds its own watermark row on first run.
 
-### 2. Surface what Sputnik captured
-- [ ] Select `builder_preparation`, `demo_url`, `readiness_checks`, `cohort`
-- [ ] Extend the `IntroRequest` TS interface
-- [ ] Card: builder name links to their profile; `demo_url` as a labelled link;
-      prep notes collapsed behind a disclosure; readiness as a compact check row
+### 1. Builder identity — `routes/jobs_intro.py`
+- [x] `LEFT JOIN public.users` → `LEFT JOIN LATERAL bedrock.builder_by_id(...)`
+- [x] `builder_id` + `builder_cohort` returned so the card can attribute the ask
+- [x] `_builder_display()` fallback chain — `full_name → email → 'Builder #<id>'`,
+      never empty, so a bare "—" is unreachable
+- [x] `requested_by_name` added to `_staff_row()` (resolved via a second
+      `staff_user_id_map` join on the requester's email) — staff asks showed a
+      raw email because the key was simply absent
 
-### 3. Colour-code builder vs jobs-team (Avni's ask)
-- [ ] Dedicated source `Tag` — `sky` = "Builder", `accent` = "Jobs team" —
-      distinct from the ask-type tag, which currently smuggles the source signal
-      into its `variant` (semantically wrong and easy to miss)
-- [ ] Left border accent on the card so the split is visible while scanning
-- [ ] Keep the `(builder)` text as the non-colour fallback (accessibility)
+### 2. Colour-code builder vs jobs-team — `JobsHome.tsx`
+- [x] Dedicated source tag: `sky` "Builder" / `accent` "Jobs team", plus a
+      matching 2px left border so the split is scannable
+- [x] Ask-type tag is now neutral — it was carrying the source signal in its
+      `variant`, which is why the distinction was easy to miss
+- [x] The tag text itself reads "Builder"/"Jobs team", so the signal survives
+      without colour (replaces the old `(builder)` suffix)
+- [x] Builder cohort shown inline when present
 
-### 4. Merge the notification paths (Avni + Jac)
-- [ ] `services/intro_notification_poller.py` — watermark source
-      `sputnik_intro_request`, enqueue `intro_request` to the connector staff for
-      new `public.intro_requests` rows
-- [ ] Payload carries `requester_kind: "builder"`, builder name, demo URL
-- [ ] `_format_slack_message`: distinguish builder vs staff asks in the DM
-- [ ] Wire into `main.py` startup alongside the SF poller
-- [ ] Seed the watermark at deploy time so the first poll doesn't DM the team
-      about all 17 pending backlog rows
+### 3. One Bedrock bot — `services/intro_notification_poller.py` (new)
+- [x] Watermark source `sputnik_intro_request`; new `public.intro_requests` rows
+      enqueue an `intro_request` notification to the **connector staff member** →
+      Bedrock bell + Slack DM, same path as staff→staff asks
+- [x] Reuses the existing `intro_request` type with `requester_kind: "builder"`,
+      so no CHECK-constraint migration
+- [x] `_format_slack_message` labels builder asks and adds the cohort line
+- [x] Wired into `main.py` startup **outside** the Salesforce guard — this poller
+      is Postgres-only and must not depend on SF being connected
+- [x] Backlog skipped by construction: the watermark seeds to *now* on first run,
+      so the 17 pending asks are never retro-DMed
+- [x] Whole cycle runs in one transaction holding `FOR UPDATE` on the watermark
+      row. Bedrock runs multiple Cloud Run instances each carrying this loop;
+      the existing SF poller reads its watermark unlocked and can double-notify,
+      and that race was not worth copying into new code
+- [x] A row whose `staff_user_id` is missing from `staff_user_id_map` is skipped
+      but still advances the watermark — otherwise it pins the mark and every
+      later poll re-scans it forever
 
-### 5. Vocabulary + status correctness
-- [ ] Single shared ask-label map covering all six Sputnik values, backend and
-      frontend in sync
-- [ ] `BUILDER_STATUS_MAP`: `completed → completed` (allowed by the CHECK
-      constraint), so accept and done stop collapsing
-- [ ] Drop the `source === "staff"` gate on "Mark intro made"
-- [ ] Fold `jobs.py:713/743` and `sputnik.py:109` onto `builder_by_id`
+### 4. Vocabulary + status correctness (needed for #3 to read right)
+- [x] Shared 8-value ask-label map, backend and frontend in sync — the Slack DM
+      was rendering the raw `introductory_call`
+- [x] `BUILDER_STATUS_MAP`: `completed → completed`, so accept and done stop
+      collapsing into `approved`
+- [x] Dropped the `source === "staff"` gate on "Mark intro made", so builder
+      asks can actually be closed out
 
-### 6. Tests
-- [ ] Regression test asserting the builder name resolves — the current bug would
-      have been caught by one assertion that `requested_by_name` is non-empty for
-      a builder-sourced row
-- [ ] A guard test that fails if any query in `routes/` joins `public.users`
-      directly, so this trap cannot be reintroduced
-- [ ] Poller test: watermark advances once, no duplicate notification
+### 5. Tests — `tests/test_jobs_intro.py`, 13 cases
+- [x] The reported bug: `requested_by_name` resolves to the real builder name
+- [x] Root-cause guard: the Sputnik query must use `bedrock.builder_by_id` and
+      must not join `public.users` (both route and poller)
+- [x] Parametrised fallback chain, including that the result is never blank
+- [x] Every Sputnik `specific_ask` value has a label; `completed` stays distinct
+- [x] Poller: first run seeds and skips the backlog; a new ask notifies exactly
+      once and bumps the watermark once; unmappable staff id doesn't pin it;
+      watermark reads take `FOR UPDATE`
+
+**Verification:** full suite `25 failed, 917 passed, 22 skipped`. Baseline on a
+clean tree is `25 failed, 904 passed` — the same 25 pre-existing environment
+failures (503s where SF/DB aren't available locally), plus exactly the 13 new
+tests. `tsc --noEmit` clean. `npm run lint` is not runnable — the repo has no
+`eslint.config.js`, so it fails on `main` too.
+
+## Not built (deliberately out of the confirmed scope)
+
+- **The richer builder card** — `builder_preparation`, `demo_url`,
+  `readiness_checks` are still not surfaced anywhere in the UI. This is the
+  largest remaining gap: staff still can't see what the builder built. Specced
+  above under "What Sputnik captures".
+- **Notifying builders back** when their ask is answered — they aren't in this
+  Slack workspace, so it cannot work today.
+- **Folding `jobs.py:713/743` and `sputnik.py:109` onto `builder_by_id`** — they
+  degrade to `Builder #N` / `User #N` rather than a dash, so cosmetic not broken.
+- **A repo-wide guard test** banning direct `public.users` joins in `routes/`.
+  The two new guard tests only cover this flow.
+- **The SF poller's unlocked watermark read** — same double-notify race, left
+  as-is to keep this change scoped.
 
 ---
 
