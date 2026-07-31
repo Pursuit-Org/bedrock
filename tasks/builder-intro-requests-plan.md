@@ -187,17 +187,88 @@ the payload, so **no CHECK-constraint migration is needed**.
 
 ---
 
-## Open questions for Avni / Jac
+## What "Bedrock DM" means (it is just a Slack DM)
 
-1. **Should builders get Bedrock Slack DMs when their ask is answered?**
-   Responding to a builder ask currently notifies nobody. If Bedrock becomes the
-   single bot, the builder should hear back — but that means DMing builders from
-   the Bedrock app, and Sputnik may already do this, in which case we'd
-   double-notify. Needs confirming before wiring.
-2. **Does the Sputnik-side channel get turned off** once Bedrock notifies, or do
-   both run during a transition?
-3. **Backlog:** 17 pending builder asks, oldest from 2026-03. Notify on the first
-   poll, or seed the watermark to now and let the backlog be worked from the page
-   only? (Plan currently assumes the latter.)
-4. **`demo_feedback` and `other`** — still live ask types in the Sputnik UI, or
-   legacy? Affects whether they need first-class labels.
+There is no Bedrock-specific message surface. `enqueue_notification()` produces
+two things per event:
+
+1. a row in `bedrock.notification` → the bell in the Bedrock web app
+   (`NotificationBell.tsx`)
+2. a **real Slack DM from the Bedrock Slack app** — `_dispatch_slack()` →
+   `_resolve_slack_id()` (`users.lookupByEmail`, cached indefinitely in
+   `bedrock.slack_user_cache`) → `chat_postMessage(channel=<slack_user_id>)`
+
+This is live in prod today for staff→staff asks.
+
+### Builders are not reachable from this Slack workspace
+
+Checked directly against the workspace the Bedrock bot lives in. Four builders,
+searched by email *and* by display name:
+
+| looked up | result |
+|---|---|
+| `adedoyin.ahoton@pursuit.org` | no match |
+| `francis.rutledge@pursuit.org` | no match |
+| `michelle.brooks@pursuit.org` | no match |
+| `Adedoyin Ahoton`, `Jimmy Ong` (by name) | no match |
+| `avni@pursuit.org` (control) | **U0AKQFH36CW** — resolves |
+
+The control proves lookup works, so builders genuinely are not in this
+workspace. `bedrock.slack_user_cache` corroborates: 17 cached users, **0 with
+`role='builder'`**.
+
+Consequence: a DM aimed at a builder would silently no-op — `_resolve_slack_id`
+returns `None` and the notification is marked `slack_status='skipped'`,
+`note='no_slack_id'`. Nothing breaks, but the builder never hears anything.
+
+**This does not block the fix.** The person who must act on an intro request is
+the *connector staff member*, and they are reachable today. Notifying builders
+back would need either Slack Connect / a cross-workspace app, or leaving
+builder-facing comms to Sputnik. Deferred, not required.
+
+---
+
+## Sputnik is a separate app — what we can and cannot touch
+
+Sputnik's code is **not in this repo**. All that exists here is read-only access
+to its tables on the shared segundo-db (`public.intro_requests`,
+`public.outreach`) through `routes/sputnik.py`. The builder-facing form, and
+whatever posts into the "builder intro request" Slack channel Avni mentioned,
+live in Sputnik's codebase where I cannot see or change them.
+
+So the earlier "does Sputnik get switched off" question was mis-scoped as a
+blocker. The concrete risk is narrow: if Bedrock starts DMing the connector staff
+and that Sputnik channel keeps posting the same ask, staff hear it twice. The
+Bedrock side is purely additive and safe either way — this is a coordination note
+for whoever owns Sputnik, not a decision needed before building.
+
+---
+
+## Resolved
+
+- **Backlog — do not notify.** Seed the watermark at deploy time. The 17 pending
+  asks (oldest 2026-03) stay visible on the Jobs page and get worked from there.
+  No retroactive DMs.
+- **`demo_feedback` / `other` are not columns.** They are two of six allowed
+  *values* of the `specific_ask` column (`varchar(100)`) on
+  `public.intro_requests`, enforced by its CHECK constraint. Usage across all 24
+  rows:
+
+  | `specific_ask` | rows | last used |
+  |---|---|---|
+  | `industry_advice` | 9 | 2026-06-24 |
+  | `informational_interview` | 7 | 2026-06-15 |
+  | `job_referral` | 4 | 2026-07-16 |
+  | `introductory_call` | 3 | 2026-07-27 |
+  | `other` | 1 | 2026-07-13 |
+  | `demo_feedback` | **0 — never used** | — |
+
+  `demo_feedback` is legal but has never been selected. Labelling all six anyway
+  is trivial and prevents the raw-underscore fallback.
+
+- **The two tables have different vocabularies.** Bedrock's own
+  `bedrock.intro_request` uses `hiring_intro` / `industry_advice` /
+  `job_referral` (plus `mock_interview` in the frontend map). `hiring_intro` and
+  `mock_interview` are **not** valid Sputnik values. The shared label map must
+  cover the union of eight, with `industry_advice` and `job_referral` common to
+  both.
