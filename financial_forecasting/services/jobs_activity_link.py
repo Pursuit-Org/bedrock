@@ -107,7 +107,7 @@ async def auto_flag_jobs_prospects(conn, dry_run: bool = False) -> dict[str, Any
     returns {"would_flag": n, "rows": [...]} with per-contact evidence
     (jobs-activity count, latest date) for preview/CSV export.
     """
-    with_block = """
+    with_block = r"""
     WITH staff_email AS (
         SELECT lower(email) AS email FROM public.org_users WHERE is_active
         UNION
