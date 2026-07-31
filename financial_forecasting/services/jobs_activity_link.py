@@ -164,6 +164,11 @@ async def auto_flag_jobs_prospects(conn, dry_run: bool = False) -> dict[str, Any
           -- Email-review candidates are staged for human review, not the main
           -- pipeline — never auto-promote them into is_jobs_contact via activity.
           AND coalesce(c.contact_stage, '') <> 'candidate'
+          -- Pursuit's own people are never prospects: exclude the staff roster
+          -- and any org-domain address (staff exist as contact rows and appear
+          -- on jobs threads constantly — without this they self-flag).
+          AND lower(c.email) NOT IN (SELECT email FROM staff_email)
+          AND lower(c.email) !~ '@(pursuit\.(org|com)|c4q\.nyc|ac\.c4q\.nyc|coalitionforqueens\.org)$'
           AND (
               lower(c.email) IN (SELECT em FROM part_email WHERE em IS NOT NULL)
               OR c.contact_id IN (SELECT contact_id FROM linked_cid)
