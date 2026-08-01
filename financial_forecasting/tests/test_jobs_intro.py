@@ -216,8 +216,41 @@ def test_watermark_is_locked_so_parallel_instances_cannot_double_notify(monkeypa
     monkeypatch.setitem(_services, "db_pool", FakePool(conn))
     asyncio.run(poller.poll_once())
 
-    reads = [q for q in conn.queries() if "notification_watermark" in q and "SELECT" in q]
+    reads = [q for q in conn.queries()
+             if q.strip().startswith("SELECT last_seen FROM bedrock.notification_watermark")]
     assert reads and all("FOR UPDATE" in q for q in reads), reads
+
+
+def test_sputnik_timestamps_are_read_as_utc(monkeypatch, _captured):
+    """public.intro_requests.created_at is `timestamp` (naive) while
+    notification_watermark.last_seen is `timestamptz`. Without the cast asyncpg
+    hands back a naive datetime on one side and an aware one on the other, and
+    both the SQL comparison and `created_at > newest` raise TypeError — the
+    poller would then fail every cycle, silently, inside run_forever's guard.
+    FakeConn can't enforce asyncpg's typing, so assert on the SQL itself.
+    """
+    import asyncio
+    from dependencies import _services
+    import services.intro_notification_poller as poller
+
+    conn = _poller_conn(watermark=datetime(2026, 6, 1, tzinfo=timezone.utc),
+                        rows=[_builder_row()])
+    monkeypatch.setitem(_services, "db_pool", FakePool(conn))
+    asyncio.run(poller.poll_once())
+
+    sql = next(q for q in conn.queries() if "FROM public.intro_requests ir" in q)
+    assert "ir.created_at AT TIME ZONE 'UTC' AS created_at" in sql
+    assert "WHERE ir.created_at AT TIME ZONE 'UTC' > $1" in sql
+
+
+def test_route_normalises_sputnik_timestamps_to_utc():
+    """Same mismatch on the read path: builder rows would serialise without a
+    UTC offset while staff rows carry one, so the browser reads them as local."""
+    conn = _conn([_builder_row()])
+    make_jobs_client(conn).get("/api/jobs/intro-requests?box=inbox")
+    sql = next(q for q in conn.queries() if "FROM public.intro_requests ir" in q)
+    assert "ir.created_at   AT TIME ZONE 'UTC' AS created_at" in sql
+    assert "ir.responded_at AT TIME ZONE 'UTC' AS responded_at" in sql
 
 
 def test_poller_reads_builder_identity_via_security_definer(monkeypatch, _captured):

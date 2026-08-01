@@ -178,7 +178,13 @@ async def list_intro_requests(
             f"""
             SELECT ir.intro_request_id, ir.contact_id, ir.contact_name, ir.contact_company,
                    ir.contact_title, ir.specific_ask, ir.request_context, ir.status,
-                   ir.staff_response_notes, ir.responded_at, ir.created_at,
+                   -- These are `timestamp` (naive) here but `timestamptz` on
+                   -- bedrock.intro_request, so without the cast the two sources
+                   -- serialise differently and the browser reads builder dates
+                   -- as local time. The DB runs in UTC.
+                   ir.staff_response_notes,
+                   ir.responded_at AT TIME ZONE 'UTC' AS responded_at,
+                   ir.created_at   AT TIME ZONE 'UTC' AS created_at,
                    ir.builder_id,
                    b.full_name AS builder_name, b.email AS builder_email,
                    b.cohort AS builder_cohort

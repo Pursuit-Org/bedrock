@@ -116,7 +116,15 @@ async def _poll_builder_intros(pool) -> int:
 
             rows = await conn.fetch(
                 """
-                SELECT ir.intro_request_id, ir.created_at, ir.specific_ask,
+                -- intro_requests.created_at is `timestamp` (naive) while
+                -- notification_watermark.last_seen is `timestamptz`, so asyncpg
+                -- hands us a naive datetime on one side and an aware one on the
+                -- other: the bare comparison raises rather than mis-sorting.
+                -- The DB runs in UTC and these values are UTC, so read them as
+                -- such and keep Python uniformly tz-aware.
+                SELECT ir.intro_request_id,
+                       ir.created_at AT TIME ZONE 'UTC' AS created_at,
+                       ir.specific_ask,
                        ir.request_context, ir.contact_name, ir.contact_company,
                        ir.builder_id, ir.staff_user_id,
                        b.full_name AS builder_name, b.email AS builder_email,
@@ -125,7 +133,7 @@ async def _poll_builder_intros(pool) -> int:
                 FROM public.intro_requests ir
                 LEFT JOIN LATERAL bedrock.builder_by_id(ir.builder_id) b ON true
                 LEFT JOIN bedrock.staff_user_id_map m ON m.staff_user_id = ir.staff_user_id
-                WHERE ir.created_at > $1
+                WHERE ir.created_at AT TIME ZONE 'UTC' > $1
                   AND ir.status = 'pending'
                 ORDER BY ir.created_at ASC
                 LIMIT 200
