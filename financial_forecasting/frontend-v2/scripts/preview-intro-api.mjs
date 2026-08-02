@@ -102,7 +102,16 @@ createServer((req, res) => {
   if (path === '/api/jobs/intro-requests') {
     return send(res, { success: true, data: [staffRow, builderRow] });
   }
-  // Every other zone on the Jobs page renders from an empty result.
+
+  // Response shape matters: hooks destructure these differently, and handing
+  // back the wrong one throws inside render (a caught .filter on an object
+  // blanks the whole page). Salesforce endpoints return bare arrays; the
+  // notification badge reads data.data.count; the rest use {success, data}.
+  if (path.startsWith('/api/salesforce/')) return send(res, []);
+  if (path === '/api/notifications/unread-count') {
+    return send(res, { success: true, data: { count: 0 } });
+  }
+  // Every other zone renders from an empty result.
   return send(res, { success: true, data: [] });
 }).listen(PORT, '127.0.0.1', () => {
   console.log(`\n  intro-requests preview API — MODE=${MODE}`);
