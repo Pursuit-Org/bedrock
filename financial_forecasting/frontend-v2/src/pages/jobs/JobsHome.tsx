@@ -948,14 +948,19 @@ function IntroRequestCard({ r, mine }: { r: IntroRequest; mine: boolean }) {
   // Who is asking — the signal Avni asked to make obvious. Carried by a
   // dedicated tag + a left border, not by the ask-type tag's colour (which
   // used to smuggle it and was easy to miss while scanning).
+  //
+  // amber vs accent, not sky vs accent: --sky is oklch(0.55 0.13 245) and
+  // --accent is oklch(0.55 0.15 250) — same lightness, 5° apart in hue, so
+  // side by side they read as one colour. green/red are spoken for by the
+  // Accept/Decline actions on this same card.
   const fromBuilder = r.source === "builder";
   return (
     <div className={cn(
       "flex flex-col gap-1.5 border-t border-l-2 border-border-strong px-3 py-2 text-[12.5px]",
-      fromBuilder ? "border-l-sky" : "border-l-accent",
+      fromBuilder ? "border-l-amber" : "border-l-accent",
     )}>
       <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-        <Tag variant={fromBuilder ? "sky" : "accent"}>{fromBuilder ? "Builder" : "Jobs team"}</Tag>
+        <Tag variant={fromBuilder ? "amber" : "accent"}>{fromBuilder ? "Builder" : "Jobs team"}</Tag>
         <Link to={`/jobs/contacts/${r.contact_id}`} className="font-medium text-ink hover:text-accent">{r.contact_name || "—"}</Link>
         {r.contact_company && <span className="text-[11.5px] text-ink-3">{r.contact_company}</span>}
         <Tag>{askLabel(r.specific_ask)}</Tag>
