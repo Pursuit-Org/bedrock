@@ -34,6 +34,21 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+# db.py annotates `asyncpg.Pool | None` at module scope, which is a runtime
+# TypeError before 3.10. The Dockerfile runs 3.11; fail with something legible
+# rather than a traceback out of an unrelated import.
+if sys.version_info < (3, 10):
+    sys.exit(
+        f"\n  This needs Python 3.10+ (production runs 3.11); you are on "
+        f"{sys.version_info.major}.{sys.version_info.minor}.\n\n"
+        "    brew install python@3.11\n"
+        "    cd financial_forecasting\n"
+        "    rm -rf .venv\n"
+        "    python3.11 -m venv .venv\n"
+        "    source .venv/bin/activate\n"
+        "    pip install -r requirements.txt\n"
+    )
+
 # Run from anywhere: put financial_forecasting/ on the path.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
