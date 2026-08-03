@@ -49,7 +49,7 @@ import { useSessionState } from "@/lib/useSessionState";
 import { InlineSelect } from "@/components/ui/InlineEdit";
 import { Drawer } from "@/components/ui/Drawer";
 import { JobsFunnels } from "@/components/jobs/JobsFunnels";
-import { PeriodBar } from "@/components/jobs/PeriodBar";
+import { PeriodBar, defaultPeriod } from "@/components/jobs/PeriodBar";
 import { CommittedRolesModal } from "@/components/jobs/CommittedRolesModal";
 import { DealExpandPanel, PlacementsModal, ClosedLostModal, stageOptionsFor, displayPriority } from "./JobsTeam";
 import { relDay } from "@/lib/format";
@@ -81,18 +81,6 @@ const dayOnly = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()
 const parseDateInput = (v: string) => dayOnly(new Date(`${v}T00:00:00`));
 /** Whole days from a to b (both floored to midnight). */
 const dayDiff = (a: Date, b: Date) => Math.round((dayOnly(b).getTime() - dayOnly(a).getTime()) / 86400000);
-/** The most recent `dow` (0=Sun) on or before `d`. */
-function mostRecentDow(d: Date, dow: number): Date {
-  const x = dayOnly(d);
-  x.setDate(x.getDate() - ((x.getDay() - dow + 7) % 7));
-  return x;
-}
-/** Sun–Sat week containing `d`, clamped to today (the previous default). */
-function calendarWeek(today: Date): { start: Date; end: Date } {
-  const t = dayOnly(today);
-  const sun = mostRecentDow(t, 0);
-  return { start: sun, end: t };
-}
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
@@ -108,7 +96,11 @@ export function JobsOpportunitiesOverview() {
   // Free-form window: both bounds inclusive, no snapping. Defaults to the
   // calendar week (what the Weekly preset selects, matching Outreach); the
   // presets and the two date inputs set it.
-  const [range, setRange] = useState<{ start: Date; end: Date }>(() => calendarWeek(new Date()));
+  // Completed week, matching Outreach — see defaultPeriod.
+  const [range, setRange] = useState<{ start: Date; end: Date }>(() => {
+    const [f, t] = defaultPeriod();
+    return { start: parseDateInput(f), end: parseDateInput(t) };
+  });
   const weekStart = range.start;
   const weekEnd = range.end;
   const spanDays = Math.max(1, dayDiff(weekStart, weekEnd) + 1);
@@ -243,7 +235,6 @@ export function JobsOpportunitiesOverview() {
         period={{ from: fmtDateInput(weekStart), to: fmtDateInput(weekEnd) }}
         periodLabel={rangeLabel}
         dealType={dealType}
-        onUsePeriod={(f, t) => setRange({ start: parseDateInput(f), end: parseDateInput(t) })}
       />
 
       {/* ── Aging + Breakdown ─────────────────────────────────────────── */}

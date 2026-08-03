@@ -53,16 +53,13 @@ const DEAL_TYPE_FILTERS: { value: string; label: string }[] = [
   ),
 ];
 
-export function JobsFunnels({ builderSegment, only, period, periodLabel, onUsePeriod, dealType: dealTypeProp }: {
+export function JobsFunnels({ builderSegment, only, period, periodLabel, dealType: dealTypeProp }: {
   builderSegment?: string;
   only?: FunnelType;
   /** Pass a window to get period-flow counts (records that ENTERED each stage).
    *  Omit it for the all-time snapshot — the Exec view has no period control. */
   period?: FunnelPeriod;
   periodLabel?: string;
-  /** Jump the page's period to a window that has data — used by the empty
-   *  state, so an empty week is one click from the last real movement. */
-  onUsePeriod?: (from: string, to: string) => void;
   /** Let the host page own the deal-type lens. When set, the funnel's own pill
    *  row is hidden — otherwise the Pipeline page shows two deal-type controls
    *  that can disagree with each other. */
@@ -78,7 +75,7 @@ export function JobsFunnels({ builderSegment, only, period, periodLabel, onUsePe
   const setDealType = setDealTypeOwn;
   // The builders funnel is the L3+ job-ready pool — scope it by the dashboard's
   // L3-cohort segment instead of deal type.
-  const { data, isLoading } = useJobsFunnel(
+  const { data, isLoading, isError, error, refetch } = useJobsFunnel(
     funnel,
     funnel === "builders" ? undefined : dealType,
     funnel === "builders" ? builderSegment : undefined,
@@ -157,15 +154,11 @@ export function JobsFunnels({ builderSegment, only, period, periodLabel, onUsePe
         isPeriod={isPeriod}
         periodLabel={periodLabel}
         lastMovementAt={data?.last_movement_at ?? null}
-        onUsePeriod={onUsePeriod}
+        isError={isError}
+        errorText={(error as { message?: string } | null)?.message ?? null}
+        onRetry={() => refetch()}
       />
 
-      {/* Muted note for funnels without stage-change history */}
-      {funnel !== "opportunities" && !isPeriod ? (
-        <p className="text-[11.5px] text-ink-3">
-          Stage-change history isn't tracked for this funnel yet.
-        </p>
-      ) : null}
     </div>
   );
 }
@@ -217,7 +210,9 @@ function FunnelCard({
   isPeriod,
   periodLabel,
   lastMovementAt,
-  onUsePeriod,
+  isError,
+  errorText,
+  onRetry,
 }: {
   funnel: FunnelType;
   stages: FunnelStage[];
@@ -226,7 +221,9 @@ function FunnelCard({
   isPeriod: boolean;
   periodLabel?: string;
   lastMovementAt: string | null;
-  onUsePeriod?: (from: string, to: string) => void;
+  isError: boolean;
+  errorText: string | null;
+  onRetry: () => void;
 }) {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState(false);
@@ -292,7 +289,16 @@ function FunnelCard({
       ) : null}
 
       {/* Stage rows */}
-      {collapsed ? null : isLoading ? (
+      {collapsed ? null : isError ? (
+        <div className="px-4 py-8 text-center">
+          <p className="text-[12.5px] font-semibold text-red">Couldn't load this funnel.</p>
+          {errorText ? <p className="mt-1 text-[11.5px] text-ink-3">{errorText}</p> : null}
+          <button type="button" onClick={onRetry}
+            className="mt-2.5 rounded-md border border-border-strong bg-surface px-2.5 py-1 text-[12px] font-medium text-accent hover:bg-surface-2">
+            Retry
+          </button>
+        </div>
+      ) : isLoading ? (
         <div className="flex flex-col">
           {Array.from({ length: 5 }).map((_, i) => (
             <div
@@ -323,22 +329,6 @@ function FunnelCard({
               <p className="mt-1 text-[11.5px] text-ink-3">
                 Most recent movement was {new Date(lastMovementAt).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}.
               </p>
-              {onUsePeriod ? (
-                <button
-                  type="button"
-                  onClick={() => {
-                    const end = new Date(lastMovementAt);
-                    const start = new Date(end);
-                    start.setDate(start.getDate() - 29);
-                    const iso = (d: Date) =>
-                      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-                    onUsePeriod(iso(start), iso(end));
-                  }}
-                  className="mt-2.5 rounded-md border border-border-strong bg-surface px-2.5 py-1 text-[12px] font-medium text-accent hover:bg-surface-2"
-                >
-                  Show the 30 days to then
-                </button>
-              ) : null}
             </>
           ) : (
             <p className="mt-1 text-[11.5px] text-ink-3">

@@ -34,8 +34,9 @@ function fmtPeriod(iso: string, gran: "day" | "week" | "month"): string {
  * Account-level outreach over time — a line per period of how many accounts
  * were reached. The dropdown splits that into NEW accounts (first activated
  * that period) vs EXISTING ones. Period, bucket size, scope and sender are all
- * owned by the page's period row — this chart deliberately has no controls of
- * its own beyond that split, so there's one set per page.
+ * owned by the page's period row. The only controls here are the series split
+ * and the bucket size (how finely the selected period is sliced), which is a
+ * different question from how long the period is.
  */
 export function ActivityTrends({ granularity, scope, owner, range }: {
   granularity: "day" | "week" | "month";
@@ -43,7 +44,11 @@ export function ActivityTrends({ granularity, scope, owner, range }: {
   owner?: string;
   range?: OutreachRange;
 }) {
-  const gran = granularity;
+  // Bucket size within the selected period. Seeded from the page's granularity
+  // but independent of it: the page chooses how long the window is, this chooses
+  // how finely to slice it — a month of data by day is a legitimate view.
+  const [bucket, setBucket] = useState<"day" | "week" | "month" | null>(null);
+  const gran = bucket ?? granularity;
   // Channel stays "all": splitting email vs meetings was a fourth control on a
   // page that already has three, and the line answers "how much outreach".
   const channel: OutreachChannel = "all";
@@ -88,7 +93,18 @@ export function ActivityTrends({ granularity, scope, owner, range }: {
           {/* One line by default — total accounts reached per period. The
               new-vs-existing split is a second question, so it sits behind the
               dropdown rather than competing for the same axis. */}
-          <div className="flex items-center justify-end">
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-4">Data points</span>
+            <div className="inline-flex items-center rounded-md border border-border-strong bg-surface p-0.5">
+              {([["day", "Daily"], ["week", "Weekly"], ["month", "Monthly"]] as const).map(([k, lbl]) => (
+                <button key={k} type="button" onClick={() => setBucket(k)}
+                  title={`One point per ${k} across the selected period`}
+                  className={`rounded px-2 py-0.5 text-[12px] font-medium transition-colors ${
+                    gran === k ? "bg-accent-soft text-accent" : "text-ink-2 hover:bg-surface-2"}`}>
+                  {lbl}
+                </button>
+              ))}
+            </div>
             <select
               value={split}
               onChange={(e) => setSplit(e.target.value as SplitMode)}

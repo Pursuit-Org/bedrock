@@ -14,6 +14,7 @@ import {
   useStuckContacts,
   useRespondedContacts,
   useUpdateJobsMembership,
+  inScope,
   MEMBERSHIP_STAGES,
   MEMBERSHIP_STAGE_LABELS,
   type OutreachGranularity,
@@ -28,18 +29,11 @@ import { TagCampaigns } from "@/components/jobs/TagCampaigns";
 import { JobsFunnels } from "@/components/jobs/JobsFunnels";
 import { Panel, BreakdownBars } from "./JobsOpportunitiesOverview";
 import { ActivityTrends } from "@/components/jobs/ActivityTrends";
-import { PeriodBar, ScopeButtons } from "@/components/jobs/PeriodBar";
+import { PeriodBar, ScopeButtons, defaultPeriod } from "@/components/jobs/PeriodBar";
 import { relDay } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 const DRILL_PAGE = 25;
-/** [startISO, endISO] for the current Sun–Sat week (local dates). */
-function currentWeek(): [string, string] {
-  const iso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-  const start = new Date(); start.setHours(0, 0, 0, 0); start.setDate(start.getDate() - start.getDay());
-  const end = new Date(start); end.setDate(start.getDate() + 6);
-  return [iso(start), iso(end)];
-}
 const MEMBERSHIP_STAGE_OPTIONS = MEMBERSHIP_STAGES.map((s) => ({ value: s, label: MEMBERSHIP_STAGE_LABELS[s] }));
 
 
@@ -410,10 +404,22 @@ function ThisWeekBlock({ nameOf, activityPipeline, granularity, scope, owner, ra
       if (t >= pStart && t <= pEnd) bucket(c.owner_email).contacted.push(c);
     }
     return [...by.entries()]
-      .filter(([, r]) => r.assigned.length + r.contacted.length > 0)
+      .filter(([email, r]) => r.assigned.length + r.contacted.length > 0
+        // Honour the page's sender scope: "(unowned)" is nobody's, so it only
+        // shows under Everyone.
+        && (email === "(unowned)" ? scope === "pursuit" : inScope(email, scope)))
       .sort((a, b) => (b[1].assigned.length + b[1].contacted.length) - (a[1].assigned.length + a[1].contacted.length));
-  }, [assignedData, contactedData, range]);
-  if (rows.length === 0) return null;
+  }, [assignedData, contactedData, range, scope]);
+  if (rows.length === 0) {
+    return (
+      <div className="flex flex-col gap-3">
+        <SectionHead title="Outreach Detail" note={periodLabel ? `${periodLabel} · assigned queue and contacts reached` : undefined} />
+        <div className="rounded-lg border border-dashed border-border-strong px-4 py-6 text-center text-[12.5px] text-ink-4">
+          Nobody in this scope has an assigned queue for this period.
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="flex flex-col gap-3">
       <SectionHead title="Outreach Detail" note={periodLabel ? `${periodLabel} · assigned queue and contacts reached` : "assigned queue · contacts reached"} />
@@ -999,8 +1005,10 @@ export function JobsOutreach() {
   const [granularity, setGranularity] = useState<OutreachGranularity>("week");
   const [scope, setScope] = useState<OutreachScopeKind>("team");
   const [owner, setOwner] = useState<string>("");   // "" = whole scope
-  const [from, setFrom] = useState(() => currentWeek()[0]);
-  const [to, setTo] = useState(() => currentWeek()[1]);
+  // Defaults to the completed week (see defaultPeriod) rather than the one in
+  // progress — on a Monday the current week is two days of nothing.
+  const [from, setFrom] = useState(() => defaultPeriod()[0]);
+  const [to, setTo] = useState(() => defaultPeriod()[1]);
   const range: OutreachDateRange | undefined = from && to ? { from, to } : undefined;
 
   const { data: staff = [] } = useJobsStaff();
@@ -1036,8 +1044,7 @@ export function JobsOutreach() {
       {/* ── Monday agenda: contacts funnel → this week (+ activity pipeline)
              → requiring attention → campaigns → scorecard → targeting.
              Activity over time now sits below the sender-segment divider. ── */}
-      <JobsFunnels only="prospects" period={range} periodLabel={rangeLabel || undefined}
-        onUsePeriod={(f, t) => { setFrom(f); setTo(t); }} />
+      <JobsFunnels only="prospects" period={range} periodLabel={rangeLabel || undefined} />
 
       <ThisWeekBlock nameOf={nameOf} activityPipeline={sc?.activity_pipeline}
         granularity={granularity} scope={scope} owner={owner || undefined} range={range}

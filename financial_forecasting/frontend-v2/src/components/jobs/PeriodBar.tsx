@@ -24,37 +24,57 @@ const addDays = (v: string, n: number) => {
   return iso(d);
 };
 
+/** Yesterday. Every preset ends here rather than today: reviewing on a Monday
+ *  you want the week that finished, not the two days of the one in progress —
+ *  an in-progress period always reads as a collapse in volume. */
+function yesterday(): Date {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() - 1);
+  return d;
+}
+
 /** Each preset sets the window AND the bucket size together — a month of dates
- *  shown in weekly buckets reads as a bug. */
+ *  shown in weekly buckets reads as a bug. All three are trailing windows ending
+ *  yesterday, so "Weekly" on Aug 3 means Jul 27 – Aug 2. */
 export const PERIOD_PRESETS: {
   key: OutreachGranularity;
   label: string;
+  title: string;
   get: () => [string, string];
 }[] = [
   {
     key: "day",
     label: "Daily",
-    get: () => { const t = iso(new Date()); return [t, t]; },
+    title: "Yesterday",
+    get: () => { const e = yesterday(); return [iso(e), iso(e)]; },
   },
   {
     key: "week",
     label: "Weekly",
+    title: "The 7 days ending yesterday",
     get: () => {
-      const s = new Date(); s.setHours(0, 0, 0, 0); s.setDate(s.getDate() - s.getDay());
-      const e = new Date(s); e.setDate(s.getDate() + 6);
+      const e = yesterday();
+      const s = new Date(e); s.setDate(e.getDate() - 6);
       return [iso(s), iso(e)];
     },
   },
   {
     key: "month",
     label: "Monthly",
+    title: "The month ending yesterday",
     get: () => {
-      const n = new Date();
-      return [iso(new Date(n.getFullYear(), n.getMonth(), 1)),
-              iso(new Date(n.getFullYear(), n.getMonth() + 1, 0))];
+      const e = yesterday();
+      const s = new Date(e); s.setMonth(e.getMonth() - 1); s.setDate(s.getDate() + 1);
+      return [iso(s), iso(e)];
     },
   },
 ];
+
+/** The default window for a page: the completed week. */
+export function defaultPeriod(): [string, string] {
+  return PERIOD_PRESETS[1].get();
+}
 
 function fmt(v: string) {
   return parse(v).toLocaleDateString(undefined, { month: "short", day: "numeric" });
@@ -136,7 +156,7 @@ export function PeriodBar({
           return (
             <button key={p.key} type="button"
               onClick={() => { onGranularityChange(p.key); onChange(pf, pt); }}
-              title={`${p.label} — ${pf} to ${pt}`}
+              title={`${p.title} — ${pf} to ${pt}`}
               className={cn("rounded px-2 py-0.5 text-[12px] font-medium transition-colors",
                 active ? "bg-accent-soft text-accent" : "text-ink-2 hover:bg-surface-2")}>
               {p.label}
@@ -156,8 +176,8 @@ export function ScopeButtons({ value, onChange }: {
   onChange: (v: "pursuit" | "team" | "staff") => void;
 }) {
   const opts: { key: "team" | "staff" | "pursuit"; label: string; title: string }[] = [
-    { key: "team", label: "Jobs team", title: "Avni, Damon and Devika" },
-    { key: "staff", label: "Other staff", title: "Everyone else at Pursuit" },
+    { key: "team", label: "Jobs Team", title: "Avni, Damon and Devika" },
+    { key: "staff", label: "Other Staff", title: "Everyone else at Pursuit" },
     { key: "pursuit", label: "Everyone", title: "The whole Pursuit team" },
   ];
   return (

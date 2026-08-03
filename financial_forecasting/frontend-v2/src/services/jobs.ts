@@ -1137,6 +1137,23 @@ export function useActivityTrends(granularity: "day" | "week" | "month", channel
 
 export type OutreachGranularity = "day" | "week" | "month";
 export type OutreachScopeKind = "pursuit" | "team" | "staff";
+
+/** The core jobs team. Mirrors JOBS_TEAM_EMAILS in routes/jobs.py — the backend
+ *  is the source of truth; this copy exists so client-side tables (the assigned
+ *  queue) can honour the same scope toggle the API endpoints do. Keep in sync. */
+export const JOBS_TEAM_EMAILS = [
+  "avni@pursuit.org",
+  "damon.kornhauser@pursuit.org",
+  "devika@pursuit.org",
+];
+
+/** Does this owner belong to the selected sender scope? */
+export function inScope(email: string | null | undefined, scope: OutreachScopeKind): boolean {
+  if (scope === "pursuit") return true;
+  const e = (email ?? "").toLowerCase();
+  const isTeam = JOBS_TEAM_EMAILS.includes(e);
+  return scope === "team" ? isTeam : !isTeam;
+}
 export interface OutreachDateRange { from: string; to: string }
 
 export interface ScorecardCell { warm: number; cold: number; total: number }
