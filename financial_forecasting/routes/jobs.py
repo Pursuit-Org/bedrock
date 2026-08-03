@@ -1707,10 +1707,11 @@ async def get_funnel(
     movement_by_stage: dict = {}  # stage_key -> list of recent transitions touching it
 
     if ftype == "opportunities":
-        # Opportunities can enter the pipeline at Initial Outreach (e.g. bulk
-        # imports / early-stage deals), so the funnel starts there.
+        # Initial Outreach is being retired, so the funnel starts at In
+        # Discussions (2026-08-03). Opps still sitting in initial_outreach keep
+        # counting everywhere else on the Pipeline page — this hides the row,
+        # it doesn't drop the deals.
         stage_order = [
-            ("initial_outreach", "Initial Outreach"),
             ("active_in_discussions", "In Discussions"),
             ("active_opportunity_confirmed", "Opportunity Confirmed"),
             ("active_builder_interview", "Builder Interview"),
@@ -2201,6 +2202,11 @@ async def opportunities_overview(
 
     in_set = len(rows)
     stalled_6wk = 0  # active opps that have been an opportunity for >6 weeks (since created)
+    # Every active-set member, flat, carrying the keys each panel groups by
+    # (age bucket, status, deal type, segment, stage, owner, priority). The
+    # frontend filters THIS array for every drill-down, so a drill can never
+    # disagree with the count above it — one array, one source of truth.
+    active_set: list = []
     age_counts = [0, 0, 0, 0, 0]
     bd: dict = {"status": {}, "deal_type": {}, "segment": {}, "stage": {}, "owner": {}}
     stage_heat: dict = {}
@@ -2228,11 +2234,31 @@ async def opportunities_overview(
         else:
             status = "active"
 
+        # Normalise once, so the drill filters and the counts use identical keys.
+        dt_key = r["deal_type"] or "(unset)"
+        seg_key = r["segment"] or "(unset)"
+        owner_key = r["owner_email"] or "(unassigned)"
+
         _inc("status", status)
-        _inc("deal_type", r["deal_type"] or "(unset)")
-        _inc("segment", r["segment"] or "(unset)")
+        _inc("deal_type", dt_key)
+        _inc("segment", seg_key)
         _inc("stage", r["stage"])
-        _inc("owner", r["owner_email"] or "(unassigned)")
+        _inc("owner", owner_key)
+
+        active_set.append({
+            "opportunity_id": str(r["id"]),
+            "account": r["account_name"],
+            "owner": r["owner_email"],
+            "stage": r["stage"],
+            "stage_label": STAGE_LABELS.get(r["stage"], r["stage"]),
+            "priority": r["priority"] if r["priority"] in (1, 2, 3, 4, 5) else None,
+            "age_bucket": bi,
+            "days_in_stage": stage_days,
+            "status": status,
+            "deal_type": dt_key,
+            "segment": seg_key,
+            "owner_key": owner_key,
+        })
 
         stage_heat.setdefault(r["stage"], [0, 0, 0, 0, 0])[bi] += 1
         if r["priority"] in (1, 2, 3, 4, 5):
@@ -2357,6 +2383,10 @@ async def opportunities_overview(
             "stage": {"rows": stage_rows, "col_totals": _col_totals(stage_rows)},
         },
         "needs_attention": needs[:30],
+        # Every active-set member with its grouping keys. Backs the drill-downs
+        # on the aging bars, the set distribution and the heatmap cells — all
+        # three filter this one array, so no drill can contradict its count.
+        "active_set": active_set,
         "recent_activity": recent_activity,
         # Rows behind each summary card — the card count and its drill list are
         # the same query, so they can never disagree (closed-won showed 10 but a

@@ -40,6 +40,26 @@ function currentWeek(): [string, string] {
 }
 const MEMBERSHIP_STAGE_OPTIONS = MEMBERSHIP_STAGES.map((s) => ({ value: s, label: MEMBERSHIP_STAGE_LABELS[s] }));
 
+const ISO = (d: Date) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+/** [startISO, endISO] for today. */
+function currentDay(): [string, string] {
+  const d = new Date(); d.setHours(0, 0, 0, 0);
+  return [ISO(d), ISO(d)];
+}
+/** [startISO, endISO] for the calendar month containing today. */
+function currentMonth(): [string, string] {
+  const n = new Date();
+  return [ISO(new Date(n.getFullYear(), n.getMonth(), 1)), ISO(new Date(n.getFullYear(), n.getMonth() + 1, 0))];
+}
+/** Each preset sets the window AND the scorecard bucket size together — showing
+ *  a month of dates in weekly buckets reads as a bug. */
+const PERIOD_PRESETS: { key: OutreachGranularity; label: string; get: () => [string, string] }[] = [
+  { key: "day", label: "Daily", get: currentDay },
+  { key: "week", label: "Weekly", get: currentWeek },
+  { key: "month", label: "Monthly", get: currentMonth },
+];
+
 
 // ── Formatting helpers ────────────────────────────────────────────────────────
 function fmtDate(iso: string) {
@@ -306,7 +326,7 @@ const startOfWeekSunday = () => {
 /** Per-owner "this week": current assigned queue + contacts moved to Initial
  *  outreach this week — the same numbers as Jobs Home's progress strip,
  *  rolled up per person for the meeting. */
-function ThisWeekBlock({ nameOf, activityPipeline, granularity, scope, owner, range, periodLabel }: {
+function ThisWeekBlock({ nameOf, activityPipeline, granularity, scope, owner, range, periodLabel, onSelectOwner }: {
   periodLabel?: string;
   nameOf: (email: string) => string;
   activityPipeline?: ScorecardRow[];
@@ -314,6 +334,9 @@ function ThisWeekBlock({ nameOf, activityPipeline, granularity, scope, owner, ra
   scope: OutreachScopeKind;
   owner?: string;
   range?: OutreachDateRange;
+  /** Clicking an owner scopes the whole page to them (same state as the
+   *  sender dropdown), so the row acts as a filter rather than a dead label. */
+  onSelectOwner?: (email: string) => void;
 }) {
   const { data: assignedData } = useJobsContacts({ membership_stage: "assigned", limit: 1000 });
   const { data: contactedData } = useJobsContacts({ membership_stage: "initial_outreach", limit: 1000 });
@@ -337,7 +360,7 @@ function ThisWeekBlock({ nameOf, activityPipeline, granularity, scope, owner, ra
   if (rows.length === 0) return null;
   return (
     <div className="flex flex-col gap-3">
-      <SectionHead title="This week" note={periodLabel ? `${periodLabel} · assigned queue and contacts reached` : "assigned queue · contacts reached"} />
+      <SectionHead title="Outreach Detail" note={periodLabel ? `${periodLabel} · assigned queue and contacts reached` : "assigned queue · contacts reached"} />
       <div className="flex flex-col overflow-hidden rounded-xl border border-border-strong bg-surface">
         <div className="border-b border-border-strong bg-surface-2 px-4 py-3 text-[13px] font-bold text-ink-2">Assigned &amp; Contacted</div>
         <table className="w-full text-[12.5px]">
@@ -352,8 +375,20 @@ function ThisWeekBlock({ nameOf, activityPipeline, granularity, scope, owner, ra
               const total = r.assigned + r.contacted;
               const pct = total ? Math.round((100 * r.contacted) / total) : 0;
               return (
-                <tr key={email} className="border-t border-border-strong">
-                  <td className="px-3 py-1.5 font-medium text-ink">{email === "(unowned)" ? <span className="text-ink-4">Unowned</span> : nameOf(email)}</td>
+                <tr key={email} className={cn("border-t border-border-strong",
+                  owner && owner.toLowerCase() === email && "bg-accent-soft/40")}>
+                  <td className="px-3 py-1.5 font-medium text-ink">
+                    {email === "(unowned)" ? (
+                      <span className="text-ink-4">Unowned</span>
+                    ) : onSelectOwner ? (
+                      <button type="button" onClick={() => onSelectOwner(email)}
+                        title={`Filter this page to ${nameOf(email)}`}
+                        className={cn("text-left hover:text-accent hover:underline",
+                          owner && owner.toLowerCase() === email ? "text-accent" : "text-ink")}>
+                        {nameOf(email)}
+                      </button>
+                    ) : nameOf(email)}
+                  </td>
                   <td className="px-2 py-1.5 text-right tabular-nums text-ink-2">{total}</td>
                   <td className="px-2 py-1.5 text-right tabular-nums">
                     <span className={cn("font-semibold", r.contacted > 0 ? "text-green" : "text-ink-4")}>{r.contacted}</span>
@@ -765,8 +800,8 @@ function RequiringAttention({ owner, nameOf, staffEmails }: {
 }
 
 export function JobsOutreach() {
-  // Fixed internals now that the pill bar is gone: the jobs team, weekly buckets.
-  const granularity: OutreachGranularity = "week";
+  // Scope is fixed to the jobs team; the bucket size follows the period preset.
+  const [granularity, setGranularity] = useState<OutreachGranularity>("week");
   const scope: OutreachScopeKind = "team";
   const [owner, setOwner] = useState<string>("");   // "" = whole scope
   const [from, setFrom] = useState(() => currentWeek()[0]);
@@ -794,10 +829,21 @@ export function JobsOutreach() {
         <input type="date" value={to} min={from || undefined}
           onChange={(e) => setTo(e.target.value)}
           className="h-7 rounded-md border border-border-strong bg-surface px-2 text-[12.5px] text-ink outline-none focus:border-accent" />
-        <button type="button" onClick={() => { const [f, t] = currentWeek(); setFrom(f); setTo(t); }}
-          className="h-7 rounded-md border border-border-strong bg-surface px-2 text-[12px] text-ink-2 hover:bg-surface-2">
-          This week
-        </button>
+        <div className="inline-flex items-center rounded-md border border-border-strong bg-surface p-0.5">
+          {PERIOD_PRESETS.map((p) => {
+            const [pf, pt] = p.get();
+            const active = granularity === p.key && from === pf && to === pt;
+            return (
+              <button key={p.key} type="button"
+                onClick={() => { setGranularity(p.key); setFrom(pf); setTo(pt); }}
+                title={`${p.label} — ${pf} to ${pt}`}
+                className={cn("rounded px-2 py-0.5 text-[12px] font-medium transition-colors",
+                  active ? "bg-accent-soft text-accent" : "text-ink-2 hover:bg-surface-2")}>
+                {p.label}
+              </button>
+            );
+          })}
+        </div>
         <div className="flex-1" />
         <select value={owner} onChange={(e) => setOwner(e.target.value)}
           className="h-7 rounded-md border border-border-strong bg-surface px-2 text-[12.5px] text-ink-2 outline-none focus:border-accent"
@@ -818,7 +864,14 @@ export function JobsOutreach() {
 
       <ThisWeekBlock nameOf={nameOf} activityPipeline={sc?.activity_pipeline}
         granularity={granularity} scope={scope} owner={owner || undefined} range={range}
-        periodLabel={rangeLabel || undefined} />
+        periodLabel={rangeLabel || undefined}
+        onSelectOwner={(email) => {
+          // The table keys owners lowercased; resolve back to the canonical
+          // staff email so exact-match server filters still hit (one staff
+          // record is "joanna@Pursuit.org").
+          const canonical = staff.find((st) => st.email.toLowerCase() === email)?.email ?? email;
+          setOwner(owner.toLowerCase() === email ? "" : canonical);
+        }} />
 
       <RequiringAttention owner={owner || undefined} nameOf={nameOf} staffEmails={staffEmails} />
 

@@ -2107,6 +2107,25 @@ export type OppBreakdownDim = "status" | "deal_type" | "segment" | "stage" | "ow
 
 export interface OppBreakdownItem { key: string; label: string; count: number }
 export interface OppAgingBucket { key: string; label: string; count: number; pct: number }
+/** One active-set opportunity with the keys every panel groups by. The aging
+ *  bars, set distribution and heatmap cells all drill by filtering this array,
+ *  so a drill list can never disagree with the number above it. */
+export interface OppActiveSetMember {
+  opportunity_id: string;
+  account: string | null;
+  owner: string | null;
+  stage: string;
+  stage_label: string;
+  priority: number | null;
+  /** Index into `heatmaps.buckets` / `aging.buckets` (0 = <2 weeks … 4 = 8+). */
+  age_bucket: number;
+  days_in_stage: number;
+  status: string;
+  deal_type: string;
+  segment: string;
+  owner_key: string;
+}
+
 export interface OppHeatRow { key: string; label: string; cells: number[]; total: number }
 export interface OppHeatmap { rows: OppHeatRow[]; col_totals: number[]; unset?: number; populated?: boolean }
 export interface OppNeedsRow {
@@ -2157,6 +2176,7 @@ export interface OpportunitiesOverview {
     stage: OppHeatmap;
   };
   needs_attention: OppNeedsRow[];
+  active_set: OppActiveSetMember[];
   /** Rows behind each summary card — same query as the count, so they agree. */
   drills: { in_set: OppDrillRow[]; stalled: OppDrillRow[]; net_new: OppDrillRow[]; won: OppDrillRow[]; lost: OppDrillRow[] };
   recent_activity: OppActivityEvent[];

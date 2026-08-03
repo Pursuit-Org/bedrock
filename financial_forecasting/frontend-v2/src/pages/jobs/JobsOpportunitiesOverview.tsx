@@ -4,8 +4,9 @@
  * The Thursday-meeting agenda, top to bottom: summary cards (incl. the
  * won-with-open-tasks stage-gate check, which sits left of the closed
  * won/lost outcome boxes), the period-scoped opportunities funnel,
- * time-in-stage aging + the switchable set distribution, the two
- * concentration heatmaps, recent activity (the week's narrative), then the
+ * time-in-stage aging + the switchable set distribution, the concentration
+ * heatmap (one chart; the dropdown swaps its Y axis between stage and
+ * priority), recent activity (the week's narrative), then the
  * per-owner walkthrough (P1s with next task, stalled with why — rows manage
  * inline and expand to the full DealExpandPanel).
  *
@@ -13,8 +14,12 @@
  * Backed by /api/jobs/opportunities/overview (+ /opportunities for the
  * managed rows). The standalone needs-attention panel was removed in the
  * 2026-07-30 exec review; the heatmaps were removed then too and restored
- * 2026-08-03 — Priority×Time now degrades to an empty-state card rather than
+ * 2026-08-03 — the priority axis degrades to an empty-state card rather than
  * rendering a blank grid, which was the original objection to it.
+ *
+ * Every number representing a slice of the active set (aging bar, distribution
+ * bar, heatmap cell) drills into the SAME `active_set` array from the
+ * endpoint, so a drill list can never disagree with the count above it.
  */
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
@@ -36,6 +41,7 @@ import {
   type OppNeedsRow,
   type OppActivityEvent,
   type OppHeatmap,
+  type OppActiveSetMember,
 } from "@/services/jobs";
 import { useAllJobsTasks } from "@/services/jobsTasks";
 import { useSessionState } from "@/lib/useSessionState";
@@ -104,6 +110,9 @@ export function JobsOpportunitiesOverview() {
   const [owner, setOwner] = useState<string>("all");
   const [dealType, setDealType] = useState<string>("all");
   const [dim, setDim] = useState<OppBreakdownDim>("status");
+  // Y axis of the single concentration heatmap. Stage is the default because
+  // it is always populated; priority can legitimately be empty.
+  const [heatAxis, setHeatAxis] = useState<HeatAxis>("stage");
   // Free-form window: both bounds inclusive, no snapping. Defaults to the
   // Thursday-aligned meeting cycle; presets and the two date inputs set it.
   const today = useMemo(() => dayOnly(new Date()), []);
@@ -337,7 +346,8 @@ export function JobsOpportunitiesOverview() {
       {/* ── Aging + Breakdown ─────────────────────────────────────────── */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <Panel title="Time in Pipeline">
-          <AgingBars buckets={data?.aging.buckets ?? []} isLoading={isLoading} />
+          <AgingBars buckets={data?.aging.buckets ?? []} isLoading={isLoading}
+            activeSet={data?.active_set} nameOf={nameOf} />
         </Panel>
         <Panel
           title="Active set distribution"
@@ -351,28 +361,43 @@ export function JobsOpportunitiesOverview() {
             </select>
           }
         >
-          <BreakdownBars items={data?.breakdowns[dim] ?? []} dim={dim} isLoading={isLoading} />
+          <BreakdownBars items={data?.breakdowns[dim] ?? []} dim={dim} isLoading={isLoading}
+            activeSet={data?.active_set} nameOf={nameOf} />
         </Panel>
       </div>
 
-      {/* ── Concentration heatmaps ────────────────────────────────────────
+      {/* ── Concentration heatmap ─────────────────────────────────────────
           Where the active set sits, cross-tabbed against how long it's been
           sitting. Dark cells on the right = piling up; dark on the left =
-          healthy flow. Restored 2026-08-03 at Kwame's request — the earlier
-          removal's "Priority renders empty" objection is handled by the
-          empty-state card below. */}
-      <Panel title="Priority × Time in Pipeline">
-        {data && !data.heatmaps.priority.populated ? (
+          healthy flow. Columns are always the age buckets; the dropdown swaps
+          the Y axis between Stage and Priority (one chart, was two). */}
+      <Panel
+        title={`${heatAxis === "stage" ? "Stage" : "Priority"} × Time in Pipeline`}
+        action={
+          <select
+            value={heatAxis}
+            onChange={(e) => setHeatAxis(e.target.value as HeatAxis)}
+            title="What the rows break down by"
+            className="h-7 rounded-md border border-border-strong bg-surface px-2 text-[12px] text-ink outline-none focus:border-accent"
+          >
+            <option value="stage">By stage</option>
+            <option value="priority">By priority</option>
+          </select>
+        }
+      >
+        {heatAxis === "priority" && data && !data.heatmaps.priority.populated ? (
           <EmptyPriorityCard unset={data.heatmaps.priority.unset ?? 0} />
         ) : (
-          <Heatmap heatmap={data?.heatmaps.priority} buckets={data?.heatmaps.buckets ?? []}
-            rowHeader="Priority" isLoading={isLoading} />
+          <Heatmap
+            heatmap={heatAxis === "stage" ? data?.heatmaps.stage : data?.heatmaps.priority}
+            buckets={data?.heatmaps.buckets ?? []}
+            rowHeader={heatAxis === "stage" ? "Stage" : "Priority"}
+            isLoading={isLoading}
+            axis={heatAxis}
+            activeSet={data?.active_set}
+            nameOf={nameOf}
+          />
         )}
-      </Panel>
-
-      <Panel title="Stage × Time in Pipeline">
-        <Heatmap heatmap={data?.heatmaps.stage} buckets={data?.heatmaps.buckets ?? []}
-          rowHeader="Stage" isLoading={isLoading} />
       </Panel>
 
       {/* ── Recent activity — the week's narrative ────────────────────── */}
@@ -825,28 +850,114 @@ export function Panel({
   );
 }
 
+// ── Shared inline drill ──────────────────────────────────────────────────────
+// Every number on this page that represents a slice of the active set opens the
+// same list, filtered from `active_set` — so the drill and the count are always
+// the same rows. Capped at 5 with a show-all, since these sit inline under a
+// chart rather than in a drawer.
+
+const MINI_DRILL_CAP = 5;
+
+function OppMiniDrill({ label, members, nameOf }: {
+  label: string;
+  members: OppActiveSetMember[];
+  nameOf: (e: string | null) => string;
+}) {
+  const [showAll, setShowAll] = useState(false);
+  const shown = showAll ? members : members.slice(0, MINI_DRILL_CAP);
+  const extra = members.length - shown.length;
+
+  return (
+    <div className="mt-2 overflow-hidden rounded-lg border border-border-strong bg-surface-2/40">
+      <div className="flex items-center justify-between border-b border-border-strong px-3 py-1.5">
+        <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">{label}</span>
+        <span className="text-[11px] tabular-nums text-ink-4">{members.length}</span>
+      </div>
+      {members.length === 0 ? (
+        <div className="px-3 py-3 text-[12px] text-ink-4">No opportunities here.</div>
+      ) : (
+        <>
+          <ul className="divide-y divide-border-strong">
+            {shown.map((m) => (
+              <li key={m.opportunity_id} className="flex items-center gap-2 px-3 py-1.5">
+                <Link to={`/jobs/opportunities/${m.opportunity_id}`}
+                  className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-ink hover:text-accent hover:underline">
+                  {m.account ?? "—"}
+                </Link>
+                <span className="w-[132px] flex-shrink-0 truncate text-[11.5px] text-ink-3">{m.stage_label}</span>
+                <span className="w-[96px] flex-shrink-0 truncate text-[11.5px] text-ink-3">{nameOf(m.owner)}</span>
+                <span className="w-[64px] flex-shrink-0 text-right text-[11.5px] tabular-nums text-ink-4">
+                  {m.days_in_stage}d
+                </span>
+              </li>
+            ))}
+          </ul>
+          {extra > 0 ? (
+            <button type="button" onClick={() => setShowAll(true)}
+              className="w-full border-t border-border-strong px-3 py-1.5 text-[11.5px] font-medium text-accent hover:bg-surface-2">
+              Show all {members.length}
+            </button>
+          ) : null}
+        </>
+      )}
+    </div>
+  );
+}
+
+/** The active-set field each distribution dimension groups by. Must mirror the
+ *  keys the backend counts with, or a drill would disagree with its bar. */
+const BD_FIELD: Record<OppBreakdownDim, keyof OppActiveSetMember> = {
+  status: "status",
+  deal_type: "deal_type",
+  segment: "segment",
+  stage: "stage",
+  owner: "owner_key",
+};
+
 // ── Aging bars ────────────────────────────────────────────────────────────────
 
 const AGE_COLOR = ["var(--green)", "#6FBE93", "var(--amber)", "#D97A3E", "var(--red)"];
 
-function AgingBars({ buckets, isLoading }: { buckets: { key: string; label: string; count: number; pct: number }[]; isLoading: boolean }) {
+function AgingBars({ buckets, isLoading, activeSet, nameOf }: {
+  buckets: { key: string; label: string; count: number; pct: number }[];
+  isLoading: boolean;
+  activeSet?: OppActiveSetMember[];
+  nameOf?: (e: string | null) => string;
+}) {
+  const [open, setOpen] = useState<number | null>(null);
   if (isLoading) {
     return <div className="flex flex-col gap-3 py-1">{Array.from({ length: 5 }).map((_, i) => (
       <div key={i} className="h-3 animate-pulse rounded bg-surface-2" />
     ))}</div>;
   }
   const max = Math.max(1, ...buckets.map((b) => b.count));
+  const canDrill = !!activeSet && !!nameOf;
   return (
     <div className="flex flex-col">
       {buckets.map((b, i) => (
-        <div key={b.key} className="grid grid-cols-[92px_1fr_36px_36px] items-center gap-3 py-[7px]">
-          <div className="text-[12.5px] font-semibold text-ink">{b.label}</div>
-          <div className="h-2.5 overflow-hidden rounded-full bg-surface-2">
-            <div className="h-full rounded-full transition-[width] duration-500"
-              style={{ width: `${Math.round((100 * b.count) / max)}%`, background: AGE_COLOR[i] ?? "var(--accent)" }} />
+        <div key={b.key}>
+          <div className="grid grid-cols-[92px_1fr_36px_36px] items-center gap-3 py-[7px]">
+            <div className="text-[12.5px] font-semibold text-ink">{b.label}</div>
+            <div className="h-2.5 overflow-hidden rounded-full bg-surface-2">
+              <div className="h-full rounded-full transition-[width] duration-500"
+                style={{ width: `${Math.round((100 * b.count) / max)}%`, background: AGE_COLOR[i] ?? "var(--accent)" }} />
+            </div>
+            {canDrill && b.count > 0 ? (
+              <button type="button" onClick={() => setOpen(open === i ? null : i)}
+                title={`Show the ${b.count} opportunities in ${b.label}`}
+                className={cn("rounded text-right text-[12.5px] font-semibold tabular-nums hover:underline",
+                  open === i ? "text-accent" : "text-ink hover:text-accent")}>
+                {b.count}
+              </button>
+            ) : (
+              <div className="text-right text-[12.5px] font-semibold tabular-nums text-ink">{b.count}</div>
+            )}
+            <div className="text-right text-[11.5px] tabular-nums text-ink-4">{b.pct}%</div>
           </div>
-          <div className="text-right text-[12.5px] font-semibold tabular-nums text-ink">{b.count}</div>
-          <div className="text-right text-[11.5px] tabular-nums text-ink-4">{b.pct}%</div>
+          {canDrill && open === i ? (
+            <OppMiniDrill label={`${b.label} in stage`} nameOf={nameOf}
+              members={activeSet.filter((m) => m.age_bucket === i)} />
+          ) : null}
         </div>
       ))}
       <div className="mt-3 flex flex-wrap gap-4 border-t border-border-strong pt-3 text-[11.5px] text-ink-3">
@@ -866,7 +977,16 @@ function breakdownLabel(dim: OppBreakdownDim, key: string, label: string): strin
   return label;
 }
 
-export function BreakdownBars({ items, dim, isLoading }: { items: { key: string; label: string; count: number }[]; dim: OppBreakdownDim; isLoading: boolean }) {
+export function BreakdownBars({ items, dim, isLoading, activeSet, nameOf }: {
+  items: { key: string; label: string; count: number }[];
+  dim: OppBreakdownDim;
+  isLoading: boolean;
+  /** Pass the active set to make each count drillable. Omitted on the Outreach
+   *  targeting panel, which charts a different population entirely. */
+  activeSet?: OppActiveSetMember[];
+  nameOf?: (e: string | null) => string;
+}) {
+  const [open, setOpen] = useState<string | null>(null);
   if (isLoading) {
     return <div className="flex flex-col gap-3 py-1">{Array.from({ length: 4 }).map((_, i) => (
       <div key={i} className="h-3 animate-pulse rounded bg-surface-2" />
@@ -875,21 +995,37 @@ export function BreakdownBars({ items, dim, isLoading }: { items: { key: string;
   if (items.length === 0) return <div className="py-6 text-center text-[12px] text-ink-4">No data.</div>;
   const total = items.reduce((a, b) => a + b.count, 0) || 1;
   const max = Math.max(1, ...items.map((i) => i.count));
+  const canDrill = !!activeSet && !!nameOf;
+  const field = BD_FIELD[dim];
   return (
     <div className="flex flex-col">
       {items.map((it) => (
-        <div key={it.key} className="grid grid-cols-[128px_1fr_58px] items-center gap-3 py-[7px]">
-          <div className="truncate text-[12.5px] font-medium text-ink" title={breakdownLabel(dim, it.key, it.label)}>
-            {breakdownLabel(dim, it.key, it.label)}
+        <div key={it.key}>
+          <div className="grid grid-cols-[128px_1fr_58px] items-center gap-3 py-[7px]">
+            <div className="truncate text-[12.5px] font-medium text-ink" title={breakdownLabel(dim, it.key, it.label)}>
+              {breakdownLabel(dim, it.key, it.label)}
+            </div>
+            <div className="h-2.5 overflow-hidden rounded-full bg-surface-2">
+              <div className="h-full rounded-full transition-[width] duration-500"
+                style={{ width: `${Math.round((100 * it.count) / max)}%`, background: "linear-gradient(90deg,#6d5efc,#8b7dff)" }} />
+            </div>
+            <div className="text-right text-[12px] tabular-nums text-ink-2">
+              {canDrill && it.count > 0 ? (
+                <button type="button" onClick={() => setOpen(open === it.key ? null : it.key)}
+                  title={`Show the ${it.count} opportunities in ${breakdownLabel(dim, it.key, it.label)}`}
+                  className={cn("font-semibold hover:underline", open === it.key ? "text-accent" : "text-ink hover:text-accent")}>
+                  {it.count}
+                </button>
+              ) : (
+                <span className="font-semibold text-ink">{it.count}</span>
+              )}
+              <span className="text-ink-4"> · {Math.round((100 * it.count) / total)}%</span>
+            </div>
           </div>
-          <div className="h-2.5 overflow-hidden rounded-full bg-surface-2">
-            <div className="h-full rounded-full transition-[width] duration-500"
-              style={{ width: `${Math.round((100 * it.count) / max)}%`, background: "linear-gradient(90deg,#6d5efc,#8b7dff)" }} />
-          </div>
-          <div className="text-right text-[12px] tabular-nums text-ink-2">
-            <span className="font-semibold text-ink">{it.count}</span>
-            <span className="text-ink-4"> · {Math.round((100 * it.count) / total)}%</span>
-          </div>
+          {canDrill && open === it.key ? (
+            <OppMiniDrill label={breakdownLabel(dim, it.key, it.label)} nameOf={nameOf}
+              members={activeSet.filter((m) => m[field] === it.key)} />
+          ) : null}
         </div>
       ))}
     </div>
@@ -934,17 +1070,33 @@ function EmptyPriorityCard({ unset }: { unset: number }) {
   );
 }
 
-function Heatmap({ heatmap, buckets, rowHeader, isLoading }: {
+type HeatAxis = "stage" | "priority";
+
+function Heatmap({ heatmap, buckets, rowHeader, isLoading, axis, activeSet, nameOf }: {
   heatmap: OppHeatmap | undefined;
   buckets: { key: string; label: string }[];
   rowHeader: string;
   isLoading: boolean;
+  axis: HeatAxis;
+  activeSet?: OppActiveSetMember[];
+  nameOf?: (e: string | null) => string;
 }) {
+  // `${rowKey}:${bucketIndex}` of the open cell.
+  const [open, setOpen] = useState<string | null>(null);
+
   if (isLoading) return <div className="h-40 animate-pulse rounded-lg bg-surface-2" />;
   if (!heatmap || heatmap.rows.length === 0)
     return <div className="py-6 text-center text-[12px] text-ink-4">No opportunities to chart.</div>;
 
   const max = Math.max(1, ...heatmap.rows.flatMap((r) => r.cells));
+  const canDrill = !!activeSet && !!nameOf;
+  // Priority rows are keyed "P3" on the wire but the member carries 3.
+  const rowMatches = (m: OppActiveSetMember, rowKey: string) =>
+    axis === "stage" ? m.stage === rowKey : `P${m.priority ?? ""}` === rowKey;
+
+  const openRow = open ? heatmap.rows.find((r) => `${r.key}:${open.split(":")[1]}` === open) : null;
+  const openBucket = open ? Number(open.split(":")[1]) : null;
+
   return (
     <div className="overflow-x-auto">
       <table className="w-full min-w-[560px] border-collapse">
@@ -963,10 +1115,26 @@ function Heatmap({ heatmap, buckets, rowHeader, isLoading }: {
               <td className="whitespace-nowrap py-1 pr-2 text-[12.5px] font-semibold text-ink">{row.label}</td>
               {row.cells.map((n, i) => {
                 const st = heatBlue(n, max);
+                const cellKey = `${row.key}:${i}`;
+                const isOpen = open === cellKey;
+                const clickable = canDrill && n > 0;
                 return (
                   <td key={i} className="p-1">
-                    <div className="flex h-11 items-center justify-center rounded-lg text-[14px] font-bold"
-                      style={{ background: st.background, color: st.color }}>
+                    <div
+                      role={clickable ? "button" : undefined}
+                      tabIndex={clickable ? 0 : undefined}
+                      onClick={clickable ? () => setOpen(isOpen ? null : cellKey) : undefined}
+                      onKeyDown={clickable ? (e) => {
+                        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setOpen(isOpen ? null : cellKey); }
+                      } : undefined}
+                      title={clickable ? `${n} opportunities · ${row.label} · ${buckets[i]?.label ?? ""} — click to list them` : undefined}
+                      className={cn(
+                        "flex h-11 items-center justify-center rounded-lg text-[14px] font-bold",
+                        clickable && "cursor-pointer transition-shadow hover:ring-2 hover:ring-accent/50",
+                        isOpen && "ring-2 ring-accent",
+                      )}
+                      style={{ background: st.background, color: st.color }}
+                    >
                       {n}
                     </div>
                   </td>
@@ -984,6 +1152,15 @@ function Heatmap({ heatmap, buckets, rowHeader, isLoading }: {
           </tr>
         </tbody>
       </table>
+
+      {canDrill && openRow && openBucket != null ? (
+        <OppMiniDrill
+          label={`${openRow.label} · ${buckets[openBucket]?.label ?? ""}`}
+          nameOf={nameOf}
+          members={activeSet.filter((m) => m.age_bucket === openBucket && rowMatches(m, openRow.key))}
+        />
+      ) : null}
+
       <div className="mt-2.5 flex items-center gap-1.5 text-[11px] text-ink-4">
         <span className="h-2.5 w-8 rounded-sm"
           style={{ background: "linear-gradient(90deg, rgba(47,127,224,0.16), rgba(47,127,224,1))" }} />

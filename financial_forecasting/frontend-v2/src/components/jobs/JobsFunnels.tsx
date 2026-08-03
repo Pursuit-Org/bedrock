@@ -187,6 +187,9 @@ function FunnelCard({
   const subtitle = isPeriod
     ? `${FUNNEL_NOUN[funnel]} that entered each stage${periodLabel ? ` · ${periodLabel}` : ""}`
     : FUNNEL_SUBTITLE[funnel];
+  // An all-zero period is the normal state early in a week, and four empty bars
+  // read as a broken render — say so in words instead.
+  const allZero = stages.length > 0 && stages.every((s) => s.count === 0);
 
   return (
     <section
@@ -225,94 +228,105 @@ function FunnelCard({
         <div className="px-4 py-6 text-center text-[12px] text-ink-4">
           No stages to display.
         </div>
+      ) : allZero ? (
+        <div className="px-4 py-8 text-center">
+          <p className="text-[12.5px] font-semibold text-ink">
+            No {FUNNEL_NOUN[funnel]} entered any stage {periodLabel ? `between ${periodLabel}` : "in this period"}.
+          </p>
+          <p className="mt-1 text-[11.5px] text-ink-3">
+            Widen the period above to see the pipeline move.
+          </p>
+        </div>
       ) : (
         <div className="flex flex-col px-4 py-3">
-          {stages.map((stage, i) => {
+          {stages.map((stage) => {
             const isExpanded = expanded === stage.key;
             const isWon = WON_STAGE_KEYS.has(stage.key);
             const barGradient = isWon
               ? "linear-gradient(90deg, #15b87f 0%, #3ad29a 100%)"
               : "linear-gradient(90deg, #6d5efc 0%, #8b7dff 100%)";
-            // Taper: the band narrows down the funnel with volume. Floored at 18%
-            // so a near-empty stage is still a readable, clickable target.
-            const width = Math.max(18, stage.pct_of_max);
-            const prev = i > 0 ? stages[i - 1] : null;
+            // Taper: the band narrows down the funnel with volume. Floored at 6%
+            // so a near-empty stage is still visible rather than vanishing.
+            const width = Math.max(6, stage.pct_of_max);
 
             return (
               <div key={stage.key}>
-                {/* Connector carrying the step-down rate from the stage above */}
-                {prev ? (
-                  <div className="flex items-center justify-center gap-1.5 py-1">
-                    <ChevronDown size={11} className="text-ink-4" />
-                    {prev.conversion_to_next != null ? (
-                      <span
-                        className={cn(
-                          "text-[11px] font-semibold tabular-nums",
-                          prev.conversion_to_next >= 100 ? "text-[var(--green)]" : "text-ink-3",
-                        )}
-                        title={
-                          isPeriod
-                            ? `${stage.count} entered ${stage.label} vs ${prev.count} that entered ${prev.label} in this period. Over 100% means more moved forward than arrived — a backlog being cleared, since they entered ${prev.label} earlier.`
-                            : `Conversion from ${prev.label} to ${stage.label}`
-                        }
-                      >
-                        {prev.conversion_to_next}%
-                      </span>
-                    ) : null}
-                  </div>
-                ) : null}
-
                 <button
                   type="button"
                   onClick={() => setExpanded(isExpanded ? null : stage.key)}
-                  className="group flex w-full flex-col items-center rounded-lg py-0.5 text-left transition-colors hover:bg-surface-2/40"
+                  className="group flex w-full items-center gap-3 rounded-lg px-1 py-1 text-left transition-colors hover:bg-surface-2/40"
                   title={
                     isPeriod
                       ? `${stage.count} ${FUNNEL_NOUN[funnel]} entered ${stage.label} in this period — click for who, when and owner`
                       : `${stage.count} ${FUNNEL_NOUN[funnel]} currently in ${stage.label}`
                   }
                 >
-                  <div
-                    className="relative flex h-12 items-center justify-center rounded-lg px-4 transition-[width] duration-500"
-                    style={{ width: `${width}%`, background: barGradient }}
-                  >
-                    <span className="truncate text-[12.5px] font-semibold text-white">
-                      {stage.label}
+                  {/* Stage name, left, fixed column so the bars share a baseline */}
+                  <span className="flex w-[190px] flex-shrink-0 items-center gap-1 text-[12.5px] font-semibold text-ink">
+                    <span className="text-ink-4">
+                      {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                     </span>
-                    <span className="ml-2.5 font-mono text-[14px] font-bold tabular-nums text-white">
+                    <span className="truncate" title={stage.label}>{stage.label}</span>
+                  </span>
+
+                  {/* The bar itself — tapers with volume. A zero stage gets a
+                      hairline rule, not a stub of colour that reads as volume. */}
+                  <span className="flex min-w-0 flex-1 items-center">
+                    {stage.count === 0 ? (
+                      <span className="h-px w-8 bg-border-strong" />
+                    ) : (
+                      <span
+                        className="h-10 rounded-lg transition-[width] duration-500"
+                        style={{ width: `${width}%`, background: barGradient }}
+                      />
+                    )}
+                  </span>
+
+                  {/* Numbers, right: volume, then conversion, then movement */}
+                  <span className="flex w-[230px] flex-shrink-0 items-center justify-end gap-2 text-[11.5px]">
+                    {stage.advanced_in > 0 ? (
+                      <span
+                        className="inline-flex items-center gap-0.5 rounded-full bg-[var(--green-soft)] px-1.5 py-0.5 text-[10.5px] font-semibold text-[var(--green)]"
+                        title={`${stage.advanced_in} advanced into this stage in the last 30d`}
+                      >
+                        <ArrowUp size={10} />
+                        {stage.advanced_in}
+                      </span>
+                    ) : null}
+                    {stage.regressed_in > 0 ? (
+                      <span
+                        className="inline-flex items-center gap-0.5 rounded-full bg-[var(--amber-soft)] px-1.5 py-0.5 text-[10.5px] font-semibold text-[var(--amber)]"
+                        title={`${stage.regressed_in} regressed into this stage in the last 30d`}
+                      >
+                        <ArrowDown size={10} />
+                        {stage.regressed_in}
+                      </span>
+                    ) : null}
+                    <span className="font-mono text-[14px] font-bold tabular-nums text-ink">
                       {stage.count}
                     </span>
-
-                    {/* Movement chips + expand affordance ride outside the band
-                        so they never get clipped on a narrow stage. */}
-                    <span className="absolute left-full ml-2.5 flex items-center gap-1.5 whitespace-nowrap">
-                      {stage.advanced_in > 0 ? (
-                        <span
-                          className="inline-flex items-center gap-0.5 rounded-full bg-[var(--green-soft)] px-1.5 py-0.5 text-[10.5px] font-semibold text-[var(--green)]"
-                          title={`${stage.advanced_in} advanced into this stage in the last 30d`}
-                        >
-                          <ArrowUp size={10} />
-                          {stage.advanced_in}
-                        </span>
-                      ) : null}
-                      {stage.regressed_in > 0 ? (
-                        <span
-                          className="inline-flex items-center gap-0.5 rounded-full bg-[var(--amber-soft)] px-1.5 py-0.5 text-[10.5px] font-semibold text-[var(--amber)]"
-                          title={`${stage.regressed_in} regressed into this stage in the last 30d`}
-                        >
-                          <ArrowDown size={10} />
-                          {stage.regressed_in}
-                        </span>
-                      ) : null}
-                      <span className="text-ink-4 opacity-0 transition-opacity group-hover:opacity-100">
-                        {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                    {stage.conversion_to_next != null ? (
+                      <span
+                        className={cn(
+                          "w-[104px] text-right tabular-nums",
+                          stage.conversion_to_next >= 100 ? "text-[var(--green)]" : "text-ink-3",
+                        )}
+                        title={
+                          isPeriod
+                            ? `Of what entered ${stage.label} in this period, the next stage took ${stage.conversion_to_next}%. Over 100% means more moved forward than arrived — a backlog clearing, since they entered ${stage.label} earlier.`
+                            : `Conversion from ${stage.label} to the next stage`
+                        }
+                      >
+                        → {stage.conversion_to_next}% to next
                       </span>
-                    </span>
-                  </div>
+                    ) : (
+                      <span className="w-[104px]" />
+                    )}
+                  </span>
                 </button>
 
                 {isExpanded ? (
-                  <div className="mt-2 overflow-hidden rounded-lg border border-border-strong">
+                  <div className="mb-1 mt-1 overflow-hidden rounded-lg border border-border-strong">
                     <StageDetail stage={stage} recordColumns={recordColumns} isPeriod={isPeriod} />
                   </div>
                 ) : null}
