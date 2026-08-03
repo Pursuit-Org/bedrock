@@ -23,8 +23,8 @@
  */
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { addDays, format } from "date-fns";
-import { AlertTriangle, ArrowRight, ChevronLeft, ChevronRight, Clock, Minus, Plus, TrendingDown, TrendingUp, Trophy, XCircle } from "lucide-react";
+import { format } from "date-fns";
+import { AlertTriangle, ArrowRight, ChevronRight, Clock, Minus, Plus, TrendingDown, TrendingUp, Trophy, XCircle } from "lucide-react";
 
 import {
   useOpportunitiesOverview,
@@ -42,12 +42,14 @@ import {
   type OppActivityEvent,
   type OppHeatmap,
   type OppActiveSetMember,
+  type OutreachGranularity,
 } from "@/services/jobs";
 import { useAllJobsTasks } from "@/services/jobsTasks";
 import { useSessionState } from "@/lib/useSessionState";
 import { InlineSelect } from "@/components/ui/InlineEdit";
 import { Drawer } from "@/components/ui/Drawer";
 import { JobsFunnels } from "@/components/jobs/JobsFunnels";
+import { PeriodBar } from "@/components/jobs/PeriodBar";
 import { CommittedRolesModal } from "@/components/jobs/CommittedRolesModal";
 import { DealExpandPanel, PlacementsModal, ClosedLostModal, stageOptionsFor, displayPriority } from "./JobsTeam";
 import { relDay } from "@/lib/format";
@@ -101,35 +103,15 @@ export function JobsOpportunitiesOverview() {
   // Y axis of the single concentration heatmap. Stage is the default because
   // it is always populated; priority can legitimately be empty.
   const [heatAxis, setHeatAxis] = useState<HeatAxis>("stage");
+  // Bucket size travels with the period preset, same as Outreach.
+  const [granularity, setGranularity] = useState<OutreachGranularity>("week");
   // Free-form window: both bounds inclusive, no snapping. Defaults to the
   // calendar week (what the Weekly preset selects, matching Outreach); the
   // presets and the two date inputs set it.
-  const today = useMemo(() => dayOnly(new Date()), []);
   const [range, setRange] = useState<{ start: Date; end: Date }>(() => calendarWeek(new Date()));
   const weekStart = range.start;
   const weekEnd = range.end;
   const spanDays = Math.max(1, dayDiff(weekStart, weekEnd) + 1);
-  const canGoNext = dayDiff(weekEnd, today) >= 1;
-  /** Step the whole window by its own length, so a week stays a week and a
-   *  month a month. Forward steps clamp at today rather than overshooting. */
-  const shiftRange = (dir: -1 | 1) => setRange(({ start, end }) => {
-    const s = addDays(start, dir * spanDays);
-    const e = addDays(end, dir * spanDays);
-    if (dir === 1 && dayDiff(e, today) < 0) return { start: addDays(today, -(spanDays - 1)), end: today };
-    return { start: s, end: e };
-  });
-  // Both setters clamp at today (a future window is always empty) and keep
-  // start <= end by dragging the other bound along.
-  const setStart = (v: string) => setRange(({ end }) => {
-    const p = parseDateInput(v);
-    const s = dayDiff(p, today) < 0 ? today : p;
-    return { start: s, end: dayDiff(s, end) < 0 ? s : end };
-  });
-  const setEnd = (v: string) => setRange(({ start }) => {
-    const p = parseDateInput(v);
-    const e = dayDiff(p, today) < 0 ? today : p;
-    return { start: dayDiff(start, e) < 0 ? e : start, end: e };
-  });
   const rangeLabel = weekStart.getFullYear() === weekEnd.getFullYear()
     ? `${format(weekStart, "MMM d")} – ${format(weekEnd, "MMM d")}`
     : `${format(weekStart, "MMM d, yyyy")} – ${format(weekEnd, "MMM d, yyyy")}`;
@@ -199,85 +181,18 @@ export function JobsOpportunitiesOverview() {
 
   return (
     <div className="flex flex-col gap-6 pt-1">
-      {/* ── Header row ─────────────────────────────────────────────────── */}
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h2 className="text-[18px] font-semibold tracking-tight text-ink">Opportunities Overview</h2>
-        </div>
-        <div className="flex flex-wrap items-center gap-1 rounded-lg border border-border-strong bg-surface px-1.5 py-1 text-[12.5px]">
-          <button
-            type="button"
-            onClick={() => shiftRange(-1)}
-            className="rounded p-1 text-ink-4 hover:bg-surface-2 hover:text-ink"
-            title={`Back ${spanDays} days`}
-          >
-            <ChevronLeft size={15} />
-          </button>
-          <span className="whitespace-nowrap px-1 font-semibold text-ink">{rangeLabel}</span>
-          <span className="whitespace-nowrap text-[11px] text-ink-4">{spanDays}d</span>
-          <button
-            type="button"
-            onClick={() => shiftRange(1)}
-            disabled={!canGoNext}
-            className="rounded p-1 text-ink-4 hover:bg-surface-2 hover:text-ink disabled:opacity-30 disabled:hover:bg-transparent"
-            title={`Forward ${spanDays} days`}
-          >
-            <ChevronRight size={15} />
-          </button>
-          <span className="ml-1 flex items-center gap-1">
-            <input
-              type="date"
-              value={fmtDateInput(weekStart)}
-              max={fmtDateInput(weekEnd)}
-              onChange={(e) => { if (e.target.value) setStart(e.target.value); }}
-              className="rounded border border-border-strong bg-surface px-1.5 py-0.5 text-[12px] text-ink outline-none focus:border-accent"
-              title="First day of the window (inclusive)"
-            />
-            <span className="text-ink-4">→</span>
-            <input
-              type="date"
-              value={fmtDateInput(weekEnd)}
-              max={fmtDateInput(today)}
-              onChange={(e) => { if (e.target.value) setEnd(e.target.value); }}
-              className="rounded border border-border-strong bg-surface px-1.5 py-0.5 text-[12px] text-ink outline-none focus:border-accent"
-              title="Last day of the window (inclusive)"
-            />
-          </span>
-          <span className="ml-1 flex items-center gap-1 border-l border-border pl-1.5">
-            {([
-              // Same three presets as Outreach, so the two pages read alike.
-              { label: "Daily", title: "Today", get: () => ({ start: today, end: today }) },
-              { label: "Weekly", title: "This calendar week so far (Sun–today)", get: () => calendarWeek(new Date()) },
-              { label: "Monthly", title: "This calendar month so far", get: () => ({ start: new Date(today.getFullYear(), today.getMonth(), 1), end: today }) },
-            ] as const).map((p) => {
-              const r = p.get();
-              const active = fmtDateInput(r.start) === fmtDateInput(weekStart) && fmtDateInput(r.end) === fmtDateInput(weekEnd);
-              return (
-                <button
-                  key={p.label}
-                  type="button"
-                  title={p.title}
-                  onClick={() => setRange(p.get())}
-                  className={`rounded px-1.5 py-0.5 text-[11.5px] font-medium ${
-                    active ? "bg-accent-soft text-accent" : "text-ink-4 hover:bg-surface-2 hover:text-ink"}`}
-                >
-                  {p.label}
-                </button>
-              );
-            })}
-          </span>
-        </div>
-      </div>
+      <h2 className="text-[18px] font-semibold tracking-tight text-ink">Opportunities Overview</h2>
 
-      {/* ── Controls ──────────────────────────────────────────────────── */}
-      <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
+      <PeriodBar
+        from={fmtDateInput(weekStart)} to={fmtDateInput(weekEnd)}
+        onChange={(f, t) => setRange({ start: parseDateInput(f), end: parseDateInput(t) })}
+        granularity={granularity} onGranularityChange={setGranularity}
+        clampToToday
+      >
         <div className="flex items-center gap-2">
           <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">Owner</span>
-          <select
-            value={owner}
-            onChange={(e) => setOwner(e.target.value)}
-            className="h-7 rounded-md border border-border-strong bg-surface px-2 text-[12.5px] text-ink outline-none focus:border-accent"
-          >
+          <select value={owner} onChange={(e) => setOwner(e.target.value)}
+            className="h-7 rounded-md border border-border-strong bg-surface px-2 text-[12.5px] text-ink outline-none focus:border-accent">
             <option value="all">All owners</option>
             {(staffQ.data ?? []).map((st) => (
               <option key={st.email} value={st.email}>{st.name || ownerShort(st.email)}</option>
@@ -286,17 +201,14 @@ export function JobsOpportunitiesOverview() {
         </div>
         <div className="flex items-center gap-2">
           <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">Deal type</span>
-          <select
-            value={dealType}
-            onChange={(e) => setDealType(e.target.value)}
-            className="h-7 rounded-md border border-border-strong bg-surface px-2 text-[12.5px] text-ink outline-none focus:border-accent"
-          >
+          <select value={dealType} onChange={(e) => setDealType(e.target.value)}
+            className="h-7 rounded-md border border-border-strong bg-surface px-2 text-[12.5px] text-ink outline-none focus:border-accent">
             {DEAL_TYPE_FILTERS.map((d) => (
               <option key={d.value} value={d.value}>{d.label}</option>
             ))}
           </select>
         </div>
-      </div>
+      </PeriodBar>
 
       {/* ── Summary cards ─────────────────────────────────────────────── */}
       <div className="grid grid-cols-2 items-stretch gap-4 lg:grid-cols-5">
@@ -331,6 +243,7 @@ export function JobsOpportunitiesOverview() {
         period={{ from: fmtDateInput(weekStart), to: fmtDateInput(weekEnd) }}
         periodLabel={rangeLabel}
         dealType={dealType}
+        onUsePeriod={(f, t) => setRange({ start: parseDateInput(f), end: parseDateInput(t) })}
       />
 
       {/* ── Aging + Breakdown ─────────────────────────────────────────── */}

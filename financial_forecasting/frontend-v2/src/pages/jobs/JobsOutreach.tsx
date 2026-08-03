@@ -28,6 +28,7 @@ import { TagCampaigns } from "@/components/jobs/TagCampaigns";
 import { JobsFunnels } from "@/components/jobs/JobsFunnels";
 import { Panel, BreakdownBars } from "./JobsOpportunitiesOverview";
 import { ActivityTrends } from "@/components/jobs/ActivityTrends";
+import { PeriodBar, ScopeButtons } from "@/components/jobs/PeriodBar";
 import { relDay } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
@@ -41,25 +42,6 @@ function currentWeek(): [string, string] {
 }
 const MEMBERSHIP_STAGE_OPTIONS = MEMBERSHIP_STAGES.map((s) => ({ value: s, label: MEMBERSHIP_STAGE_LABELS[s] }));
 
-const ISO = (d: Date) =>
-  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-/** [startISO, endISO] for today. */
-function currentDay(): [string, string] {
-  const d = new Date(); d.setHours(0, 0, 0, 0);
-  return [ISO(d), ISO(d)];
-}
-/** [startISO, endISO] for the calendar month containing today. */
-function currentMonth(): [string, string] {
-  const n = new Date();
-  return [ISO(new Date(n.getFullYear(), n.getMonth(), 1)), ISO(new Date(n.getFullYear(), n.getMonth() + 1, 0))];
-}
-/** Each preset sets the window AND the scorecard bucket size together — showing
- *  a month of dates in weekly buckets reads as a bug. */
-const PERIOD_PRESETS: { key: OutreachGranularity; label: string; get: () => [string, string] }[] = [
-  { key: "day", label: "Daily", get: currentDay },
-  { key: "week", label: "Weekly", get: currentWeek },
-  { key: "month", label: "Monthly", get: currentMonth },
-];
 
 
 // ── Formatting helpers ────────────────────────────────────────────────────────
@@ -223,7 +205,7 @@ function TargetingPanel({ granularity, scope, owner, range }: {
   const replies = (dim?.rows ?? []).reduce((n, r) => n + r.responses, 0);
   return (
     <Panel
-      title="Targeting mix"
+      title="Targeting Mix"
       desc={`Who we reached this period${sent ? ` · ${sent} contacts, ${replies} replied` : ""}`}
       action={
         <select value={dimKey} onChange={(e) => setDimKey(e.target.value)}
@@ -543,8 +525,22 @@ function useAwaitingActivation(staffEmails: Set<string>) {
 }
 
 function HygieneBlock({ nameOf, staffEmails }: { nameOf: (email: string) => string; staffEmails: Set<string> }) {
-  const noProspect = useAwaitingActivation(staffEmails);
+  const all = useAwaitingActivation(staffEmails);
   const [showAll, setShowAll] = useState(false);
+  const [sort, setSort] = useState("onfile");
+  const [ownerF, setOwnerF] = useState("");
+  const owners = useMemo(() => ownerOptions(all, (a) => a.owner_email), [all]);
+  // 60+ accounts is too many to scan raw — "which of mine have people I could
+  // flag today" is the actual question, so that's the default sort.
+  const noProspect = useMemo(() => {
+    const rows = ownerF
+      ? all.filter((a) => ((a.owner_email ?? "").toLowerCase() || "(unowned)") === ownerF)
+      : [...all];
+    if (sort === "name") return rows.sort((a, b) => a.account.localeCompare(b.account));
+    if (sort === "recent") return rows.sort((a, b) => (b.last_activity_at ?? "").localeCompare(a.last_activity_at ?? ""));
+    if (sort === "stalest") return rows.sort((a, b) => (a.last_activity_at ?? "").localeCompare(b.last_activity_at ?? ""));
+    return rows.sort((a, b) => (b.contact_count ?? 0) - (a.contact_count ?? 0));
+  }, [all, sort, ownerF]);
 
   // Two different problems: contacts exist but nobody's been flagged into the
   // pipeline (just activate one) vs genuinely nobody on file (go find someone).
@@ -552,10 +548,20 @@ function HygieneBlock({ nameOf, staffEmails }: { nameOf: (email: string) => stri
   const shown = showAll ? noProspect : noProspect.slice(0, 10);
   return (
     <div className="flex flex-col gap-3">
-      <p className="text-[11.5px] text-ink-3">
-        {noProspect.length} owned accounts with nobody in the prospect list — {withPeople} have contacts on file to flag,{" "}
-        {noProspect.length - withPeople} have nobody yet
-      </p>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-[11.5px] text-ink-3">
+          {noProspect.length} owned accounts with nobody in the prospect list — {withPeople} have contacts on file to flag,{" "}
+          {noProspect.length - withPeople} have nobody yet
+        </p>
+        <ListControls sort={sort} setSort={setSort} owner={ownerF} setOwner={setOwnerF}
+          owners={owners} nameOf={nameOf}
+          sortOpts={[
+            { value: "onfile", label: "Most contacts on file" },
+            { value: "stalest", label: "Stalest activity" },
+            { value: "recent", label: "Most recent activity" },
+            { value: "name", label: "Account name" },
+          ]} />
+      </div>
       {noProspect.length > 0 && (
         <div className="overflow-hidden rounded-lg border border-border-strong bg-surface">
           <div className="bg-amber-soft px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-amber">
@@ -616,8 +622,20 @@ function HygieneBlock({ nameOf, staffEmails }: { nameOf: (email: string) => stri
 /** Replied but still in initial outreach — the owner decides where each goes.
  *  Deliberately never auto-advances: a positive reply belongs in Converted, a
  *  neutral/negative one in On hold / Not a fit, and only a human can tell. */
-function RespondedPanel({ owner }: { owner?: string }) {
-  const { data = [], isLoading } = useRespondedContacts(owner);
+function RespondedPanel({ owner, nameOf }: { owner?: string; nameOf: (e: string) => string }) {
+  const { data: raw = [], isLoading } = useRespondedContacts(owner);
+  const [sort, setSort] = useState("oldest");
+  const [ownerF, setOwnerF] = useState("");
+  const owners = useMemo(() => ownerOptions(raw, (r) => r.owner_email), [raw]);
+  const data = useMemo(() => {
+    const rows = ownerF
+      ? raw.filter((r) => ((r.owner_email ?? "").toLowerCase() || "(unowned)") === ownerF)
+      : [...raw];
+    const key = (r: typeof rows[number]) => r.last_reply ?? "";
+    if (sort === "recent") return rows.sort((a, b) => key(b).localeCompare(key(a)));
+    if (sort === "touches") return rows.sort((a, b) => (b.touches ?? 0) - (a.touches ?? 0));
+    return rows.sort((a, b) => key(a).localeCompare(key(b)));  // oldest reply first
+  }, [raw, sort, ownerF]);
   const update = useUpdateJobsMembership();
   const [showAll, setShowAll] = useState(false);
   const move = (c: { contact_id: number; full_name: string | null }, stage: MembershipStage) =>
@@ -626,7 +644,17 @@ function RespondedPanel({ owner }: { owner?: string }) {
     });
   const shown = showAll ? data : data.slice(0, 8);
   return (
-    <Panel title="Replied — needs a decision"
+    <Panel
+      action={
+        <ListControls sort={sort} setSort={setSort} owner={ownerF} setOwner={setOwnerF}
+          owners={owners} nameOf={nameOf}
+          sortOpts={[
+            { value: "oldest", label: "Longest un-actioned" },
+            { value: "recent", label: "Most recent reply" },
+            { value: "touches", label: "Most touches" },
+          ]} />
+      }
+      title="Replied — needs a decision"
       badge={data.length ? String(data.length) : undefined}
       desc="They came back to us and are still in initial outreach. Read the reply, then move them — nothing advances on its own.">
       {isLoading ? (
@@ -679,8 +707,19 @@ function RespondedPanel({ owner }: { owner?: string }) {
 
 /** Contacts stuck in initial outreach — 3+ touches, no reply. The cue to find a
  *  different contact at that account (replaced the account working list). */
-function StuckContactsPanel({ owner }: { owner?: string }) {
-  const { data = [], isLoading } = useStuckContacts(3, owner);
+function StuckContactsPanel({ owner, nameOf }: { owner?: string; nameOf: (e: string) => string }) {
+  const { data: raw = [], isLoading } = useStuckContacts(3, owner);
+  const [sort, setSort] = useState("touches");
+  const [ownerF, setOwnerF] = useState("");
+  const owners = useMemo(() => ownerOptions(raw, (r) => r.owner_email), [raw]);
+  const data = useMemo(() => {
+    const rows = ownerF
+      ? raw.filter((r) => ((r.owner_email ?? "").toLowerCase() || "(unowned)") === ownerF)
+      : [...raw];
+    if (sort === "stalest") return rows.sort((a, b) => (a.last_touch ?? "").localeCompare(b.last_touch ?? ""));
+    if (sort === "recent") return rows.sort((a, b) => (b.last_touch ?? "").localeCompare(a.last_touch ?? ""));
+    return rows.sort((a, b) => (b.touches ?? 0) - (a.touches ?? 0));
+  }, [raw, sort, ownerF]);
   // Stage editable in place: the usual next move here is On hold / Not a fit,
   // or Converted if the account came good through another contact.
   const updateMembership = useUpdateJobsMembership();
@@ -693,6 +732,14 @@ function StuckContactsPanel({ owner }: { owner?: string }) {
   }
   const shown = showAll ? data : data.slice(0, 15);
   return (
+    <div className="flex flex-col gap-2">
+      <ListControls sort={sort} setSort={setSort} owner={ownerF} setOwner={setOwnerF}
+        owners={owners} nameOf={nameOf}
+        sortOpts={[
+          { value: "touches", label: "Most touches" },
+          { value: "stalest", label: "Stalest (oldest touch)" },
+          { value: "recent", label: "Most recent touch" },
+        ]} />
     <div className="overflow-hidden rounded-lg border border-border-strong bg-surface">
       <table className="w-full text-[12.5px]">
         <thead><tr className="bg-surface-2/60 text-left text-[10.5px] uppercase tracking-wider text-ink-3">
@@ -754,6 +801,7 @@ function StuckContactsPanel({ owner }: { owner?: string }) {
         </button>
       )}
     </div>
+    </div>
   );
 }
 
@@ -765,6 +813,41 @@ function StuckContactsPanel({ owner }: { owner?: string }) {
 // its own full-width section.
 
 type AttentionKey = "replied" | "stuck" | "activation";
+
+/** Sort + owner filter strip shared by the three Requiring Attention details —
+ *  each list is long enough that scanning it unsorted is the actual work. */
+function ListControls({ sort, setSort, sortOpts, owner, setOwner, owners, nameOf }: {
+  sort: string;
+  setSort: (v: string) => void;
+  sortOpts: { value: string; label: string }[];
+  owner: string;
+  setOwner: (v: string) => void;
+  owners: string[];
+  nameOf: (email: string) => string;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-4">Sort</span>
+      <select value={sort} onChange={(e) => setSort(e.target.value)}
+        className="h-7 rounded-md border border-border-strong bg-surface px-2 text-[12px] text-ink-2 outline-none focus:border-accent">
+        {sortOpts.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+      </select>
+      <span className="ml-1 text-[10.5px] font-semibold uppercase tracking-wider text-ink-4">Owner</span>
+      <select value={owner} onChange={(e) => setOwner(e.target.value)}
+        className="h-7 rounded-md border border-border-strong bg-surface px-2 text-[12px] text-ink-2 outline-none focus:border-accent">
+        <option value="">All owners</option>
+        {owners.map((o) => <option key={o} value={o}>{o === "(unowned)" ? "Unowned" : nameOf(o)}</option>)}
+      </select>
+    </div>
+  );
+}
+
+/** Distinct owner keys present in a list, for its filter dropdown. */
+function ownerOptions<T>(rows: T[], pick: (r: T) => string | null | undefined): string[] {
+  const set = new Set<string>();
+  for (const r of rows) set.add((pick(r) ?? "").toLowerCase() || "(unowned)");
+  return [...set].sort();
+}
 
 const DAY_MS = 86_400_000;
 
@@ -897,13 +980,13 @@ function RequiringAttention({ owner, nameOf, staffEmails }: {
         />
       </div>
 
-      {open === "replied" ? <RespondedPanel owner={owner} /> : null}
+      {open === "replied" ? <RespondedPanel owner={owner} nameOf={nameOf} /> : null}
       {open === "stuck" ? (
         <div className="flex flex-col gap-2">
           <p className="text-[11.5px] text-ink-3">
             3+ touches, no reply — time to work a different contact at the account
           </p>
-          <StuckContactsPanel owner={owner} />
+          <StuckContactsPanel owner={owner} nameOf={nameOf} />
         </div>
       ) : null}
       {open === "activation" ? <HygieneBlock nameOf={nameOf} staffEmails={staffEmails} /> : null}
@@ -912,9 +995,9 @@ function RequiringAttention({ owner, nameOf, staffEmails }: {
 }
 
 export function JobsOutreach() {
-  // Scope is fixed to the jobs team; the bucket size follows the period preset.
+  // Bucket size follows the period preset; scope is the three-way sender filter.
   const [granularity, setGranularity] = useState<OutreachGranularity>("week");
-  const scope: OutreachScopeKind = "team";
+  const [scope, setScope] = useState<OutreachScopeKind>("team");
   const [owner, setOwner] = useState<string>("");   // "" = whole scope
   const [from, setFrom] = useState(() => currentWeek()[0]);
   const [to, setTo] = useState(() => currentWeek()[1]);
@@ -930,33 +1013,14 @@ export function JobsOutreach() {
 
   return (
     <div className="flex flex-col gap-6 pt-3">
-      {/* ── Page period + sender: one filter for the whole page, so "this
-             week" always means the dates shown here ── */}
-      <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border-strong bg-surface-2 px-3 py-2">
-        <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">Period</span>
-        <input type="date" value={from} max={to || undefined}
-          onChange={(e) => setFrom(e.target.value)}
-          className="h-7 rounded-md border border-border-strong bg-surface px-2 text-[12.5px] text-ink outline-none focus:border-accent" />
-        <span className="text-ink-4">→</span>
-        <input type="date" value={to} min={from || undefined}
-          onChange={(e) => setTo(e.target.value)}
-          className="h-7 rounded-md border border-border-strong bg-surface px-2 text-[12.5px] text-ink outline-none focus:border-accent" />
-        <div className="inline-flex items-center rounded-md border border-border-strong bg-surface p-0.5">
-          {PERIOD_PRESETS.map((p) => {
-            const [pf, pt] = p.get();
-            const active = granularity === p.key && from === pf && to === pt;
-            return (
-              <button key={p.key} type="button"
-                onClick={() => { setGranularity(p.key); setFrom(pf); setTo(pt); }}
-                title={`${p.label} — ${pf} to ${pt}`}
-                className={cn("rounded px-2 py-0.5 text-[12px] font-medium transition-colors",
-                  active ? "bg-accent-soft text-accent" : "text-ink-2 hover:bg-surface-2")}>
-                {p.label}
-              </button>
-            );
-          })}
-        </div>
-        <div className="flex-1" />
+      {/* ── Page period, scope and sender: one row driving every section,
+             including the activity chart at the bottom ── */}
+      <PeriodBar
+        from={from} to={to}
+        onChange={(f, t) => { setFrom(f); setTo(t); }}
+        granularity={granularity} onGranularityChange={setGranularity}
+      >
+        <ScopeButtons value={scope} onChange={(v) => { setScope(v); setOwner(""); }} />
         <select value={owner} onChange={(e) => setOwner(e.target.value)}
           className="h-7 rounded-md border border-border-strong bg-surface px-2 text-[12.5px] text-ink-2 outline-none focus:border-accent"
           title="Filter every section to one person">
@@ -964,7 +1028,7 @@ export function JobsOutreach() {
           {[...staff].sort((a, b) => (a.name || a.email).localeCompare(b.name || b.email))
             .map((st) => <option key={st.email} value={st.email}>{st.name || st.email}</option>)}
         </select>
-      </div>
+      </PeriodBar>
 
       {/* ── Daily digest (the morning Slack) ── */}
       <DailyDigestBlock />
@@ -972,7 +1036,8 @@ export function JobsOutreach() {
       {/* ── Monday agenda: contacts funnel → this week (+ activity pipeline)
              → requiring attention → campaigns → scorecard → targeting.
              Activity over time now sits below the sender-segment divider. ── */}
-      <JobsFunnels only="prospects" period={range} periodLabel={rangeLabel || undefined} />
+      <JobsFunnels only="prospects" period={range} periodLabel={rangeLabel || undefined}
+        onUsePeriod={(f, t) => { setFrom(f); setTo(t); }} />
 
       <ThisWeekBlock nameOf={nameOf} activityPipeline={sc?.activity_pipeline}
         granularity={granularity} scope={scope} owner={owner || undefined} range={range}
@@ -1007,7 +1072,7 @@ export function JobsOutreach() {
           {/* ── Divider: everything above = high-level review; below = per-sender/account detail ── */}
           <div className="mt-6 flex items-center gap-3">
             <div className="h-px flex-1 bg-border-strong" />
-            <span className="text-[11px] font-bold uppercase tracking-[.12em] text-ink-3">Sender segments and accounts</span>
+            <span className="text-[11px] font-bold uppercase tracking-[.12em] text-ink-3">Segments</span>
             <div className="h-px flex-1 bg-border-strong" />
           </div>
         </>
@@ -1017,8 +1082,15 @@ export function JobsOutreach() {
 
       {/* Activity over time reads as supporting detail behind the sender
           segments, not as a headline — so it sits at the bottom. */}
-      <SectionHead title="Activity over time" note={rangeLabel ? `${rangeLabel} vs. prior period` : undefined} />
-      <ActivityTrends />
+      {/* Separator: everything above is the review; this is supporting trend
+          data on a different population, so it gets its own band. */}
+      <div className="mt-6 flex items-center gap-3">
+        <div className="h-px flex-1 bg-border-strong" />
+        <span className="text-[11px] font-bold uppercase tracking-[.12em] text-ink-3">Activity over time</span>
+        <div className="h-px flex-1 bg-border-strong" />
+      </div>
+      <ActivityTrends granularity={granularity} scope={scope} owner={owner || undefined}
+        range={range} />
 
     </div>
   );

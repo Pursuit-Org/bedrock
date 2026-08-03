@@ -1022,6 +1022,10 @@ export interface FunnelData {
    *  `snapshot` = counts are records currently sitting in each stage. */
   mode: "period" | "snapshot";
   period: { from: string; to: string } | null;
+  /** Set only when the selected window came back empty: the most recent movement
+   *  of any kind, so the empty state can point at where the data actually is
+   *  instead of leaving "nothing happened" and "wrong week" indistinguishable. */
+  last_movement_at: string | null;
   stages: FunnelStage[];
   record_columns: { key: string; label: string }[];
 }
@@ -1110,7 +1114,7 @@ export interface ActivityTrends {
   coverage_note: string | null;
 }
 
-export type OutreachScope = "team" | "staff";
+export type OutreachScope = OutreachScopeKind;
 
 export interface OutreachRange { from: string; to: string }
 
@@ -1483,6 +1487,33 @@ export function useTagCampaigns() {
     queryKey: ["jobs", "tag-campaigns"],
     queryFn: async () => {
       const { data } = await api.get<ApiResponse<TagCampaign[]>>("/api/jobs/tag-campaigns");
+      return data.data;
+    },
+    staleTime: 60_000,
+  });
+}
+
+export interface TagCampaignContact {
+  contact_id: number;
+  full_name: string | null;
+  company: string | null;
+  stage: string | null;
+  stage_entered_at: string | null;
+  owner: string | null;
+  touches: number;
+  last_touch: string | null;
+}
+export interface TagCampaignAccount { company: string; contacts: number; contacted: number }
+
+/** The contacts and accounts behind a campaign's counts. Same slug set and
+ *  jobs-prospect gate as /tag-campaigns, so the drills tie to the numbers. */
+export function useTagCampaignRecords(key: string | null) {
+  return useQuery<{ contacts: TagCampaignContact[]; accounts: TagCampaignAccount[] }>({
+    queryKey: ["jobs", "tag-campaign-records", key ?? ""],
+    enabled: !!key,
+    queryFn: async () => {
+      const { data } = await api.get<ApiResponse<{ contacts: TagCampaignContact[]; accounts: TagCampaignAccount[] }>>(
+        `/api/jobs/tag-campaigns/${encodeURIComponent(key as string)}/records`);
       return data.data;
     },
     staleTime: 60_000,

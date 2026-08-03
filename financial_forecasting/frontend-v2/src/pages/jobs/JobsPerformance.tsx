@@ -18,6 +18,14 @@ const TABS: { key: TabKey; label: string; icon: typeof BarChart3 }[] = [
 
 const VALID_TABS = new Set<string>(TABS.map((t) => t.key));
 
+/** One page, four views — the header names the one you're looking at. */
+const TAB_META: Record<TabKey, { title: string; subtitle: string }> = {
+  exec: { title: "Exec view", subtitle: "The outcomes the leadership team tracks." },
+  outreach: { title: "Outreach", subtitle: "The contacts funnel, the week's queue, and what needs a decision." },
+  pipeline: { title: "Pipeline", subtitle: "The employer-deal pipeline — volume, conversion and where it's stuck." },
+  placement: { title: "Placement", subtitle: "Placement performance reporting." },
+};
+
 export function JobsPerformancePage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const tabFromUrl = searchParams.get("tab");
@@ -33,8 +41,8 @@ export function JobsPerformancePage() {
   return (
     <div className="flex flex-col gap-0 px-7 py-4 pb-12">
       <PageHeader
-        title="Performance"
-        subtitle="Pipeline health, outreach, and placement metrics."
+        title={TAB_META[activeTab].title}
+        subtitle={TAB_META[activeTab].subtitle}
         actions={
           <div className="flex items-center gap-1 rounded-lg border border-border-strong bg-surface-2 p-1">
             {TABS.map((t) => {

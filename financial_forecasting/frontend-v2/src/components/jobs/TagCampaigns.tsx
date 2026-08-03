@@ -11,7 +11,11 @@ import { SortableContext, verticalListSortingStrategy, useSortable, arrayMove } 
 import { CSS } from "@dnd-kit/utilities";
 import { GripVertical, Loader2 } from "lucide-react";
 
-import { useTagCampaigns, useSetTagCampaignOrder, useSetCampaignOwner, useStaff, type TagCampaign } from "@/services/jobs";
+import { useTagCampaigns, useSetTagCampaignOrder, useSetCampaignOwner, useStaff,
+  useTagCampaignRecords, MEMBERSHIP_STAGE_LABELS,
+  type TagCampaign, type MembershipStage } from "@/services/jobs";
+import { Link } from "react-router-dom";
+import { relDay } from "@/lib/format";
 import { InlineSelect } from "@/components/ui/InlineEdit";
 import { cn } from "@/lib/utils";
 
@@ -48,7 +52,12 @@ function FunnelBar({ f }: { f: TagCampaign["funnel"] }) {
 }
 
 const EMPTY_FUNNEL = { not_yet: 0, assigned: 0, contacted: 0, converted: 0, on_hold: 0 };
-function Row({ c, rank, staffOptions }: { c: TagCampaign; rank: number; staffOptions: { value: string; label: string }[] }) {
+type DrillKind = "contacts" | "accounts" | null;
+
+function Row({ c, rank, staffOptions, drill, onDrill }: {
+  c: TagCampaign; rank: number; staffOptions: { value: string; label: string }[];
+  drill: DrillKind; onDrill: (d: DrillKind) => void;
+}) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: c.key });
   const setOwner = useSetCampaignOwner();
   const staffName = (email: string | null) => staffOptions.find((s) => s.value === email)?.label ?? email ?? "—";
@@ -58,20 +67,31 @@ function Row({ c, rank, staffOptions }: { c: TagCampaign; rank: number; staffOpt
     <div
       ref={setNodeRef}
       style={{ transform: CSS.Transform.toString(transform), transition }}
-      className={cn("flex items-center gap-3 border-b border-border-strong bg-surface px-3 py-2 text-[12.5px] last:border-b-0",
+      className={cn("border-b border-border-strong bg-surface text-[12.5px] last:border-b-0",
         isDragging && "relative z-10 rounded shadow-lg ring-1 ring-accent")}
     >
+    <div className="flex items-center gap-3 px-3 py-2">
       <button type="button" {...attributes} {...listeners} className="cursor-grab touch-none text-ink-4 hover:text-ink-2 active:cursor-grabbing" aria-label={`Reorder ${c.label}`}><GripVertical size={14} /></button>
       <span className="w-5 text-right font-mono text-[11px] text-ink-4">{rank}</span>
       <span className="w-40 shrink-0 truncate font-medium text-ink" title={c.label}>{c.label}</span>
       {/* single funnel bar over the in-pipeline contacts only */}
       <div className="flex min-w-0 flex-1 items-center gap-2">
         <FunnelBar f={f} />
-        <span className="w-24 shrink-0 text-right tabular-nums text-[10.5px] text-ink-3" title="contacted / in pipeline">
+        <button type="button"
+          onClick={() => onDrill(drill === "contacts" ? null : "contacts")}
+          title="List the contacts in this campaign, with who's been contacted and when"
+          className={cn("w-24 shrink-0 text-right tabular-nums text-[10.5px] hover:underline",
+            drill === "contacts" ? "text-accent" : "text-ink-3 hover:text-accent")}>
           {contacted.toLocaleString()}/{c.in_pipeline.toLocaleString()} in pipe
-        </span>
+        </button>
       </div>
-      <span className="w-20 shrink-0 text-right tabular-nums text-ink-2" title="accounts">{c.accounts.toLocaleString()} <span className="text-ink-4">acct</span></span>
+      <button type="button"
+        onClick={() => onDrill(drill === "accounts" ? null : "accounts")}
+        title="List the accounts these contacts sit at"
+        className={cn("w-20 shrink-0 text-right tabular-nums hover:underline",
+          drill === "accounts" ? "text-accent" : "text-ink-2 hover:text-accent")}>
+        {c.accounts.toLocaleString()} <span className="text-ink-4">acct</span>
+      </button>
       {/* conversion = converted / (contacted + converted) — where traction is */}
       <span className="w-14 shrink-0 text-right tabular-nums text-[11.5px]"
         title={`${f.converted} converted of ${contacted + (f.converted ?? 0)} contacted`}>
@@ -90,6 +110,112 @@ function Row({ c, rank, staffOptions }: { c: TagCampaign; rank: number; staffOpt
         />
       </span>
     </div>
+    {drill ? <CampaignDrill campaignKey={c.key} kind={drill} label={c.label} /> : null}
+    </div>
+  );
+}
+
+const CAMPAIGN_DRILL_CAP = 10;
+
+/** Contacts or accounts behind a campaign's numbers. The contact list marks who
+ *  has actually been reached and when — the whole point of the campaign view is
+ *  knowing what's left to work. */
+function CampaignDrill({ campaignKey, kind, label }: {
+  campaignKey: string; kind: "contacts" | "accounts"; label: string;
+}) {
+  const { data, isLoading } = useTagCampaignRecords(campaignKey);
+  const [showAll, setShowAll] = useState(false);
+
+  if (isLoading) return <div className="px-3 py-2.5 text-[12px] text-ink-3">Loading…</div>;
+
+  const rows = kind === "contacts" ? (data?.contacts ?? []) : (data?.accounts ?? []);
+  const shown = showAll ? rows : rows.slice(0, CAMPAIGN_DRILL_CAP);
+  if (rows.length === 0)
+    return <div className="px-3 py-2.5 text-[12px] text-ink-4">Nothing in the pipeline for {label} yet.</div>;
+
+  return (
+    <div className="border-t border-border-strong bg-surface-2/40 px-3 py-2">
+      <div className="mb-1.5 flex items-center justify-between">
+        <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
+          {label} · {kind === "contacts" ? "contacts in pipeline" : "accounts"}
+        </span>
+        <span className="text-[11px] tabular-nums text-ink-4">{rows.length}</span>
+      </div>
+      <div className="overflow-hidden rounded border border-border-strong bg-surface">
+        <table className="w-full text-[12px]">
+          <thead>
+            <tr className="bg-surface-2/60 text-left text-[10.5px] uppercase tracking-wider text-ink-3">
+              {kind === "contacts" ? (
+                <>
+                  <th className="px-3 py-1.5 font-semibold">Contact</th>
+                  <th className="px-2 py-1.5 font-semibold">Company</th>
+                  <th className="px-2 py-1.5 font-semibold">Reached</th>
+                  <th className="px-2 py-1.5 font-semibold">When</th>
+                  <th className="px-2 py-1.5 text-right font-semibold">Touches</th>
+                  <th className="px-2 py-1.5 text-right font-semibold">Last touch</th>
+                </>
+              ) : (
+                <>
+                  <th className="px-3 py-1.5 font-semibold">Account</th>
+                  <th className="px-2 py-1.5 text-right font-semibold">Contacts</th>
+                  <th className="px-2 py-1.5 text-right font-semibold">Reached</th>
+                </>
+              )}
+            </tr>
+          </thead>
+          <tbody>
+            {kind === "contacts"
+              ? (shown as NonNullable<typeof data>["contacts"]).map((r) => {
+                  // "Reached" = past the assigned queue. Anyone still unstaged or
+                  // merely assigned has not been contacted yet.
+                  const reached = r.stage === "initial_outreach" || r.stage === "converted_to_opportunity";
+                  return (
+                    <tr key={r.contact_id} className="border-t border-border-strong">
+                      <td className="px-3 py-1.5">
+                        <Link to={`/jobs/contacts/${r.contact_id}`}
+                          className="font-medium text-ink hover:text-accent hover:underline">
+                          {r.full_name ?? "—"}
+                        </Link>
+                      </td>
+                      <td className="px-2 py-1.5 truncate text-ink-2">{r.company ?? "—"}</td>
+                      <td className="px-2 py-1.5">
+                        <span className={cn("rounded-full px-1.5 py-0.5 text-[10.5px] font-semibold",
+                          reached ? "bg-green-soft text-green" : "bg-surface-2 text-ink-3")}>
+                          {r.stage ? (MEMBERSHIP_STAGE_LABELS[r.stage as MembershipStage] ?? r.stage) : "Not yet"}
+                        </span>
+                      </td>
+                      <td className="px-2 py-1.5 text-ink-3">{relDay(r.stage_entered_at) ?? "—"}</td>
+                      <td className={cn("px-2 py-1.5 text-right tabular-nums", r.touches > 0 ? "text-ink-2" : "text-ink-4")}>
+                        {r.touches}
+                      </td>
+                      <td className="px-2 py-1.5 text-right tabular-nums text-ink-4">{relDay(r.last_touch) ?? "—"}</td>
+                    </tr>
+                  );
+                })
+              : (shown as NonNullable<typeof data>["accounts"]).map((a) => (
+                  <tr key={a.company} className="border-t border-border-strong">
+                    <td className="px-3 py-1.5">
+                      <Link to={`/jobs/accounts?q=${encodeURIComponent(a.company)}`}
+                        className="font-medium text-ink hover:text-accent hover:underline">
+                        {a.company}
+                      </Link>
+                    </td>
+                    <td className="px-2 py-1.5 text-right tabular-nums text-ink-2">{a.contacts}</td>
+                    <td className={cn("px-2 py-1.5 text-right tabular-nums", a.contacted > 0 ? "text-green" : "text-ink-4")}>
+                      {a.contacted}
+                    </td>
+                  </tr>
+                ))}
+          </tbody>
+        </table>
+        {rows.length > shown.length ? (
+          <button type="button" onClick={() => setShowAll(true)}
+            className="w-full border-t border-border-strong px-3 py-1.5 text-[11.5px] font-medium text-accent hover:bg-surface-2">
+            Show all {rows.length}
+          </button>
+        ) : null}
+      </div>
+    </div>
   );
 }
 
@@ -98,6 +224,9 @@ export function TagCampaigns() {
   const { data: staff = [] } = useStaff();
   const save = useSetTagCampaignOrder();
   const [items, setItems] = useState<TagCampaign[]>([]);
+  // One drill open at a time — two expanded tables at this row height turns
+  // the list into a wall.
+  const [openDrill, setOpenDrill] = useState<{ key: string; kind: "contacts" | "accounts" } | null>(null);
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }));
   const staffOptions = [{ value: "", label: "— none —" }, ...staff.map((s) => ({ value: s.email, label: s.name }))];
 
@@ -154,7 +283,11 @@ export function TagCampaigns() {
         ) : (
           <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
             <SortableContext items={items.map((i) => i.key)} strategy={verticalListSortingStrategy}>
-              {items.map((c, idx) => <Row key={c.key} c={c} rank={idx + 1} staffOptions={staffOptions} />)}
+              {items.map((c, idx) => (
+                <Row key={c.key} c={c} rank={idx + 1} staffOptions={staffOptions}
+                  drill={openDrill?.key === c.key ? openDrill.kind : null}
+                  onDrill={(d) => setOpenDrill(d ? { key: c.key, kind: d } : null)} />
+              ))}
             </SortableContext>
           </DndContext>
         )}

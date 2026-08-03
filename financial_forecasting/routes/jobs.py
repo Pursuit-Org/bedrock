@@ -1995,6 +1995,7 @@ async def get_funnel(
             period_entries[k].sort(key=lambda rec: rec["entered_at"] or "", reverse=True)
         return period_entries
 
+    last_movement_at = None
     if period is not None:
         p_from, p_to = period
         period_entries = await _entries(p_from, p_to)
@@ -2002,6 +2003,32 @@ async def get_funnel(
         span = p_to - p_from
         prev = await _entries(p_from - span, p_from)
         prev_counts = [len(prev.get(k, [])) for k, _ in stage_order]
+
+        # When the window is empty, "nothing happened" is indistinguishable from
+        # "you're looking at the wrong week". Report the most recent movement of
+        # ANY kind so the empty state can point at where the data actually is.
+        if not any(len(v) for v in period_entries.values()):
+            if ftype == "prospects":
+                last_movement_at = await conn.fetchval("""
+                    SELECT max(t) FROM (
+                        SELECT max(assigned_at) AS t FROM bedrock.jobs_contact_membership
+                        UNION ALL SELECT max(first_outreach_at) FROM bedrock.jobs_contact_membership
+                        UNION ALL SELECT max(converted_at) FROM bedrock.jobs_contact_membership
+                        UNION ALL SELECT max(changed_at) FROM bedrock.jobs_membership_stage_history
+                    ) x
+                """)
+            else:
+                last_movement_at = await conn.fetchval("""
+                    SELECT max(t) FROM (
+                        SELECT max(h.changed_at) AS t
+                        FROM bedrock.jobs_stage_history h
+                        JOIN bedrock.jobs_opportunity o ON o.id = h.opportunity_id
+                        WHERE o.deleted_at IS NULL AND ($1::text IS NULL OR o.deal_type = $1)
+                        UNION ALL
+                        SELECT max(o.created_at) FROM bedrock.jobs_opportunity o
+                        WHERE o.deleted_at IS NULL AND ($1::text IS NULL OR o.deal_type = $1)
+                    ) x
+                """, dt)
 
     stages = []
     cohort_conv = locals().get("cohort_conv") or {}
@@ -2070,6 +2097,9 @@ async def get_funnel(
         "type": ftype,
         "mode": "period" if period_entries is not None else "snapshot",
         "period": ({"from": period_from, "to": period_to} if period_entries is not None else None),
+        # Only set when the window came back empty — the empty state uses it to
+        # say where the movement actually is.
+        "last_movement_at": last_movement_at.isoformat() if last_movement_at else None,
         "stages": stages,
         "record_columns": record_columns,
     }}
@@ -2743,11 +2773,16 @@ def _staff_actor(alias: str = "a") -> str:
 def _actor_sql(alias: str, owner: Optional[str], scope: str = "team") -> str:
     """Actor filter for the outreach trends/detail. With `owner` (a single,
     validated staff email) it scopes to that person; else `scope` picks the core
-    jobs team ('team', default) or the wider staff ('staff'). `owner` is
-    regex-validated so it's safe to interpolate into the ILIKE."""
+    jobs team ('team', default), the wider staff ('staff'), or everyone at
+    Pursuit ('pursuit'). `owner` is regex-validated so it's safe to interpolate
+    into the ILIKE."""
     if owner and _SAFE_EMAIL.match(owner):
         return f"({alias}.email_from ILIKE '%{owner}%' OR {alias}.logged_by ILIKE '%{owner}%')"
-    return _staff_actor(alias) if scope == "staff" else _team_actor(alias)
+    if scope == "staff":
+        return _staff_actor(alias)
+    if scope == "pursuit":
+        return f"({_team_actor(alias)} OR {_staff_actor(alias)})"
+    return _team_actor(alias)
 
 
 @router.get("/activity-trends")
@@ -2755,7 +2790,7 @@ async def activity_trends(
     granularity: str = Query("week", pattern="^(day|week|month)$"),
     channel: str = Query("all", pattern="^(all|email|meeting)$"),
     owner: Optional[str] = Query(None, description="Scope to one staff email (else the scope)"),
-    scope: str = Query("team", pattern="^(team|staff)$", description="team = Avni/Damon/Devika; scope = everyone else's jobs outreach"),
+    scope: str = Query("team", pattern="^(pursuit|team|staff)$", description="team = Avni/Damon/Devika; staff = everyone else; pursuit = both"),
     date_from: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$", description="Custom range start (ISO date); overrides trailing window when both from+to are set"),
     date_to: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$", description="Custom range end (ISO date)"),
     user=Depends(require_auth),
@@ -2900,7 +2935,7 @@ async def activity_trends_detail(
     granularity: str = Query("week", pattern="^(day|week|month)$"),
     channel: str = Query("all", pattern="^(all|email|meeting)$"),
     owner: Optional[str] = Query(None),
-    scope: str = Query("team", pattern="^(team|staff)$"),
+    scope: str = Query("team", pattern="^(pursuit|team|staff)$"),
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
@@ -6480,6 +6515,79 @@ async def tag_campaigns(user=Depends(require_auth), conn=Depends(get_db)):
                     }})
     out.sort(key=lambda x: (x["sort_order"], x["label"]))
     return {"success": True, "data": out}
+
+
+@router.get("/tag-campaigns/{key}/records")
+async def tag_campaign_records(
+    key: str,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """The contacts and accounts behind a campaign's counts.
+
+    Deliberately re-derives the slug set from the catalog via `_campaign_key` and
+    applies the same `is_jobs_contact` gate as /tag-campaigns, so a drill list can
+    never disagree with the number that opened it.
+    """
+    cat = await conn.fetch(
+        "SELECT slug FROM bedrock.contact_tag_catalog WHERE active")
+    slugs = [r["slug"] for r in cat if _campaign_key(r["slug"]) == key]
+    if not slugs:
+        raise HTTPException(404, f"Unknown campaign: {key}")
+
+    rows = await conn.fetch("""
+        WITH tagged AS (
+          SELECT DISTINCT c.contact_id
+          FROM public.contacts c
+          CROSS JOIN LATERAL unnest(c.tags) AS t
+          WHERE t = ANY($1::text[])
+        ),
+        act AS (
+          SELECT a.participant_public_contact_id AS cid,
+                 count(*) AS touches,
+                 max(a.activity_date) AS last_touch
+          FROM bedrock.activity a
+          WHERE a.deleted_at IS NULL
+            AND a.participant_public_contact_id IN (SELECT contact_id FROM tagged)
+          GROUP BY 1
+        )
+        SELECT c.contact_id, c.full_name, c.current_company AS company,
+               c.is_jobs_contact, m.stage, m.owner_email,
+               -- Latest stage stamp the contact reached, so "when" lines up with
+               -- the stage shown next to it. The label lives in the frontend's
+               -- MEMBERSHIP_STAGE_LABELS, which is the single source for it.
+               COALESCE(m.converted_at, m.first_outreach_at, m.assigned_at) AS stage_entered_at,
+               COALESCE(act.touches, 0) AS touches, act.last_touch
+        FROM tagged tg
+        JOIN public.contacts c ON c.contact_id = tg.contact_id
+        LEFT JOIN bedrock.jobs_contact_membership m ON m.contact_id = c.contact_id
+        LEFT JOIN act ON act.cid = c.contact_id
+        ORDER BY c.full_name
+    """, slugs)
+
+    # in_pipeline / accounts count only jobs prospects, so the drills must too.
+    in_pipe = [r for r in rows if r["is_jobs_contact"]]
+    contacts = [{
+        "contact_id": r["contact_id"],
+        "full_name": r["full_name"],
+        "company": r["company"],
+        "stage": r["stage"],
+        "stage_entered_at": r["stage_entered_at"].isoformat() if r["stage_entered_at"] else None,
+        "owner": r["owner_email"],
+        "touches": int(r["touches"] or 0),
+        "last_touch": r["last_touch"].isoformat() if r["last_touch"] else None,
+    } for r in in_pipe]
+
+    by_company: dict = {}
+    for r in in_pipe:
+        name = r["company"] or "(no company)"
+        a = by_company.setdefault(name, {"company": name, "contacts": 0, "contacted": 0})
+        a["contacts"] += 1
+        if r["stage"] in ("initial_outreach", "converted_to_opportunity"):
+            a["contacted"] += 1
+    accounts = sorted(by_company.values(), key=lambda a: (-a["contacts"], a["company"]))
+
+    return {"success": True, "data": {"contacts": contacts, "accounts": accounts}}
 
 
 class CampaignOrder(BaseModel):

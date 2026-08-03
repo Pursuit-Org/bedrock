@@ -53,13 +53,16 @@ const DEAL_TYPE_FILTERS: { value: string; label: string }[] = [
   ),
 ];
 
-export function JobsFunnels({ builderSegment, only, period, periodLabel, dealType: dealTypeProp }: {
+export function JobsFunnels({ builderSegment, only, period, periodLabel, onUsePeriod, dealType: dealTypeProp }: {
   builderSegment?: string;
   only?: FunnelType;
   /** Pass a window to get period-flow counts (records that ENTERED each stage).
    *  Omit it for the all-time snapshot — the Exec view has no period control. */
   period?: FunnelPeriod;
   periodLabel?: string;
+  /** Jump the page's period to a window that has data — used by the empty
+   *  state, so an empty week is one click from the last real movement. */
+  onUsePeriod?: (from: string, to: string) => void;
   /** Let the host page own the deal-type lens. When set, the funnel's own pill
    *  row is hidden — otherwise the Pipeline page shows two deal-type controls
    *  that can disagree with each other. */
@@ -153,6 +156,8 @@ export function JobsFunnels({ builderSegment, only, period, periodLabel, dealTyp
         isLoading={isLoading}
         isPeriod={isPeriod}
         periodLabel={periodLabel}
+        lastMovementAt={data?.last_movement_at ?? null}
+        onUsePeriod={onUsePeriod}
       />
 
       {/* Muted note for funnels without stage-change history */}
@@ -211,6 +216,8 @@ function FunnelCard({
   isLoading,
   isPeriod,
   periodLabel,
+  lastMovementAt,
+  onUsePeriod,
 }: {
   funnel: FunnelType;
   stages: FunnelStage[];
@@ -218,6 +225,8 @@ function FunnelCard({
   isLoading: boolean;
   isPeriod: boolean;
   periodLabel?: string;
+  lastMovementAt: string | null;
+  onUsePeriod?: (from: string, to: string) => void;
 }) {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState(false);
@@ -268,15 +277,15 @@ function FunnelCard({
           <span className="w-[190px] flex-shrink-0" />
           <span className="min-w-0 flex-1" />
           <span className="flex flex-shrink-0 flex-col">
-            <span className="flex">
-              <span className="w-[130px] text-center text-[9.5px] font-bold uppercase tracking-[.1em] text-ink-4">Volume</span>
-              <span className="w-[138px] text-center text-[9.5px] font-bold uppercase tracking-[.1em] text-ink-4">Conversion</span>
+            <span className="flex gap-2">
+              <span className="w-[152px] border-b border-border-strong pb-0.5 text-center text-[9.5px] font-bold uppercase tracking-[.1em] text-ink-3">Volume</span>
+              <span className="w-[160px] border-b border-border-strong pb-0.5 text-center text-[9.5px] font-bold uppercase tracking-[.1em] text-ink-3">Conversion</span>
             </span>
-            <span className="flex text-[10px] font-semibold uppercase tracking-wider text-ink-4">
-              <span className="w-[54px] text-right">#</span>
-              <span className="w-[76px] text-right">Trend</span>
-              <span className="w-[62px] text-right">%</span>
-              <span className="w-[76px] text-right">Trend</span>
+            <span className="mt-1 flex text-[10px] font-semibold uppercase tracking-wider text-ink-4">
+              <span className="w-[64px] text-right">#</span>
+              <span className="w-[88px] text-right">Trend</span>
+              <span className="w-[72px] text-right">%</span>
+              <span className="w-[88px] text-right">Trend</span>
             </span>
           </span>
         </div>
@@ -306,9 +315,36 @@ function FunnelCard({
           <p className="text-[12.5px] font-semibold text-ink">
             No {FUNNEL_NOUN[funnel]} entered any stage {periodLabel ? `between ${periodLabel}` : "in this period"}.
           </p>
-          <p className="mt-1 text-[11.5px] text-ink-3">
-            Widen the period above to see the pipeline move.
-          </p>
+          {/* Without this, "nothing happened" and "you're looking at the wrong
+              week" are indistinguishable — which is exactly how an empty funnel
+              gets read as broken. */}
+          {lastMovementAt ? (
+            <>
+              <p className="mt-1 text-[11.5px] text-ink-3">
+                Most recent movement was {new Date(lastMovementAt).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}.
+              </p>
+              {onUsePeriod ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const end = new Date(lastMovementAt);
+                    const start = new Date(end);
+                    start.setDate(start.getDate() - 29);
+                    const iso = (d: Date) =>
+                      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+                    onUsePeriod(iso(start), iso(end));
+                  }}
+                  className="mt-2.5 rounded-md border border-border-strong bg-surface px-2.5 py-1 text-[12px] font-medium text-accent hover:bg-surface-2"
+                >
+                  Show the 30 days to then
+                </button>
+              ) : null}
+            </>
+          ) : (
+            <p className="mt-1 text-[11.5px] text-ink-3">
+              Widen the period above to see the pipeline move.
+            </p>
+          )}
         </div>
       ) : (
         <div className="flex flex-col px-4 py-3">
@@ -359,27 +395,26 @@ function FunnelCard({
 
                   {/* Four numbers: volume, volume trend, conversion in,
                       conversion trend. Widths match the header grid above. */}
-                  <span className="flex flex-shrink-0 items-center text-[11.5px]">
-                    <span className="w-[54px] text-right font-mono text-[14px] font-bold tabular-nums text-ink"
+                  <span className="flex flex-shrink-0 items-center gap-2 text-[11.5px]">
+                    <span className="w-[64px] text-right font-mono text-[14px] font-bold tabular-nums text-ink"
                       title={isPeriod
                         ? `${stage.count} ${FUNNEL_NOUN[funnel]} entered ${stage.label} in this period`
                         : `${stage.count} ${FUNNEL_NOUN[funnel]} currently in ${stage.label}`}>
                       {stage.count}
                     </span>
-                    <span className="w-[76px] text-right">
+                    <span className="w-[88px] text-right">
                       <PctTrend current={stage.count} prior={stage.count_prev} noun={FUNNEL_NOUN[funnel]} />
                     </span>
-                    <span className="w-[62px] text-right tabular-nums"
+                    <span className="w-0" />
+                    <span className="w-[72px] text-right tabular-nums"
                       title={prevLabel && stage.conversion_in != null
                         ? `${stage.conversion_in}% of what entered ${prevLabel} in this period reached ${stage.label}. Over 100% means more moved forward than arrived — a backlog clearing, since they entered ${prevLabel} earlier.`
                         : "No prior stage to convert from"}>
                       {stage.conversion_in != null ? (
-                        <span className={stage.conversion_in >= 100 ? "font-semibold text-[var(--green)]" : "text-ink-2"}>
-                          {stage.conversion_in}%
-                        </span>
+                        <span className="font-mono text-[13px] font-semibold text-ink">{stage.conversion_in}%</span>
                       ) : <span className="text-ink-4">—</span>}
                     </span>
-                    <span className="w-[76px] text-right">
+                    <span className="w-[88px] text-right">
                       <PtTrend current={stage.conversion_in} prior={stage.conversion_in_prev} />
                     </span>
                   </span>

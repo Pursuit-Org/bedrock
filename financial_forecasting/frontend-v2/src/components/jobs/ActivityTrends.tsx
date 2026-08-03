@@ -33,20 +33,23 @@ function fmtPeriod(iso: string, gran: "day" | "week" | "month"): string {
 /**
  * Account-level outreach over time — a line per period of how many accounts
  * were reached. The dropdown splits that into NEW accounts (first activated
- * that period) vs EXISTING ones. Toggle the channel (all / email / meeting)
- * and the bucket size (week/month).
+ * that period) vs EXISTING ones. Period, bucket size, scope and sender are all
+ * owned by the page's period row — this chart deliberately has no controls of
+ * its own beyond that split, so there's one set per page.
  */
-export function ActivityTrends() {
-  const [gran, setGran] = useState<"day" | "week" | "month">("week");
-  const [channel, setChannel] = useState<OutreachChannel>("all");
-  const [owner, setOwner] = useState<string>("");          // "" = whole scope
-  const [scope, setScope] = useState<OutreachScope>("team"); // team = Avni/Damon/Devika; staff = everyone else
+export function ActivityTrends({ granularity, scope, owner, range }: {
+  granularity: "day" | "week" | "month";
+  scope: OutreachScope;
+  owner?: string;
+  range?: OutreachRange;
+}) {
+  const gran = granularity;
+  // Channel stays "all": splitting email vs meetings was a fourth control on a
+  // page that already has three, and the line answers "how much outreach".
+  const channel: OutreachChannel = "all";
   const [openPeriod, setOpenPeriod] = useState<string | null>(null);
   // "total" = one line, accounts reached. "split" = new vs existing.
   const [split, setSplit] = useState<SplitMode>("total");
-  const [from, setFrom] = useState<string>("");
-  const [to, setTo] = useState<string>("");
-  const range: OutreachRange | undefined = from && to && from <= to ? { from, to } : undefined;
   const { data, isLoading, isError, refetch } = useActivityTrends(gran, channel, owner || undefined, scope, range);
 
   const chartData = useMemo(
@@ -66,27 +69,6 @@ export function ActivityTrends() {
     <SectionCard
       title="Outreach & Activation"
       storageScope="jobs"
-      action={
-        <div className="flex items-center gap-2">
-          <Toggle value={scope} onChange={(v) => { setScope(v as OutreachScope); setOwner(""); }}
-                  opts={[["team", "Core team"], ["staff", "Other staff"]]} />
-          <Toggle value={channel} onChange={(v) => setChannel(v as OutreachChannel)}
-                  opts={[["all", "All"], ["email", "Email"], ["meeting", "Meetings"]]} />
-          <Toggle value={gran} onChange={(v) => setGran(v as "day" | "week" | "month")}
-                  opts={[["day", "Daily"], ["week", "Weekly"], ["month", "Monthly"]]} />
-          <div className="flex items-center gap-1 rounded-md border border-border-strong px-1.5 py-0.5">
-            <input type="date" value={from} max={to || undefined} onChange={(e) => setFrom(e.target.value)}
-              title="Range start" className="h-6 bg-transparent text-[11.5px] text-ink-2 outline-none" />
-            <span className="text-[11px] text-ink-4">→</span>
-            <input type="date" value={to} min={from || undefined} onChange={(e) => setTo(e.target.value)}
-              title="Range end" className="h-6 bg-transparent text-[11.5px] text-ink-2 outline-none" />
-            {(from || to) && (
-              <button type="button" onClick={() => { setFrom(""); setTo(""); }}
-                title="Clear range (back to trailing window)" className="px-1 text-[11px] font-medium text-ink-4 hover:text-ink-2">×</button>
-            )}
-          </div>
-        </div>
-      }
     >
       {isLoading ? (
         <div className="flex items-center justify-center gap-2 py-16 text-[13px] text-ink-3"><Loader2 size={16} className="animate-spin" /> Loading…</div>
@@ -150,7 +132,7 @@ export function ActivityTrends() {
           </p>
         </div>
       )}
-      <OutreachDetailDrawer period={openPeriod} gran={gran} channel={channel} owner={owner} scope={scope} onClose={() => setOpenPeriod(null)} />
+      <OutreachDetailDrawer period={openPeriod} gran={gran} channel={channel} owner={owner ?? ""} scope={scope} onClose={() => setOpenPeriod(null)} />
     </SectionCard>
   );
 }
@@ -193,18 +175,6 @@ function OutreachDetailDrawer({ period, gran, channel, owner, scope, onClose }: 
   );
 }
 
-function Toggle({ value, onChange, opts }: { value: string; onChange: (v: string) => void; opts: [string, string][] }) {
-  return (
-    <div className="flex items-center gap-0.5 rounded-md border border-border-strong p-0.5 text-[11.5px]">
-      {opts.map(([v, label]) => (
-        <button key={v} type="button" onClick={() => onChange(v)}
-          className={`rounded px-2.5 py-1 font-medium ${value === v ? "bg-ink text-surface" : "text-ink-3 hover:text-ink"}`}>
-          {label}
-        </button>
-      ))}
-    </div>
-  );
-}
 
 function Legend({ color, label }: { color: string; label: string }) {
   return (
