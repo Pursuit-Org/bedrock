@@ -1010,19 +1010,42 @@ export interface FunnelStage {
 
 export interface FunnelData {
   type: FunnelType;
+  /** `period` = counts are records that ENTERED each stage inside the window.
+   *  `snapshot` = counts are records currently sitting in each stage. */
+  mode: "period" | "snapshot";
+  period: { from: string; to: string } | null;
   stages: FunnelStage[];
   record_columns: { key: string; label: string }[];
 }
 
-export function useJobsFunnel(ftype: FunnelType, dealType?: string, segment?: string) {
+/** Window for period-flow mode. Omit it to get the all-time snapshot (the Exec
+ *  view, which has no period control, relies on that default). */
+export interface FunnelPeriod {
+  from: string;
+  to: string;
+}
+
+export function useJobsFunnel(
+  ftype: FunnelType,
+  dealType?: string,
+  segment?: string,
+  period?: FunnelPeriod,
+) {
   const dt = dealType && dealType !== "all" ? dealType : undefined;
   const seg = segment && segment !== "all" ? segment : undefined;
+  // The builders funnel has no stage-entry stamps, so a period would silently
+  // return zeros — the backend ignores it, and we keep it out of the key too.
+  const p0 = ftype === "builders" ? undefined : period;
   return useQuery<FunnelData>({
-    queryKey: ["jobs", "funnel", ftype, dt ?? "all", seg ?? "all"],
+    queryKey: ["jobs", "funnel", ftype, dt ?? "all", seg ?? "all", p0?.from ?? "", p0?.to ?? ""],
     queryFn: async () => {
       const p = new URLSearchParams();
       if (dt) p.set("deal_type", dt);
       if (seg) p.set("segment", seg);
+      if (p0?.from && p0?.to) {
+        p.set("period_from", p0.from);
+        p.set("period_to", p0.to);
+      }
       const qs = p.toString() ? `?${p}` : "";
       const { data } = await api.get<ApiResponse<FunnelData>>(`/api/jobs/funnel/${ftype}${qs}`);
       return data.data;

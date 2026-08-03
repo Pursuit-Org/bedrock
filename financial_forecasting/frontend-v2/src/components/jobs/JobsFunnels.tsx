@@ -8,6 +8,7 @@ import {
   type DealType,
   type FunnelType,
   type FunnelStage,
+  type FunnelPeriod,
   type FunnelMovement,
 } from "@/services/jobs";
 import { cn } from "@/lib/utils";
@@ -52,19 +53,35 @@ const DEAL_TYPE_FILTERS: { value: string; label: string }[] = [
   ),
 ];
 
-export function JobsFunnels({ builderSegment, only }: { builderSegment?: string; only?: FunnelType } = {}) {
+export function JobsFunnels({ builderSegment, only, period, periodLabel, dealType: dealTypeProp }: {
+  builderSegment?: string;
+  only?: FunnelType;
+  /** Pass a window to get period-flow counts (records that ENTERED each stage).
+   *  Omit it for the all-time snapshot — the Exec view has no period control. */
+  period?: FunnelPeriod;
+  periodLabel?: string;
+  /** Let the host page own the deal-type lens. When set, the funnel's own pill
+   *  row is hidden — otherwise the Pipeline page shows two deal-type controls
+   *  that can disagree with each other. */
+  dealType?: string;
+} = {}) {
   const [funnel, setFunnel] = useState<FunnelType>(only ?? "opportunities");
   // Deal-type lens. Defaults to ALL: defaulting to Full-Time silently scoped the
   // Contacts funnel to people at companies that happen to hold an FT
   // opportunity, so "Assigned" read 18 when 267 contacts are assigned.
-  const [dealType, setDealType] = useState<string>("all");
+  const [dealTypeOwn, setDealTypeOwn] = useState<string>("all");
+  const controlled = dealTypeProp != null;
+  const dealType = controlled ? dealTypeProp : dealTypeOwn;
+  const setDealType = setDealTypeOwn;
   // The builders funnel is the L3+ job-ready pool — scope it by the dashboard's
   // L3-cohort segment instead of deal type.
   const { data, isLoading } = useJobsFunnel(
     funnel,
     funnel === "builders" ? undefined : dealType,
     funnel === "builders" ? builderSegment : undefined,
+    period,
   );
+  const isPeriod = data?.mode === "period";
 
   return (
     <div className="flex flex-col gap-4">
@@ -103,7 +120,7 @@ export function JobsFunnels({ builderSegment, only }: { builderSegment?: string;
             funnel: that funnel is the L3+ pool scoped by cohort segment, and
             the lens never applied to it — showing selected-but-inert pills
             read as "PT shows full-time hires too" (TKT-129). */}
-        {funnel !== "builders" && funnel !== "prospects" && (
+        {funnel !== "builders" && funnel !== "prospects" && !controlled && (
         <div className="flex items-center gap-1.5">
           <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-4">Deal type</span>
           <div className="inline-flex flex-wrap rounded-full border border-border-strong bg-surface-2 p-0.5">
@@ -134,10 +151,12 @@ export function JobsFunnels({ builderSegment, only }: { builderSegment?: string;
         stages={data?.stages ?? []}
         recordColumns={data?.record_columns ?? []}
         isLoading={isLoading}
+        isPeriod={isPeriod}
+        periodLabel={periodLabel}
       />
 
       {/* Muted note for funnels without stage-change history */}
-      {funnel !== "opportunities" ? (
+      {funnel !== "opportunities" && !isPeriod ? (
         <p className="text-[11.5px] text-ink-3">
           Stage-change history isn't tracked for this funnel yet.
         </p>
@@ -153,13 +172,21 @@ function FunnelCard({
   stages,
   recordColumns,
   isLoading,
+  isPeriod,
+  periodLabel,
 }: {
   funnel: FunnelType;
   stages: FunnelStage[];
   recordColumns: { key: string; label: string }[];
   isLoading: boolean;
+  isPeriod: boolean;
+  periodLabel?: string;
 }) {
   const [expanded, setExpanded] = useState<string | null>(null);
+
+  const subtitle = isPeriod
+    ? `${FUNNEL_NOUN[funnel]} that entered each stage${periodLabel ? ` · ${periodLabel}` : ""}`
+    : FUNNEL_SUBTITLE[funnel];
 
   return (
     <section
@@ -175,7 +202,7 @@ function FunnelCard({
           {FUNNEL_TITLE[funnel]} Pipeline
         </div>
         <div className="mt-0.5 text-[11.5px] text-ink-3">
-          {FUNNEL_SUBTITLE[funnel]}
+          {subtitle}
         </div>
       </div>
 
@@ -199,90 +226,95 @@ function FunnelCard({
           No stages to display.
         </div>
       ) : (
-        <div className="flex flex-col">
-          {stages.map((stage) => {
+        <div className="flex flex-col px-4 py-3">
+          {stages.map((stage, i) => {
             const isExpanded = expanded === stage.key;
             const isWon = WON_STAGE_KEYS.has(stage.key);
             const barGradient = isWon
               ? "linear-gradient(90deg, #15b87f 0%, #3ad29a 100%)"
               : "linear-gradient(90deg, #6d5efc 0%, #8b7dff 100%)";
+            // Taper: the band narrows down the funnel with volume. Floored at 18%
+            // so a near-empty stage is still a readable, clickable target.
+            const width = Math.max(18, stage.pct_of_max);
+            const prev = i > 0 ? stages[i - 1] : null;
 
             return (
               <div key={stage.key}>
+                {/* Connector carrying the step-down rate from the stage above */}
+                {prev ? (
+                  <div className="flex items-center justify-center gap-1.5 py-1">
+                    <ChevronDown size={11} className="text-ink-4" />
+                    {prev.conversion_to_next != null ? (
+                      <span
+                        className={cn(
+                          "text-[11px] font-semibold tabular-nums",
+                          prev.conversion_to_next >= 100 ? "text-[var(--green)]" : "text-ink-3",
+                        )}
+                        title={
+                          isPeriod
+                            ? `${stage.count} entered ${stage.label} vs ${prev.count} that entered ${prev.label} in this period. Over 100% means more moved forward than arrived — a backlog being cleared, since they entered ${prev.label} earlier.`
+                            : `Conversion from ${prev.label} to ${stage.label}`
+                        }
+                      >
+                        {prev.conversion_to_next}%
+                      </span>
+                    ) : null}
+                  </div>
+                ) : null}
+
                 <button
                   type="button"
-                  onClick={() =>
-                    setExpanded(isExpanded ? null : stage.key)
+                  onClick={() => setExpanded(isExpanded ? null : stage.key)}
+                  className="group flex w-full flex-col items-center rounded-lg py-0.5 text-left transition-colors hover:bg-surface-2/40"
+                  title={
+                    isPeriod
+                      ? `${stage.count} ${FUNNEL_NOUN[funnel]} entered ${stage.label} in this period — click for who, when and owner`
+                      : `${stage.count} ${FUNNEL_NOUN[funnel]} currently in ${stage.label}`
                   }
-                  className="flex w-full items-center gap-3 border-t border-border-strong px-4 py-2 text-left transition-colors hover:bg-surface-2/40 first:border-t-0"
                 >
-                  <span className="flex-shrink-0 text-ink-4">
-                    {isExpanded ? (
-                      <ChevronDown size={12} />
-                    ) : (
-                      <ChevronRight size={12} />
-                    )}
-                  </span>
-
-                  <span
-                    className="w-[180px] flex-shrink-0 truncate text-[12.5px] font-semibold text-ink"
-                    title={stage.label}
-                  >
-                    {stage.label}
-                  </span>
-
                   <div
-                    className="h-3 flex-shrink-0 overflow-hidden rounded-full bg-surface-2"
-                    style={{ width: "30%" }}
-                    title={`${stage.count} ${FUNNEL_NOUN[funnel]} · ${Math.round(stage.pct_of_max)}% of largest stage`}
+                    className="relative flex h-12 items-center justify-center rounded-lg px-4 transition-[width] duration-500"
+                    style={{ width: `${width}%`, background: barGradient }}
                   >
-                    <div
-                      className="h-full rounded-full transition-[width] duration-500"
-                      style={{
-                        width: `${stage.pct_of_max}%`,
-                        background: barGradient,
-                      }}
-                    />
-                  </div>
-
-                  <div className="flex flex-1 items-center justify-end gap-2 text-[11.5px]">
-                    {stage.advanced_in > 0 ? (
-                      <span
-                        className="inline-flex items-center gap-0.5 rounded-full bg-[var(--green-soft)] px-1.5 py-0.5 text-[10.5px] font-semibold text-[var(--green)]"
-                        title={`${stage.advanced_in} advanced into this stage in the last 30d`}
-                      >
-                        <ArrowUp size={10} />
-                        {stage.advanced_in}
-                      </span>
-                    ) : null}
-                    {stage.regressed_in > 0 ? (
-                      <span
-                        className="inline-flex items-center gap-0.5 rounded-full bg-[var(--amber-soft)] px-1.5 py-0.5 text-[10.5px] font-semibold text-[var(--amber)]"
-                        title={`${stage.regressed_in} regressed into this stage in the last 30d`}
-                      >
-                        <ArrowDown size={10} />
-                        {stage.regressed_in}
-                      </span>
-                    ) : null}
-                    <span className="text-ink-2">
-                      <span className="font-mono font-semibold tabular-nums text-ink">
-                        {stage.count}
-                      </span>{" "}
-                      {FUNNEL_NOUN[funnel]}
+                    <span className="truncate text-[12.5px] font-semibold text-white">
+                      {stage.label}
                     </span>
-                    {stage.conversion_to_next != null ? (
-                      <span
-                        className="text-ink-3"
-                        title="Conversion rate to next stage"
-                      >
-                        → {stage.conversion_to_next}% to next
+                    <span className="ml-2.5 font-mono text-[14px] font-bold tabular-nums text-white">
+                      {stage.count}
+                    </span>
+
+                    {/* Movement chips + expand affordance ride outside the band
+                        so they never get clipped on a narrow stage. */}
+                    <span className="absolute left-full ml-2.5 flex items-center gap-1.5 whitespace-nowrap">
+                      {stage.advanced_in > 0 ? (
+                        <span
+                          className="inline-flex items-center gap-0.5 rounded-full bg-[var(--green-soft)] px-1.5 py-0.5 text-[10.5px] font-semibold text-[var(--green)]"
+                          title={`${stage.advanced_in} advanced into this stage in the last 30d`}
+                        >
+                          <ArrowUp size={10} />
+                          {stage.advanced_in}
+                        </span>
+                      ) : null}
+                      {stage.regressed_in > 0 ? (
+                        <span
+                          className="inline-flex items-center gap-0.5 rounded-full bg-[var(--amber-soft)] px-1.5 py-0.5 text-[10.5px] font-semibold text-[var(--amber)]"
+                          title={`${stage.regressed_in} regressed into this stage in the last 30d`}
+                        >
+                          <ArrowDown size={10} />
+                          {stage.regressed_in}
+                        </span>
+                      ) : null}
+                      <span className="text-ink-4 opacity-0 transition-opacity group-hover:opacity-100">
+                        {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                       </span>
-                    ) : null}
+                    </span>
                   </div>
                 </button>
 
                 {isExpanded ? (
-                  <StageDetail stage={stage} recordColumns={recordColumns} />
+                  <div className="mt-2 overflow-hidden rounded-lg border border-border-strong">
+                    <StageDetail stage={stage} recordColumns={recordColumns} isPeriod={isPeriod} />
+                  </div>
                 ) : null}
               </div>
             );
@@ -298,16 +330,26 @@ function FunnelCard({
 function StageDetail({
   stage,
   recordColumns,
+  isPeriod,
 }: {
   stage: FunnelStage;
   recordColumns: { key: string; label: string }[];
+  isPeriod: boolean;
 }) {
   // Only show movement that flowed INTO this stage, to keep it focused.
   const inboundMovement = (stage.movement ?? []).filter((m) => m.flow === "in");
 
   return (
-    <div className="flex flex-col gap-3 border-t border-border-strong bg-surface-2/30 px-5 py-3">
-      <StageMovement movement={inboundMovement} />
+    <div className="flex flex-col gap-3 bg-surface-2/30 px-5 py-3">
+      {/* In period mode the records ARE the movement — every row entered this
+          stage inside the window — so a separate rolling-30d list would
+          contradict the counts above it. */}
+      {isPeriod ? null : <StageMovement movement={inboundMovement} />}
+      {isPeriod ? (
+        <div className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
+          Entered this stage in the period
+        </div>
+      ) : null}
       <StageRecordsTable stage={stage} recordColumns={recordColumns} />
     </div>
   );
@@ -449,6 +491,19 @@ function formatCell(key: string, value: string | null | undefined): string {
   if (value == null || value === "") return "—";
   if (key === "deal_type") {
     return DEAL_TYPE_LABELS[value as DealType] ?? value;
+  }
+  // Stage-entry stamp: the date is what the team scans for, with the relative
+  // age after it so "when" reads without doing arithmetic.
+  if (key === "entered_at") {
+    const t = new Date(value).getTime();
+    if (Number.isNaN(t)) return value;
+    const d = new Date(t);
+    const day = d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    return `${day} · ${formatDistanceToNow(t, { addSuffix: true })}`;
+  }
+  // Owner / assigned-by are emails; the local part is enough at this density.
+  if ((key === "owner" || key === "assigned_by") && value.includes("@")) {
+    return value.split("@")[0];
   }
   return value;
 }

@@ -2,15 +2,19 @@
  * Jobs · Opportunities — Weekly Overview.
  *
  * The Thursday-meeting agenda, top to bottom: summary cards (incl. the
- * won-with-open-tasks stage-gate check), recent activity (the week's
- * narrative), the per-owner walkthrough (P1s with next task, stalled with
- * why — rows manage inline and expand to the full DealExpandPanel), then
- * time-in-stage aging and the switchable set distribution.
+ * won-with-open-tasks stage-gate check, which sits left of the closed
+ * won/lost outcome boxes), the period-scoped opportunities funnel,
+ * time-in-stage aging + the switchable set distribution, the two
+ * concentration heatmaps, recent activity (the week's narrative), then the
+ * per-owner walkthrough (P1s with next task, stalled with why — rows manage
+ * inline and expand to the full DealExpandPanel).
  *
  * "Time in pipeline" = time in the CURRENT stage (from jobs_stage_history).
  * Backed by /api/jobs/opportunities/overview (+ /opportunities for the
- * managed rows). Heatmaps + standalone needs-attention were removed in the
- * 2026-07-30 exec review — restore from git if ever needed.
+ * managed rows). The standalone needs-attention panel was removed in the
+ * 2026-07-30 exec review; the heatmaps were removed then too and restored
+ * 2026-08-03 — Priority×Time now degrades to an empty-state card rather than
+ * rendering a blank grid, which was the original objection to it.
  */
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
@@ -31,6 +35,7 @@ import {
   type OppDrillRow,
   type OppNeedsRow,
   type OppActivityEvent,
+  type OppHeatmap,
 } from "@/services/jobs";
 import { useAllJobsTasks } from "@/services/jobsTasks";
 import { useSessionState } from "@/lib/useSessionState";
@@ -305,6 +310,12 @@ export function JobsOpportunitiesOverview() {
         <SummaryCard tone="amber" label="Stalled" value={s?.stalled_6wk} isLoading={isLoading}
           sub="Open opportunity 6+ weeks"
           onClick={() => setDrill({ title: "Stalled 6+ weeks", note: "Open, created more than 6 weeks ago", rows: data?.drills.stalled ?? [] })} />
+        {/* Stage-gate check: won on the board but the follow-through (e.g. the
+            signed contract task) is still open — "signed contract = closed".
+            Sits left of the outcome boxes: it's an action, they're a result. */}
+        <SummaryCard tone="red" label="Won, open tasks" value={wonOpenTasks.length} isLoading={isLoading}
+          sub={wonOpenTasks.slice(0, 2).map((o) => o.account_name).join(" · ") || "all buttoned up"}
+          onClick={() => setDrill({ title: "Won with open tasks", note: "Closed won but follow-through still open", rows: asDrillRows(wonOpenTasks) })} />
         {/* Stacked outcome boxes for the week — Closed won (the goal,
             subtly highlighted) over Closed lost (context to understand, not a red flag). */}
         <div className="flex flex-col gap-4">
@@ -313,23 +324,15 @@ export function JobsOpportunitiesOverview() {
           <OutcomeBox tone="ink" label="Closed lost" value={s?.closed_lost} sub={rangeLabel} isLoading={isLoading}
             onClick={() => setDrill({ title: "Closed lost", note: rangeLabel, rows: data?.drills.lost ?? [] })} />
         </div>
-        {/* Stage-gate check: won on the board but the follow-through (e.g. the
-            signed contract task) is still open — "signed contract = closed". */}
-        <SummaryCard tone="red" label="Won, open tasks" value={wonOpenTasks.length} isLoading={isLoading}
-          sub={wonOpenTasks.slice(0, 2).map((o) => o.account_name).join(" · ") || "all buttoned up"}
-          onClick={() => setDrill({ title: "Won with open tasks", note: "Closed won but follow-through still open", rows: asDrillRows(wonOpenTasks) })} />
       </div>
 
-      {/* ── Pipeline funnel (same visual as Exec view) ────────────────── */}
-      <JobsFunnels only="opportunities" />
-
-      {/* ── Recent activity — the week's narrative, promoted ──────────── */}
-      <Panel
-        title="Recent activity"
-        desc={`Added, moved, won or lost between ${rangeLabel} — newest first`}
-      >
-        <RecentActivity events={orderedActivity} isLoading={isLoading} nameOf={nameOf} />
-      </Panel>
+      {/* ── Pipeline funnel — period-scoped, same visual as Outreach ───── */}
+      <JobsFunnels
+        only="opportunities"
+        period={{ from: fmtDateInput(weekStart), to: fmtDateInput(weekEnd) }}
+        periodLabel={rangeLabel}
+        dealType={dealType}
+      />
 
       {/* ── Aging + Breakdown ─────────────────────────────────────────── */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
@@ -352,6 +355,34 @@ export function JobsOpportunitiesOverview() {
         </Panel>
       </div>
 
+      {/* ── Concentration heatmaps ────────────────────────────────────────
+          Where the active set sits, cross-tabbed against how long it's been
+          sitting. Dark cells on the right = piling up; dark on the left =
+          healthy flow. Restored 2026-08-03 at Kwame's request — the earlier
+          removal's "Priority renders empty" objection is handled by the
+          empty-state card below. */}
+      <Panel title="Priority × Time in Pipeline">
+        {data && !data.heatmaps.priority.populated ? (
+          <EmptyPriorityCard unset={data.heatmaps.priority.unset ?? 0} />
+        ) : (
+          <Heatmap heatmap={data?.heatmaps.priority} buckets={data?.heatmaps.buckets ?? []}
+            rowHeader="Priority" isLoading={isLoading} />
+        )}
+      </Panel>
+
+      <Panel title="Stage × Time in Pipeline">
+        <Heatmap heatmap={data?.heatmaps.stage} buckets={data?.heatmaps.buckets ?? []}
+          rowHeader="Stage" isLoading={isLoading} />
+      </Panel>
+
+      {/* ── Recent activity — the week's narrative ────────────────────── */}
+      <Panel
+        title="Recent activity"
+        desc={`Added, moved, won or lost between ${rangeLabel} — newest first`}
+      >
+        <RecentActivity events={orderedActivity} isLoading={isLoading} nameOf={nameOf} />
+      </Panel>
+
       {/* ── Pipeline details (grouped by priority; owner view = the walkthrough) ── */}
       <Panel
         title="Pipeline details"
@@ -365,11 +396,6 @@ export function JobsOpportunitiesOverview() {
 
       {/* Needs-attention panel removed 2026-07-30 — the walkthrough's stalled
           groups carry the same rows, grouped by owner and manageable. */}
-
-      {/* Heatmaps removed 2026-07-30 (exec review): Priority×Time rendered
-          empty until priorities are tagged, and Stage×Time's column totals are
-          the aging bars above. Restore from git if concentration analysis is
-          ever needed again. */}
 
       {drill && <OppDrill title={drill.title} note={drill.note} rows={drill.rows} nameOf={nameOf} onClose={() => setDrill(null)} />}
       {placementModalDeal && <PlacementsModal deal={placementModalDeal} onClose={() => setPlacementModalDeal(null)} />}
@@ -879,6 +905,93 @@ const ACTIVITY_META: Record<OppActivityEvent["type"], { label: string; color: st
   lost:    { label: "Lost",    color: "var(--ink-3)",  icon: <XCircle size={11} /> },
   stalled: { label: "Stalled", color: "var(--amber)",  icon: <Clock size={11} /> },
 };
+
+// ── Concentration heatmaps ───────────────────────────────────────────────────
+// Colour encodes VOLUME only — a blue that deepens with the count. No red
+// "concern" shading: the gradient is the single signal, so a dark cell in an
+// older column is the whole story without a second visual language on top.
+
+function heatBlue(n: number, max: number): { background: string; color: string } {
+  if (n <= 0) return { background: "var(--surface-2)", color: "var(--ink-4)" };
+  const t = max > 0 ? n / max : 0;
+  const alpha = 0.16 + 0.84 * t;
+  return {
+    background: `rgba(47, 127, 224, ${alpha.toFixed(2)})`,  // --sky base #2F7FE0
+    color: alpha > 0.5 ? "#ffffff" : "var(--ink)",
+  };
+}
+
+function EmptyPriorityCard({ unset }: { unset: number }) {
+  return (
+    <div className="rounded-lg border border-dashed border-border-strong px-4 py-6 text-center">
+      <p className="text-[12.5px] font-semibold text-ink">
+        No priority set on any of the {unset} active opps yet.
+      </p>
+      <p className="mt-1 text-[11.5px] text-ink-3">
+        This heatmap lights up automatically as the team sets priority on opportunities.
+      </p>
+    </div>
+  );
+}
+
+function Heatmap({ heatmap, buckets, rowHeader, isLoading }: {
+  heatmap: OppHeatmap | undefined;
+  buckets: { key: string; label: string }[];
+  rowHeader: string;
+  isLoading: boolean;
+}) {
+  if (isLoading) return <div className="h-40 animate-pulse rounded-lg bg-surface-2" />;
+  if (!heatmap || heatmap.rows.length === 0)
+    return <div className="py-6 text-center text-[12px] text-ink-4">No opportunities to chart.</div>;
+
+  const max = Math.max(1, ...heatmap.rows.flatMap((r) => r.cells));
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full min-w-[560px] border-collapse">
+        <thead>
+          <tr>
+            <th className="px-2 pb-2.5 text-left text-[10.5px] font-semibold uppercase tracking-wider text-ink-4">{rowHeader}</th>
+            {buckets.map((b) => (
+              <th key={b.key} className="px-1.5 pb-2.5 text-center text-[10.5px] font-semibold uppercase tracking-wider text-ink-4">{b.label}</th>
+            ))}
+            <th className="px-2 pb-2.5 text-right text-[10.5px] font-semibold uppercase tracking-wider text-ink-4">Total</th>
+          </tr>
+        </thead>
+        <tbody>
+          {heatmap.rows.map((row) => (
+            <tr key={row.key}>
+              <td className="whitespace-nowrap py-1 pr-2 text-[12.5px] font-semibold text-ink">{row.label}</td>
+              {row.cells.map((n, i) => {
+                const st = heatBlue(n, max);
+                return (
+                  <td key={i} className="p-1">
+                    <div className="flex h-11 items-center justify-center rounded-lg text-[14px] font-bold"
+                      style={{ background: st.background, color: st.color }}>
+                      {n}
+                    </div>
+                  </td>
+                );
+              })}
+              <td className="py-1 pl-2 text-right text-[12px] font-semibold tabular-nums text-ink-3">{row.total}</td>
+            </tr>
+          ))}
+          <tr>
+            <td className="border-t border-border-strong pt-2.5 text-[11.5px] font-semibold text-ink-4">Column total</td>
+            {heatmap.col_totals.map((n, i) => (
+              <td key={i} className="border-t border-border-strong pt-2.5 text-center text-[11.5px] font-semibold tabular-nums text-ink-4">{n}</td>
+            ))}
+            <td className="border-t border-border-strong" />
+          </tr>
+        </tbody>
+      </table>
+      <div className="mt-2.5 flex items-center gap-1.5 text-[11px] text-ink-4">
+        <span className="h-2.5 w-8 rounded-sm"
+          style={{ background: "linear-gradient(90deg, rgba(47,127,224,0.16), rgba(47,127,224,1))" }} />
+        fewer → more opportunities
+      </div>
+    </div>
+  );
+}
 
 function RecentActivity({ events, isLoading, nameOf }: { events: OppActivityEvent[]; isLoading: boolean; nameOf: (e: string | null) => string }) {
   const [showAll, setShowAll] = useState(false);

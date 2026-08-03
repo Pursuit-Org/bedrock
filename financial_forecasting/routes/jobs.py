@@ -1651,25 +1651,59 @@ async def builder_segments(user=Depends(require_auth), conn=Depends(get_db)):
     }}
 
 
+# Stages that must not advertise a conversion rate into whatever follows them in
+# `stage_order`: the next row isn't a forward step. On Hold is a parking state and
+# Converted is the end of the contact funnel.
+_NO_CONVERSION_FROM = {"converted_to_opportunity", "on_hold", "closed_won"}
+
+
 @router.get("/funnel/{ftype}")
 async def get_funnel(
     ftype: str,
     deal_type: Optional[str] = Query(None),
     segment: Optional[str] = Query(None),
+    period_from: Optional[str] = Query(None, description="YYYY-MM-DD, inclusive"),
+    period_to: Optional[str] = Query(None, description="YYYY-MM-DD, inclusive"),
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
     """Unified funnel for the three pipelines: opportunities | prospects | builders.
 
-    Returns ordered stages with counts, conversion-to-next, and the records in
-    each stage (for inline expand). Opportunities also include recent
-    progression (advanced/regressed) from bedrock.jobs_stage_history.
+    Two modes:
+
+    * **Snapshot** (no period) — stages carry how many records SIT in them right
+      now, and conversion is the all-time cohort rate. This is what the Exec view
+      uses; it has no period control.
+    * **Period flow** (`period_from` + `period_to`) — stages carry how many
+      records ENTERED them inside the window, and conversion is
+      `next stage entries / this stage entries`. Used by Outreach and Pipeline,
+      which both have a period picker.
+
+    Period flow can legitimately exceed 100%: more contacts can enter Initial
+    Outreach in a week than were assigned that same week, because they were
+    assigned earlier. That's backlog being cleared, so the rate is reported as
+    measured rather than clamped.
 
     `deal_type` (ft | pt_contract | ...) scopes every funnel to that lens:
     opportunities by their own deal_type; prospects to contacts at companies
     that have a deal of that type; builders to applications on such opps.
     """
     dt = deal_type if deal_type and deal_type != "all" else None
+
+    # Period mode is opt-in and only meaningful where we stamp stage entry.
+    period: Optional[tuple] = None
+    if period_from and period_to and ftype in ("opportunities", "prospects"):
+        try:
+            p_from = datetime.strptime(period_from, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            # Inclusive end date → exclusive upper bound at the next midnight, so
+            # a record stamped 17:04 on the last day still counts.
+            p_to = (datetime.strptime(period_to, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                    + timedelta(days=1))
+        except ValueError:
+            raise HTTPException(400, "period_from / period_to must be YYYY-MM-DD")
+        if p_to <= p_from:
+            raise HTTPException(400, "period_to must not precede period_from")
+        period = (p_from, p_to)
     movement_by_stage: dict = {}  # stage_key -> list of recent transitions touching it
 
     if ftype == "opportunities":
@@ -1821,8 +1855,143 @@ async def get_funnel(
     else:
         raise HTTPException(404, f"Unknown funnel: {ftype}")
 
+    # ── Period flow ────────────────────────────────────────────────────────
+    # Swap "how many sit in this stage" for "how many ENTERED it in the window".
+    # Stage entry is stamped, so this is read off timestamps rather than inferred.
+    period_entries: Optional[dict] = None
+    if period is not None:
+        p_from, p_to = period
+        period_entries = {k: [] for k, _ in stage_order}
+
+        if ftype == "prospects":
+            company_lens = """
+                AND ($3::text IS NULL OR lower(c.current_company) IN (
+                      SELECT lower(account_name) FROM bedrock.jobs_opportunity
+                      WHERE deleted_at IS NULL AND deal_type = $3 AND account_name IS NOT NULL))
+            """
+            # The three managed stages each have their own entry stamp on the
+            # membership row, which is more reliable than the history table
+            # (history only goes back to when we started recording it).
+            # Two sources, because neither alone is complete: the membership row
+            # stamps entry for the three managed stages, and the history table
+            # records every transition but only since we started writing it.
+            # Keyed by (contact, stage) so a contact with both isn't counted twice;
+            # the stamp wins because it's the purpose-built field.
+            seen: dict = {}
+
+            prows = await conn.fetch(f"""
+                SELECT c.contact_id, c.full_name AS name, c.current_company AS company,
+                       m.owner_email AS owner, m.assigned_by,
+                       m.assigned_at, m.first_outreach_at, m.converted_at
+                FROM bedrock.jobs_contact_membership m
+                JOIN public.contacts c ON c.contact_id = m.contact_id
+                WHERE m.stage <> 'not_a_fit' AND $1::timestamptz IS NOT NULL
+                  AND $2::timestamptz IS NOT NULL
+                  {company_lens}
+            """, p_from, p_to, dt)
+            stamp_for = {
+                "assigned": "assigned_at",
+                "initial_outreach": "first_outreach_at",
+                "converted_to_opportunity": "converted_at",
+            }
+            for r in prows:
+                for stage_key, col in stamp_for.items():
+                    ts = r[col]
+                    if ts is not None and p_from <= ts < p_to:
+                        seen[(r["contact_id"], stage_key)] = {
+                            "name": r["name"], "company": r["company"],
+                            "owner": r["owner"], "assigned_by": r["assigned_by"],
+                            "entered_at": ts.isoformat(),
+                        }
+
+            hrows = await conn.fetch(f"""
+                SELECT DISTINCT ON (h.contact_id, h.to_stage)
+                       h.contact_id, h.to_stage, h.changed_at, h.changed_by,
+                       c.full_name AS name, c.current_company AS company,
+                       m.owner_email AS owner
+                FROM bedrock.jobs_membership_stage_history h
+                JOIN public.contacts c ON c.contact_id = h.contact_id
+                LEFT JOIN bedrock.jobs_contact_membership m ON m.contact_id = h.contact_id
+                WHERE h.changed_at >= $1 AND h.changed_at < $2
+                  {company_lens}
+                ORDER BY h.contact_id, h.to_stage, h.changed_at
+            """, p_from, p_to, dt)
+            for r in hrows:
+                key = (r["contact_id"], r["to_stage"])
+                if r["to_stage"] not in period_entries or key in seen:
+                    continue
+                seen[key] = {
+                    "name": r["name"], "company": r["company"], "owner": r["owner"],
+                    "assigned_by": r["changed_by"],
+                    "entered_at": r["changed_at"].isoformat() if r["changed_at"] else None,
+                }
+
+            for (_cid, stage_key), rec in seen.items():
+                period_entries[stage_key].append(rec)
+            record_columns = [
+                {"key": "name", "label": "Contact"},
+                {"key": "company", "label": "Company"},
+                {"key": "owner", "label": "Owner"},
+                {"key": "assigned_by", "label": "Assigned by"},
+                {"key": "entered_at", "label": "Entered"},
+            ]
+
+        else:  # opportunities
+            orows = await conn.fetch("""
+                WITH hist AS (
+                    SELECT DISTINCT ON (h.opportunity_id, h.to_stage)
+                           h.opportunity_id AS oid, h.to_stage AS stage,
+                           h.changed_at AS entered_at, h.changed_by
+                    FROM bedrock.jobs_stage_history h
+                    JOIN bedrock.jobs_opportunity o ON o.id = h.opportunity_id
+                    WHERE o.deleted_at IS NULL
+                      AND h.changed_at >= $1 AND h.changed_at < $2
+                      AND ($3::text IS NULL OR o.deal_type = $3)
+                    ORDER BY h.opportunity_id, h.to_stage, h.changed_at
+                ),
+                created AS (
+                    -- An opp created straight into a stage never gets a history
+                    -- row, so without this it would vanish from the funnel.
+                    SELECT o.id AS oid, o.stage, o.created_at AS entered_at,
+                           NULL::text AS changed_by
+                    FROM bedrock.jobs_opportunity o
+                    WHERE o.deleted_at IS NULL
+                      AND o.created_at >= $1 AND o.created_at < $2
+                      AND ($3::text IS NULL OR o.deal_type = $3)
+                      AND NOT EXISTS (SELECT 1 FROM bedrock.jobs_stage_history h2
+                                      WHERE h2.opportunity_id = o.id)
+                )
+                SELECT e.stage, e.entered_at, e.changed_by, o.account_name AS name,
+                       o.deal_type, o.owner_email AS owner
+                FROM (SELECT * FROM hist UNION ALL SELECT * FROM created) e
+                JOIN bedrock.jobs_opportunity o ON o.id = e.oid
+                ORDER BY e.entered_at DESC
+            """, p_from, p_to, dt)
+            for r in orows:
+                if r["stage"] in period_entries:
+                    period_entries[r["stage"]].append({
+                        "name": r["name"], "deal_type": r["deal_type"],
+                        "owner": r["owner"], "assigned_by": r["changed_by"],
+                        "entered_at": r["entered_at"].isoformat() if r["entered_at"] else None,
+                    })
+            record_columns = [
+                {"key": "name", "label": "Company"},
+                {"key": "deal_type", "label": "Type"},
+                {"key": "owner", "label": "Owner"},
+                {"key": "assigned_by", "label": "Moved by"},
+                {"key": "entered_at", "label": "Entered"},
+            ]
+
+        for k in period_entries:
+            period_entries[k].sort(key=lambda rec: rec["entered_at"] or "", reverse=True)
+
     stages = []
     cohort_conv = locals().get("cohort_conv") or {}
+    if period_entries is not None:
+        # Period mode supersedes the snapshot entirely: counts, records and
+        # conversion all come from entries, so the cohort rate must not leak in.
+        by_stage = period_entries
+        cohort_conv = {}
     counts = [len(by_stage.get(k, [])) for k, _ in stage_order]
     max_count = max(counts) if counts else 1
     for i, (k, label) in enumerate(stage_order):
@@ -1830,8 +1999,14 @@ async def get_funnel(
         cnt = len(recs)
         nxt = counts[i + 1] if i + 1 < len(counts) else None
         conv = round(100 * nxt / cnt) if (nxt is not None and cnt > 0) else None
-        # Contacts funnel: use the cohort rate, and never show a >100% ratio.
-        if k in cohort_conv:
+        if period_entries is not None:
+            # Period flow: report the rate as measured, including >100% (backlog
+            # cleared). On Hold is a parking state, not the step after Converted,
+            # so neither it nor Converted advertises a rate into it.
+            if k in _NO_CONVERSION_FROM:
+                conv = None
+        elif k in cohort_conv:
+            # Contacts funnel snapshot: use the cohort rate.
             conv = cohort_conv[k]
         elif conv is not None and conv > 100:
             conv = None
@@ -1846,7 +2021,13 @@ async def get_funnel(
             "regressed_in": sum(1 for m in mv if m["flow"] == "in" and m["direction"] == "regressed"),
         })
 
-    return {"success": True, "data": {"type": ftype, "stages": stages, "record_columns": record_columns}}
+    return {"success": True, "data": {
+        "type": ftype,
+        "mode": "period" if period_entries is not None else "snapshot",
+        "period": ({"from": period_from, "to": period_to} if period_entries is not None else None),
+        "stages": stages,
+        "record_columns": record_columns,
+    }}
 
 
 # ── Opportunities weekly overview (Thursday pipeline meeting) ──────────────────

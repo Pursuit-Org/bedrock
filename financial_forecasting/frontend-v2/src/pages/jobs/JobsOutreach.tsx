@@ -384,15 +384,20 @@ function ThisWeekBlock({ nameOf, activityPipeline, granularity, scope, owner, ra
 }
 
 /** Hygiene: the accountability strip + the assigned-but-no-prospect table. */
-function HygieneBlock({ nameOf, staffEmails }: { nameOf: (email: string) => string; staffEmails: Set<string> }) {
+/** Accounts a jobs-team member owns with nobody flagged into the prospect list.
+ *  Shared by the Requiring Attention card (count) and its detail table, so the
+ *  headline number and the rows can never disagree. */
+function useAwaitingActivation(staffEmails: Set<string>) {
   const { data: accounts = [] } = useJobsAccounts(undefined, "all");
-  const [showAll, setShowAll] = useState(false);
-
-  // Accounts someone on the jobs team owns, with nobody in the prospect list.
-  const noProspect = useMemo(() => accounts
+  return useMemo(() => accounts
     .filter((a) => a.owner_email && staffEmails.has(a.owner_email.toLowerCase()) && a.prospect_count === 0)
     .sort((a, b) => (a.owner_email ?? "").localeCompare(b.owner_email ?? "") || a.account.localeCompare(b.account)),
     [accounts, staffEmails]);
+}
+
+function HygieneBlock({ nameOf, staffEmails }: { nameOf: (email: string) => string; staffEmails: Set<string> }) {
+  const noProspect = useAwaitingActivation(staffEmails);
+  const [showAll, setShowAll] = useState(false);
 
   // Two different problems: contacts exist but nobody's been flagged into the
   // pipeline (just activate one) vs genuinely nobody on file (go find someone).
@@ -400,8 +405,10 @@ function HygieneBlock({ nameOf, staffEmails }: { nameOf: (email: string) => stri
   const shown = showAll ? noProspect : noProspect.slice(0, 10);
   return (
     <div className="flex flex-col gap-3">
-      <SectionHead title="Target accounts awaiting activation"
-        note={`${noProspect.length} owned accounts with nobody in the prospect list — ${withPeople} have contacts on file to flag, ${noProspect.length - withPeople} have nobody yet`} />
+      <p className="text-[11.5px] text-ink-3">
+        {noProspect.length} owned accounts with nobody in the prospect list — {withPeople} have contacts on file to flag,{" "}
+        {noProspect.length - withPeople} have nobody yet
+      </p>
       {noProspect.length > 0 && (
         <div className="overflow-hidden rounded-lg border border-border-strong bg-surface">
           <div className="bg-amber-soft px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-amber">
@@ -604,6 +611,159 @@ function StuckContactsPanel({ owner }: { owner?: string }) {
 }
 
 // ── Page ──────────────────────────────────────────────────────────────────────
+// ── Requiring attention ─────────────────────────────────────────────────────
+// One place for the three queues that need a human: replies awaiting a
+// decision, contacts stuck in outreach, accounts with nobody flagged. Each card
+// is the headline; clicking it opens the same detail table that used to sit in
+// its own full-width section.
+
+type AttentionKey = "replied" | "stuck" | "activation";
+
+const DAY_MS = 86_400_000;
+
+function AttentionCard({ label, value, sub, tone, active, onClick }: {
+  label: string;
+  value: number | undefined;
+  sub: React.ReactNode;
+  tone: "red" | "amber" | "accent";
+  active: boolean;
+  onClick: () => void;
+}) {
+  const toneCls = {
+    red: "text-red",
+    amber: "text-amber",
+    accent: "text-accent",
+  }[tone];
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-expanded={active}
+      className={cn(
+        "flex flex-col items-start gap-1 rounded-xl border bg-surface px-4 py-3 text-left transition-colors",
+        active
+          ? "border-accent ring-1 ring-accent/30"
+          : "border-border-strong hover:bg-surface-2/50",
+      )}
+    >
+      <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-4">{label}</span>
+      <span className={cn("text-[26px] font-semibold leading-none tabular-nums", toneCls)}>
+        {value ?? "—"}
+      </span>
+      <span className="text-[11px] leading-snug text-ink-3">{sub}</span>
+      <span className="mt-0.5 inline-flex items-center gap-0.5 text-[10.5px] font-semibold text-accent">
+        {active ? "Hide detail" : "See detail"}
+        {active ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+      </span>
+    </button>
+  );
+}
+
+function RequiringAttention({ owner, nameOf, staffEmails }: {
+  owner?: string;
+  nameOf: (email: string) => string;
+  staffEmails: Set<string>;
+}) {
+  const [open, setOpen] = useState<AttentionKey | null>(null);
+  const { data: replied = [] } = useRespondedContacts(owner);
+  const { data: stuck = [] } = useStuckContacts(3, owner);
+  const awaiting = useAwaitingActivation(staffEmails);
+
+  // Trend on replies: last 7 days vs the 7 before, off each row's last_reply.
+  // There's no prior-period endpoint, so this is derived from the same payload
+  // rather than being a second fetch that could disagree with the count.
+  const replyTrend = useMemo(() => {
+    const now = Date.now();
+    let recent = 0;
+    let prior = 0;
+    for (const r of replied) {
+      if (!r.last_reply) continue;
+      const age = now - new Date(r.last_reply).getTime();
+      if (age < 7 * DAY_MS) recent += 1;
+      else if (age < 14 * DAY_MS) prior += 1;
+    }
+    return { recent, prior };
+  }, [replied]);
+
+  const stuckStats = useMemo(() => {
+    if (stuck.length === 0) return null;
+    const touches = stuck.reduce((n, s) => n + (s.touches ?? 0), 0) / stuck.length;
+    const withTouch = stuck.filter((s) => s.last_touch);
+    const days = withTouch.length
+      ? withTouch.reduce((n, s) => n + (Date.now() - new Date(s.last_touch as string).getTime()), 0)
+        / withTouch.length / DAY_MS
+      : null;
+    return { touches, days };
+  }, [stuck]);
+
+  const withPeople = awaiting.filter((a) => (a.contact_count ?? 0) > 0).length;
+
+  return (
+    <div className="flex flex-col gap-3">
+      <SectionHead title="Requiring attention"
+        note="three queues that need a person — click a card for the detail" />
+
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <AttentionCard
+          label="Replies needing a decision"
+          value={replied.length}
+          tone="red"
+          active={open === "replied"}
+          onClick={() => setOpen(open === "replied" ? null : "replied")}
+          sub={
+            <>
+              {replyTrend.recent} in the last 7d
+              {replyTrend.prior > 0 ? (
+                <>
+                  {" · "}
+                  <span className={replyTrend.recent >= replyTrend.prior ? "text-red" : "text-[var(--green)]"}>
+                    {replyTrend.recent >= replyTrend.prior ? "▲" : "▼"}{" "}
+                    {Math.abs(replyTrend.recent - replyTrend.prior)}
+                  </span>{" "}
+                  vs prior 7d
+                </>
+              ) : null}
+            </>
+          }
+        />
+        <AttentionCard
+          label="Stuck in initial outreach"
+          value={stuck.length}
+          tone="amber"
+          active={open === "stuck"}
+          onClick={() => setOpen(open === "stuck" ? null : "stuck")}
+          sub={
+            stuckStats
+              ? `avg ${stuckStats.touches.toFixed(1)} touches${
+                  stuckStats.days != null ? ` · last touch ${Math.round(stuckStats.days)}d ago` : ""
+                }`
+              : "nobody stuck — 3+ touches, no reply"
+          }
+        />
+        <AttentionCard
+          label="Accounts awaiting activation"
+          value={awaiting.length}
+          tone="accent"
+          active={open === "activation"}
+          onClick={() => setOpen(open === "activation" ? null : "activation")}
+          sub={`${withPeople} have contacts on file to flag`}
+        />
+      </div>
+
+      {open === "replied" ? <RespondedPanel owner={owner} /> : null}
+      {open === "stuck" ? (
+        <div className="flex flex-col gap-2">
+          <p className="text-[11.5px] text-ink-3">
+            3+ touches, no reply — time to work a different contact at the account
+          </p>
+          <StuckContactsPanel owner={owner} />
+        </div>
+      ) : null}
+      {open === "activation" ? <HygieneBlock nameOf={nameOf} staffEmails={staffEmails} /> : null}
+    </div>
+  );
+}
+
 export function JobsOutreach() {
   // Fixed internals now that the pill bar is gone: the jobs team, weekly buckets.
   const granularity: OutreachGranularity = "week";
@@ -652,30 +812,20 @@ export function JobsOutreach() {
       <DailyDigestBlock />
 
       {/* ── Monday agenda: contacts funnel → this week (+ activity pipeline)
-             → stuck → target accounts → campaigns → scorecard → targeting ── */}
-      <JobsFunnels only="prospects" />
+             → requiring attention → campaigns → scorecard → targeting.
+             Activity over time now sits below the sender-segment divider. ── */}
+      <JobsFunnels only="prospects" period={range} periodLabel={rangeLabel || undefined} />
 
       <ThisWeekBlock nameOf={nameOf} activityPipeline={sc?.activity_pipeline}
         granularity={granularity} scope={scope} owner={owner || undefined} range={range}
         periodLabel={rangeLabel || undefined} />
 
-      <RespondedPanel owner={owner || undefined} />
-
-      <div className="flex flex-col gap-3">
-        <SectionHead title="Stuck in initial outreach"
-          note="3+ touches, no reply — time to work a different contact at the account" />
-        <StuckContactsPanel owner={owner || undefined} />
-      </div>
-
-      <HygieneBlock nameOf={nameOf} staffEmails={staffEmails} />
+      <RequiringAttention owner={owner || undefined} nameOf={nameOf} staffEmails={staffEmails} />
 
       <div className="flex flex-col gap-3">
         <SectionHead title="Campaigns · coverage" note="the warm list, by source" />
         <TagCampaigns />
       </div>
-
-      <SectionHead title="Activity over time" note={rangeLabel ? `${rangeLabel} vs. prior period` : undefined} />
-      <ActivityTrends />
 
       {isError && <div className="rounded-lg border border-red-soft bg-red-soft px-4 py-3 text-[13px] text-red">Couldn't load the scorecard. Try again in a moment.</div>}
       {isLoading && !sc && (
@@ -695,16 +845,15 @@ export function JobsOutreach() {
             <span className="text-[11px] font-bold uppercase tracking-[.12em] text-ink-3">Sender segments and accounts</span>
             <div className="h-px flex-1 bg-border-strong" />
           </div>
-
-
-
-
-
         </>
       )}
 
-
       <TargetingPanel granularity={granularity} scope={scope} owner={owner || undefined} range={range} />
+
+      {/* Activity over time reads as supporting detail behind the sender
+          segments, not as a headline — so it sits at the bottom. */}
+      <SectionHead title="Activity over time" note={rangeLabel ? `${rangeLabel} vs. prior period` : undefined} />
+      <ActivityTrends />
 
     </div>
   );
