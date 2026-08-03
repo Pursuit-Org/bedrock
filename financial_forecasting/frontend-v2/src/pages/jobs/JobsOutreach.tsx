@@ -20,6 +20,7 @@ import {
   type OutreachScopeKind,
   type OutreachDateRange,
   type ScorecardRow,
+  type JobContactWithDeal,
   type MembershipStage,
 } from "@/services/jobs";
 import { InlineSelect } from "@/components/ui/InlineEdit";
@@ -326,6 +327,69 @@ const startOfWeekSunday = () => {
 /** Per-owner "this week": current assigned queue + contacts moved to Initial
  *  outreach this week — the same numbers as Jobs Home's progress strip,
  *  rolled up per person for the meeting. */
+const CELL_DRILL_CAP = 10;
+
+/** The contacts behind an Assigned-set / Contacted number: who, when they hit
+ *  the stage, and how much outreach they've had. All of it is already on the
+ *  contact rows the table counts, so this needs no extra fetch. */
+function ContactCellDrill({ label, contacts, whenLabel }: {
+  label: string;
+  contacts: JobContactWithDeal[];
+  whenLabel: string;
+}) {
+  const [showAll, setShowAll] = useState(false);
+  const sorted = useMemo(() => [...contacts].sort((a, b) =>
+    (b.membership_stage_entered_at ?? "").localeCompare(a.membership_stage_entered_at ?? "")),
+    [contacts]);
+  const shown = showAll ? sorted : sorted.slice(0, CELL_DRILL_CAP);
+  const extra = sorted.length - shown.length;
+
+  if (contacts.length === 0) return <div className="text-[12px] text-ink-4">No contacts.</div>;
+  return (
+    <div className="overflow-hidden rounded-lg border border-border-strong bg-surface">
+      <div className="flex items-center justify-between border-b border-border-strong px-3 py-1.5">
+        <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">{label}</span>
+        <span className="text-[11px] tabular-nums text-ink-4">{sorted.length}</span>
+      </div>
+      <table className="w-full text-[12px]">
+        <thead>
+          <tr className="bg-surface-2/60 text-left text-[10.5px] uppercase tracking-wider text-ink-3">
+            <th className="px-3 py-1.5 font-semibold">Contact</th>
+            <th className="px-2 py-1.5 font-semibold">Company</th>
+            <th className="px-2 py-1.5 font-semibold">{whenLabel}</th>
+            <th className="px-2 py-1.5 text-right font-semibold" title="Logged jobs touches on this contact">Touches</th>
+            <th className="px-2 py-1.5 text-right font-semibold">Last touch</th>
+          </tr>
+        </thead>
+        <tbody>
+          {shown.map((c) => (
+            <tr key={c.contact_id} className="border-t border-border-strong">
+              <td className="px-3 py-1.5">
+                <Link to={`/jobs/contacts/${c.contact_id}`} className="font-medium text-ink hover:text-accent hover:underline">
+                  {c.full_name ?? "—"}
+                </Link>
+              </td>
+              <td className="px-2 py-1.5 truncate text-ink-2">{c.current_company ?? "—"}</td>
+              <td className="px-2 py-1.5 text-ink-3">{relDay(c.membership_stage_entered_at) ?? "—"}</td>
+              <td className={cn("px-2 py-1.5 text-right tabular-nums",
+                (c.recent_activity_count ?? 0) > 0 ? "text-ink-2" : "text-ink-4")}>
+                {c.recent_activity_count ?? 0}
+              </td>
+              <td className="px-2 py-1.5 text-right tabular-nums text-ink-4">{relDay(c.last_activity_at) ?? "—"}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {extra > 0 ? (
+        <button type="button" onClick={() => setShowAll(true)}
+          className="w-full border-t border-border-strong px-3 py-1.5 text-[11.5px] font-medium text-accent hover:bg-surface-2">
+          Show all {sorted.length}
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
 function ThisWeekBlock({ nameOf, activityPipeline, granularity, scope, owner, range, periodLabel, onSelectOwner }: {
   periodLabel?: string;
   nameOf: (email: string) => string;
@@ -340,23 +404,33 @@ function ThisWeekBlock({ nameOf, activityPipeline, granularity, scope, owner, ra
 }) {
   const { data: assignedData } = useJobsContacts({ membership_stage: "assigned", limit: 1000 });
   const { data: contactedData } = useJobsContacts({ membership_stage: "initial_outreach", limit: 1000 });
+  // Which owner's which column is expanded, e.g. "avni@pursuit.org:contacted".
+  const [openCell, setOpenCell] = useState<string | null>(null);
+
+  // Keep the contact objects, not just tallies — the drill lists them, and
+  // deriving both from one pass means the number and the list always agree.
   const rows = useMemo(() => {
-    const weekStart = startOfWeekSunday();
-    const by = new Map<string, { assigned: number; contacted: number }>();
-    const bump = (email: string | null | undefined, key: "assigned" | "contacted") => {
+    // Contacted is a period event, so it follows the page's Period picker (it
+    // used to hardcode the current Sun-week and ignore the selector entirely).
+    const pStart = range?.from ? new Date(`${range.from}T00:00:00`) : startOfWeekSunday();
+    const pEnd = range?.to ? new Date(`${range.to}T23:59:59.999`) : new Date();
+    const by = new Map<string, { assigned: JobContactWithDeal[]; contacted: JobContactWithDeal[] }>();
+    const bucket = (email: string | null | undefined) => {
       const k = (email ?? "").toLowerCase() || "(unowned)";
-      const r = by.get(k) ?? { assigned: 0, contacted: 0 };
-      r[key] += 1;
+      const r = by.get(k) ?? { assigned: [], contacted: [] };
       by.set(k, r);
+      return r;
     };
-    for (const c of assignedData?.data ?? []) bump(c.owner_email, "assigned");
+    for (const c of assignedData?.data ?? []) bucket(c.owner_email).assigned.push(c);
     for (const c of contactedData?.data ?? []) {
-      if (c.membership_stage_entered_at && new Date(c.membership_stage_entered_at) >= weekStart) bump(c.owner_email, "contacted");
+      if (!c.membership_stage_entered_at) continue;
+      const t = new Date(c.membership_stage_entered_at);
+      if (t >= pStart && t <= pEnd) bucket(c.owner_email).contacted.push(c);
     }
     return [...by.entries()]
-      .filter(([, r]) => r.assigned + r.contacted > 0)
-      .sort((a, b) => (b[1].assigned + b[1].contacted) - (a[1].assigned + a[1].contacted));
-  }, [assignedData, contactedData]);
+      .filter(([, r]) => r.assigned.length + r.contacted.length > 0)
+      .sort((a, b) => (b[1].assigned.length + b[1].contacted.length) - (a[1].assigned.length + a[1].contacted.length));
+  }, [assignedData, contactedData, range]);
   if (rows.length === 0) return null;
   return (
     <div className="flex flex-col gap-3">
@@ -366,41 +440,79 @@ function ThisWeekBlock({ nameOf, activityPipeline, granularity, scope, owner, ra
         <table className="w-full text-[12.5px]">
           <thead><tr className="bg-surface-2 text-left text-[10.5px] uppercase tracking-wide text-ink-3">
             <th className="py-2.5 pl-3.5 pr-2 text-left font-bold">Owner</th>
-            <th className="px-2 py-2.5 text-right font-bold" title="Assigned this period (queue + already contacted)">Assigned set</th>
-            <th className="px-2 py-2.5 text-right font-bold" title="Moved to initial outreach">Contacted / assigned</th>
+            <th className="px-2 py-2.5 text-right font-bold" title="Contacts in this owner's assigned queue — click to list them">Assigned set</th>
+            <th className="px-2 py-2.5 text-right font-bold" title="Moved to initial outreach inside the selected period — click to list them">Contacted / assigned</th>
             <th className="w-[34%] px-3 py-2.5 text-left font-bold">Progress</th>
           </tr></thead>
           <tbody>
             {rows.map(([email, r]) => {
-              const total = r.assigned + r.contacted;
-              const pct = total ? Math.round((100 * r.contacted) / total) : 0;
+              const total = r.assigned.length + r.contacted.length;
+              const pct = total ? Math.round((100 * r.contacted.length) / total) : 0;
+              const cell = (which: "assigned" | "contacted") => `${email}:${which}`;
+              const toggle = (which: "assigned" | "contacted") =>
+                setOpenCell(openCell === cell(which) ? null : cell(which));
+              const openWhich = openCell?.startsWith(`${email}:`)
+                ? (openCell.split(":")[1] as "assigned" | "contacted")
+                : null;
               return (
-                <tr key={email} className={cn("border-t border-border-strong",
-                  owner && owner.toLowerCase() === email && "bg-accent-soft/40")}>
-                  <td className="px-3 py-1.5 font-medium text-ink">
-                    {email === "(unowned)" ? (
-                      <span className="text-ink-4">Unowned</span>
-                    ) : onSelectOwner ? (
-                      <button type="button" onClick={() => onSelectOwner(email)}
-                        title={`Filter this page to ${nameOf(email)}`}
-                        className={cn("text-left hover:text-accent hover:underline",
-                          owner && owner.toLowerCase() === email ? "text-accent" : "text-ink")}>
-                        {nameOf(email)}
-                      </button>
-                    ) : nameOf(email)}
-                  </td>
-                  <td className="px-2 py-1.5 text-right tabular-nums text-ink-2">{total}</td>
-                  <td className="px-2 py-1.5 text-right tabular-nums">
-                    <span className={cn("font-semibold", r.contacted > 0 ? "text-green" : "text-ink-4")}>{r.contacted}</span>
-                    <span className="text-ink-4"> / {total}</span>
-                    <span className="ml-1 text-[11px] text-ink-4">({pct}%)</span>
-                  </td>
-                  <td className="px-3 py-1.5">
-                    <div className="h-1.5 overflow-hidden rounded-full border border-border-strong bg-surface-2" title={`${r.contacted} of ${total} contacted this week`}>
-                      <div className="h-full rounded-full bg-green transition-all" style={{ width: `${pct}%` }} />
-                    </div>
-                  </td>
-                </tr>
+                <Fragment key={email}>
+                  <tr className={cn("border-t border-border-strong",
+                    owner && owner.toLowerCase() === email && "bg-accent-soft/40")}>
+                    <td className="px-3 py-1.5 font-medium text-ink">
+                      {email === "(unowned)" ? (
+                        <span className="text-ink-4">Unowned</span>
+                      ) : onSelectOwner ? (
+                        <button type="button" onClick={() => onSelectOwner(email)}
+                          title={`Filter this page to ${nameOf(email)}`}
+                          className={cn("text-left hover:text-accent hover:underline",
+                            owner && owner.toLowerCase() === email ? "text-accent" : "text-ink")}>
+                          {nameOf(email)}
+                        </button>
+                      ) : nameOf(email)}
+                    </td>
+                    <td className="px-2 py-1.5 text-right tabular-nums">
+                      {total > 0 ? (
+                        <button type="button" onClick={() => toggle("assigned")}
+                          title={`List the ${r.assigned.length} contacts in the assigned queue`}
+                          className={cn("hover:underline", openWhich === "assigned" ? "text-accent" : "text-ink-2 hover:text-accent")}>
+                          {total}
+                        </button>
+                      ) : <span className="text-ink-2">{total}</span>}
+                    </td>
+                    <td className="px-2 py-1.5 text-right tabular-nums">
+                      {r.contacted.length > 0 ? (
+                        <button type="button" onClick={() => toggle("contacted")}
+                          title={`List the ${r.contacted.length} contacted in this period`}
+                          className={cn("font-semibold hover:underline", openWhich === "contacted" ? "text-accent" : "text-green hover:text-accent")}>
+                          {r.contacted.length}
+                        </button>
+                      ) : <span className="font-semibold text-ink-4">0</span>}
+                      <span className="text-ink-4"> / {total}</span>
+                      <span className="ml-1 text-[11px] text-ink-4">({pct}%)</span>
+                    </td>
+                    <td className="px-3 py-1.5">
+                      <div className="h-1.5 overflow-hidden rounded-full border border-border-strong bg-surface-2" title={`${r.contacted.length} of ${total} contacted in this period`}>
+                        <div className="h-full rounded-full bg-green transition-all" style={{ width: `${pct}%` }} />
+                      </div>
+                    </td>
+                  </tr>
+                  {openWhich ? (
+                    <tr className="border-t border-border-strong bg-surface-2/40">
+                      <td colSpan={4} className="px-3 py-2">
+                        <ContactCellDrill
+                          label={openWhich === "assigned"
+                            ? `${nameOf(email)} · assigned set`
+                            : `${nameOf(email)} · contacted this period`}
+                          // "Assigned set" is the queue PLUS those already
+                          // contacted, so its drill must list both — otherwise
+                          // clicking 26 shows 23.
+                          contacts={openWhich === "assigned" ? [...r.assigned, ...r.contacted] : r.contacted}
+                          whenLabel={openWhich === "assigned" ? "Entered stage" : "Contacted"}
+                        />
+                      </td>
+                    </tr>
+                  ) : null}
+                </Fragment>
               );
             })}
           </tbody>

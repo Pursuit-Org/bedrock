@@ -165,6 +165,43 @@ export function JobsFunnels({ builderSegment, only, period, periodLabel, dealTyp
   );
 }
 
+// ── Trend cells ─────────────────────────────────────────────────────────────
+
+/** Relative change in a volume, vs the prior window of equal length. */
+function PctTrend({ current, prior, noun }: { current: number; prior: number | null; noun: string }) {
+  if (prior == null) return <span className="text-ink-4" title="No prior period to compare">—</span>;
+  if (prior === 0) {
+    // Growth from nothing has no meaningful percentage — say "new" instead of ∞.
+    return current > 0
+      ? <span className="font-semibold text-[var(--green)]" title={`${current} ${noun} vs none last period`}>new</span>
+      : <span className="text-ink-4" title="None either period">—</span>;
+  }
+  const v = (100 * (current - prior)) / prior;
+  const up = v >= 0;
+  return (
+    <span className={cn("font-semibold tabular-nums whitespace-nowrap", up ? "text-[var(--green)]" : "text-red")}
+      title={`${current} vs ${prior} in the prior period`}>
+      {up ? "▲" : "▼"} {Math.abs(Math.round(v))}%
+    </span>
+  );
+}
+
+/** Percentage-POINT change in a rate — a conversion going 40%→50% is +10pt,
+ *  not +25%, and conflating the two is how conversion trends get misread. */
+function PtTrend({ current, prior }: { current: number | null; prior: number | null }) {
+  if (current == null || prior == null)
+    return <span className="text-ink-4" title="No prior period to compare">—</span>;
+  const v = current - prior;
+  if (v === 0) return <span className="text-ink-4" title="Unchanged">0pt</span>;
+  const up = v > 0;
+  return (
+    <span className={cn("font-semibold tabular-nums whitespace-nowrap", up ? "text-[var(--green)]" : "text-red")}
+      title={`${current}% this period vs ${prior}% in the prior period`}>
+      {up ? "▲" : "▼"} {Math.abs(v)}pt
+    </span>
+  );
+}
+
 // ── Funnel card ───────────────────────────────────────────────────────────
 
 function FunnelCard({
@@ -183,6 +220,7 @@ function FunnelCard({
   periodLabel?: string;
 }) {
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [collapsed, setCollapsed] = useState(false);
 
   const subtitle = isPeriod
     ? `${FUNNEL_NOUN[funnel]} that entered each stage${periodLabel ? ` · ${periodLabel}` : ""}`
@@ -196,21 +234,56 @@ function FunnelCard({
       className="overflow-hidden rounded-2xl border border-white/60 shadow-[0_1px_2px_rgba(20,18,14,0.04),0_8px_24px_-16px_rgba(20,18,14,0.3)]"
       style={{ background: "var(--surface)" }}
     >
-      {/* Header bar — soft gradient band */}
-      <div
-        className="border-b border-border-strong px-5 py-2.5"
+      {/* Header bar — soft gradient band. Clicking it collapses the stage rows,
+          so a week with no movement can be folded away. */}
+      <button
+        type="button"
+        onClick={() => setCollapsed((c) => !c)}
+        aria-expanded={!collapsed}
+        title={collapsed ? "Show the stages" : "Hide the stages"}
+        className="flex w-full items-center gap-2 border-b border-border-strong px-5 py-2.5 text-left"
         style={{ background: "linear-gradient(135deg, #f4f3ff 0%, #fbfaff 70%)" }}
       >
-        <div className="text-[12px] font-semibold uppercase tracking-wider text-[#4f3fe0]">
-          {FUNNEL_TITLE[funnel]} Pipeline
+        <span className="text-[#4f3fe0]">
+          {collapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block text-[12px] font-semibold uppercase tracking-wider text-[#4f3fe0]">
+            {FUNNEL_TITLE[funnel]} Pipeline
+          </span>
+          <span className="mt-0.5 block text-[11.5px] text-ink-3">{subtitle}</span>
+        </span>
+        {/* Collapsed, the totals still need to be legible at a glance. */}
+        {collapsed ? (
+          <span className="flex-shrink-0 text-[11.5px] text-ink-3">
+            {stages.reduce((n, s) => n + s.count, 0)} total
+          </span>
+        ) : null}
+      </button>
+
+      {/* Column headers — two groups over four numbers. Only meaningful next to
+          the rows, so they collapse with them. */}
+      {!collapsed && !isLoading && stages.length > 0 && !allZero ? (
+        <div className="flex items-end gap-3 border-b border-border-strong bg-surface-2/40 px-5 py-1.5">
+          <span className="w-[190px] flex-shrink-0" />
+          <span className="min-w-0 flex-1" />
+          <span className="flex flex-shrink-0 flex-col">
+            <span className="flex">
+              <span className="w-[130px] text-center text-[9.5px] font-bold uppercase tracking-[.1em] text-ink-4">Volume</span>
+              <span className="w-[138px] text-center text-[9.5px] font-bold uppercase tracking-[.1em] text-ink-4">Conversion</span>
+            </span>
+            <span className="flex text-[10px] font-semibold uppercase tracking-wider text-ink-4">
+              <span className="w-[54px] text-right">#</span>
+              <span className="w-[76px] text-right">Trend</span>
+              <span className="w-[62px] text-right">%</span>
+              <span className="w-[76px] text-right">Trend</span>
+            </span>
+          </span>
         </div>
-        <div className="mt-0.5 text-[11.5px] text-ink-3">
-          {subtitle}
-        </div>
-      </div>
+      ) : null}
 
       {/* Stage rows */}
-      {isLoading ? (
+      {collapsed ? null : isLoading ? (
         <div className="flex flex-col">
           {Array.from({ length: 5 }).map((_, i) => (
             <div
@@ -239,7 +312,7 @@ function FunnelCard({
         </div>
       ) : (
         <div className="flex flex-col px-4 py-3">
-          {stages.map((stage) => {
+          {stages.map((stage, i) => {
             const isExpanded = expanded === stage.key;
             const isWon = WON_STAGE_KEYS.has(stage.key);
             const barGradient = isWon
@@ -248,6 +321,8 @@ function FunnelCard({
             // Taper: the band narrows down the funnel with volume. Floored at 6%
             // so a near-empty stage is still visible rather than vanishing.
             const width = Math.max(6, stage.pct_of_max);
+            // The stage this row converts FROM, for the conversion tooltip.
+            const prevLabel = i > 0 ? stages[i - 1].label : null;
 
             return (
               <div key={stage.key}>
@@ -282,46 +357,31 @@ function FunnelCard({
                     )}
                   </span>
 
-                  {/* Numbers, right: volume, then conversion, then movement */}
-                  <span className="flex w-[230px] flex-shrink-0 items-center justify-end gap-2 text-[11.5px]">
-                    {stage.advanced_in > 0 ? (
-                      <span
-                        className="inline-flex items-center gap-0.5 rounded-full bg-[var(--green-soft)] px-1.5 py-0.5 text-[10.5px] font-semibold text-[var(--green)]"
-                        title={`${stage.advanced_in} advanced into this stage in the last 30d`}
-                      >
-                        <ArrowUp size={10} />
-                        {stage.advanced_in}
-                      </span>
-                    ) : null}
-                    {stage.regressed_in > 0 ? (
-                      <span
-                        className="inline-flex items-center gap-0.5 rounded-full bg-[var(--amber-soft)] px-1.5 py-0.5 text-[10.5px] font-semibold text-[var(--amber)]"
-                        title={`${stage.regressed_in} regressed into this stage in the last 30d`}
-                      >
-                        <ArrowDown size={10} />
-                        {stage.regressed_in}
-                      </span>
-                    ) : null}
-                    <span className="font-mono text-[14px] font-bold tabular-nums text-ink">
+                  {/* Four numbers: volume, volume trend, conversion in,
+                      conversion trend. Widths match the header grid above. */}
+                  <span className="flex flex-shrink-0 items-center text-[11.5px]">
+                    <span className="w-[54px] text-right font-mono text-[14px] font-bold tabular-nums text-ink"
+                      title={isPeriod
+                        ? `${stage.count} ${FUNNEL_NOUN[funnel]} entered ${stage.label} in this period`
+                        : `${stage.count} ${FUNNEL_NOUN[funnel]} currently in ${stage.label}`}>
                       {stage.count}
                     </span>
-                    {stage.conversion_to_next != null ? (
-                      <span
-                        className={cn(
-                          "w-[104px] text-right tabular-nums",
-                          stage.conversion_to_next >= 100 ? "text-[var(--green)]" : "text-ink-3",
-                        )}
-                        title={
-                          isPeriod
-                            ? `Of what entered ${stage.label} in this period, the next stage took ${stage.conversion_to_next}%. Over 100% means more moved forward than arrived — a backlog clearing, since they entered ${stage.label} earlier.`
-                            : `Conversion from ${stage.label} to the next stage`
-                        }
-                      >
-                        → {stage.conversion_to_next}% to next
-                      </span>
-                    ) : (
-                      <span className="w-[104px]" />
-                    )}
+                    <span className="w-[76px] text-right">
+                      <PctTrend current={stage.count} prior={stage.count_prev} noun={FUNNEL_NOUN[funnel]} />
+                    </span>
+                    <span className="w-[62px] text-right tabular-nums"
+                      title={prevLabel && stage.conversion_in != null
+                        ? `${stage.conversion_in}% of what entered ${prevLabel} in this period reached ${stage.label}. Over 100% means more moved forward than arrived — a backlog clearing, since they entered ${prevLabel} earlier.`
+                        : "No prior stage to convert from"}>
+                      {stage.conversion_in != null ? (
+                        <span className={stage.conversion_in >= 100 ? "font-semibold text-[var(--green)]" : "text-ink-2"}>
+                          {stage.conversion_in}%
+                        </span>
+                      ) : <span className="text-ink-4">—</span>}
+                    </span>
+                    <span className="w-[76px] text-right">
+                      <PtTrend current={stage.conversion_in} prior={stage.conversion_in_prev} />
+                    </span>
                   </span>
                 </button>
 

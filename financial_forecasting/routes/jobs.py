@@ -1860,8 +1860,16 @@ async def get_funnel(
     # Swap "how many sit in this stage" for "how many ENTERED it in the window".
     # Stage entry is stamped, so this is read off timestamps rather than inferred.
     period_entries: Optional[dict] = None
-    if period is not None:
-        p_from, p_to = period
+    prev_counts: Optional[list] = None
+
+    async def _entries(p_from, p_to) -> dict:
+        """Records that entered each stage inside [p_from, p_to).
+
+        Run twice in period mode — once for the selected window and once for the
+        window of equal length immediately before it, which is what the volume
+        and conversion trends compare against.
+        """
+        nonlocal record_columns
         period_entries = {k: [] for k, _ in stage_order}
 
         if ftype == "prospects":
@@ -1985,6 +1993,15 @@ async def get_funnel(
 
         for k in period_entries:
             period_entries[k].sort(key=lambda rec: rec["entered_at"] or "", reverse=True)
+        return period_entries
+
+    if period is not None:
+        p_from, p_to = period
+        period_entries = await _entries(p_from, p_to)
+        # Prior window = same length, immediately before. Only its counts matter.
+        span = p_to - p_from
+        prev = await _entries(p_from - span, p_from)
+        prev_counts = [len(prev.get(k, [])) for k, _ in stage_order]
 
     stages = []
     cohort_conv = locals().get("cohort_conv") or {}
@@ -1995,27 +2012,54 @@ async def get_funnel(
         cohort_conv = {}
     counts = [len(by_stage.get(k, [])) for k, _ in stage_order]
     max_count = max(counts) if counts else 1
+
+    def _conv_to_next(cs: list, i: int, key: str) -> Optional[int]:
+        """Share of stage i's arrivals that went on to stage i+1."""
+        cnt = cs[i]
+        nxt = cs[i + 1] if i + 1 < len(cs) else None
+        if nxt is None or cnt <= 0:
+            return None
+        # On Hold is a parking state, not the step after Converted, so neither it
+        # nor Converted advertises a rate into it.
+        if key in _NO_CONVERSION_FROM:
+            return None
+        return round(100 * nxt / cnt)
+
+    # Conversion is reported on the DESTINATION row — "% of the prior stage that
+    # reached this one" — which is how the team reads it. That's the same number
+    # as the source row's to-next rate, just displayed one row down.
+    def _stage_conv(i: int, key: str) -> Optional[int]:
+        raw = _conv_to_next(counts, i, key)
+        if period_entries is not None:
+            # Period flow reports the rate as measured, including >100% (a
+            # backlog clearing) — clamping it is what made the old number
+            # untrustworthy.
+            return raw
+        if key in cohort_conv:
+            return cohort_conv[key]          # contacts snapshot: cohort rate
+        return None if (raw is not None and raw > 100) else raw
+
+    conv_to_next = [_stage_conv(i, k) for i, (k, _) in enumerate(stage_order)]
+    prev_conv_to_next = (
+        [_conv_to_next(prev_counts, i, k) for i, (k, _) in enumerate(stage_order)]
+        if prev_counts is not None else None
+    )
+
     for i, (k, label) in enumerate(stage_order):
         recs = by_stage.get(k, [])
         cnt = len(recs)
-        nxt = counts[i + 1] if i + 1 < len(counts) else None
-        conv = round(100 * nxt / cnt) if (nxt is not None and cnt > 0) else None
-        if period_entries is not None:
-            # Period flow: report the rate as measured, including >100% (backlog
-            # cleared). On Hold is a parking state, not the step after Converted,
-            # so neither it nor Converted advertises a rate into it.
-            if k in _NO_CONVERSION_FROM:
-                conv = None
-        elif k in cohort_conv:
-            # Contacts funnel snapshot: use the cohort rate.
-            conv = cohort_conv[k]
-        elif conv is not None and conv > 100:
-            conv = None
         mv = movement_by_stage.get(k, [])
         stages.append({
             "key": k, "label": label, "count": cnt,
             "pct_of_max": round(100 * cnt / max_count) if max_count else 0,
-            "conversion_to_next": conv,
+            "conversion_to_next": conv_to_next[i],
+            # Same rate, addressed to the row it describes.
+            "conversion_in": conv_to_next[i - 1] if i > 0 else None,
+            # Prior window of equal length, for the two trend columns.
+            "count_prev": prev_counts[i] if prev_counts is not None else None,
+            "conversion_in_prev": (
+                prev_conv_to_next[i - 1] if (prev_conv_to_next is not None and i > 0) else None
+            ),
             "records": recs,
             "movement": mv,
             "advanced_in": sum(1 for m in mv if m["flow"] == "in" and m["direction"] == "advanced"),

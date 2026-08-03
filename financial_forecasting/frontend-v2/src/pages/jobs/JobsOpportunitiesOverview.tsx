@@ -1,7 +1,7 @@
 /**
  * Jobs · Opportunities — Weekly Overview.
  *
- * The Thursday-meeting agenda, top to bottom: summary cards (incl. the
+ * The pipeline-meeting agenda, top to bottom: summary cards (incl. the
  * won-with-open-tasks stage-gate check, which sits left of the closed
  * won/lost outcome boxes), the period-scoped opportunities funnel,
  * time-in-stage aging + the switchable set distribution, the concentration
@@ -85,18 +85,6 @@ function mostRecentDow(d: Date, dow: number): Date {
   x.setDate(x.getDate() - ((x.getDay() - dow + 7) % 7));
   return x;
 }
-const THURSDAY = 4;
-/** The pipeline meeting runs Thursdays, so the default window is the Thursday-
- *  aligned week: on meeting day that's the completed cycle just reviewed
- *  (last Thu → Wed), any other day it's the in-progress cycle (Thu → today).
- *  Both bounds are inclusive, so the cycle is a clean 7 days with no overlap
- *  between consecutive weeks. Any range is selectable via the two date inputs. */
-function thursdayCycle(today: Date): { start: Date; end: Date } {
-  const t = dayOnly(today);
-  return t.getDay() === THURSDAY
-    ? { start: addDays(t, -7), end: addDays(t, -1) }
-    : { start: mostRecentDow(t, THURSDAY), end: t };
-}
 /** Sun–Sat week containing `d`, clamped to today (the previous default). */
 function calendarWeek(today: Date): { start: Date; end: Date } {
   const t = dayOnly(today);
@@ -114,15 +102,16 @@ export function JobsOpportunitiesOverview() {
   // it is always populated; priority can legitimately be empty.
   const [heatAxis, setHeatAxis] = useState<HeatAxis>("stage");
   // Free-form window: both bounds inclusive, no snapping. Defaults to the
-  // Thursday-aligned meeting cycle; presets and the two date inputs set it.
+  // calendar week (what the Weekly preset selects, matching Outreach); the
+  // presets and the two date inputs set it.
   const today = useMemo(() => dayOnly(new Date()), []);
-  const [range, setRange] = useState<{ start: Date; end: Date }>(() => thursdayCycle(new Date()));
+  const [range, setRange] = useState<{ start: Date; end: Date }>(() => calendarWeek(new Date()));
   const weekStart = range.start;
   const weekEnd = range.end;
   const spanDays = Math.max(1, dayDiff(weekStart, weekEnd) + 1);
   const canGoNext = dayDiff(weekEnd, today) >= 1;
-  /** Step the whole window by its own length, so a Thursday-aligned week stays
-   *  Thursday-aligned. Forward steps clamp at today rather than overshooting. */
+  /** Step the whole window by its own length, so a week stays a week and a
+   *  month a month. Forward steps clamp at today rather than overshooting. */
   const shiftRange = (dir: -1 | 1) => setRange(({ start, end }) => {
     const s = addDays(start, dir * spanDays);
     const e = addDays(end, dir * spanDays);
@@ -256,9 +245,10 @@ export function JobsOpportunitiesOverview() {
           </span>
           <span className="ml-1 flex items-center gap-1 border-l border-border pl-1.5">
             {([
-              { label: "Thu week", title: "The Thursday-to-Thursday meeting cycle", get: () => thursdayCycle(new Date()) },
-              { label: "Week", title: "This calendar week so far (Sun–today)", get: () => calendarWeek(new Date()) },
-              { label: "30d", title: "The last 30 days", get: () => ({ start: addDays(today, -29), end: today }) },
+              // Same three presets as Outreach, so the two pages read alike.
+              { label: "Daily", title: "Today", get: () => ({ start: today, end: today }) },
+              { label: "Weekly", title: "This calendar week so far (Sun–today)", get: () => calendarWeek(new Date()) },
+              { label: "Monthly", title: "This calendar month so far", get: () => ({ start: new Date(today.getFullYear(), today.getMonth(), 1), end: today }) },
             ] as const).map((p) => {
               const r = p.get();
               const active = fmtDateInput(r.start) === fmtDateInput(weekStart) && fmtDateInput(r.end) === fmtDateInput(weekEnd);

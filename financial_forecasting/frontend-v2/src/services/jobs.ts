@@ -1002,6 +1002,14 @@ export interface FunnelStage {
   count: number;
   pct_of_max: number;
   conversion_to_next: number | null;
+  /** Share of the PREVIOUS stage's arrivals that reached this one. Same number
+   *  as the previous row's `conversion_to_next`, addressed to the row it
+   *  describes — which is how the team reads it. */
+  conversion_in: number | null;
+  /** Same measures over the window of equal length immediately before, for the
+   *  two trend columns. Null in snapshot mode (no prior window exists). */
+  count_prev: number | null;
+  conversion_in_prev: number | null;
   records: Record<string, string | null>[];
   movement: FunnelMovement[];
   advanced_in: number;
