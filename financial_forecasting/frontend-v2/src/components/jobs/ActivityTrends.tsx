@@ -33,22 +33,23 @@ function fmtPeriod(iso: string, gran: "day" | "week" | "month"): string {
 /**
  * Account-level outreach over time — a line per period of how many accounts
  * were reached. The dropdown splits that into NEW accounts (first activated
- * that period) vs EXISTING ones. Period, bucket size, scope and sender are all
- * owned by the page's period row. The only controls here are the series split
- * and the bucket size (how finely the selected period is sliced), which is a
- * different question from how long the period is.
+ * that period) vs EXISTING ones. Period, scope and sender are owned by the
+ * page's period row. The only controls here are the series split and the bucket
+ * size (how finely the selected period is sliced), which is a different question
+ * from how long the period is.
  */
-export function ActivityTrends({ granularity, scope, owner, range }: {
-  granularity: "day" | "week" | "month";
+export function ActivityTrends({ scope, owner, range }: {
   scope: OutreachScope;
   owner?: string;
   range?: OutreachRange;
 }) {
-  // Bucket size within the selected period. Seeded from the page's granularity
-  // but independent of it: the page chooses how long the window is, this chooses
-  // how finely to slice it — a month of data by day is a legitimate view.
-  const [bucket, setBucket] = useState<"day" | "week" | "month" | null>(null);
-  const gran = bucket ?? granularity;
+  // Bucket size within the selected period — independent of the page period: the
+  // page chooses how long the window is, this chooses how finely to slice it.
+  // Defaults to DAILY regardless of the page preset, because the shape of the
+  // outreach (which days the team actually worked) is the point of the chart;
+  // a month in monthly buckets is one bar and says nothing.
+  const [bucket, setBucket] = useState<"day" | "week" | "month">("day");
+  const gran = bucket;
   // Channel stays "all": splitting email vs meetings was a fourth control on a
   // page that already has three, and the line answers "how much outreach".
   const channel: OutreachChannel = "all";

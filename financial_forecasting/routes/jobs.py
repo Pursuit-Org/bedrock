@@ -1913,18 +1913,29 @@ async def get_funnel(
                             "entered_at": ts.isoformat(),
                         }
 
-            hrows = await conn.fetch(f"""
-                SELECT DISTINCT ON (h.contact_id, h.to_stage)
-                       h.contact_id, h.to_stage, h.changed_at, h.changed_by,
-                       c.full_name AS name, c.current_company AS company,
-                       m.owner_email AS owner
-                FROM bedrock.jobs_membership_stage_history h
-                JOIN public.contacts c ON c.contact_id = h.contact_id
-                LEFT JOIN bedrock.jobs_contact_membership m ON m.contact_id = h.contact_id
-                WHERE h.changed_at >= $1 AND h.changed_at < $2
-                  {company_lens}
-                ORDER BY h.contact_id, h.to_stage, h.changed_at
-            """, p_from, p_to, dt)
+            try:
+                hrows = await conn.fetch(f"""
+                    SELECT DISTINCT ON (h.contact_id, h.to_stage)
+                           h.contact_id, h.to_stage, h.changed_at, h.changed_by,
+                           c.full_name AS name, c.current_company AS company,
+                           m.owner_email AS owner
+                    FROM bedrock.jobs_membership_stage_history h
+                    JOIN public.contacts c ON c.contact_id = h.contact_id
+                    LEFT JOIN bedrock.jobs_contact_membership m ON m.contact_id = h.contact_id
+                    WHERE h.changed_at >= $1 AND h.changed_at < $2
+                      {company_lens}
+                    ORDER BY h.contact_id, h.to_stage, h.changed_at
+                """, p_from, p_to, dt)
+            except asyncpg.exceptions.InsufficientPrivilegeError:
+                # Read-only enhancement: without it the stamps still carry
+                # assigned / initial-outreach / converted, so the funnel is
+                # complete for those three and only loses on_hold entries and
+                # pre-stamp history. Far better than a dead panel.
+                logger.warning(
+                    "funnel: no SELECT on bedrock.jobs_membership_stage_history for this "
+                    "role — falling back to membership stamps only. Apply the "
+                    "2026-08-03 membership-stage-history-grant migration.")
+                hrows = []
             for r in hrows:
                 key = (r["contact_id"], r["to_stage"])
                 if r["to_stage"] not in period_entries or key in seen:
@@ -2009,14 +2020,23 @@ async def get_funnel(
         # ANY kind so the empty state can point at where the data actually is.
         if not any(len(v) for v in period_entries.values()):
             if ftype == "prospects":
-                last_movement_at = await conn.fetchval("""
-                    SELECT max(t) FROM (
-                        SELECT max(assigned_at) AS t FROM bedrock.jobs_contact_membership
-                        UNION ALL SELECT max(first_outreach_at) FROM bedrock.jobs_contact_membership
-                        UNION ALL SELECT max(converted_at) FROM bedrock.jobs_contact_membership
-                        UNION ALL SELECT max(changed_at) FROM bedrock.jobs_membership_stage_history
-                    ) x
-                """)
+                try:
+                    last_movement_at = await conn.fetchval("""
+                        SELECT max(t) FROM (
+                            SELECT max(assigned_at) AS t FROM bedrock.jobs_contact_membership
+                            UNION ALL SELECT max(first_outreach_at) FROM bedrock.jobs_contact_membership
+                            UNION ALL SELECT max(converted_at) FROM bedrock.jobs_contact_membership
+                            UNION ALL SELECT max(changed_at) FROM bedrock.jobs_membership_stage_history
+                        ) x
+                    """)
+                except asyncpg.exceptions.InsufficientPrivilegeError:
+                    last_movement_at = await conn.fetchval("""
+                        SELECT max(t) FROM (
+                            SELECT max(assigned_at) AS t FROM bedrock.jobs_contact_membership
+                            UNION ALL SELECT max(first_outreach_at) FROM bedrock.jobs_contact_membership
+                            UNION ALL SELECT max(converted_at) FROM bedrock.jobs_contact_membership
+                        ) x
+                    """)
             else:
                 last_movement_at = await conn.fetchval("""
                     SELECT max(t) FROM (

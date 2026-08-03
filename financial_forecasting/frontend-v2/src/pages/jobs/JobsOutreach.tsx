@@ -245,9 +245,19 @@ function digestSlackText(dg: NonNullable<ReturnType<typeof useDailyDigest>["data
   return lines.join("\n");
 }
 
-function DailyDigestBlock() {
+function DailyDigestBlock({ periodEnd }: { periodEnd?: string }) {
   const yesterday = useMemo(() => { const d = new Date(); d.setDate(d.getDate() - 1); return localISODate(d); }, []);
-  const [digestDate, setDigestDate] = useState<string>(yesterday);
+  // The digest is ONE day by design — it's the morning Slack post, not a range
+  // summary. But it follows the page period's END date so it isn't stranded on
+  // yesterday while the rest of the page shows July: moving the period to
+  // Jul 6 – Aug 2 lands the digest on Aug 2. Overriding the date here is still
+  // allowed, and a later period change moves it again.
+  const target = periodEnd && periodEnd <= yesterday ? periodEnd : yesterday;
+  const [override, setOverride] = useState<string | null>(null);
+  const [syncedTo, setSyncedTo] = useState(target);
+  if (syncedTo !== target) { setSyncedTo(target); setOverride(null); }
+  const digestDate = override ?? target;
+  const setDigestDate = (v: string) => setOverride(v);
   const { data: dg, isLoading } = useDailyDigest(digestDate);
   const o = dg?.outreach;
   const copy = () => {
@@ -262,11 +272,13 @@ function DailyDigestBlock() {
         <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">Daily digest</span>
         <input type="date" value={digestDate} max={yesterday}
           onChange={(e) => { if (e.target.value) setDigestDate(e.target.value); }}
+          title="The digest covers a single day — this one"
           className="h-6 rounded border border-border-strong bg-surface px-1.5 text-[11.5px] text-ink-2 outline-none focus:border-accent" />
+        <span className="text-[11px] text-ink-4">one day only</span>
         <div className="flex-1" />
         <button type="button" onClick={copy} disabled={!dg}
           className="h-7 rounded-md border border-border-strong bg-surface px-2.5 text-[12px] font-medium text-ink-2 hover:bg-surface-2 disabled:opacity-40">
-          Copy for Slack
+          Copy
         </button>
       </div>
       {isLoading || !o ? (
@@ -1039,7 +1051,7 @@ export function JobsOutreach() {
       </PeriodBar>
 
       {/* ── Daily digest (the morning Slack) ── */}
-      <DailyDigestBlock />
+      <DailyDigestBlock periodEnd={to} />
 
       {/* ── Monday agenda: contacts funnel → this week (+ activity pipeline)
              → requiring attention → campaigns → scorecard → targeting.
@@ -1096,8 +1108,7 @@ export function JobsOutreach() {
         <span className="text-[11px] font-bold uppercase tracking-[.12em] text-ink-3">Activity over time</span>
         <div className="h-px flex-1 bg-border-strong" />
       </div>
-      <ActivityTrends granularity={granularity} scope={scope} owner={owner || undefined}
-        range={range} />
+      <ActivityTrends scope={scope} owner={owner || undefined} range={range} />
 
     </div>
   );
