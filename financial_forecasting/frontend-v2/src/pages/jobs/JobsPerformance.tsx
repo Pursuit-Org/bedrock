@@ -10,7 +10,7 @@ import { JobsOpportunitiesOverview } from "./JobsOpportunitiesOverview";
 type TabKey = "exec" | "outreach" | "pipeline" | "placement";
 
 const TABS: { key: TabKey; label: string; icon: typeof BarChart3 }[] = [
-  { key: "exec", label: "Exec view", icon: BarChart3 },
+  { key: "exec", label: "Overview", icon: BarChart3 },
   { key: "outreach", label: "Outreach", icon: Send },
   { key: "pipeline", label: "Pipeline", icon: Kanban },
   { key: "placement", label: "Placement", icon: GraduationCap },
@@ -20,7 +20,8 @@ const VALID_TABS = new Set<string>(TABS.map((t) => t.key));
 
 /** One page, four views — the header names the one you're looking at. */
 const TAB_META: Record<TabKey, { title: string; subtitle: string }> = {
-  exec: { title: "Exec view", subtitle: "The outcomes the leadership team tracks." },
+  // The URL keeps ?tab=exec so existing links and bookmarks still resolve.
+  exec: { title: "Overview", subtitle: "The outcomes the leadership team tracks." },
   outreach: { title: "Outreach", subtitle: "The contacts funnel, the week's queue, and what needs a decision." },
   pipeline: { title: "Pipeline", subtitle: "The employer-deal pipeline — volume, conversion and where it's stuck." },
   placement: { title: "Placement", subtitle: "Placement performance reporting." },

@@ -54,8 +54,10 @@ export function ActivityTrends({ scope, owner, range }: {
   // page that already has three, and the line answers "how much outreach".
   const channel: OutreachChannel = "all";
   const [openPeriod, setOpenPeriod] = useState<string | null>(null);
-  // "total" = one line, accounts reached. "split" = new vs existing.
-  const [split, setSplit] = useState<SplitMode>("total");
+  // "split" = new vs existing accounts, the default: whether outreach is
+  // opening new doors or working the existing book is the question worth
+  // asking, and one combined line hides it. "total" collapses to one line.
+  const [split, setSplit] = useState<SplitMode>("split");
   const { data, isLoading, isError, refetch } = useActivityTrends(gran, channel, owner || undefined, scope, range);
 
   const chartData = useMemo(

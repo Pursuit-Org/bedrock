@@ -24,7 +24,7 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { format } from "date-fns";
-import { AlertTriangle, ArrowRight, ChevronRight, Clock, Minus, Plus, TrendingDown, TrendingUp, Trophy, XCircle } from "lucide-react";
+import { AlertTriangle, ArrowRight, ChevronRight, Clock, Minus, Plus, TrendingDown, TrendingUp, Trophy, X, XCircle } from "lucide-react";
 
 import {
   useOpportunitiesOverview,
@@ -111,8 +111,11 @@ export function JobsOpportunitiesOverview() {
   const staffQ = useJobsStaff();
   const nameOf = useMemo(() => {
     const m = new Map<string, string>();
-    (staffQ.data ?? []).forEach((st) => m.set(st.email, st.name));
-    return (email: string | null) => (email ? m.get(email) ?? titleCaseEmail(email) : "—");
+    (staffQ.data ?? []).forEach((st) => { if (st.name) m.set(st.email.toLowerCase(), st.name); });
+    // Keyed lowercase: the API returns owner emails lowercased while one staff
+    // record is "joanna@Pursuit.org", so an exact-case map missed and fell
+    // through to the email's local part — "avni" instead of "Avni Nahar".
+    return (email: string | null) => (email ? m.get(email.toLowerCase()) ?? titleCaseEmail(email) : "—");
   }, [staffQ.data]);
   const { data, isLoading } = useOpportunitiesOverview(
     owner, dealType, fmtDateInput(weekEnd), fmtDateInput(weekStart));
@@ -244,7 +247,7 @@ export function JobsOpportunitiesOverview() {
             activeSet={data?.active_set} nameOf={nameOf} />
         </Panel>
         <Panel
-          title="Active set distribution"
+          title="Active Set Distribution"
           action={
             <select
               value={dim}
@@ -302,11 +305,8 @@ export function JobsOpportunitiesOverview() {
         <RecentActivity events={orderedActivity} isLoading={isLoading} nameOf={nameOf} />
       </Panel>
 
-      {/* ── Pipeline details (grouped by priority; owner view = the walkthrough) ── */}
-      <Panel
-        title="Pipeline details"
-        desc="Grouped by priority (switch to owner for the walkthrough) — rows manage inline and expand to the full panel"
-      >
+      {/* ── Opportunities Set (grouped by priority; owner view = the walkthrough) ── */}
+      <Panel title="Opportunities Set">
         <div className="max-h-[520px] overflow-y-auto">
           <OwnerWalkthrough openOpps={openOpps} needsById={needsById} nextTaskByOpp={nextTaskByOpp}
             nameOf={nameOf} {...rowHandlers} />
@@ -458,6 +458,152 @@ function ManagedOppRow({ o, sub, detail, right, nextTask, expandedId, setExpande
   );
 }
 
+// ── Opportunities Set filters ───────────────────────────────────────────────
+// One declarative spec drives the whole control: each field maps an
+// opportunity to the bucket label it belongs in, so categorical fields (deal
+// type, stage) and continuous ones (salary, last activity) filter through the
+// same path and the value list is always derived from what's actually in the
+// set — no dropdown option that matches zero rows. Adding a field here is the
+// only edit needed to make it filterable; the columns stay as they are.
+
+type OppFilterField = {
+  key: string;
+  label: string;
+  /** The bucket this opportunity falls in, or null to exclude it from the field. */
+  bucket: (o: JobsOpportunity) => string | null;
+  /** Fixed display order; anything unlisted sorts alphabetically after these. */
+  order?: string[];
+};
+
+const DAYS_SINCE = (iso: string | null | undefined) =>
+  iso ? Math.floor((Date.now() - new Date(iso).getTime()) / 86_400_000) : null;
+
+const ACTIVITY_ORDER_LABELS = ["Last 7 days", "8–30 days", "31–90 days", "Over 90 days", "No activity"];
+const SALARY_ORDER_LABELS = ["Under $80k", "$80k–100k", "$100k–120k", "$120k+", "Not set"];
+
+const OPP_FILTER_FIELDS: OppFilterField[] = [
+  { key: "deal_type", label: "Deal type",
+    bucket: (o) => (o.deal_type ? DEAL_TYPE_LABELS[o.deal_type] ?? o.deal_type : "Not set") },
+  { key: "stage", label: "Stage",
+    bucket: (o) => STAGE_LABELS[o.stage] ?? o.stage },
+  { key: "segment", label: "Segment",
+    bucket: (o) => o.segment || "Not set" },
+  { key: "priority", label: "Priority", order: ["P1", "P2", "P3+", "Not set"],
+    bucket: (o) => {
+      const p = displayPriority(o.priority);
+      return p == null ? "Not set" : p === 1 ? "P1" : p === 2 ? "P2" : "P3+";
+    } },
+  { key: "owner", label: "Owner",
+    // Lowercased to match the rest of the page — one staff record is
+    // "joanna@Pursuit.org", which would otherwise bucket separately.
+    bucket: (o) => (o.owner_email || "(unassigned)").toLowerCase() },
+  { key: "activity", label: "Last activity", order: ACTIVITY_ORDER_LABELS,
+    bucket: (o) => {
+      const d = DAYS_SINCE(o.last_activity_at);
+      if (d == null) return "No activity";
+      return d <= 7 ? "Last 7 days" : d <= 30 ? "8–30 days" : d <= 90 ? "31–90 days" : "Over 90 days";
+    } },
+  { key: "salary", label: "Salary", order: SALARY_ORDER_LABELS,
+    bucket: (o) => {
+      const v = o.salary_expected;
+      if (v == null) return "Not set";
+      return v < 80_000 ? "Under $80k" : v < 100_000 ? "$80k–100k" : v < 120_000 ? "$100k–120k" : "$120k+";
+    } },
+  { key: "likelihood", label: "Likelihood", order: ["High", "Medium", "Low", "Not set"],
+    bucket: (o) => (o.likelihood ? o.likelihood[0].toUpperCase() + o.likelihood.slice(1) : "Not set") },
+  { key: "open_tasks", label: "Open tasks", order: ["Has open tasks", "None open"],
+    bucket: (o) => ((o.open_tasks ?? 0) > 0 ? "Has open tasks" : "None open") },
+  { key: "roles", label: "Roles", order: ["Has roles", "No roles"],
+    bucket: (o) => ((o.num_roles ?? 0) > 0 ? "Has roles" : "No roles") },
+  { key: "source", label: "Source",
+    bucket: (o) => o.source || "Not set" },
+];
+
+const FILTER_BY_KEY = new Map(OPP_FILTER_FIELDS.map((f) => [f.key, f]));
+
+/** Distinct buckets present in `opps`, counted, in the field's declared order. */
+function filterOptions(field: OppFilterField, opps: JobsOpportunity[]) {
+  const counts = new Map<string, number>();
+  for (const o of opps) {
+    const b = field.bucket(o);
+    if (b != null) counts.set(b, (counts.get(b) ?? 0) + 1);
+  }
+  const rank = (v: string) => {
+    const i = field.order?.indexOf(v) ?? -1;
+    return i === -1 ? field.order?.length ?? 0 : i;
+  };
+  return [...counts.entries()]
+    .sort((a, b) => rank(a[0]) - rank(b[0]) || a[0].localeCompare(b[0]))
+    .map(([value, count]) => ({ value, count }));
+}
+
+function OppSetFilters({ filters, setFilters, opps, nameOf }: {
+  filters: Record<string, string>;
+  setFilters: (f: Record<string, string>) => void;
+  /** Pre-filter set, so each value list shows what's available to select. */
+  opps: JobsOpportunity[];
+  nameOf: (e: string | null) => string;
+}) {
+  const active = Object.keys(filters).filter((k) => FILTER_BY_KEY.has(k));
+  const unused = OPP_FILTER_FIELDS.filter((f) => !(f.key in filters));
+  const show = (fieldKey: string, v: string) =>
+    fieldKey === "owner" && v !== "(unassigned)" ? nameOf(v) : v;
+
+  return (
+    <>
+      {active.map((key) => {
+        const field = FILTER_BY_KEY.get(key)!;
+        // Options come from the set with THIS field's own filter lifted, so
+        // narrowing one field never empties its own dropdown.
+        const others = Object.entries(filters).filter(([k]) => k !== key);
+        const pool = opps.filter((o) => others.every(([k, v]) => FILTER_BY_KEY.get(k)?.bucket(o) === v));
+        return (
+          <span key={key}
+            className="inline-flex h-7 items-center gap-1 rounded-md border border-accent/40 bg-accent-soft pl-2 pr-1 text-[11.5px]">
+            <span className="font-semibold text-accent">{field.label}</span>
+            <select value={filters[key]}
+              onChange={(e) => setFilters({ ...filters, [key]: e.target.value })}
+              className="h-6 max-w-[136px] rounded border-none bg-transparent text-[11.5px] text-accent outline-none">
+              {filterOptions(field, pool).map((o) => (
+                <option key={o.value} value={o.value}>{show(key, o.value)} ({o.count})</option>
+              ))}
+            </select>
+            <button type="button" title={`Remove the ${field.label} filter`}
+              onClick={() => { const next = { ...filters }; delete next[key]; setFilters(next); }}
+              className="grid h-4 w-4 place-items-center rounded text-accent/70 hover:bg-accent/10 hover:text-accent">
+              <X size={11} />
+            </button>
+          </span>
+        );
+      })}
+
+      {unused.length > 0 && (
+        <select value="" title="Filter the set by any field"
+          onChange={(e) => {
+            const field = FILTER_BY_KEY.get(e.target.value);
+            if (!field) return;
+            // Seed with the field's first bucket. Every option is derived from
+            // the set, so whichever one lands is guaranteed non-empty — picking
+            // a filter should never blank the table.
+            const first = filterOptions(field, opps)[0];
+            if (first) setFilters({ ...filters, [field.key]: first.value });
+          }}
+          className="h-7 rounded-md border border-border-strong bg-surface px-2 text-[12px] text-ink-2 outline-none focus:border-accent">
+          <option value="">{active.length ? "+ Filter" : "Filter by…"}</option>
+          {unused.map((f) => <option key={f.key} value={f.key}>{f.label}</option>)}
+        </select>
+      )}
+
+      {active.length > 1 && (
+        <button type="button" onClick={() => setFilters({})}
+          className="h-7 rounded-md px-1.5 text-[11.5px] font-medium text-ink-3 hover:text-ink">
+          Clear all
+        </button>
+      )}
+    </>
+  );
+}
+
 function OwnerWalkthrough({ openOpps, needsById, nextTaskByOpp, nameOf, ...handlers }: {
   openOpps: JobsOpportunity[];
   needsById: Map<string, OppNeedsRow>;
@@ -468,12 +614,19 @@ function OwnerWalkthrough({ openOpps, needsById, nextTaskByOpp, nameOf, ...handl
   const [groupBy, setGroupBy] = useSessionState<"owner" | "priority" | "">("jobsPipeline.details.groupBy", "priority");
   const [ownerFilter, setOwnerFilter] = useSessionState<string>("jobsPipeline.walkthrough.owner", "");
   const [flaggedOnly, setFlaggedOnly] = useSessionState<boolean>("jobsPipeline.walkthrough.flagged", false);
+  // Field → selected bucket. Every field in OPP_FILTER_FIELDS is filterable
+  // without being a column: the ask was to slice the set, not widen the table.
+  const [filters, setFilters] = useSessionState<Record<string, string>>("jobsPipeline.details.filters", {});
 
   const owners = useMemo(() => [...new Set(openOpps.map((o) => (o.owner_email ?? "").toLowerCase()))]
     .filter(Boolean).sort(), [openOpps]);
+  const filterEntries = useMemo(
+    () => Object.entries(filters).filter(([k]) => FILTER_BY_KEY.has(k)), [filters]);
   const visible = useMemo(() => openOpps.filter((o) =>
     (!ownerFilter || (o.owner_email ?? "").toLowerCase() === ownerFilter) &&
-    (!flaggedOnly || needsById.has(o.id))), [openOpps, ownerFilter, flaggedOnly, needsById]);
+    (!flaggedOnly || needsById.has(o.id)) &&
+    filterEntries.every(([k, v]) => FILTER_BY_KEY.get(k)!.bucket(o) === v)),
+    [openOpps, ownerFilter, flaggedOnly, needsById, filterEntries]);
 
   const controls = (
     <div className="mb-2 flex flex-wrap items-center gap-2">
@@ -488,13 +641,16 @@ function OwnerWalkthrough({ openOpps, needsById, nextTaskByOpp, nameOf, ...handl
         <option value="priority">Group by priority</option>
         <option value="">No grouping</option>
       </select>
+      <OppSetFilters filters={filters} setFilters={setFilters} opps={openOpps} nameOf={nameOf} />
       <button type="button" onClick={() => setFlaggedOnly(!flaggedOnly)}
         className={cn("h-7 rounded-md border px-2 text-[11.5px] font-medium",
           flaggedOnly ? "border-[var(--amber)]/40 bg-[var(--amber-soft)] text-[var(--amber)]"
                       : "border-border-strong bg-surface text-ink-3 hover:text-ink-2")}>
         Needs attention only
       </button>
-      <span className="text-[11.5px] text-ink-4">{visible.length} shown</span>
+      <span className="text-[11.5px] text-ink-4">
+        {visible.length} shown{visible.length !== openOpps.length ? ` of ${openOpps.length}` : ""}
+      </span>
     </div>
   );
 
@@ -865,9 +1021,20 @@ function AgingBars({ buckets, isLoading, activeSet, nameOf }: {
 
 // ── Breakdown bars ──────────────────────────────────────────────────────────
 
-function breakdownLabel(dim: OppBreakdownDim, key: string, label: string): string {
+/** Owner bars read as a person, not a mailbox: "Avni Nahar", not "avni".
+ *  Abbreviated to "Damon K." past 16 characters, which is where the full name
+ *  starts truncating in the 128px label column. */
+function ownerLabel(key: string, nameOf?: (e: string | null) => string): string {
+  const full = nameOf ? nameOf(key) : titleCaseEmail(key);
+  if (full.length <= 16) return full;
+  const parts = full.split(/\s+/);
+  return parts.length > 1 ? `${parts[0]} ${parts[parts.length - 1][0]}.` : full;
+}
+
+function breakdownLabel(dim: OppBreakdownDim, key: string, label: string,
+                        nameOf?: (e: string | null) => string): string {
   if (dim === "deal_type") return DEAL_TYPE_LABELS[key as DealType] ?? label;
-  if (dim === "owner") return ownerShort(key);
+  if (dim === "owner") return ownerLabel(key, nameOf);
   return label;
 }
 
@@ -896,8 +1063,8 @@ export function BreakdownBars({ items, dim, isLoading, activeSet, nameOf }: {
       {items.map((it) => (
         <div key={it.key}>
           <div className="grid grid-cols-[128px_1fr_58px] items-center gap-3 py-[7px]">
-            <div className="truncate text-[12.5px] font-medium text-ink" title={breakdownLabel(dim, it.key, it.label)}>
-              {breakdownLabel(dim, it.key, it.label)}
+            <div className="truncate text-[12.5px] font-medium text-ink" title={breakdownLabel(dim, it.key, it.label, nameOf)}>
+              {breakdownLabel(dim, it.key, it.label, nameOf)}
             </div>
             <div className="h-2.5 overflow-hidden rounded-full bg-surface-2">
               <div className="h-full rounded-full transition-[width] duration-500"
@@ -906,7 +1073,7 @@ export function BreakdownBars({ items, dim, isLoading, activeSet, nameOf }: {
             <div className="text-right text-[12px] tabular-nums text-ink-2">
               {canDrill && it.count > 0 ? (
                 <button type="button" onClick={() => setOpen(open === it.key ? null : it.key)}
-                  title={`Show the ${it.count} opportunities in ${breakdownLabel(dim, it.key, it.label)}`}
+                  title={`Show the ${it.count} opportunities in ${breakdownLabel(dim, it.key, it.label, nameOf)}`}
                   className={cn("font-semibold hover:underline", open === it.key ? "text-accent" : "text-ink hover:text-accent")}>
                   {it.count}
                 </button>
@@ -917,7 +1084,7 @@ export function BreakdownBars({ items, dim, isLoading, activeSet, nameOf }: {
             </div>
           </div>
           {canDrill && open === it.key ? (
-            <OppMiniDrill label={breakdownLabel(dim, it.key, it.label)} nameOf={nameOf}
+            <OppMiniDrill label={breakdownLabel(dim, it.key, it.label, nameOf)} nameOf={nameOf}
               members={activeSet.filter((m) => m[field] === it.key)} />
           ) : null}
         </div>

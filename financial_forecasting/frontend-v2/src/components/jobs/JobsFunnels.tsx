@@ -15,9 +15,13 @@ import { cn } from "@/lib/utils";
 
 // ── Funnel-type config ─────────────────────────────────────────────────────
 
+// Contacts first: it's the top of the funnel, so it's where the walkthrough
+// starts. The deal-type lens is bound to the Opportunities tab (a contact has
+// no deal type), so it appears only once Opportunities is selected rather than
+// sitting inert next to Contacts.
 const FUNNEL_TABS: { type: FunnelType; label: string }[] = [
-  { type: "opportunities", label: "Opportunities" },
   { type: "prospects", label: "Contacts" },
+  { type: "opportunities", label: "Opportunities" },
   { type: "builders", label: "Builders" },
 ];
 
@@ -44,6 +48,22 @@ const WON_STAGE_KEYS = new Set(["closed_won", "accepted"]);
 
 const RECORD_CAP = 60;
 
+// ── Number-column geometry ──────────────────────────────────────────────────
+// The header and every stage row read these same widths. They used to be typed
+// out twice with different gaps: the header laid out four cells with no gaps
+// (312px) inside a 320px block, orphaning 8px on the right, while each row laid
+// out five children with gap-2 (344px). Both blocks are right-aligned, so the
+// counts landed 24px left of "#" and the pt-deltas 8px right of "Trend".
+// Grouping the cells in both places — and letting only ONE gap exist, between
+// the two groups — makes the two rows structurally identical.
+const COL_COUNT = "w-[64px]";
+const COL_TREND = "w-[88px]";
+const COL_PCT = "w-[72px]";
+/** Each group is exactly the sum of its columns: 64+88 and 72+88. */
+const GROUP_VOLUME = "w-[152px]";
+const GROUP_CONVERSION = "w-[160px]";
+
+
 // ── Component ───────────────────────────────────────────────────────────────
 
 const DEAL_TYPE_FILTERS: { value: string; label: string }[] = [
@@ -65,7 +85,7 @@ export function JobsFunnels({ builderSegment, only, period, periodLabel, dealTyp
    *  that can disagree with each other. */
   dealType?: string;
 } = {}) {
-  const [funnel, setFunnel] = useState<FunnelType>(only ?? "opportunities");
+  const [funnel, setFunnel] = useState<FunnelType>(only ?? FUNNEL_TABS[0].type);
   // Deal-type lens. Defaults to ALL: defaulting to Full-Time silently scoped the
   // Contacts funnel to people at companies that happen to hold an FT
   // opportunity, so "Assigned" read 18 when 267 contacts are assigned.
@@ -275,14 +295,18 @@ function FunnelCard({
           <span className="min-w-0 flex-1" />
           <span className="flex flex-shrink-0 flex-col">
             <span className="flex gap-2">
-              <span className="w-[152px] border-b border-border-strong pb-0.5 text-center text-[9.5px] font-bold uppercase tracking-[.1em] text-ink-3">Volume</span>
-              <span className="w-[160px] border-b border-border-strong pb-0.5 text-center text-[9.5px] font-bold uppercase tracking-[.1em] text-ink-3">Conversion</span>
+              <span className={cn(GROUP_VOLUME, "border-b border-border-strong pb-0.5 text-center text-[9.5px] font-bold uppercase tracking-[.1em] text-ink-3")}>Volume</span>
+              <span className={cn(GROUP_CONVERSION, "border-b border-border-strong pb-0.5 text-center text-[9.5px] font-bold uppercase tracking-[.1em] text-ink-3")}>Conversion</span>
             </span>
-            <span className="mt-1 flex text-[10px] font-semibold uppercase tracking-wider text-ink-4">
-              <span className="w-[64px] text-right">#</span>
-              <span className="w-[88px] text-right">Trend</span>
-              <span className="w-[72px] text-right">%</span>
-              <span className="w-[88px] text-right">Trend</span>
+            <span className="mt-1 flex gap-2 text-[10px] font-semibold uppercase tracking-wider text-ink-4">
+              <span className={cn(GROUP_VOLUME, "flex")}>
+                <span className={cn(COL_COUNT, "flex-shrink-0 text-right")}>#</span>
+                <span className={cn(COL_TREND, "flex-shrink-0 text-right")}>Trend</span>
+              </span>
+              <span className={cn(GROUP_CONVERSION, "flex")}>
+                <span className={cn(COL_PCT, "flex-shrink-0 text-right")}>%</span>
+                <span className={cn(COL_TREND, "flex-shrink-0 text-right")}>Trend</span>
+              </span>
             </span>
           </span>
         </div>
@@ -386,26 +410,29 @@ function FunnelCard({
                   {/* Four numbers: volume, volume trend, conversion in,
                       conversion trend. Widths match the header grid above. */}
                   <span className="flex flex-shrink-0 items-center gap-2 text-[11.5px]">
-                    <span className="w-[64px] text-right font-mono text-[14px] font-bold tabular-nums text-ink"
-                      title={isPeriod
-                        ? `${stage.count} ${FUNNEL_NOUN[funnel]} entered ${stage.label} in this period`
-                        : `${stage.count} ${FUNNEL_NOUN[funnel]} currently in ${stage.label}`}>
-                      {stage.count}
+                    <span className={cn(GROUP_VOLUME, "flex items-center")}>
+                      <span className={cn(COL_COUNT, "flex-shrink-0 text-right font-mono text-[14px] font-bold tabular-nums text-ink")}
+                        title={isPeriod
+                          ? `${stage.count} ${FUNNEL_NOUN[funnel]} entered ${stage.label} in this period`
+                          : `${stage.count} ${FUNNEL_NOUN[funnel]} currently in ${stage.label}`}>
+                        {stage.count}
+                      </span>
+                      <span className={cn(COL_TREND, "flex-shrink-0 text-right")}>
+                        <PctTrend current={stage.count} prior={stage.count_prev} noun={FUNNEL_NOUN[funnel]} />
+                      </span>
                     </span>
-                    <span className="w-[88px] text-right">
-                      <PctTrend current={stage.count} prior={stage.count_prev} noun={FUNNEL_NOUN[funnel]} />
-                    </span>
-                    <span className="w-0" />
-                    <span className="w-[72px] text-right tabular-nums"
-                      title={prevLabel && stage.conversion_in != null
-                        ? `${stage.conversion_in}% of what entered ${prevLabel} in this period reached ${stage.label}. Over 100% means more moved forward than arrived — a backlog clearing, since they entered ${prevLabel} earlier.`
-                        : "No prior stage to convert from"}>
-                      {stage.conversion_in != null ? (
-                        <span className="font-mono text-[13px] font-semibold text-ink">{stage.conversion_in}%</span>
-                      ) : <span className="text-ink-4">—</span>}
-                    </span>
-                    <span className="w-[88px] text-right">
-                      <PtTrend current={stage.conversion_in} prior={stage.conversion_in_prev} />
+                    <span className={cn(GROUP_CONVERSION, "flex items-center")}>
+                      <span className={cn(COL_PCT, "flex-shrink-0 text-right tabular-nums")}
+                        title={prevLabel && stage.conversion_in != null
+                          ? `${stage.conversion_in}% of what entered ${prevLabel} in this period reached ${stage.label}. Over 100% means more moved forward than arrived — a backlog clearing, since they entered ${prevLabel} earlier.`
+                          : "No prior stage to convert from"}>
+                        {stage.conversion_in != null ? (
+                          <span className="font-mono text-[13px] font-semibold text-ink">{stage.conversion_in}%</span>
+                        ) : <span className="text-ink-4">—</span>}
+                      </span>
+                      <span className={cn(COL_TREND, "flex-shrink-0 text-right")}>
+                        <PtTrend current={stage.conversion_in} prior={stage.conversion_in_prev} />
+                      </span>
                     </span>
                   </span>
                 </button>

@@ -274,7 +274,6 @@ function DailyDigestBlock({ periodEnd }: { periodEnd?: string }) {
           onChange={(e) => { if (e.target.value) setDigestDate(e.target.value); }}
           title="The digest covers a single day — this one"
           className="h-6 rounded border border-border-strong bg-surface px-1.5 text-[11.5px] text-ink-2 outline-none focus:border-accent" />
-        <span className="text-[11px] text-ink-4">one day only</span>
         <div className="flex-1" />
         <button type="button" onClick={copy} disabled={!dg}
           className="h-7 rounded-md border border-border-strong bg-surface px-2.5 text-[12px] font-medium text-ink-2 hover:bg-surface-2 disabled:opacity-40">
@@ -295,7 +294,6 @@ function DailyDigestBlock({ periodEnd }: { periodEnd?: string }) {
           ) : (
             <span className="text-ink-4">No builder submissions</span>
           )}
-          <span className="text-[11px] text-ink-4">Builder outreach isn't tracked yet — add it to the Slack post by hand.</span>
         </div>
       )}
     </div>
@@ -948,8 +946,7 @@ function RequiringAttention({ owner, nameOf, staffEmails }: {
 
   return (
     <div className="flex flex-col gap-3">
-      <SectionHead title="Requiring attention"
-        note="three queues that need a person — click a card for the detail" />
+      <SectionHead title="Requiring attention" />
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         <AttentionCard
@@ -1069,8 +1066,6 @@ export function JobsOutreach() {
           setOwner(owner.toLowerCase() === email ? "" : canonical);
         }} />
 
-      <RequiringAttention owner={owner || undefined} nameOf={nameOf} staffEmails={staffEmails} />
-
       <div className="flex flex-col gap-3">
         <SectionHead title="Campaigns · coverage" note="the warm list, by source" />
         <TagCampaigns />
@@ -1110,6 +1105,10 @@ export function JobsOutreach() {
       </div>
       <ActivityTrends scope={scope} owner={owner || undefined} range={range} />
 
+      {/* Requiring attention closes the page (moved below the trend band
+          2026-08-04): it's the action list you leave the review with, so it
+          reads better as the last thing than wedged mid-scroll. */}
+      <RequiringAttention owner={owner || undefined} nameOf={nameOf} staffEmails={staffEmails} />
     </div>
   );
 }
