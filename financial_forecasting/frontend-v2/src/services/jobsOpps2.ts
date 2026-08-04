@@ -343,3 +343,128 @@ export function useAdvanceBuilderStage() {
     onError: () => toast.error("Update failed"),
   });
 }
+
+// ── Roles board (Placement > Roles — every role, every account) ────────────────
+
+export interface RolesBoardApplication {
+  job_application_id: number;
+  builder: string;
+  stage: string | null;
+  date_applied: string | null;
+}
+
+export interface RolesBoardRole extends Role {
+  account_name: string | null;
+  opp_stage: string | null;
+  applications: RolesBoardApplication[];
+}
+
+export function useRolesBoard() {
+  return useQuery<RolesBoardRole[]>({
+    queryKey: ["jobs", "roles-board"],
+    queryFn: async () => {
+      const { data } = await api.get<ApiResponse<RolesBoardRole[]>>("/api/jobs/roles/board");
+      return data.data;
+    },
+    staleTime: 15_000,
+  });
+}
+
+export interface OpportunitySearchResult {
+  id: string;
+  account_name: string | null;
+  title: string | null;
+  stage: string;
+}
+
+/** Opportunity picker for the Roles board's Add Role flow. */
+export function useSearchOpportunities(q: string) {
+  return useQuery<OpportunitySearchResult[]>({
+    queryKey: ["jobs", "opportunity-search", q.trim().toLowerCase()],
+    queryFn: async () => {
+      const { data } = await api.get<ApiResponse<OpportunitySearchResult[]>>(
+        `/api/jobs/opportunities/search?q=${encodeURIComponent(q.trim())}`,
+      );
+      return data.data;
+    },
+    enabled: q.trim().length >= 2,
+    staleTime: 15_000,
+  });
+}
+
+export interface RoleApplicationCreateBody {
+  user_id: number;
+  builder_name?: string;
+  stage?: AppStage;
+  date_applied?: string;
+}
+
+/** Log a builder application directly against a role from the Roles board
+ *  (rather than needing to open the parent opportunity first). */
+export function useCreateRoleApplication(roleId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (body: RoleApplicationCreateBody) => {
+      const { data } = await api.post<ApiResponse<{ job_application_id: number }>>(
+        `/api/jobs/roles/${roleId}/applications`,
+        body,
+      );
+      return data.data;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["jobs", "roles-board"] });
+      invalidateOppDependents(qc);
+      toast.success("Application logged");
+    },
+    onError: () => toast.error("Failed to log application"),
+  });
+}
+
+export interface MatchSuggestion {
+  job_application_id: number;
+  builder: string;
+  company_name: string | null;
+  role_title: string | null;
+  date_applied: string | null;
+  suggested_match: {
+    jobs_role_id: string;
+    role_title: string | null;
+    account_name: string | null;
+    confidence: "exact" | "normalized";
+  };
+}
+
+/** Backfill helper: suggested role matches for recently-applied, still-unlinked
+ *  applications. Never auto-applied — each suggestion needs an explicit confirm. */
+export function useMatchSuggestions(days = 30) {
+  return useQuery<MatchSuggestion[]>({
+    queryKey: ["jobs", "match-suggestions", days],
+    queryFn: async () => {
+      const { data } = await api.get<ApiResponse<MatchSuggestion[]>>(
+        `/api/jobs/job-applications/match-suggestions?days=${days}`,
+      );
+      return data.data;
+    },
+    staleTime: 30_000,
+  });
+}
+
+export function useConfirmMatch() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ appId, jobsRoleId }: { appId: number; jobsRoleId: string }) => {
+      const { data } = await api.post<ApiResponse<{ job_application_id: number; jobs_role_id: string }>>(
+        `/api/jobs/job-applications/${appId}/confirm-match`,
+        { jobs_role_id: jobsRoleId },
+      );
+      return data.data;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["jobs", "match-suggestions"] });
+      qc.invalidateQueries({ queryKey: ["jobs", "roles-board"] });
+      invalidateOppDependents(qc);
+      toast.success("Match confirmed");
+    },
+    onError: () => toast.error("Failed to confirm match"),
+  });
+}

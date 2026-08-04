@@ -1337,6 +1337,52 @@ async def hire_into_role(
     return {"success": True, "data": {"role": _role_dict(updated), "employment_record_id": new_id, "sf_sync": sf_sync}}
 
 
+@router.get("/roles/board")
+async def roles_board(
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Every role across every (non-deleted) opportunity, each with its matched
+    builder applications — the cross-account Placement > Roles board. Builder
+    name is derived from the job_applications.notes prefix (see
+    opp_builder_activity) rather than joined from public.users, which isn't
+    directly readable under every DB role (e.g. avni_dev)."""
+    roles = await conn.fetch(
+        """
+        SELECT r.*, o.account_name, o.stage AS opp_stage
+        FROM bedrock.jobs_role r
+        JOIN bedrock.jobs_opportunity o ON o.id = r.opportunity_id
+        WHERE o.deleted_at IS NULL
+        ORDER BY o.account_name, r.created_at DESC
+        """
+    )
+    apps = await conn.fetch(
+        """
+        SELECT job_application_id, jobs_role_id,
+               trim(split_part(notes, ':', 1)) AS builder,
+               stage, date_applied
+        FROM public.job_applications
+        WHERE jobs_role_id IS NOT NULL
+        ORDER BY date_applied DESC NULLS LAST
+        """
+    )
+    apps_by_role: dict = {}
+    for a in apps:
+        apps_by_role.setdefault(str(a["jobs_role_id"]), []).append({
+            "job_application_id": a["job_application_id"],
+            "builder": a["builder"],
+            "stage": a["stage"],
+            "date_applied": a["date_applied"].isoformat() if a["date_applied"] else None,
+        })
+
+    out = []
+    for r in roles:
+        d = _role_dict(r)
+        d["applications"] = apps_by_role.get(d["id"], [])
+        out.append(d)
+    return {"success": True, "data": out}
+
+
 class PlacementSyncChoice(BaseModel):
     sf_account_id: Optional[str] = None        # link this existing SF account
     force_create_account: bool = False         # or explicitly create a new one
@@ -1609,6 +1655,170 @@ async def update_builder_activity(
     if result == "UPDATE 0":
         raise HTTPException(404, "Application not found")
     return {"success": True, "data": {"job_application_id": app_id, "stage": body.stage}}
+
+
+class RoleApplicationCreate(BaseModel):
+    user_id:      int                       # builder user_id (from the builder picker)
+    builder_name: Optional[str] = None      # stored in notes prefix for display
+    stage:        str = "applied"
+    date_applied: Optional[date] = None
+
+
+@router.post("/roles/{role_id}/applications")
+async def create_role_application(
+    role_id: UUID,
+    body: RoleApplicationCreate,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Log a builder application directly against a role from the Roles board
+    (rather than needing to open the parent opportunity first). Derives the
+    opportunity + company name from the role, then inserts with the same shape
+    as create_builder_activity so the existing read paths (opp_builder_activity,
+    roles_board) stay consistent."""
+    if body.stage not in VALID_APP_STAGES:
+        raise HTTPException(400, f"Invalid stage: {body.stage}")
+    role = await conn.fetchrow(
+        """
+        SELECT r.title, r.opportunity_id, o.account_name
+        FROM bedrock.jobs_role r
+        JOIN bedrock.jobs_opportunity o ON o.id = r.opportunity_id
+        WHERE r.id=$1 AND o.deleted_at IS NULL
+        """,
+        role_id,
+    )
+    if not role:
+        raise HTTPException(404, "Role not found")
+
+    notes = f"{body.builder_name}: logged via Placement Roles" if body.builder_name else None
+    app_id = await conn.fetchval(
+        """
+        INSERT INTO public.job_applications
+            (builder_id, company_name, role_title, stage, date_applied,
+             source_type, jobs_opportunity_id, jobs_role_id, notes)
+        VALUES ($1, $2, $3, $4, COALESCE($5, CURRENT_DATE),
+                'Pursuit_referred', $6, $7, $8)
+        RETURNING job_application_id
+        """,
+        body.user_id,
+        role["account_name"],
+        role["title"] or "Role",
+        body.stage,
+        body.date_applied,
+        role["opportunity_id"],
+        role_id,
+        notes,
+    )
+    return {"success": True, "data": {"job_application_id": app_id, "stage": body.stage}}
+
+
+def _title_nkey(title: str) -> str:
+    """Normalized role-title key for backfill matching — case/punctuation
+    insensitive, same spirit as _acct_nkey but without the legal-suffix strip
+    (titles don't have those)."""
+    s = (title or "").strip().lower()
+    s = re.sub(r"[,\.\&\'\"()]", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+@router.get("/job-applications/match-suggestions")
+async def job_application_match_suggestions(
+    days: int = Query(30, ge=1, le=365),
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """One-time-backfill helper: for unlinked applications from the last N
+    days, suggest a jobs_role match by company + title so a human can confirm.
+    Never auto-applied — see confirm_job_application_match. Matching mirrors
+    the only existing precedent in this codebase (services/sf_company_matcher.py
+    and _acct_nkey above): exact normalized-name match first, then a looser
+    normalized-title check within the same account."""
+    apps = await conn.fetch(
+        """
+        SELECT job_application_id, company_name, role_title, date_applied,
+               trim(split_part(notes, ':', 1)) AS builder
+        FROM public.job_applications
+        WHERE jobs_role_id IS NULL
+          AND date_applied >= (CURRENT_DATE - $1::int * INTERVAL '1 day')
+        ORDER BY date_applied DESC
+        """,
+        days,
+    )
+    if not apps:
+        return {"success": True, "data": []}
+
+    roles = await conn.fetch(
+        """
+        SELECT r.id, r.title, o.account_name
+        FROM bedrock.jobs_role r
+        JOIN bedrock.jobs_opportunity o ON o.id = r.opportunity_id
+        WHERE o.deleted_at IS NULL AND r.status = 'open'
+        """
+    )
+    role_index = [
+        {"id": str(r["id"]), "title": r["title"], "account_name": r["account_name"],
+         "account_key": _acct_nkey(r["account_name"]), "title_key": _title_nkey(r["title"])}
+        for r in roles
+    ]
+
+    suggestions = []
+    for a in apps:
+        app_account_key = _acct_nkey(a["company_name"])
+        app_title_key = _title_nkey(a["role_title"])
+        best = None
+        for r in role_index:
+            if r["account_key"] != app_account_key:
+                continue
+            confidence = "exact" if r["title_key"] == app_title_key else "normalized"
+            if best is None or (confidence == "exact" and best["confidence"] != "exact"):
+                best = {
+                    "jobs_role_id": r["id"], "role_title": r["title"],
+                    "account_name": r["account_name"], "confidence": confidence,
+                }
+            if confidence == "exact":
+                break
+        if best:
+            suggestions.append({
+                "job_application_id": a["job_application_id"],
+                "builder": a["builder"],
+                "company_name": a["company_name"],
+                "role_title": a["role_title"],
+                "date_applied": a["date_applied"].isoformat() if a["date_applied"] else None,
+                "suggested_match": best,
+            })
+    return {"success": True, "data": suggestions}
+
+
+class MatchConfirm(BaseModel):
+    jobs_role_id: str
+
+
+@router.post("/job-applications/{app_id}/confirm-match")
+async def confirm_job_application_match(
+    app_id: int,
+    body: MatchConfirm,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Link an application to a role. Only fires on an explicit staff confirm
+    click in the UI — matches from match-suggestions are suggested, never
+    auto-applied."""
+    role_id = UUID(body.jobs_role_id)
+    role = await conn.fetchrow("SELECT opportunity_id FROM bedrock.jobs_role WHERE id=$1", role_id)
+    if not role:
+        raise HTTPException(404, "Role not found")
+    result = await conn.execute(
+        """
+        UPDATE public.job_applications
+        SET jobs_role_id=$1, jobs_opportunity_id=$2, updated_at=now()
+        WHERE job_application_id=$3
+        """,
+        role_id, role["opportunity_id"], app_id,
+    )
+    if result == "UPDATE 0":
+        raise HTTPException(404, "Application not found")
+    return {"success": True, "data": {"job_application_id": app_id, "jobs_role_id": str(role_id)}}
 
 
 # ── Job-ready (L3+) pool ───────────────────────────────────────────────────────
@@ -5849,6 +6059,33 @@ async def list_opportunities(
         f"SELECT count(*) FROM bedrock.jobs_opportunity o WHERE {where}", *params
     )
     return {"success": True, "data": [_norm_opp(dict(r)) for r in rows], "total": total}
+
+
+@router.get("/opportunities/search")
+async def search_opportunities(
+    q: str = Query(..., min_length=1),
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Lightweight opportunity picker (by employer/account name or deal title) —
+    used by the Roles board's Add Role flow to attach a new role to an existing
+    opportunity instead of always creating one from scratch."""
+    like = f"%{q.strip().lower()}%"
+    rows = await conn.fetch(
+        """
+        SELECT id, account_name, title, stage
+        FROM bedrock.jobs_opportunity
+        WHERE deleted_at IS NULL
+          AND (lower(trim(account_name)) LIKE $1 OR lower(trim(title)) LIKE $1)
+        ORDER BY account_name
+        LIMIT 20
+        """,
+        like,
+    )
+    return {"success": True, "data": [
+        {"id": str(r["id"]), "account_name": r["account_name"], "title": r["title"], "stage": r["stage"]}
+        for r in rows
+    ]}
 
 
 @router.post("/opportunities")
