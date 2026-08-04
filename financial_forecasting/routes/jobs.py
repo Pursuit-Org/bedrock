@@ -2486,6 +2486,85 @@ _SENIORITY_RUNGS = ["Highest", "High", "Medium", "Low", "Lowest"]
 _TRISTATE_VALUES = ["Yes", "HQ elsewhere", "Unknown"]
 
 
+_STAFF_EMAIL_TOKEN = ":staff_email"
+
+
+def _net_rule_clause(
+    rule: dict,
+    fields: dict[str, tuple[str, str]],
+    params: list,
+    staff_email: str = "",
+) -> tuple[str, list]:
+    """Translate one {field,op,values} filter rule into a SQL clause.
+
+    Returns (clause, params); an empty clause means "no-op, skip this rule".
+    Values are always bound, never interpolated, and `fields` is a whitelist —
+    an unrecognised field or an op the field's type doesn't support raises 400
+    rather than silently matching everything, which would under-filter without
+    telling anyone.
+
+    An expression may contain the literal `:staff_email` token; it is bound on
+    demand, only for the rules that actually use it. Binding it up front instead
+    would hand the count queries a parameter their WHERE never references, and
+    asyncpg rejects an argument count that doesn't match the statement.
+
+    list_contacts has its own larger translator (see `_RULE_FIELDS` there) that
+    also covers number/date/recency. That one is load-bearing and carries
+    filter-fuzzing fixes from 2026-07-16, so it was left alone rather than
+    refactored underneath. This helper is the place to consolidate to when
+    someone has the appetite to migrate it.
+    """
+    field, op = rule.get("field"), rule.get("op")
+    values = [str(v) for v in (rule.get("values") or [])]
+    spec = fields.get(field)
+    if spec is None:
+        raise HTTPException(400, f"unfilterable field: {field}")
+    ftype, expr = spec
+
+    if _STAFF_EMAIL_TOKEN in expr:
+        # One binding, substituted into every occurrence in this expression.
+        params.append(f"%{staff_email}%")
+        expr = expr.replace(_STAFF_EMAIL_TOKEN, f"${len(params)}")
+
+    if op == "is_empty":
+        if ftype == "tags":
+            return f"coalesce(array_length({expr}, 1), 0) = 0", params
+        if ftype == "boolean":
+            return f"NOT {expr}", params          # a boolean is never "empty"
+        return f"(({expr}) IS NULL OR ({expr})::text = '')", params
+    if op == "is_not_empty":
+        if ftype == "tags":
+            return f"coalesce(array_length({expr}, 1), 0) > 0", params
+        if ftype == "boolean":
+            return expr, params
+        return f"(({expr}) IS NOT NULL AND ({expr})::text <> '')", params
+
+    if ftype == "boolean" and op in ("equals", "not_equals"):
+        # "yes"/"no" from the picker, flipped again by not_equals.
+        want = ((values[0] if values else "") == "yes") ^ (op == "not_equals")
+        return (expr if want else f"NOT {expr}"), params
+
+    if not values:
+        return "", params                          # nothing selected yet — no-op
+
+    neg = "NOT " if op == "not_equals" else ""
+    if ftype == "tags" and op in ("equals", "not_equals"):
+        params.append(values)
+        return f"{neg}(coalesce({expr}, '{{}}'::text[]) && ${len(params)}::text[])", params
+    if ftype == "select" and op in ("equals", "not_equals"):
+        params.append(values)
+        return f"{neg}(coalesce(({expr})::text, '') = ANY(${len(params)}::text[]))", params
+    if ftype == "text" and op in ("contains", "equals", "not_equals"):
+        if op == "contains":
+            params.append(f"%{values[0]}%")
+            return f"lower(coalesce({expr}, '')) LIKE lower(${len(params)})", params
+        params.append(values[0])
+        sym = "=" if op == "equals" else "<>"
+        return f"lower(coalesce({expr}, '')) {sym} lower(${len(params)})", params
+
+    raise HTTPException(400, f"unsupported op '{op}' for {field}")
+
+
 def _tristate_case(col: str) -> str:
     """Map a company HQ string to tri-state presence.
 
@@ -6492,19 +6571,39 @@ async def my_network(
         where += f" AND (c.full_name ILIKE ${len(params)} OR c.current_company ILIKE ${len(params)} OR c.current_title ILIKE ${len(params)})"
 
     # ── Filter rules (the page's Filter menu) ─────────────────────────────────
-    # Four closed-vocabulary select fields, each mapping to a whitelisted SQL
-    # expression that mirrors the column the page displays. An unknown field or
-    # op is a 400, never a silent pass-through that would under-filter.
-    #
-    # list_contacts has a fuller sibling of this translator (see _RULE_FIELDS
-    # there) covering text/number/date/tags/recency. It is deliberately not
-    # shared: the two whitelists map different tables and aliases, and that
-    # endpoint carries filter-fuzzing fixes worth not disturbing.
-    _NET_RULE_FIELDS: dict[str, str] = {
-        "headcount": "co.size_bucket",
-        "industry":  "co.industry",
-        "tristate":  _tristate_case("co.hq_location"),
-        "seniority": _seniority_case("c.current_title"),
+    # Each UI field maps to a whitelisted (type, SQL expression) pair mirroring
+    # the column the page displays. An unknown field or op is a 400, never a
+    # silent pass-through that would under-filter.
+    _NET_RULE_FIELDS: dict[str, tuple[str, str]] = {
+        # firmographics
+        "headcount": ("select", "co.size_bucket"),
+        "industry":  ("select", "co.industry"),
+        "tristate":  ("select", _tristate_case("co.hq_location")),
+        "seniority": ("select", _seniority_case("c.current_title")),
+        # the contact themselves
+        "company":   ("text", "c.current_company"),
+        "title":     ("text", "c.current_title"),
+        "tags":      ("tags", "c.tags"),
+        # signals — the same three chips the row renders, so the filter and the
+        # badge can never disagree.
+        "is_jobs":   ("boolean", "(c.is_jobs_contact = true)"),
+        "has_open_opp": ("boolean",
+            "EXISTS (SELECT 1 FROM bedrock.jobs_opportunity o2 WHERE o2.deleted_at IS NULL"
+            " AND o2.stage LIKE 'active%'"
+            " AND lower(trim(o2.account_name)) = lower(trim(c.current_company)))"),
+        "hired_before": ("boolean",
+            "EXISTS (SELECT 1 FROM public.employment_records e2 WHERE c.current_company IS NOT NULL"
+            " AND lower(e2.company_name) = lower(c.current_company))"),
+        # "warm" = THIS staff member has touched them; "touched" = anyone has.
+        # Mirrors the two LATERALs in the rows query, including the relevance
+        # gate. :staff_email is bound on demand — see _net_rule_clause.
+        "warm": ("boolean",
+            f"EXISTS (SELECT 1 FROM bedrock.activity a2 WHERE a2.participant_public_contact_id = c.contact_id"
+            f" AND a2.deleted_at IS NULL AND {_jobs_relevant('a2')}"
+            f" AND (a2.email_from ILIKE {_STAFF_EMAIL_TOKEN} OR a2.logged_by ILIKE {_STAFF_EMAIL_TOKEN}))"),
+        "touched": ("boolean",
+            f"EXISTS (SELECT 1 FROM bedrock.activity a2 WHERE a2.participant_public_contact_id = c.contact_id"
+            f" AND a2.deleted_at IS NULL AND {_jobs_relevant('a2')})"),
     }
     if filter_rules:
         try:
@@ -6513,23 +6612,9 @@ async def my_network(
         except Exception:
             raise HTTPException(400, "filters must be a JSON array of {field,op,values}")
         for rule in parsed_rules[:20]:
-            field, op = rule.get("field"), rule.get("op")
-            values = [str(v) for v in (rule.get("values") or [])]
-            expr = _NET_RULE_FIELDS.get(field)
-            if expr is None:
-                raise HTTPException(400, f"unfilterable field: {field}")
-            if op == "is_empty":
-                where += f" AND ({expr} IS NULL OR ({expr})::text = '')"
-            elif op == "is_not_empty":
-                where += f" AND (({expr}) IS NOT NULL AND ({expr})::text <> '')"
-            elif op in ("equals", "not_equals"):
-                if not values:
-                    continue
-                params.append(values)
-                neg = "NOT " if op == "not_equals" else ""
-                where += f" AND {neg}(coalesce(({expr})::text, '') = ANY(${len(params)}::text[]))"
-            else:
-                raise HTTPException(400, f"unsupported op '{op}' for {field}")
+            clause, params = _net_rule_clause(rule, _NET_RULE_FIELDS, params, email)
+            if clause:
+                where += f" AND {clause}"
 
     # `total` is the whole network; `matched` is what the filters + search leave.
     total = await conn.fetchval(f"SELECT count(*) FROM {NET_FROM} WHERE {base_where}", sid)
@@ -6549,6 +6634,7 @@ async def my_network(
                (opp.has_open IS NOT NULL) AS has_open_opp,
                cs.status AS status, cs.reason AS status_reason,
                -- firmographics behind the page's filters
+               coalesce(c.tags, '{{}}'::text[]) AS tags,
                co.size_bucket AS headcount_band, co.industry AS industry, co.hq_location,
                ({_tristate_case('co.hq_location')}) AS tristate,
                ({_seniority_case('c.current_title')}) AS seniority
@@ -6607,6 +6693,7 @@ async def my_network(
             "has_open_opp": r["has_open_opp"],
             "status": r["status"] or "new",
             "status_reason": r["status_reason"],
+            "tags": list(r["tags"] or []),
             "headcount_band": r["headcount_band"],
             "industry": r["industry"],
             "hq_location": r["hq_location"],

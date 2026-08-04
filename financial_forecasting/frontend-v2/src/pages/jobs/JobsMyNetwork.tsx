@@ -14,7 +14,10 @@ import { cn } from "@/lib/utils";
 import { ContactExpandTabs } from "@/components/jobs/jobsEntity";
 import { SortableHeader } from "@/components/ui/SortableHeader";
 import { useSort, compare } from "@/lib/sort";
-import { useMyNetwork, useMyNetworkFacets, useSetConnectionStatus, type MyNetworkFacets, type NetworkConnection } from "@/services/jobs";
+import {
+  useContactTagCatalog, useMyNetwork, useMyNetworkFacets, useSetConnectionStatus,
+  type MyNetworkFacets, type NetworkConnection,
+} from "@/services/jobs";
 import { relDay } from "@/lib/format";
 import {
   AddFilterButton, FilterChip, describeRule, ruleApplies,
@@ -60,13 +63,30 @@ const NET_SORT_VALUE: Record<NetSortKey, (c: NetworkConnection) => unknown> = {
 // four dimensions are the ones the employer-prospect ranking work sliced on;
 // Investor is the fifth and needs bedrock.company_investor, which does not exist
 // yet — see the plan's deferred section.
-type Field = "headcount" | "tristate" | "industry" | "seniority";
+type Field =
+  | "headcount" | "tristate" | "industry" | "seniority"
+  | "company" | "title" | "tags"
+  | "is_jobs" | "has_open_opp" | "hired_before" | "warm" | "touched";
 const FILTERABLE: Record<Field, FieldMeta<NetworkConnection>> = {
+  // firmographics
   headcount: { label: "Headcount", type: "select", getValue: (c) => c.headcount_band ?? "" },
   tristate: { label: "Tri-state presence", type: "select", getValue: (c) => c.tristate ?? "" },
   industry: { label: "Industry", type: "select", getValue: (c) => c.industry ?? "" },
   seniority: { label: "Seniority", type: "select", getValue: (c) => c.seniority ?? "" },
+  // the contact themselves
+  company: { label: "Company", type: "text", getValue: (c) => c.current_company ?? "" },
+  title: { label: "Title", type: "text", getValue: (c) => c.current_title ?? "" },
+  tags: { label: "Tags", type: "tags", getValue: (c) => (c.tags ?? []).join(",") },
+  // signals — the same three chips the row renders, plus the warmth dot
+  is_jobs: { label: "In jobs pipeline", type: "select", getValue: (c) => (c.is_jobs_contact ? "yes" : "no") },
+  has_open_opp: { label: "Open opportunity", type: "select", getValue: (c) => (c.has_open_opp ? "yes" : "no") },
+  hired_before: { label: "Company hired before", type: "select", getValue: (c) => (c.company_hired_before ? "yes" : "no") },
+  warm: { label: "You've been in touch", type: "select", getValue: (c) => (c.warm ? "yes" : "no") },
+  touched: { label: "Pursuit has been in touch", type: "select", getValue: (c) => (c.touched ? "yes" : "no") },
 };
+const YESNO = [{ value: "yes", label: "Yes" }, { value: "no", label: "No" }];
+/** Stable empty default so the tag-catalog fallback doesn't remake the memo. */
+const EMPTY_TAGS: { slug: string; label: string }[] = [];
 // Ladders, so the menu reads in a sensible order rather than alphabetically
 // ("1-10, 1001-5000, 11-50, …"). Values absent from a staff member's network are
 // dropped; anything the server returns that we don't know about is appended
@@ -92,20 +112,30 @@ function byLadder(values: string[], order: string[]): string[] {
   const known = order.filter((v) => values.includes(v));
   return [...known, ...values.filter((v) => !order.includes(v))];
 }
-function buildSelectOptions(facets: MyNetworkFacets | undefined): Partial<Record<Field, { value: string; label: string }[]>> {
+function buildSelectOptions(
+  facets: MyNetworkFacets | undefined,
+  tagCatalog: { slug: string; label: string }[],
+): Partial<Record<Field, { value: string; label: string }[]>> {
   const f = facets ?? { headcount: [], industry: [], tristate: [], seniority: [] };
   return {
     headcount: byLadder(f.headcount, HEADCOUNT_ORDER).map((v) => ({ value: v, label: v })),
     tristate: byLadder(f.tristate, TRISTATE_ORDER).map((v) => ({ value: v, label: TRISTATE_LABEL[v] ?? v })),
     seniority: byLadder(f.seniority, SENIORITY_ORDER).map((v) => ({ value: v, label: SENIORITY_LABEL[v] ?? v })),
     industry: [...f.industry].sort().map((v) => ({ value: v, label: v })),
+    tags: tagCatalog.map((t) => ({ value: t.slug, label: t.label })),
+    // Company and title are free-text "contains" rules — no option list.
+    is_jobs: YESNO, has_open_opp: YESNO, hired_before: YESNO, warm: YESNO, touched: YESNO,
   };
 }
-/** Chip text. Only tri-state needs relabelling — seniority deliberately keeps its
- *  bare rung ("Highest"), because the explanatory menu label is far too wide for
- *  a chip. */
-function renderFilterValue(field: Field, value: string): string {
-  return field === "tristate" ? TRISTATE_LABEL[value] ?? value : value;
+/** Chip text: turn stored values into what the menu showed. Seniority deliberately
+ *  keeps its bare rung ("Highest") — the explanatory menu label is far too wide
+ *  for a chip. */
+function makeRenderFilterValue(tagCatalog: { slug: string; label: string }[]) {
+  return (field: Field, value: string): string => {
+    if (field === "tristate") return TRISTATE_LABEL[value] ?? value;
+    if (field === "tags") return tagCatalog.find((t) => t.slug === value)?.label ?? value;
+    return value;
+  };
 }
 
 // ── Your call: 👍 / 👎 ───────────────────────────────────────────────────────
@@ -214,7 +244,9 @@ function MyNetworkZone() {
   const { sort, toggle: toggleSort } = useSort<NetSortKey>();
   const { data, isLoading } = useMyNetwork(q || undefined, rules);
   const { data: facets } = useMyNetworkFacets();
-  const selectOptions = useMemo(() => buildSelectOptions(facets), [facets]);
+  const { data: tagCatalog = EMPTY_TAGS } = useContactTagCatalog();
+  const selectOptions = useMemo(() => buildSelectOptions(facets, tagCatalog), [facets, tagCatalog]);
+  const renderFilterValue = useMemo(() => makeRenderFilterValue(tagCatalog), [tagCatalog]);
   let conns = data?.connections ?? [];
   // The server already applied these rules in SQL; re-applying them here is a
   // guard against a client/server semantic mismatch, the same belt-and-braces

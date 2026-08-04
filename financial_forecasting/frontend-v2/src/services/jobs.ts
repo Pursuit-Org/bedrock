@@ -1634,6 +1634,8 @@ export interface NetworkConnection {
   // 'Unknown' — never 'No', because an HQ cannot refute an office.
   headcount_band: string | null; industry: string | null; hq_location: string | null;
   tristate: string | null; seniority: string | null;
+  /** Curated CRM tags (bedrock.contact_tag_catalog slugs). */
+  tags: string[];
 }
 /** The filter menu's option lists for this staff member's network. */
 export interface MyNetworkFacets {
