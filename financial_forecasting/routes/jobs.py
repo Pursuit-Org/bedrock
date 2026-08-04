@@ -2449,6 +2449,61 @@ def _jobs_relevant(alias: str) -> str:
             f"OR {alias}.type NOT IN ('email','meeting'))")
 
 
+# ── firmographic derivations (My Network filters) ─────────────────────────────
+# Both ladders are PORTED VERBATIM from ~/employer-prospect-ranking/scripts/lib_sql.py,
+# which implements the "Prioritizing our employer prospect list" doc
+# (1C3BNx4gbEA91BXciq22UP58OoUgAZGbXdzUsC42jshQ). They were reviewed against that
+# doc's own tables — do not re-derive them here. If one changes, change both.
+
+def _seniority_case(col: str) -> str:
+    """Map a job title to the doc's seniority ladder.
+
+    Evaluated top to bottom, first match wins, so the narrowest patterns come
+    first. Two judgment calls, both settled by the doc's "when in doubt, rate it
+    down": SVP → Medium (its High is "C-suite or EVP", and SVP is neither) and
+    Managing Director → Medium (senior finance, but not C-suite; plain Director
+    stays Low)."""
+    return f"""
+CASE
+  WHEN {col} IS NULL OR btrim({col}) = '' THEN 'Lowest'
+  WHEN {col} ~* '(chief executive|(^|[^a-z])ceo([^a-z]|$)|founder|co[- ]?founder|(^|[^a-z])owner([^a-z]|$)|proprietor|managing partner|founding partner)'
+       THEN 'Highest'
+  WHEN {col} ~* '(^|[^a-z])(chief[a-z ]*officer|chief [a-z]+|cto|cfo|coo|chro|cio|cmo|cro|cpo|cso|cdo|cco|ciso|cxo)([^a-z]|$)'
+       OR {col} ~* '(^|[^a-z])(evp|executive vice president|president|chairman|chairwoman|chairperson|general partner)([^a-z]|$)'
+       THEN 'High'
+  WHEN {col} ~* '(^|[^a-z])(svp|senior vice president|vp|vice president|head of|global head|managing director|(^|[^a-z])partner([^a-z]|$))'
+       THEN 'Medium'
+  WHEN {col} ~* '(^|[^a-z])(director|manager|principal|team lead|tech lead|supervisor)([^a-z]|$)'
+       THEN 'Low'
+  ELSE 'Lowest'
+END"""
+
+
+# The COMPLETE output domains of the two expressions below. Both CASEs are total
+# (every input lands on a branch, NULL included), so these lists need no query to
+# discover — which keeps them out of the per-request facet scan.
+_SENIORITY_RUNGS = ["Highest", "High", "Medium", "Low", "Lowest"]
+_TRISTATE_VALUES = ["Yes", "HQ elsewhere", "Unknown"]
+
+
+def _tristate_case(col: str) -> str:
+    """Map a company HQ string to tri-state presence.
+
+    Yields 'Yes' | 'HQ elsewhere' | 'Unknown' and DELIBERATELY NEVER 'No'.
+    Presence is not headquarters: Google, Amazon and Microsoft all run large New
+    York offices from out-of-state HQs. An HQ can confirm presence; only research
+    can refute it. Anything stronger than 'HQ elsewhere' would be a claim this
+    column cannot support."""
+    return f"""
+CASE
+  WHEN coalesce({col}, '') = '' OR lower({col}) = 'null' THEN 'Unknown'
+  WHEN {col} ~* '(,\\s*(NY|NJ|CT)\\s*$)|(,\\s*(NY|NJ|CT)\\s*,)'
+       OR {col} ~* '(new york|brooklyn|bronx|queens|manhattan|staten island|long island city|yonkers|white plains|new rochelle|mount vernon|westchester|hoboken|newark|jersey city|princeton|hackensack|paramus|morristown|stamford|greenwich|norwalk|bridgeport|hartford|new haven|danbury|westport|darien)'
+       THEN 'Yes'
+  ELSE 'HQ elsewhere'
+END"""
+
+
 # Canonical placement-status derivation for a jobs_role, so every screen (Home,
 # Accounts, drills) agrees. Stakeholder vocabulary (JOBS_REVIEW_PLAN.md #9):
 #   ft_placed       — a builder is placed full-time (the FT seat is filled)
@@ -6398,26 +6453,88 @@ async def my_network(
     q: Optional[str] = Query(None, description="Search name/company/title"),
     limit: int = Query(500, le=2000),
     staff_email: Optional[str] = Query(None, description="Admin override; else the caller"),
+    filter_rules: Optional[str] = Query(None, alias="filters", description="JSON array of {field,op,values} rules — applied in SQL so filters see the whole network, not the loaded page"),
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
     """The logged-in staff member's LinkedIn connections (from
     staff_contact_relationships), joined to contacts + company, with flags for
     whether we've had activity with them (warm) and whether they're already a
-    jobs prospect. Drives the "My Network" home zone. Sputnik staff ids are
-    mapped to emails via bedrock.staff_user_id_map."""
+    jobs prospect. Drives the "My Network" page. Sputnik staff ids are
+    mapped to emails via bedrock.staff_user_id_map.
+
+    Returns `total` (the whole network) alongside `matched` (the count under the
+    active filters) so the UI can say "412 of 5,121" and warn honestly when a
+    filtered result exceeds `limit`. Seven staff have more than 2,000
+    connections, so a filter that only sifted the loaded page would under-report
+    without saying so."""
     email = (staff_email or (user.get("email") if isinstance(user, dict) else getattr(user, "email", None)) or "").lower()
     sid = await conn.fetchval("SELECT staff_user_id FROM bedrock.staff_user_id_map WHERE lower(email)=$1", email)
     if sid is None:
-        return {"success": True, "data": {"mapped": False, "connections": [], "total": 0,
+        return {"success": True, "data": {"mapped": False, "connections": [], "total": 0, "matched": 0,
                 "message": "No LinkedIn connections mapped for this account yet."}}
+
+    # The companies join is unconditional on every query below: the shared `where`
+    # string may reference `co.`, so it must resolve identically in the count, the
+    # rows, and the facet queries. It is a PK join, so the cost is negligible.
+    NET_FROM = ("public.staff_contact_relationships r "
+                "JOIN public.contacts c ON c.contact_id = r.contact_id "
+                "LEFT JOIN public.companies co ON co.company_id = c.company_id")
+
     params: list = [sid]
     where = "r.staff_user_id = $1 AND coalesce(c.contact_stage,'') <> 'merged'"
+    # `base_where` excludes the search box and the filter rules — the facet lists
+    # describe the WHOLE network, so the filter menu offers a stable set of
+    # options that doesn't shrink as you narrow.
+    base_where = where
     if q:
         params.append(f"%{q}%")
         where += f" AND (c.full_name ILIKE ${len(params)} OR c.current_company ILIKE ${len(params)} OR c.current_title ILIKE ${len(params)})"
-    total = await conn.fetchval(
-        f"SELECT count(*) FROM public.staff_contact_relationships r JOIN public.contacts c ON c.contact_id=r.contact_id WHERE {where}", *params)
+
+    # ── Filter rules (the page's Filter menu) ─────────────────────────────────
+    # Four closed-vocabulary select fields, each mapping to a whitelisted SQL
+    # expression that mirrors the column the page displays. An unknown field or
+    # op is a 400, never a silent pass-through that would under-filter.
+    #
+    # list_contacts has a fuller sibling of this translator (see _RULE_FIELDS
+    # there) covering text/number/date/tags/recency. It is deliberately not
+    # shared: the two whitelists map different tables and aliases, and that
+    # endpoint carries filter-fuzzing fixes worth not disturbing.
+    _NET_RULE_FIELDS: dict[str, str] = {
+        "headcount": "co.size_bucket",
+        "industry":  "co.industry",
+        "tristate":  _tristate_case("co.hq_location"),
+        "seniority": _seniority_case("c.current_title"),
+    }
+    if filter_rules:
+        try:
+            parsed_rules = json.loads(filter_rules)
+            assert isinstance(parsed_rules, list)
+        except Exception:
+            raise HTTPException(400, "filters must be a JSON array of {field,op,values}")
+        for rule in parsed_rules[:20]:
+            field, op = rule.get("field"), rule.get("op")
+            values = [str(v) for v in (rule.get("values") or [])]
+            expr = _NET_RULE_FIELDS.get(field)
+            if expr is None:
+                raise HTTPException(400, f"unfilterable field: {field}")
+            if op == "is_empty":
+                where += f" AND ({expr} IS NULL OR ({expr})::text = '')"
+            elif op == "is_not_empty":
+                where += f" AND (({expr}) IS NOT NULL AND ({expr})::text <> '')"
+            elif op in ("equals", "not_equals"):
+                if not values:
+                    continue
+                params.append(values)
+                neg = "NOT " if op == "not_equals" else ""
+                where += f" AND {neg}(coalesce(({expr})::text, '') = ANY(${len(params)}::text[]))"
+            else:
+                raise HTTPException(400, f"unsupported op '{op}' for {field}")
+
+    # `total` is the whole network; `matched` is what the filters + search leave.
+    total = await conn.fetchval(f"SELECT count(*) FROM {NET_FROM} WHERE {base_where}", sid)
+    matched = await conn.fetchval(f"SELECT count(*) FROM {NET_FROM} WHERE {where}", *params)
+
     params.append(f"%{email}%"); p_email = len(params)   # staff-specific activity match
     params.append(sid);          p_sid = len(params)       # connection_status join
     params.append(limit);        p_lim = len(params)
@@ -6430,9 +6547,14 @@ async def my_network(
                coalesce(cc.n, 0) AS co_connections,
                (hire.hired IS NOT NULL) AS company_hired_before,
                (opp.has_open IS NOT NULL) AS has_open_opp,
-               cs.status AS status, cs.reason AS status_reason
+               cs.status AS status, cs.reason AS status_reason,
+               -- firmographics behind the page's filters
+               co.size_bucket AS headcount_band, co.industry AS industry, co.hq_location,
+               ({_tristate_case('co.hq_location')}) AS tristate,
+               ({_seniority_case('c.current_title')}) AS seniority
         FROM public.staff_contact_relationships r
         JOIN public.contacts c ON c.contact_id = r.contact_id
+        LEFT JOIN public.companies co ON co.company_id = c.company_id
         LEFT JOIN LATERAL (
             SELECT count(*) n, max(activity_date) last,
                    (array_agg(type ORDER BY activity_date DESC))[1] AS last_type
@@ -6465,7 +6587,7 @@ async def my_network(
         LIMIT ${p_lim}
         """, *params)
     return {"success": True, "data": {
-        "mapped": True, "total": total,
+        "mapped": True, "total": total, "matched": matched,
         "connections": [{
             "contact_id": r["contact_id"], "full_name": r["full_name"], "current_title": r["current_title"],
             "current_company": r["current_company"], "email": r["email"], "linkedin_url": r["linkedin_url"],
@@ -6485,7 +6607,48 @@ async def my_network(
             "has_open_opp": r["has_open_opp"],
             "status": r["status"] or "new",
             "status_reason": r["status_reason"],
+            "headcount_band": r["headcount_band"],
+            "industry": r["industry"],
+            "hq_location": r["hq_location"],
+            "tristate": r["tristate"],
+            "seniority": r["seniority"],
         } for r in rows]}}
+
+
+@router.get("/my-network/facets")
+async def my_network_facets(
+    staff_email: Optional[str] = Query(None, description="Admin override; else the caller"),
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """The option lists for the My Network filter menu.
+
+    Separate from /my-network on purpose: these depend only on WHOSE network it
+    is, never on the search box or the active filters, but the scan costs about
+    as much as the row query itself. Folded into the main response it re-ran on
+    every keystroke; on its own key the client fetches it once.
+
+    Headcount and industry are discovered from the data so a new value can't go
+    missing from the menu. Tri-state and seniority are the complete output
+    domains of two total CASE expressions, so they need no scan at all."""
+    email = (staff_email or (user.get("email") if isinstance(user, dict) else getattr(user, "email", None)) or "").lower()
+    sid = await conn.fetchval("SELECT staff_user_id FROM bedrock.staff_user_id_map WHERE lower(email)=$1", email)
+    if sid is None:
+        return {"success": True, "data": {"headcount": [], "industry": [], "tristate": [], "seniority": []}}
+    row = await conn.fetchrow(
+        """SELECT array_agg(DISTINCT co.size_bucket) FILTER (WHERE co.size_bucket IS NOT NULL) AS headcount,
+                  array_agg(DISTINCT co.industry)    FILTER (WHERE co.industry    IS NOT NULL) AS industry
+           FROM public.staff_contact_relationships r
+           JOIN public.contacts c ON c.contact_id = r.contact_id
+           LEFT JOIN public.companies co ON co.company_id = c.company_id
+           WHERE r.staff_user_id = $1 AND coalesce(c.contact_stage,'') <> 'merged'""", sid)
+    return {"success": True, "data": {
+        # Ordering is the client's job — it holds the size/seniority ladders.
+        "headcount": sorted(row["headcount"] or []),
+        "industry": sorted(row["industry"] or []),
+        "tristate": _TRISTATE_VALUES,
+        "seniority": _SENIORITY_RUNGS,
+    }}
 
 
 class ConnectionStatusUpdate(BaseModel):

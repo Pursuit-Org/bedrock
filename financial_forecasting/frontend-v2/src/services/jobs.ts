@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import { useMutation, useQuery, useQueryClient, keepPreviousData, type QueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
+import { serializeRulesForServer, type FilterRule } from "@/pages/cleanup/Filters";
 
 /**
  * Invalidate the query families that depend on opportunities/activity — opp
@@ -1627,15 +1628,52 @@ export interface NetworkConnection {
   touched: boolean;   // anyone at Pursuit has activity with them
   co_connections: number; company_hired_before: boolean; has_open_opp: boolean;
   status: string; status_reason: string | null;
+  // Firmographics behind the page's filters. headcount_band/industry come from
+  // public.companies; tristate/seniority are derived in SQL (see routes/jobs.py
+  // _tristate_case / _seniority_case). tristate is 'Yes' | 'HQ elsewhere' |
+  // 'Unknown' — never 'No', because an HQ cannot refute an office.
+  headcount_band: string | null; industry: string | null; hq_location: string | null;
+  tristate: string | null; seniority: string | null;
 }
-export interface MyNetwork { mapped: boolean; total: number; connections: NetworkConnection[]; message?: string }
-export function useMyNetwork(q?: string) {
+/** The filter menu's option lists for this staff member's network. */
+export interface MyNetworkFacets {
+  headcount: string[]; industry: string[]; tristate: string[]; seniority: string[];
+}
+export interface MyNetwork {
+  mapped: boolean;
+  /** The whole network, ignoring search + filters. */
+  total: number;
+  /** How many match the active search + filters — counted in SQL, so it stays
+   *  right even when more match than the 2,000 `connections` can hold. */
+  matched: number;
+  connections: NetworkConnection[];
+  message?: string;
+}
+
+/** Facets live on their own key because they depend only on whose network it is,
+ *  not on the query — folded into useMyNetwork they re-ran on every keystroke. */
+export function useMyNetworkFacets() {
+  return useQuery<MyNetworkFacets>({
+    queryKey: ["jobs", "my-network-facets"],
+    queryFn: async () => {
+      const { data } = await api.get<ApiResponse<MyNetworkFacets>>("/api/jobs/my-network/facets");
+      return data.data;
+    },
+    staleTime: 10 * 60_000,
+  });
+}
+export function useMyNetwork(q?: string, rules?: FilterRule[]) {
+  // Filters go to the SERVER: seven staff have >2,000 connections, so sifting
+  // only the loaded page would under-report without saying so.
+  const serialized = rules?.length ? JSON.stringify(serializeRulesForServer(rules)) : "";
   return useQuery<MyNetwork>({
-    queryKey: ["jobs", "my-network", q ?? ""],
+    queryKey: ["jobs", "my-network", q ?? "", serialized],
     queryFn: async () => {
       // limit=2000 (server max) — the default 500 silently hid connections for
       // anyone with a bigger network ("total 647, loaded 500").
-      const { data } = await api.get<ApiResponse<MyNetwork>>("/api/jobs/my-network", { params: { limit: 2000, ...(q ? { q } : {}) } });
+      const { data } = await api.get<ApiResponse<MyNetwork>>("/api/jobs/my-network", {
+        params: { limit: 2000, ...(q ? { q } : {}), ...(serialized ? { filters: serialized } : {}) },
+      });
       return data.data;
     },
     staleTime: 60_000,
@@ -1649,7 +1687,28 @@ export function useSetConnectionStatus() {
       const { data } = await api.patch<ApiResponse<unknown>>("/api/jobs/my-network/status", body);
       return data.data;
     },
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["jobs", "my-network"] }),
+    // Optimistic: the thumbs are a rapid-triage control, and invalidating on
+    // success refetched up to 2,000 rows per click. Patch every cached
+    // my-network page (they vary by search + filters), roll back on failure.
+    onMutate: async (body) => {
+      await qc.cancelQueries({ queryKey: ["jobs", "my-network"] });
+      const snapshot = qc.getQueriesData<MyNetwork>({ queryKey: ["jobs", "my-network"] });
+      qc.setQueriesData<MyNetwork>({ queryKey: ["jobs", "my-network"] }, (prev) =>
+        prev
+          ? {
+              ...prev,
+              connections: prev.connections.map((c) =>
+                c.contact_id === body.contact_id ? { ...c, status: body.status } : c,
+              ),
+            }
+          : prev,
+      );
+      return { snapshot };
+    },
+    onError: (_err, _body, ctx) => {
+      for (const [key, data] of ctx?.snapshot ?? []) qc.setQueryData(key, data);
+    },
+    onSettled: () => qc.invalidateQueries({ queryKey: ["jobs", "my-network"] }),
   });
 }
 
