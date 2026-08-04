@@ -230,12 +230,13 @@ function TargetingPanel({ granularity, scope, owner, range }: {
   const [dimKey, setDimKey] = useState<string>("tag");
   const dim = dims.find((d) => d.key === dimKey) ?? dims[0];
   const items = (dim?.rows ?? []).map((r) => ({ key: r.bucket, label: r.bucket, count: r.sent }));
-  const sent = (dim?.rows ?? []).reduce((n, r) => n + r.sent, 0);
-  const replies = (dim?.rows ?? []).reduce((n, r) => n + r.responses, 0);
   return (
     <Panel
       title="Targeting Mix"
-      desc={`Who we reached this period${sent ? ` · ${sent} contacts, ${replies} replied` : ""}`}
+      desc="Outreach across segments"
+      // Fills the grid row so its bottom edge lines up with Outreach Trends
+      // beside it — a few segment bars left a short card next to a tall chart.
+      className="h-full"
       action={
         <select value={dimKey} onChange={(e) => setDimKey(e.target.value)}
           className="h-7 rounded-md border border-border-strong bg-surface px-2 text-[12px] text-ink outline-none focus:border-accent">
@@ -547,8 +548,7 @@ function ContactCellDrill({ label, contacts, whenLabel }: {
   );
 }
 
-function ThisWeekBlock({ nameOf, activityPipeline, granularity, scope, owner, range, periodLabel, onSelectOwner }: {
-  periodLabel?: string;
+function ThisWeekBlock({ nameOf, activityPipeline, granularity, scope, owner, range, onSelectOwner }: {
   nameOf: (email: string) => string;
   activityPipeline?: ScorecardRow[];
   granularity: OutreachGranularity;
@@ -594,7 +594,7 @@ function ThisWeekBlock({ nameOf, activityPipeline, granularity, scope, owner, ra
   if (rows.length === 0) {
     return (
       <div className="flex flex-col gap-3">
-        <SectionHead title="Outreach Detail" note={periodLabel ? `${periodLabel} · assigned queue and contacts reached` : undefined} />
+        <SectionHead title="Outreach Detail" />
         <div className="rounded-lg border border-dashed border-border-strong px-4 py-6 text-center text-[12.5px] text-ink-4">
           Nobody in this scope has an assigned queue for this period.
         </div>
@@ -603,7 +603,7 @@ function ThisWeekBlock({ nameOf, activityPipeline, granularity, scope, owner, ra
   }
   return (
     <div className="flex flex-col gap-3">
-      <SectionHead title="Outreach Detail" note={periodLabel ? `${periodLabel} · assigned queue and contacts reached` : "assigned queue · contacts reached"} />
+      <SectionHead title="Outreach Detail" />
       <div className="flex flex-col overflow-hidden rounded-xl border border-border-strong bg-surface">
         <div className="border-b border-border-strong bg-surface-2 px-4 py-3 text-[13px] font-bold text-ink-2">Assigned &amp; Contacted</div>
         <table className="w-full text-[12.5px]">
@@ -1231,7 +1231,6 @@ export function JobsOutreach() {
 
       <ThisWeekBlock nameOf={nameOf} activityPipeline={sc?.activity_pipeline}
         granularity={granularity} scope={scope} owner={owner || undefined} range={range}
-        periodLabel={rangeLabel || undefined}
         onSelectOwner={(email) => {
           // The table keys owners lowercased; resolve back to the canonical
           // staff email so exact-match server filters still hit (one staff
@@ -1241,7 +1240,7 @@ export function JobsOutreach() {
         }} />
 
       <div className="flex flex-col gap-3">
-        <SectionHead title="Campaigns · coverage" note="the warm list, by source" />
+        <SectionHead title="Campaigns · coverage" />
         <TagCampaigns />
       </div>
 
@@ -1262,11 +1261,11 @@ export function JobsOutreach() {
         <span className="text-[11px] font-bold uppercase tracking-[.12em] text-ink-3">Segments &amp; activity over time</span>
         <div className="h-px flex-1 bg-border-strong" />
       </div>
-      <div className="grid grid-cols-1 items-start gap-5 lg:grid-cols-2 lg:gap-0">
-        <div className="min-w-0 lg:pr-5">
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-2 lg:gap-0">
+        <div className="min-w-0 lg:h-full lg:pr-5">
           <TargetingPanel granularity={granularity} scope={scope} owner={owner || undefined} range={range} />
         </div>
-        <div className="min-w-0 lg:border-l lg:border-border-strong lg:pl-5">
+        <div className="min-w-0 lg:h-full lg:border-l lg:border-border-strong lg:pl-5">
           <ActivityTrends scope={scope} owner={owner || undefined} range={range} />
         </div>
       </div>

@@ -225,9 +225,9 @@ export function JobsOpportunitiesOverview() {
         {/* Stacked outcome boxes for the week — Closed won (the goal,
             subtly highlighted) over Closed lost (context to understand, not a red flag). */}
         <div className="flex flex-col gap-4">
-          <OutcomeBox tone="green" highlight label="Closed won" value={s?.moved_committed} sub={rangeLabel} isLoading={isLoading}
+          <OutcomeBox tone="green" highlight label="Closed won" value={s?.moved_committed} isLoading={isLoading}
             onClick={() => setDrill({ title: "Closed won", note: rangeLabel, rows: data?.drills.won ?? [] })} />
-          <OutcomeBox tone="ink" label="Closed lost" value={s?.closed_lost} sub={rangeLabel} isLoading={isLoading}
+          <OutcomeBox tone="ink" label="Closed lost" value={s?.closed_lost} isLoading={isLoading}
             onClick={() => setDrill({ title: "Closed lost", note: rangeLabel, rows: data?.drills.lost ?? [] })} />
         </div>
       </div>
@@ -861,7 +861,9 @@ function OutcomeBox({
           {highlight ? <Trophy size={11} className="text-[var(--green)]" /> : null}
           {label}
         </div>
-        <div className="text-[10.5px] text-ink-4">{sub ?? "this week"}</div>
+        {/* No "this week" fallback: it was a lie under any preset but Weekly,
+            and the period row above already states the window. */}
+        {sub ? <div className="text-[10.5px] text-ink-4">{sub}</div> : null}
       </div>
       {isLoading ? (
         <div className="h-6 w-8 animate-pulse rounded bg-surface-2" />
@@ -877,14 +879,20 @@ function OutcomeBox({
 // ── Panel wrapper ─────────────────────────────────────────────────────────────
 
 export function Panel({
-  title, desc, action, badge, children,
+  title, desc, action, badge, className, children,
 }: {
-  title: string; desc?: string; action?: React.ReactNode; badge?: string; children: React.ReactNode;
+  title: string; desc?: string; action?: React.ReactNode; badge?: string;
+  /** For a panel that has to fill its grid row — pass "h-full". */
+  className?: string;
+  children: React.ReactNode;
 }) {
   return (
-    <section className="rounded-2xl border border-border-strong bg-surface px-5 py-4">
+    <section className={cn("rounded-2xl border border-border-strong bg-surface px-5 py-4", className)}>
       <div className="mb-3 flex items-start justify-between gap-3">
-        <div>
+        {/* shrink-0: in a half-width panel the title lost the fight with the
+            controls and wrapped to two lines. Controls wrap gracefully; a
+            two-line title next to a one-line sibling does not. */}
+        <div className="shrink-0">
           <div className="flex items-center gap-2">
             <h3 className="text-[14px] font-semibold text-ink">{title}</h3>
             {badge ? (

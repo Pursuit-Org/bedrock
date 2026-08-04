@@ -107,10 +107,9 @@ export function ActivityTrends({ scope, owner, range }: {
     // Mix's. Same wrapper = tops line up by construction, not by hand-tuning.
     <Panel
       title="Outreach Trends"
-      // Short enough to stay on one line beside the controls at half width —
-      // the click affordance sits under the chart instead of crowding this.
-      desc={`Accounts reached per ${gran}`}
+      desc="Accounts contacted"
       action={controls}
+      className="h-full"
     >
       {isLoading ? (
         <div className="flex items-center justify-center gap-2 py-16 text-[13px] text-ink-3"><Loader2 size={16} className="animate-spin" /> Loading…</div>
@@ -147,7 +146,6 @@ export function ActivityTrends({ scope, owner, range }: {
               )}
             </LineChart>
           </ResponsiveContainer>
-          <p className="-mt-1 text-[10.5px] text-ink-4">Click a point to see who was reached that {gran}.</p>
           {split === "split" ? (
             <div className="flex flex-wrap items-center gap-4 pl-1">
               <Legend color={NEW_COLOR} label="New accounts (first activated this period)" />

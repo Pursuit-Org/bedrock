@@ -342,9 +342,14 @@ export function TagCampaigns() {
         <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">Campaigns · outreach priority</span>
         <CampaignPicker all={items} selected={picked} onChange={setPicked} />
         {save.isPending && <Loader2 size={12} className="animate-spin text-ink-4" />}
-        <span className="text-[11px] text-ink-4">
-          {pickedSet.size ? `${visible.length} of ${items.length} shown · # is the true priority rank` : "drag to reorder · bar = funnel of contacts in the pipeline (worked → not yet)"}
-        </span>
+        {/* Only speaks up when a filter is on, where "3 of 5" is the one thing
+            the header can't otherwise tell you. The drag/legend explainer was
+            standing instructions for a control you can just use. */}
+        {pickedSet.size ? (
+          <span className="text-[11px] text-ink-4">
+            {visible.length} of {items.length} shown · # is the true priority rank
+          </span>
+        ) : null}
         {/* legend (stage funnel) */}
         <span className="ml-auto flex items-center gap-3 text-[10.5px] text-ink-4">
           {STAGE_LEGEND.map((s) => <span key={s.label} className="flex items-center gap-1"><span className={cn("inline-block h-2.5 w-2.5 rounded-sm", s.cls)} />{s.label}</span>)}
