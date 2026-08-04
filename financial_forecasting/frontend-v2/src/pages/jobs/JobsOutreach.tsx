@@ -1042,11 +1042,12 @@ function AttentionCard({ label, value, sub, tone, active, onClick }: {
   label: string;
   value: number | undefined;
   sub: React.ReactNode;
-  tone: "red" | "amber" | "accent";
+  tone: "ink" | "red" | "amber" | "accent";
   active: boolean;
   onClick: () => void;
 }) {
   const toneCls = {
+    ink: "text-ink",
     red: "text-red",
     amber: "text-amber",
     accent: "text-accent",
@@ -1123,7 +1124,9 @@ function RequiringAttention({ owner, nameOf, staffEmails }: {
         <AttentionCard
           label="Replies needing a decision"
           value={replied.length}
-          tone="red"
+          // Black, not red: a reply is a good outcome waiting on a decision, not
+          // a failure. The 7-day trend below still colours when it's climbing.
+          tone="ink"
           active={open === "replied"}
           onClick={() => setOpen(open === "replied" ? null : "replied")}
           sub={
