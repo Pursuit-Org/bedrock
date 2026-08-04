@@ -4,8 +4,9 @@ import {
 } from "recharts";
 import { AlertTriangle, Loader2, Mail, Calendar } from "lucide-react";
 
-import { SectionCard } from "@/components/detail";
 import { Drawer } from "@/components/ui/Drawer";
+// Same card wrapper as Targeting Mix — see the Panel note at the return below.
+import { Panel } from "@/pages/jobs/JobsOpportunitiesOverview";
 import {
   useActivityTrends, useActivityTrendDetail,
   type ActivityTrendBucket, type OutreachChannel, type OutreachScope, type OutreachRange,
@@ -73,51 +74,58 @@ export function ActivityTrends({ scope, owner, range }: {
     [data, gran],
   );
 
+  // Data-points buttons + the series select, in Panel's header slot so this card
+  // has exactly the same header geometry as Targeting Mix beside it.
+  const controls = (
+    <div className="flex flex-wrap items-center justify-end gap-2">
+      <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-4">Data points</span>
+      <div className="inline-flex items-center rounded-md border border-border-strong bg-surface p-0.5">
+        {([["day", "Daily"], ["week", "Weekly"], ["month", "Monthly"]] as const).map(([k, lbl]) => (
+          <button key={k} type="button" onClick={() => setBucket(k)}
+            title={`One point per ${k} across the selected period`}
+            className={`rounded px-2 py-0.5 text-[12px] font-medium transition-colors ${
+              gran === k ? "bg-accent-soft text-accent" : "text-ink-2 hover:bg-surface-2"}`}>
+            {lbl}
+          </button>
+        ))}
+      </div>
+      <select
+        value={split}
+        onChange={(e) => setSplit(e.target.value as SplitMode)}
+        title="What the chart plots"
+        className="h-7 rounded-md border border-border-strong bg-surface px-2 text-[11.5px] text-ink-2 outline-none focus:border-accent"
+      >
+        <option value="total">Accounts reached</option>
+        <option value="split">New vs existing accounts</option>
+      </select>
+    </div>
+  );
+
   return (
-    <SectionCard
-      title="Outreach & Activation"
-      storageScope="jobs"
+    // Panel, not SectionCard: SectionCard's collapse header is a band above the
+    // content, which pushed this chart's body a header's height below Targeting
+    // Mix's. Same wrapper = tops line up by construction, not by hand-tuning.
+    <Panel
+      title="Outreach Trends"
+      // Short enough to stay on one line beside the controls at half width —
+      // the click affordance sits under the chart instead of crowding this.
+      desc={`Accounts reached per ${gran}`}
+      action={controls}
     >
       {isLoading ? (
         <div className="flex items-center justify-center gap-2 py-16 text-[13px] text-ink-3"><Loader2 size={16} className="animate-spin" /> Loading…</div>
       ) : isError ? (
-        <div className="flex flex-col items-start gap-2 px-5 py-10">
+        <div className="flex flex-col items-start gap-2 py-10">
           <p className="text-[13px] text-red">Couldn't load outreach trends.</p>
           <button type="button" onClick={() => refetch()} className="rounded border border-border-strong px-3 py-1 text-[12px] text-ink-2 hover:bg-surface-2">Retry</button>
         </div>
       ) : (
-        <div className="flex flex-col gap-3 px-5 py-4">
+        <div className="flex flex-col gap-3">
           {data?.coverage_note ? (
             <div className="flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-[11.5px] text-amber-900">
               <AlertTriangle size={13} className="mt-0.5 flex-shrink-0" /><span>{data.coverage_note}</span>
             </div>
           ) : null}
-
-          {/* One line by default — total accounts reached per period. The
-              new-vs-existing split is a second question, so it sits behind the
-              dropdown rather than competing for the same axis. */}
-          <div className="flex flex-wrap items-center justify-end gap-2">
-            <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-4">Data points</span>
-            <div className="inline-flex items-center rounded-md border border-border-strong bg-surface p-0.5">
-              {([["day", "Daily"], ["week", "Weekly"], ["month", "Monthly"]] as const).map(([k, lbl]) => (
-                <button key={k} type="button" onClick={() => setBucket(k)}
-                  title={`One point per ${k} across the selected period`}
-                  className={`rounded px-2 py-0.5 text-[12px] font-medium transition-colors ${
-                    gran === k ? "bg-accent-soft text-accent" : "text-ink-2 hover:bg-surface-2"}`}>
-                  {lbl}
-                </button>
-              ))}
-            </div>
-            <select
-              value={split}
-              onChange={(e) => setSplit(e.target.value as SplitMode)}
-              title="What the chart plots"
-              className="h-7 rounded-md border border-border-strong bg-surface px-2 text-[11.5px] text-ink-2 outline-none focus:border-accent"
-            >
-              <option value="total">Accounts reached</option>
-              <option value="split">New vs existing accounts</option>
-            </select>
-          </div>
 
           <ResponsiveContainer width="100%" height={240}>
             <LineChart data={chartData} margin={{ top: 6, right: 8, bottom: 0, left: -18 }}
@@ -139,7 +147,7 @@ export function ActivityTrends({ scope, owner, range }: {
               )}
             </LineChart>
           </ResponsiveContainer>
-          <p className="-mt-1 text-[10.5px] text-ink-4">Click a point to see who was reached out to that {gran}.</p>
+          <p className="-mt-1 text-[10.5px] text-ink-4">Click a point to see who was reached that {gran}.</p>
           {split === "split" ? (
             <div className="flex flex-wrap items-center gap-4 pl-1">
               <Legend color={NEW_COLOR} label="New accounts (first activated this period)" />
@@ -152,7 +160,7 @@ export function ActivityTrends({ scope, owner, range }: {
         </div>
       )}
       <OutreachDetailDrawer period={openPeriod} gran={gran} channel={channel} owner={owner ?? ""} scope={scope} onClose={() => setOpenPeriod(null)} />
-    </SectionCard>
+    </Panel>
   );
 }
 
