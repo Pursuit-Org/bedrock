@@ -3456,6 +3456,31 @@ def _touch_direction(type_: str, email_from: Optional[str]) -> str:
     return "sent"
 
 
+def _touch_actor(alias: str = "a") -> str:
+    """The Pursuit person behind a touch, for the drill's Owner column.
+
+    Which side of the row that is depends on direction: when we sent it the
+    actor is the sender, when the contact replied it's the Pursuit address the
+    reply landed on, and for a manually logged call/LinkedIn note it's whoever
+    logged it. Returned as a bare lowercase email so the frontend resolves it to
+    a staff name through the same map every other owner label uses.
+
+    logged_by is only trusted when it looks like an email. Checked against
+    production 2026-08-04: 2,958 of 18,627 activity rows since January carry a
+    raw Salesforce user id there instead ('0051U0000017rDxQAI'), and only 1 of
+    the 16 distinct ids resolves through bedrock.app_user. Printing the rest
+    would put a Salesforce id in a column headed "Owner", so they come back NULL
+    and the drill shows an explicit dash."""
+    frm = _email_addr(alias)
+    return f"""coalesce(
+        CASE WHEN {frm} LIKE '%@pursuit.org' THEN {frm} END,
+        (SELECT lower(e)
+           FROM unnest(coalesce({alias}.email_to,'{{}}') || coalesce({alias}.email_cc,'{{}}')) e
+          WHERE lower(e) LIKE '%@pursuit.org' LIMIT 1),
+        CASE WHEN {alias}.logged_by LIKE '%@%'
+             THEN lower(nullif(trim({alias}.logged_by),'')) END)"""
+
+
 @router.get("/outreach/scorecard/detail")
 async def outreach_scorecard_detail(
     kind: str = Query(..., pattern="^(user|activity)$"),
@@ -3487,7 +3512,8 @@ async def outreach_scorecard_detail(
             rows = await conn.fetch(f"""
                 SELECT ir.contact_id, c.full_name, c.current_company,
                        coalesce(ir.responded_at, ir.created_at) AS activity_date,
-                       ir.specific_ask AS subject, ir.context AS snippet
+                       ir.specific_ask AS subject, ir.context AS snippet,
+                       lower(ir.requested_by_email) AS actor
                 FROM bedrock.intro_request ir
                 JOIN public.contacts c ON c.contact_id = ir.contact_id
                 WHERE ir.status IN ('accepted','completed')
@@ -3501,11 +3527,14 @@ async def outreach_scorecard_detail(
                 g["touches"].append({
                     "date": r["activity_date"].isoformat() if r["activity_date"] else None,
                     "type": "intro", "subject": r["subject"], "snippet": r["snippet"],
-                    "direction": "sent"})
+                    "direction": "sent", "actor": r["actor"]})
         elif key == "direct_email_response":
             rows = await conn.fetch(f"""
                 WITH sent_out AS (
-                    SELECT lower(e) AS addr, min(aem.sent_at) AS first_out
+                    -- `sender` = who sent the outreach this is a reply TO, so the
+                    -- drill can credit the reply to the person who earned it.
+                    SELECT lower(e) AS addr, min(aem.sent_at) AS first_out,
+                           (array_agg(aem.from_email ORDER BY aem.sent_at))[1] AS sender
                     FROM bedrock.activity a
                     JOIN bedrock.activity_email_message aem ON aem.activity_id = a.id
                     CROSS JOIN unnest(coalesce(a.email_to,'{{}}') || coalesce(a.email_cc,'{{}}')) e
@@ -3523,8 +3552,11 @@ async def outreach_scorecard_detail(
                       AND aem.from_email NOT LIKE '%@pursuit.org%'
                     GROUP BY 1
                 )
-                SELECT fr.addr, fr.reply_date, fr.contact_id, c.full_name, c.current_company
-                FROM first_reply fr LEFT JOIN public.contacts c ON c.contact_id = fr.contact_id
+                SELECT fr.addr, fr.reply_date, fr.contact_id, c.full_name, c.current_company,
+                       lower(so.sender) AS actor
+                FROM first_reply fr
+                JOIN sent_out so ON so.addr = fr.addr
+                LEFT JOIN public.contacts c ON c.contact_id = fr.contact_id
                 WHERE fr.reply_date >= $1 AND fr.reply_date < $2
                 ORDER BY fr.reply_date DESC LIMIT 500
             """, start, end)
@@ -3534,7 +3566,7 @@ async def outreach_scorecard_detail(
                 g["touches"].append({
                     "date": r["reply_date"].isoformat() if r["reply_date"] else None,
                     "type": "email", "subject": "First reply to outreach", "snippet": r["addr"],
-                    "direction": "received"})
+                    "direction": "received", "actor": r["actor"]})
             rows = []  # already consumed
         else:
             where = {
@@ -3557,9 +3589,20 @@ async def outreach_scorecard_detail(
                          else "a.activity_date >= $1 AND a.activity_date < $2")
             rows = await conn.fetch(f"""
                 SELECT a.participant_public_contact_id AS contact_id, c.full_name, c.current_company,
-                       a.activity_date, a.type, a.subject, a.email_snippet, a.email_from
+                       a.activity_date, a.type, a.subject, a.email_snippet, a.email_from,
+                       -- Prefer the per-message sender: a thread row carries only the
+                       -- FIRST message's author, so a follow-up sent this week by
+                       -- someone else would otherwise be credited to the wrong person.
+                       coalesce(lower(msg.from_email), {_touch_actor('a')}) AS actor
                 FROM bedrock.activity a
                 JOIN public.contacts c ON c.contact_id = a.participant_public_contact_id
+                LEFT JOIN LATERAL (
+                    SELECT aem.from_email
+                    FROM bedrock.activity_email_message aem
+                    WHERE aem.activity_id = a.id AND {_message_actor(scope, owner)}
+                      AND aem.sent_at >= $1 AND aem.sent_at < $2
+                    ORDER BY aem.sent_at LIMIT 1
+                ) msg ON true
                 WHERE a.deleted_at IS NULL AND {date_pred} AND {where}
                 ORDER BY c.current_company NULLS LAST, a.activity_date DESC LIMIT 500
             """, start, end)
@@ -3568,7 +3611,8 @@ async def outreach_scorecard_detail(
                 g["touches"].append({
                     "date": r["activity_date"].isoformat() if r["activity_date"] else None,
                     "type": r["type"], "subject": r["subject"], "snippet": r["email_snippet"],
-                    "direction": _touch_direction(r["type"], r["email_from"])})
+                    "direction": _touch_direction(r["type"], r["email_from"]),
+                    "actor": r["actor"]})
             if key == "engagement":
                 # Engagements also include direct email responses — append them.
                 reps = await conn.fetch(f"""
@@ -3589,8 +3633,11 @@ async def outreach_scorecard_detail(
                         WHERE a.deleted_at IS NULL AND a.type='email' AND {_not_autoreply('a')} AND aem.from_email NOT LIKE '%@pursuit.org%'
                         GROUP BY 1
                     )
-                    SELECT fr.addr, fr.reply_date, fr.contact_id, c.full_name, c.current_company
-                    FROM first_reply fr LEFT JOIN public.contacts c ON c.contact_id = fr.contact_id
+                    SELECT fr.addr, fr.reply_date, fr.contact_id, c.full_name, c.current_company,
+                           lower(so.sender) AS actor
+                    FROM first_reply fr
+                    JOIN sent_out so ON so.addr = fr.addr
+                    LEFT JOIN public.contacts c ON c.contact_id = fr.contact_id
                     WHERE fr.reply_date >= $1 AND fr.reply_date < $2 ORDER BY fr.reply_date DESC LIMIT 500
                 """, start, end)
                 for idx, r in enumerate(reps):
@@ -3598,7 +3645,8 @@ async def outreach_scorecard_detail(
                     g = _contact(cid, r["full_name"] or r["addr"], r["current_company"])
                     g["touches"].append({
                         "date": r["reply_date"].isoformat() if r["reply_date"] else None,
-                        "type": "email", "subject": "Email reply", "snippet": r["addr"], "direction": "received"})
+                        "type": "email", "subject": "Email reply", "snippet": r["addr"],
+                        "direction": "received", "actor": r["actor"]})
     else:  # kind == "user"
         if key == "initial_outreach":
             # Activity-driven: distinct contacts emailed by the scope this period.
@@ -3635,7 +3683,8 @@ async def outreach_scorecard_detail(
         if contacts:
             touch_rows = await conn.fetch(f"""
                 SELECT a.participant_public_contact_id AS contact_id, a.activity_date,
-                       a.type, a.subject, a.email_snippet, a.email_from
+                       a.type, a.subject, a.email_snippet, a.email_from,
+                       {_touch_actor('a')} AS actor
                 FROM bedrock.activity a
                 WHERE a.deleted_at IS NULL AND a.participant_public_contact_id = ANY($1::int[])
                   AND a.activity_date >= $2 AND a.activity_date < $3 AND {_jobs_relevant('a')}
@@ -3647,9 +3696,14 @@ async def outreach_scorecard_detail(
                     g["touches"].append({
                         "date": r["activity_date"].isoformat() if r["activity_date"] else None,
                         "type": r["type"], "subject": r["subject"], "snippet": r["email_snippet"],
-                        "direction": _touch_direction(r["type"], r["email_from"])})
+                        "direction": _touch_direction(r["type"], r["email_from"]),
+                        "actor": r["actor"]})
 
     items = sorted(contacts.values(), key=lambda g: (-(len(g["touches"])), g["company"] or ""))
+    # Distinct actors per contact, so the collapsed row can name who worked it
+    # without expanding to read the per-touch column.
+    for g in items:
+        g["actors"] = sorted({t["actor"] for t in g["touches"] if t.get("actor")})
     return {"success": True, "data": {"kind": kind, "key": key, "period": period,
             "count": len(items), "contacts": items}}
 

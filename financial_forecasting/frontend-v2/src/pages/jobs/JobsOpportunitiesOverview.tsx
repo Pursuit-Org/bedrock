@@ -299,7 +299,7 @@ export function JobsOpportunitiesOverview() {
 
       {/* ── Recent activity — the week's narrative ────────────────────── */}
       <Panel
-        title="Recent activity"
+        title="Recent Activity"
         desc={`Added, moved, won or lost between ${rangeLabel} — newest first`}
       >
         <RecentActivity events={orderedActivity} isLoading={isLoading} nameOf={nameOf} />
@@ -1231,6 +1231,10 @@ function Heatmap({ heatmap, buckets, rowHeader, isLoading, axis, activeSet, name
   );
 }
 
+/** The week's narrative opens at five rows — enough to read the shape of the
+ *  week without the panel dominating the scroll. */
+const RECENT_ACTIVITY_PAGE = 5;
+
 function RecentActivity({ events, isLoading, nameOf }: { events: OppActivityEvent[]; isLoading: boolean; nameOf: (e: string | null) => string }) {
   const [showAll, setShowAll] = useState(false);
   if (isLoading) return <div className="h-32 animate-pulse rounded-lg bg-surface-2" />;
@@ -1241,7 +1245,7 @@ function RecentActivity({ events, isLoading, nameOf }: { events: OppActivityEven
       </div>
     );
   }
-  const shown = showAll ? events : events.slice(0, 10);
+  const shown = showAll ? events : events.slice(0, RECENT_ACTIVITY_PAGE);
   return (
     <div className="flex flex-col">
       {shown.map((e, i) => {
@@ -1267,10 +1271,10 @@ function RecentActivity({ events, isLoading, nameOf }: { events: OppActivityEven
           </div>
         );
       })}
-      {events.length > 10 ? (
+      {events.length > RECENT_ACTIVITY_PAGE ? (
         <button type="button" onClick={() => setShowAll((v) => !v)}
           className="mt-2 self-start text-[12px] font-medium text-accent hover:underline">
-          {showAll ? "Show less" : `Show ${events.length - 10} more`}
+          {showAll ? "Show less" : `Show ${events.length - RECENT_ACTIVITY_PAGE} more`}
         </button>
       ) : null}
     </div>

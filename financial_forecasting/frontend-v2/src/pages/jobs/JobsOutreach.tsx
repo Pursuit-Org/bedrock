@@ -1,6 +1,6 @@
 import { Fragment, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { ChevronRight, ChevronDown, Loader2 } from "lucide-react";
+import { ChevronRight, ChevronDown, Loader2, Users } from "lucide-react";
 
 import { toast } from "sonner";
 import {
@@ -9,6 +9,8 @@ import {
   useOutreachTargetingMix,
   useJobsStaff,
   useJobsContacts,
+  useContactDetail,
+  useContactTagCatalog,
   useJobsAccounts,
   useDailyDigest,
   useStuckContacts,
@@ -34,6 +36,8 @@ import { relDay } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 const DRILL_PAGE = 25;
+/** Touches shown before "Show n older" in a contact's inline touch log. */
+const TOUCH_LOG_CAP = 5;
 const MEMBERSHIP_STAGE_OPTIONS = MEMBERSHIP_STAGES.map((s) => ({ value: s, label: MEMBERSHIP_STAGE_LABELS[s] }));
 
 
@@ -63,11 +67,22 @@ function Trend({ current, prior, unit = "pct" }: { current: number; prior: numbe
 }
 
 // ── Drill-down (contacts → their touches) ─────────────────────────────────────
+
+/** "Avni Nahar", or "Avni Nahar +2" when several people worked one contact —
+ *  the full list is in the row's tooltip. */
+function actorSummary(actors: string[] | undefined, nameOf: (e: string) => string): string {
+  if (!actors || actors.length === 0) return "";
+  const first = nameOf(actors[0]);
+  return actors.length === 1 ? first : `${first} +${actors.length - 1}`;
+}
+
 function RowDrill({
-  kind, rowKey, granularity, scope, owner, range,
+  kind, rowKey, granularity, scope, owner, range, nameOf,
 }: {
   kind: "user" | "activity"; rowKey: string;
   granularity: OutreachGranularity; scope: OutreachScopeKind; owner?: string; range?: OutreachDateRange;
+  /** Resolves an actor email to a staff name for the Owner column. */
+  nameOf: (email: string) => string;
 }) {
   const [openContact, setOpenContact] = useState<Set<number>>(new Set());
   const [showAll, setShowAll] = useState(false);
@@ -91,19 +106,38 @@ function RowDrill({
               <span className="w-3.5 text-ink-4">{open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}</span>
               <span className="text-[13px] font-medium text-ink">{c.name || "Unknown contact"}</span>
               <span className="text-[12px] text-ink-3">{c.company || "—"}</span>
-              <span className="ml-auto text-[11.5px] text-ink-4">{c.touches.length} touch{c.touches.length === 1 ? "" : "es"}</span>
+              {/* Who worked this contact, without having to expand the row. */}
+              <span className="ml-auto shrink-0 text-[11.5px] text-ink-3" title={(c.actors ?? []).map(nameOf).join(", ")}>
+                {actorSummary(c.actors, nameOf)}
+              </span>
+              <span className="w-[74px] shrink-0 text-right text-[11.5px] text-ink-4">{c.touches.length} touch{c.touches.length === 1 ? "" : "es"}</span>
             </button>
             {open && (
               <div className="flex flex-col gap-1 bg-bg px-4 py-2 pl-10">
                 {c.touches.length === 0 && <div className="text-[12px] text-ink-4">No jobs touches in this period.</div>}
+                {c.touches.length > 0 && (
+                  <div className="flex items-baseline gap-2 text-[9.5px] font-bold uppercase tracking-wider text-ink-4">
+                    <span className="w-[52px]">Type</span>
+                    <span className="min-w-0 flex-1">Subject</span>
+                    <span className="w-[124px] shrink-0">Owner</span>
+                    <span className="w-[70px] shrink-0 text-right">Date</span>
+                  </div>
+                )}
                 {c.touches.map((t, i) => (
                   <div key={i} className="flex items-baseline gap-2 text-[12.5px]">
-                    <span className={cn("rounded px-1.5 py-0.5 text-[10.5px] font-semibold uppercase",
+                    <span className={cn("w-[52px] shrink-0 truncate rounded px-1.5 py-0.5 text-center text-[10.5px] font-semibold uppercase",
                       t.direction === "received" ? "bg-green-soft text-green" : "bg-surface-2 text-ink-3")}>
                       {t.direction === "received" ? "reply" : t.type}
                     </span>
                     <span className="min-w-0 flex-1 truncate text-ink-2">{t.subject || t.snippet || "(no subject)"}</span>
-                    <span className="shrink-0 text-ink-4">{t.date ? fmtDate(t.date) : ""}</span>
+                    {/* Owner: who sent it, or on a reply who earned it. */}
+                    <span className="w-[124px] shrink-0 truncate text-[11.5px] text-ink-3"
+                      title={t.actor
+                        ? `${t.direction === "received" ? "Replied to" : "By"} ${nameOf(t.actor)} · ${t.actor}`
+                        : "No Pursuit sender recorded on this touch"}>
+                      {t.actor ? nameOf(t.actor) : "—"}
+                    </span>
+                    <span className="w-[70px] shrink-0 text-right text-ink-4">{t.date ? fmtDate(t.date) : ""}</span>
                   </div>
                 ))}
               </div>
@@ -122,11 +156,12 @@ function RowDrill({
 
 // ── A scorecard table (User Pipeline / Activity Pipeline) ─────────────────────
 function ScorecardTable({
-  title, rows, idPrefix, firstColHeader, drillKind, granularity, scope, owner, range,
+  title, rows, idPrefix, firstColHeader, drillKind, granularity, scope, owner, range, nameOf,
 }: {
   title: string; rows: ScorecardRow[]; idPrefix: string; firstColHeader: string;
   drillKind: "user" | "activity";
   granularity: OutreachGranularity; scope: OutreachScopeKind; owner?: string; range?: OutreachDateRange;
+  nameOf: (email: string) => string;
 }) {
   const [open, setOpen] = useState<string | null>(null);
   return (
@@ -174,7 +209,7 @@ function ScorecardTable({
                 {isOpen && (
                   <tr>
                     <td colSpan={5} className="border-b border-border bg-bg p-0">
-                      <RowDrill kind={drillKind} rowKey={rowKey} granularity={granularity} scope={scope} owner={owner} range={range} />
+                      <RowDrill kind={drillKind} rowKey={rowKey} granularity={granularity} scope={scope} owner={owner} range={range} nameOf={nameOf} />
                     </td>
                   </tr>
                 )}
@@ -318,12 +353,125 @@ const CELL_DRILL_CAP = 10;
 /** The contacts behind an Assigned-set / Contacted number: who, when they hit
  *  the stage, and how much outreach they've had. All of it is already on the
  *  contact rows the table counts, so this needs no extra fetch. */
+/** Connected staff as a count you hover rather than a list of names — five
+ *  names inline pushed the table into a horizontal scroll, and the question is
+ *  usually "does anyone here know them?" not "who exactly". */
+function StaffBadge({ names }: { names?: string[] }) {
+  const list = names ?? [];
+  if (list.length === 0) return <span className="text-[11px] text-ink-4">—</span>;
+  return (
+    <span
+      title={`Connected staff: ${list.join(", ")}`}
+      className="inline-flex cursor-help items-center gap-1 rounded-full border border-border-strong bg-surface-2 px-1.5 py-0.5 text-[10.5px] font-medium text-ink-2">
+      <Users size={10} className="shrink-0 text-ink-3" />
+      {list.length === 1 ? firstNameOf(list[0]) : list.length}
+    </span>
+  );
+}
+
+/** First name only — "Avni Nahar" → "Avni". Keeps a single connection legible
+ *  in a narrow cell; the full name is in the tooltip. */
+function firstNameOf(name: string) {
+  return name.trim().split(/\s+/)[0] || name;
+}
+
+/** Campaign tags. Two inline, the rest behind a +n whose tooltip names them.
+ *  `labelOf` turns the stored slug into the catalog label — the API returns
+ *  "other_hiring_partner" and nobody should have to read that. */
+function TagChips({ tags, labelOf }: { tags?: string[]; labelOf: (slug: string) => string }) {
+  const list = (tags ?? []).map(labelOf);
+  if (list.length === 0) return <span className="text-[11px] text-ink-4">—</span>;
+  const head = list.slice(0, 2);
+  const rest = list.slice(2);
+  return (
+    <span className="flex flex-wrap items-center gap-1">
+      {head.map((t) => (
+        <span key={t} title={t}
+          className="max-w-[136px] truncate rounded bg-accent-soft px-1.5 py-0.5 text-[10.5px] font-medium text-accent">
+          {t}
+        </span>
+      ))}
+      {rest.length > 0 && (
+        <span title={rest.join(", ")} className="cursor-help text-[10.5px] font-medium text-ink-3">
+          +{rest.length}
+        </span>
+      )}
+    </span>
+  );
+}
+
+/** slug → catalog label, falling back to a de-slugged version so an
+ *  uncatalogued tag still reads as words rather than snake_case. */
+function useTagLabels() {
+  const { data: catalog = [] } = useContactTagCatalog();
+  return useMemo(() => {
+    const m = new Map(catalog.map((t) => [t.slug, t.label]));
+    return (slug: string) =>
+      m.get(slug) ?? slug.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  }, [catalog]);
+}
+
+/** What the touches actually were — the last conversation, in the row. Reads
+ *  the contact-detail endpoint, which already returns subject + snippet per
+ *  activity, so this needed no new API. */
+function TouchLog({ contactId }: { contactId: number }) {
+  const { data, isLoading, isError } = useContactDetail(contactId);
+  const [showAll, setShowAll] = useState(false);
+  if (isLoading) return <div className="flex items-center gap-2 text-[12px] text-ink-3"><Loader2 size={12} className="animate-spin" /> Loading the touches…</div>;
+  if (isError) return <div className="text-[12px] text-red">Couldn't load the touches.</div>;
+  const jobs = (data?.activity ?? []).filter((a) => a.is_jobs);
+  // Fall back to everything logged rather than claiming there are no touches:
+  // the count on the row comes from a different relevance rule than is_jobs.
+  const acts = jobs.length > 0 ? jobs : (data?.activity ?? []);
+  if (acts.length === 0) return <div className="text-[12px] text-ink-4">Nothing logged against this contact yet.</div>;
+  const shown = showAll ? acts : acts.slice(0, TOUCH_LOG_CAP);
+  return (
+    <div className="flex flex-col gap-1.5">
+      {shown.map((a) => {
+        const inbound = a.email_from ? !a.email_from.toLowerCase().includes("@pursuit.org") : false;
+        return (
+          <div key={a.id} className="flex items-start gap-2 text-[12px]">
+            <span className={cn("mt-[1px] w-[52px] shrink-0 rounded px-1 py-0.5 text-center text-[10px] font-semibold uppercase",
+              inbound ? "bg-green-soft text-green" : "bg-surface-2 text-ink-3")}>
+              {inbound ? "reply" : a.type}
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="font-medium text-ink">{a.subject || "(no subject)"}</span>
+              {a.email_snippet || a.description ? (
+                <span className="mt-0.5 block line-clamp-2 text-[11.5px] leading-snug text-ink-3">
+                  {a.email_snippet || a.description}
+                </span>
+              ) : null}
+            </span>
+            <span className="w-[112px] shrink-0 truncate text-right text-[11px] text-ink-4"
+              title={a.email_from || a.logged_by || undefined}>
+              {a.email_from || a.logged_by || "—"}
+            </span>
+            <span className="w-[54px] shrink-0 text-right text-[11px] tabular-nums text-ink-4">
+              {relDay(a.activity_date) ?? "—"}
+            </span>
+          </div>
+        );
+      })}
+      {!showAll && acts.length > TOUCH_LOG_CAP ? (
+        <button type="button" onClick={() => setShowAll(true)}
+          className="self-start text-[11.5px] font-medium text-accent hover:underline">
+          Show {acts.length - TOUCH_LOG_CAP} older
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
 function ContactCellDrill({ label, contacts, whenLabel }: {
   label: string;
   contacts: JobContactWithDeal[];
   whenLabel: string;
 }) {
   const [showAll, setShowAll] = useState(false);
+  /** Which contact's touch log is expanded — one at a time. */
+  const [openTouches, setOpenTouches] = useState<number | null>(null);
+  const tagLabel = useTagLabels();
   const sorted = useMemo(() => [...contacts].sort((a, b) =>
     (b.membership_stage_entered_at ?? "").localeCompare(a.membership_stage_entered_at ?? "")),
     [contacts]);
@@ -342,28 +490,51 @@ function ContactCellDrill({ label, contacts, whenLabel }: {
           <tr className="bg-surface-2/60 text-left text-[10.5px] uppercase tracking-wider text-ink-3">
             <th className="px-3 py-1.5 font-semibold">Contact</th>
             <th className="px-2 py-1.5 font-semibold">Company</th>
+            <th className="px-2 py-1.5 font-semibold" title="Pursuit staff with a relationship to this contact">Staff</th>
+            <th className="px-2 py-1.5 font-semibold" title="Campaign tags on this contact">Tags</th>
             <th className="px-2 py-1.5 font-semibold">{whenLabel}</th>
-            <th className="px-2 py-1.5 text-right font-semibold" title="Logged jobs touches on this contact">Touches</th>
+            <th className="px-2 py-1.5 text-right font-semibold" title="Logged jobs touches — click a count to read them">Touches</th>
             <th className="px-2 py-1.5 text-right font-semibold">Last touch</th>
           </tr>
         </thead>
         <tbody>
-          {shown.map((c) => (
-            <tr key={c.contact_id} className="border-t border-border-strong">
-              <td className="px-3 py-1.5">
-                <Link to={`/jobs/contacts/${c.contact_id}`} className="font-medium text-ink hover:text-accent hover:underline">
-                  {c.full_name ?? "—"}
-                </Link>
-              </td>
-              <td className="px-2 py-1.5 truncate text-ink-2">{c.current_company ?? "—"}</td>
-              <td className="px-2 py-1.5 text-ink-3">{relDay(c.membership_stage_entered_at) ?? "—"}</td>
-              <td className={cn("px-2 py-1.5 text-right tabular-nums",
-                (c.recent_activity_count ?? 0) > 0 ? "text-ink-2" : "text-ink-4")}>
-                {c.recent_activity_count ?? 0}
-              </td>
-              <td className="px-2 py-1.5 text-right tabular-nums text-ink-4">{relDay(c.last_activity_at) ?? "—"}</td>
-            </tr>
-          ))}
+          {shown.map((c) => {
+            const touches = c.recent_activity_count ?? 0;
+            const isOpen = openTouches === c.contact_id;
+            return (
+              <Fragment key={c.contact_id}>
+                <tr className="border-t border-border-strong">
+                  <td className="px-3 py-1.5">
+                    <Link to={`/jobs/contacts/${c.contact_id}`} className="font-medium text-ink hover:text-accent hover:underline">
+                      {c.full_name ?? "—"}
+                    </Link>
+                  </td>
+                  <td className="max-w-[160px] truncate px-2 py-1.5 text-ink-2" title={c.current_company ?? undefined}>
+                    {c.current_company ?? "—"}
+                  </td>
+                  <td className="px-2 py-1.5"><StaffBadge names={c.connected_staff_names} /></td>
+                  <td className="px-2 py-1.5"><TagChips tags={c.crm_tags} labelOf={tagLabel} /></td>
+                  <td className="whitespace-nowrap px-2 py-1.5 text-ink-3">{relDay(c.membership_stage_entered_at) ?? "—"}</td>
+                  <td className="px-2 py-1.5 text-right tabular-nums">
+                    {touches > 0 ? (
+                      <button type="button"
+                        onClick={() => setOpenTouches(isOpen ? null : c.contact_id)}
+                        title={`Read the ${touches} logged touch${touches === 1 ? "" : "es"} on ${c.full_name ?? "this contact"}`}
+                        className={cn("font-semibold hover:underline", isOpen ? "text-accent" : "text-ink-2 hover:text-accent")}>
+                        {touches}
+                      </button>
+                    ) : <span className="text-ink-4">0</span>}
+                  </td>
+                  <td className="whitespace-nowrap px-2 py-1.5 text-right tabular-nums text-ink-4">{relDay(c.last_activity_at) ?? "—"}</td>
+                </tr>
+                {isOpen ? (
+                  <tr className="border-t border-border-strong bg-bg">
+                    <td colSpan={7} className="px-3 py-2"><TouchLog contactId={c.contact_id} /></td>
+                  </tr>
+                ) : null}
+              </Fragment>
+            );
+          })}
         </tbody>
       </table>
       {extra > 0 ? (
@@ -522,7 +693,7 @@ function ThisWeekBlock({ nameOf, activityPipeline, granularity, scope, owner, ra
       {activityPipeline && activityPipeline.length > 0 && (
         <ScorecardTable title="Activity Pipeline" firstColHeader="Activity" rows={activityPipeline}
           idPrefix="act" drillKind="activity" granularity={granularity} scope={scope}
-          owner={owner} range={range} />
+          owner={owner} range={range} nameOf={nameOf} />
       )}
     </div>
   );
@@ -1078,32 +1249,24 @@ export function JobsOutreach() {
         </div>
       )}
 
-      {sc && (
-        <>
-          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-          </div>
-
-          {/* ── Divider: everything above = high-level review; below = per-sender/account detail ── */}
-          <div className="mt-6 flex items-center gap-3">
-            <div className="h-px flex-1 bg-border-strong" />
-            <span className="text-[11px] font-bold uppercase tracking-[.12em] text-ink-3">Segments</span>
-            <div className="h-px flex-1 bg-border-strong" />
-          </div>
-        </>
-      )}
-
-      <TargetingPanel granularity={granularity} scope={scope} owner={owner || undefined} range={range} />
-
-      {/* Activity over time reads as supporting detail behind the sender
-          segments, not as a headline — so it sits at the bottom. */}
-      {/* Separator: everything above is the review; this is supporting trend
-          data on a different population, so it gets its own band. */}
+      {/* ── One band, two charts side by side ─────────────────────────────
+             Both are supporting detail on the review above, and neither needs
+             the full page width, so they share a single divider and sit in a
+             2-up grid with a rule between them. They stack below lg, where
+             half-width would squeeze the trend line into noise. ── */}
       <div className="mt-6 flex items-center gap-3">
         <div className="h-px flex-1 bg-border-strong" />
-        <span className="text-[11px] font-bold uppercase tracking-[.12em] text-ink-3">Activity over time</span>
+        <span className="text-[11px] font-bold uppercase tracking-[.12em] text-ink-3">Segments &amp; activity over time</span>
         <div className="h-px flex-1 bg-border-strong" />
       </div>
-      <ActivityTrends scope={scope} owner={owner || undefined} range={range} />
+      <div className="grid grid-cols-1 items-start gap-5 lg:grid-cols-2 lg:gap-0">
+        <div className="min-w-0 lg:pr-5">
+          <TargetingPanel granularity={granularity} scope={scope} owner={owner || undefined} range={range} />
+        </div>
+        <div className="min-w-0 lg:border-l lg:border-border-strong lg:pl-5">
+          <ActivityTrends scope={scope} owner={owner || undefined} range={range} />
+        </div>
+      </div>
 
       {/* Requiring attention closes the page (moved below the trend band
           2026-08-04): it's the action list you leave the review with, so it

@@ -1263,6 +1263,10 @@ export interface OutreachDrillTouch {
   subject: string | null;
   snippet: string | null;
   direction: string;
+  /** Bare lowercase email of the Pursuit person behind the touch — the sender
+   *  when we sent it, the recipient when the contact replied. Resolve through
+   *  the staff name map. */
+  actor: string | null;
 }
 export interface OutreachDrillContact {
   contact_id: number;
@@ -1270,6 +1274,8 @@ export interface OutreachDrillContact {
   company: string | null;
   entered_at: string | null;
   touches: OutreachDrillTouch[];
+  /** Distinct actors across this contact's touches, for the collapsed row. */
+  actors?: string[];
 }
 export interface OutreachDrill {
   kind: "user" | "activity";
