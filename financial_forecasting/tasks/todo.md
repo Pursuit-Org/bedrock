@@ -1,6 +1,10 @@
 # Build plan: account fields, campaigns, touch depth, export, pipeline stages
 
-Status: **PLAN — questions answered 2026-08-05, ready to build on Kwame's go.**
+Status: **IN PROGRESS.** Built and pushed 2026-08-05: assigned period-scoping,
+follow-up depth (D), account firmographics (part of B), export Phase 1 for
+Contacts (part of E), and the additive migration for Jac. NOT built yet: stage
+changes (A), opportunity tags UI (C), investor picker UI, Accounts/Opportunities
+row selection. See "Remaining" at the bottom.
 Decisions: (1) build on this branch; (2) closed-lost reasons = existing seven
 + not_interested/not_selected/not_responsive/revisit; (3) call_booked goes
 after initial_outreach; (4) investor is a RELATIONSHIP — see item B, redesigned.
@@ -130,3 +134,38 @@ branch) is therefore the first decision, not a formality.
 3. call_booked → **after initial_outreach**:
    assigned → initial_outreach → call_booked → converted_to_opportunity.
 4. Investor → **relationship, not a flag** (see item B).
+
+
+## Built so far (2026-08-05)
+
+- **Assigned period-scoped** — both columns of Outreach Detail now count entries
+  into a stage during the window, so the ratio compares like with like. The
+  contacts with no stage stamp (301 of 827 in production) are reported on the
+  card instead of silently dropped.
+- **D · Follow-up depth** — panel on Outreach, 0/1/2/3/4+ touches for the period
+  cohort, each bucket expanding to its contacts. Server-side, same activity
+  filters as the drills. Production check: 47 at one touch, 7 at two, 1 at three.
+- **B (partial) · Account firmographics** — Size / HQ / Industry columns on the
+  Accounts hub (Size visible by default, HQ + Industry opt-in), read-only from
+  public.companies. The existing companies join gated on industry, hiding the
+  size band for un-enriched companies; widened. Size sorts by headcount.
+- **E (partial) · Export** — POST /api/jobs/export/{entity} streaming .xlsx,
+  wired to the Contacts bulk bar.
+- **Migration for Jac** — `2026-08-05-account-fields-and-opportunity-tags.sql`:
+  employee_count on public.companies (shared table, flagged), investor_account_key
+  on jobs_account, tags + GIN index on jobs_opportunity. Additive, no backfill.
+  The API probes for employee_count, so it lights up on apply with no redeploy.
+
+## Remaining
+
+1. **A · Stage changes** — the risky one. Migration + backfill (16 initial_outreach
+   remaps, 18 on-hold folds, 4 renames), code sweep across funnels/board/heatmap/
+   filters, coordinated deploy. Reasons vocabulary = existing seven + the four new.
+   Deliberately not started alongside other work: writes must not offer a stage
+   the live CHECK constraint rejects, and the backend talks to production.
+2. **C · Opportunity tags UI** — column exists only after the migration; needs the
+   tag editor on the opportunity panel and TagCampaigns counting opportunities.
+3. **B remainder** — investor picker + reverse portfolio list (needs the migration),
+   employee_count display.
+4. **E remainder** — row selection on Accounts and Opportunities, then their
+   Export buttons (endpoint specs already built for both).
