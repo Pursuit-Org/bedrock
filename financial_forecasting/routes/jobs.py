@@ -3434,6 +3434,8 @@ async def outreach_scorecard(
         {"metric": m, "tier": _ACTIVITY_TIER.get(m), **_row("activity", m, label, activity_pipeline_target(m, granularity))}
         for m, label in _OUTREACH_ACTIVITY_META
     ]
+    touch_depth = await _touch_depth(conn, this_start, this_end, scope, owner)
+
     return {"success": True, "data": {
         "granularity": granularity,
         "scope": scope,
@@ -3444,7 +3446,104 @@ async def outreach_scorecard(
         "user_pipeline": user_pipeline,
         "activity_pipeline": activity_pipeline,
         "by_sender": by_sender,
+        "touch_depth": touch_depth,
     }}
+
+
+# Buckets for the follow-up question. 0 is its own row rather than being folded
+# into 1: "moved to outreach with nothing logged against them" is a different
+# problem from "we touched them once and stopped".
+_TOUCH_BUCKETS = [
+    ("0", "No logged touch", 0, 0),
+    ("1", "1 touch", 1, 1),
+    ("2", "2 touches", 2, 2),
+    ("3", "3 touches", 3, 3),
+    ("4plus", "4+ touches", 4, None),
+]
+_TOUCH_DEPTH_CAP = 40   # contacts listed per bucket for the inline drill
+
+
+async def _touch_depth(conn, start, end, scope: str, owner: Optional[str]) -> dict:
+    """How deep the follow-up went for the contacts that entered initial outreach
+    in this window: 0 / 1 / 2 / 3 / 4+ logged touches.
+
+    Cohort is period-scoped (entered outreach in the window); the touch count is
+    the contact's LIFETIME jobs-relevant activity. For a cohort that only just
+    entered outreach those are near enough the same thing, and period-slicing the
+    touches would split a three-touch sequence that happened to straddle a
+    Sunday — which is the opposite of what a follow-up-depth number is for.
+
+    Uses the same _jobs_relevant / _not_autoreply filters and the same
+    stage-entry expression as the funnel and the drill-downs, so this can't
+    disagree with the rest of the tab. `undated` reports the contacts whose stage
+    entry has no timestamp at all — without the stage-history grant no period can
+    claim them, and dropping them silently is what makes a panel look wrong."""
+    if await has_membership_history(conn):
+        entered = ("COALESCE((SELECT max(h.changed_at) FROM bedrock.jobs_membership_stage_history h"
+                   " WHERE h.contact_id = m.contact_id AND h.to_stage = 'initial_outreach'),"
+                   " m.first_outreach_at)")
+    else:
+        entered = "m.first_outreach_at"
+
+    owner_pred = "TRUE"
+    if owner and _SAFE_EMAIL.match(owner):
+        owner_pred = f"lower(m.owner_email) = lower('{owner}')"
+    elif scope in ("team", "staff"):
+        owner_pred = _scope_email_pred("m.owner_email", scope)
+
+    sql = f"""
+        WITH cohort AS (
+            SELECT m.contact_id, m.owner_email, {entered} AS entered_at
+            FROM bedrock.jobs_contact_membership m
+            WHERE m.stage = 'initial_outreach' AND {owner_pred}
+        ),
+        scoped AS (
+            SELECT * FROM cohort WHERE entered_at >= $1 AND entered_at < $2
+        ),
+        counted AS (
+            SELECT s.contact_id, s.owner_email,
+                   (SELECT count(*) FROM bedrock.activity a
+                     WHERE a.participant_public_contact_id = s.contact_id
+                       AND a.deleted_at IS NULL
+                       AND {_jobs_relevant('a')} AND {_not_autoreply('a')}) AS touches
+            FROM scoped s
+        )
+        SELECT c.contact_id, c.owner_email, c.touches,
+               p.full_name, p.current_company,
+               (SELECT max(a2.activity_date) FROM bedrock.activity a2
+                 WHERE a2.participant_public_contact_id = c.contact_id
+                   AND a2.deleted_at IS NULL AND {_jobs_relevant('a2')}) AS last_touch_at
+        FROM counted c
+        LEFT JOIN public.contacts p ON p.contact_id = c.contact_id
+        ORDER BY c.touches, p.current_company NULLS LAST
+    """
+    try:
+        rows = await conn.fetch(sql, start, end)
+    except asyncpg.exceptions.InsufficientPrivilegeError:
+        logger.warning("touch depth: stage-history read refused — falling back to stamps only")
+        rows = []
+
+    undated = await conn.fetchval(f"""
+        SELECT count(*) FROM bedrock.jobs_contact_membership m
+        WHERE m.stage = 'initial_outreach' AND {owner_pred} AND {entered} IS NULL
+    """) or 0
+
+    total = len(rows)
+    buckets = []
+    for key, label, lo, hi in _TOUCH_BUCKETS:
+        members = [r for r in rows if r["touches"] >= lo and (hi is None or r["touches"] <= hi)]
+        buckets.append({
+            "key": key, "label": label, "count": len(members),
+            "pct": round(100 * len(members) / total) if total else 0,
+            "contacts": [{
+                "contact_id": r["contact_id"], "name": r["full_name"],
+                "company": r["current_company"], "owner": r["owner_email"],
+                "touches": r["touches"],
+                "last_touch_at": r["last_touch_at"].isoformat() if r["last_touch_at"] else None,
+            } for r in members[:_TOUCH_DEPTH_CAP]],
+            "truncated": max(0, len(members) - _TOUCH_DEPTH_CAP),
+        })
+    return {"total": total, "undated": undated, "buckets": buckets}
 
 
 def _touch_direction(type_: str, email_from: Optional[str]) -> str:
@@ -4441,6 +4540,27 @@ async def jobs_account_names(
     return {"success": True, "data": [{"account_key": r["key"], "account": r["name"]} for r in rows]}
 
 
+# schema-probe cache: (schema, table, column) → bool. Columns only ever get
+# ADDED by a migration, so a True is permanent; a False is re-checked so the app
+# picks the column up after Jac applies without needing a restart.
+_COLUMN_CACHE: dict[tuple[str, str, str], bool] = {}
+
+
+async def _has_column(schema: str, table: str, column: str) -> bool:
+    """Does this column exist yet? Lets a feature ship ahead of its migration and
+    light up on apply, instead of 42703-ing every request until then."""
+    key = (schema, table, column)
+    if _COLUMN_CACHE.get(key):
+        return True
+    pool = get_pool()
+    found = bool(await pool.fetchval(
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_schema = $1 AND table_name = $2 AND column_name = $3",
+        schema, table, column))
+    _COLUMN_CACHE[key] = found
+    return found
+
+
 @router.get("/accounts")
 async def jobs_accounts(
     deal_type: Optional[str] = Query(None),
@@ -4458,6 +4578,14 @@ async def jobs_accounts(
     rows; scope=all includes cold linkedin imports.
     """
     eng = "" if scope == "all" else f"AND {_engaged_clause('c')}"
+
+    # employee_count is added by the 2026-08-05 migration Jac applies. Probing
+    # for it rather than assuming means this endpoint works before AND after,
+    # and the column starts feeding the UI the moment it lands — no second
+    # deploy. Selecting a missing column would 42703 the whole accounts list.
+    employee_count_select = (
+        ", max(employee_count) AS employee_count"
+        if await _has_column("public", "companies", "employee_count") else "")
 
     # Every input below is an independent read. Run sequentially on one
     # connection they cost ~2.6s; gather them across the pool so wall-time ≈ the
@@ -4602,13 +4730,23 @@ async def jobs_accounts(
               WHERE coalesce(trim(company_name),'') <> '' AND coalesce(trim(role_title),'') <> '' GROUP BY 1
             ) s GROUP BY k
             """),
-        # Company industry by normalized name (enriched via claude_ai / the
-        # SERP-verified PE-VC pass) — powers the accounts Industry filter.
+        # Company firmographics by normalized name (enriched via claude_ai / the
+        # SERP-verified PE-VC pass) — powers the accounts Industry filter and the
+        # Size / HQ / Industry columns. The WHERE deliberately admits a row that
+        # has ANY of the four: gating on industry alone hid the size band for
+        # every company whose industry was never enriched.
         pool.fetch(
-            """
-            SELECT lower(trim(name)) AS key, max(industry) AS industry
+            f"""
+            SELECT lower(trim(name)) AS key,
+                   max(industry)     AS industry,
+                   max(size_bucket)  AS size_bucket,
+                   max(hq_location)  AS hq_location,
+                   max(stage)        AS company_stage
+                   {employee_count_select}
             FROM public.companies
-            WHERE coalesce(trim(name),'') <> '' AND coalesce(industry,'') <> ''
+            WHERE coalesce(trim(name),'') <> ''
+              AND (coalesce(industry,'') <> '' OR coalesce(size_bucket,'') <> ''
+                   OR coalesce(hq_location,'') <> '' OR coalesce(stage,'') <> '')
             GROUP BY 1
             """),
         # ALL contacts per company (not just flagged prospects). Lookup only —
@@ -4693,7 +4831,7 @@ async def jobs_accounts(
         prospect_counts[key] = r["n"]
 
     ja = {r["account_key"]: r for r in ja_rows}
-    industry_by_key = {r["key"]: r["industry"] for r in industry_rows}
+    company_by_key = {r["key"]: dict(r) for r in industry_rows}
     contact_totals = {r["key"]: r["n"] for r in contact_total_rows}
     # domain → the name variant that actually holds flagged prospects
     _by_domain: dict = {}
@@ -4807,7 +4945,14 @@ async def jobs_accounts(
         # "no people at all" are different problems with different fixes.
         g["contact_count"] = contact_totals.get(key, 0)
         g["prospect_sibling"] = sibling_hint.get(key)
-        g["industry"] = industry_by_key.get(key)
+        # Read-only firmographics from public.companies — Bedrock displays them,
+        # other systems own them, so nothing here is editable.
+        co = company_by_key.get(key) or {}
+        g["industry"] = co.get("industry")
+        g["size_bucket"] = co.get("size_bucket")
+        g["hq_location"] = co.get("hq_location")
+        g["company_stage"] = co.get("company_stage")
+        g["employee_count"] = co.get("employee_count")
         _src, _app = listings_by_key.get(key, (0, 0))
         g["roles_sourced"] = _src
         g["roles_applied"] = _app

@@ -55,19 +55,37 @@ const dealTypesOf = (a: JobsAccount) =>
   [...new Set(a.opportunities.map((o) => o.deal_type).filter(Boolean))] as string[];
 
 // ── columns ──────────────────────────────────────────────────────────────────
-type ColKey = "account" | "status" | "owner" | "opps" | "contacts" | "listings" | "hired" | "tasks" | "deal_types" | "last_activity";
-const COLUMN_ORDER: ColKey[] = ["account", "status", "owner", "opps", "contacts", "listings", "hired", "tasks", "deal_types", "last_activity"];
-const DEFAULT_VISIBLE: ColKey[] = ["account", "status", "owner", "opps", "contacts", "listings", "hired", "tasks", "last_activity"];
+type ColKey = "account" | "status" | "owner" | "size" | "hq" | "industry" | "opps" | "contacts" | "listings" | "hired" | "tasks" | "deal_types" | "last_activity";
+const COLUMN_ORDER: ColKey[] = ["account", "status", "owner", "size", "hq", "industry", "opps", "contacts", "listings", "hired", "tasks", "deal_types", "last_activity"];
+const DEFAULT_VISIBLE: ColKey[] = ["account", "status", "owner", "size", "opps", "contacts", "listings", "hired", "tasks", "last_activity"];
 const COL_LABELS: Record<ColKey, string> = {
-  account: "Account", status: "Status", owner: "Jobs owner", opps: "Opps",
+  account: "Account", status: "Status", owner: "Jobs owner",
+  size: "Size", hq: "HQ", industry: "Industry", opps: "Opps",
   contacts: "Contacts", listings: "Roles", hired: "Hired", tasks: "Open tasks", deal_types: "Deal types", last_activity: "Last touch",
 };
 // Default pixel widths — user-resizable via drag handles (useColumnWidths),
 // same grid components as the Opportunities table.
 const DEFAULT_WIDTHS: Record<ColKey, number> = {
-  account: 250, status: 125, owner: 135, opps: 75, contacts: 90, listings: 80, hired: 80, tasks: 90, deal_types: 115, last_activity: 100,
+  account: 250, status: 125, owner: 135, size: 100, hq: 140, industry: 150,
+  opps: 75, contacts: 90, listings: 80, hired: 80, tasks: 90, deal_types: 115, last_activity: 100,
 };
-const SORTABLE = new Set<ColKey>(["account", "status", "owner", "opps", "contacts", "listings", "hired", "tasks", "last_activity"]);
+const SORTABLE = new Set<ColKey>(["account", "status", "owner", "size", "hq", "industry", "opps", "contacts", "listings", "hired", "tasks", "last_activity"]);
+
+/** Size bands sort by headcount, not alphabetically. Raw employee_count wins
+ *  when it's there (it's finer), else the band's lower bound; unknown sorts last. */
+const SIZE_BAND_ORDER = ["1-10", "11-50", "51-200", "201-1000", "1001-5000", "5000+"];
+function sizeRank(a: JobsAccount): number {
+  if (a.employee_count != null) return a.employee_count;
+  const i = SIZE_BAND_ORDER.indexOf((a.size_bucket ?? "").trim());
+  return i === -1 ? Number.MAX_SAFE_INTEGER : i;
+}
+
+/** The size cell: band, with the raw headcount when we have it. */
+function sizeLabel(a: JobsAccount): string {
+  const band = (a.size_bucket ?? "").trim();
+  if (a.employee_count != null) return band ? `${a.employee_count.toLocaleString()}` : String(a.employee_count);
+  return band || "—";
+}
 
 // Total hired = builders we placed (our DB) + historical Pursuit fellows (SF).
 const totalHired = (a: JobsAccount) => (a.builders_hired ?? 0) + (a.fellows_hired ?? 0);
@@ -77,6 +95,11 @@ function extract(a: JobsAccount, key: ColKey): string | number {
     case "account":       return a.account.toLowerCase();
     case "status":        return a.account_status;
     case "owner":         return a.owner_email ?? "";
+    // Sort by the band's lower bound, not the label — alphabetically "1001-5000"
+    // sorts before "51-200", which is not what anyone means by sorting on size.
+    case "size":          return sizeRank(a);
+    case "hq":            return (a.hq_location ?? "").toLowerCase();
+    case "industry":      return (a.industry ?? "").toLowerCase();
     case "opps":          return a.opp_count;
     case "contacts":      return a.prospect_count;
     case "listings":      return a.job_listings ?? 0;
@@ -143,6 +166,23 @@ function AccountRow({
       ? <span className="inline-flex items-center gap-1 text-[12px] text-ink-2"><CheckSquare size={11} className="text-ink-4" />{account.open_tasks}</span>
       : <span className="text-ink-4">—</span>,
     owner: <OwnerSelect owner={account.owner_email} staff={staff} onSave={(email) => onSaveOwner(account.account, email)} />,
+    // Firmographics from public.companies. Read-only on purpose: other systems
+    // feed this, so making it editable here would invite two answers.
+    size: (account.size_bucket || account.employee_count != null) ? (
+      <span className="text-[12px] tabular-nums text-ink-2"
+        title={[account.size_bucket ? `Band: ${account.size_bucket}` : null,
+                account.employee_count != null ? `Headcount: ${account.employee_count.toLocaleString()}` : null,
+                account.company_stage ? `Stage: ${account.company_stage}` : null]
+                .filter(Boolean).join(" · ")}>
+        {sizeLabel(account)}
+      </span>
+    ) : <span className="text-ink-4">—</span>,
+    hq: account.hq_location
+      ? <span className="block truncate text-[12px] text-ink-2" title={account.hq_location}>{account.hq_location}</span>
+      : <span className="text-ink-4">—</span>,
+    industry: account.industry
+      ? <span className="block truncate text-[12px] text-ink-2" title={account.industry}>{account.industry}</span>
+      : <span className="text-ink-4">—</span>,
     opps: account.opp_count > 0 ? <span className="inline-flex items-center gap-1 text-[12px] text-ink-2"><Briefcase size={11} className="text-ink-4" />{account.opp_count}</span> : <span className="text-ink-4">—</span>,
     contacts: account.prospect_count > 0 ? <span className="inline-flex items-center gap-1 text-[12px] text-ink-2"><Users size={11} className="text-ink-4" />{account.prospect_count}</span> : <span className="text-ink-4">—</span>,
     listings: (account.job_listings ?? 0) > 0

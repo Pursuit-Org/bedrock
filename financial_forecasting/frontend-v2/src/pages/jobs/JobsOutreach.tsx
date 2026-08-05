@@ -23,6 +23,7 @@ import {
   type OutreachScopeKind,
   type OutreachDateRange,
   type ScorecardRow,
+  type TouchDepth,
   type JobContactWithDeal,
   type MembershipStage,
 } from "@/services/jobs";
@@ -245,6 +246,105 @@ function TargetingPanel({ granularity, scope, owner, range }: {
       }
     >
       <BreakdownBars items={items} dim="segment" isLoading={isLoading} />
+    </Panel>
+  );
+}
+
+// ── Follow-up depth ───────────────────────────────────────────────────────────
+// "Are we actually following up, or touching once and moving on." Cohort is the
+// contacts that entered initial outreach this period; the bars are how many
+// logged touches each has. Server-computed off the same activity filters as the
+// drills, so it can't disagree with the rest of the tab.
+function TouchDepthPanel({ depth, nameOf }: {
+  depth?: TouchDepth;
+  nameOf: (email: string) => string;
+}) {
+  const [open, setOpen] = useState<string | null>(null);
+  const buckets = depth?.buckets ?? [];
+  const max = Math.max(1, ...buckets.map((b) => b.count));
+  return (
+    <Panel
+      title="Follow-up Depth"
+      desc={depth ? `${depth.total} contacts entered outreach this period` : "Loading…"}
+      action={depth && depth.undated > 0 ? (
+        <span className="text-[11px] text-ink-4"
+          title="No stage timestamp, so no period can claim them. The stage-history grant fills most of these in.">
+          {depth.undated} without a stage date
+        </span>
+      ) : undefined}
+    >
+      {!depth ? (
+        <div className="h-28 animate-pulse rounded bg-surface-2" />
+      ) : depth.total === 0 ? (
+        <div className="rounded-lg border border-dashed border-border-strong px-4 py-6 text-center text-[12.5px] text-ink-4">
+          Nobody entered initial outreach in this period.
+        </div>
+      ) : (
+        <div className="flex flex-col">
+          {buckets.map((b) => (
+            <div key={b.key}>
+              <div className="grid grid-cols-[104px_1fr_74px] items-center gap-3 py-[7px]">
+                <span className={cn("text-[12.5px] font-medium",
+                  b.key === "0" ? "text-[var(--amber)]" : "text-ink")}>{b.label}</span>
+                <span className="h-2.5 overflow-hidden rounded-full bg-surface-2">
+                  <span className="block h-full rounded-full transition-[width] duration-500"
+                    style={{ width: `${Math.round((100 * b.count) / max)}%`,
+                             background: b.key === "0"
+                               ? "linear-gradient(90deg,#d99a2b,#e8b657)"
+                               : "linear-gradient(90deg,#6d5efc,#8b7dff)" }} />
+                </span>
+                <span className="text-right text-[12px] tabular-nums text-ink-2">
+                  {b.count > 0 ? (
+                    <button type="button" onClick={() => setOpen(open === b.key ? null : b.key)}
+                      title={`List the ${b.count} contacts with ${b.label.toLowerCase()}`}
+                      className={cn("font-semibold hover:underline",
+                        open === b.key ? "text-accent" : "text-ink hover:text-accent")}>
+                      {b.count}
+                    </button>
+                  ) : <span className="font-semibold text-ink-4">0</span>}
+                  <span className="text-ink-4"> · {b.pct}%</span>
+                </span>
+              </div>
+              {open === b.key ? (
+                <div className="mb-1 overflow-hidden rounded-lg border border-border-strong">
+                  <table className="w-full text-[12px]">
+                    <thead>
+                      <tr className="bg-surface-2/60 text-left text-[10.5px] uppercase tracking-wider text-ink-3">
+                        <th className="px-3 py-1.5 font-semibold">Contact</th>
+                        <th className="px-2 py-1.5 font-semibold">Company</th>
+                        <th className="px-2 py-1.5 font-semibold">Owner</th>
+                        <th className="px-2 py-1.5 text-right font-semibold">Last touch</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {b.contacts.map((c) => (
+                        <tr key={c.contact_id} className="border-t border-border-strong">
+                          <td className="px-3 py-1.5">
+                            <Link to={`/jobs/contacts/${c.contact_id}`}
+                              className="font-medium text-ink hover:text-accent hover:underline">
+                              {c.name ?? "—"}
+                            </Link>
+                          </td>
+                          <td className="max-w-[200px] truncate px-2 py-1.5 text-ink-2">{c.company ?? "—"}</td>
+                          <td className="px-2 py-1.5 text-ink-3">{c.owner ? nameOf(c.owner) : "—"}</td>
+                          <td className="whitespace-nowrap px-2 py-1.5 text-right tabular-nums text-ink-4">
+                            {relDay(c.last_touch_at) ?? "—"}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {b.truncated > 0 ? (
+                    <div className="border-t border-border-strong px-3 py-1.5 text-[11px] text-ink-4">
+                      {b.truncated} more not shown
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      )}
     </Panel>
   );
 }
@@ -583,7 +683,7 @@ function ThisWeekBlock({ nameOf, activityPipeline, granularity, scope, owner, ra
 
   // Keep the contact objects, not just tallies — the drill lists them, and
   // deriving both from one pass means the number and the list always agree.
-  const rows = useMemo(() => {
+  const { rows, undated } = useMemo(() => {
     // Contacted is a period event, so it follows the page's Period picker (it
     // used to hardcode the current Sun-week and ignore the selector entirely).
     const pStart = range?.from ? new Date(`${range.from}T00:00:00`) : startOfWeekSunday();
@@ -595,25 +695,39 @@ function ThisWeekBlock({ nameOf, activityPipeline, granularity, scope, owner, ra
       by.set(k, r);
       return r;
     };
-    for (const c of assignedData?.data ?? []) bucket(c.owner_email).assigned.push(c);
-    for (const c of contactedData?.data ?? []) {
-      if (!c.membership_stage_entered_at) continue;
+    // BOTH sides are period-scoped, so the ratio compares like with like: of the
+    // contacts that entered this window, what share got reached. Assigned used
+    // to be the whole standing queue against a period-scoped numerator, which
+    // made the % drift down as the backlog grew rather than describing the week.
+    let undated = 0;
+    const inWindow = (c: JobContactWithDeal) => {
+      if (!c.membership_stage_entered_at) { undated++; return false; }
       const t = new Date(c.membership_stage_entered_at);
-      if (t >= pStart && t <= pEnd) bucket(c.owner_email).contacted.push(c);
+      return t >= pStart && t <= pEnd;
+    };
+    for (const c of assignedData?.data ?? []) {
+      if (inWindow(c)) bucket(c.owner_email).assigned.push(c);
     }
-    return [...by.entries()]
+    for (const c of contactedData?.data ?? []) {
+      if (inWindow(c)) bucket(c.owner_email).contacted.push(c);
+    }
+    const visible = [...by.entries()]
       .filter(([email, r]) => r.assigned.length + r.contacted.length > 0
         // Honour the page's sender scope: "(unowned)" is nobody's, so it only
         // shows under Everyone.
         && (email === "(unowned)" ? scope === "pursuit" : inScope(email, scope)))
       .sort((a, b) => (b[1].assigned.length + b[1].contacted.length) - (a[1].assigned.length + a[1].contacted.length));
+    // Reported, not swallowed: 301 of 827 initial-outreach contacts carry no
+    // stage stamp in production, so a period view genuinely cannot place them.
+    // Silently dropping them is what makes a table look like it's lying.
+    return { rows: visible, undated };
   }, [assignedData, contactedData, range, scope]);
   if (rows.length === 0) {
     return (
       <div className="flex flex-col gap-3">
         <SectionHead title="Outreach Detail" />
         <div className="rounded-lg border border-dashed border-border-strong px-4 py-6 text-center text-[12.5px] text-ink-4">
-          Nobody in this scope has an assigned queue for this period.
+          No contacts entered the assigned or contacted stage in this period.
         </div>
       </div>
     );
@@ -622,12 +736,23 @@ function ThisWeekBlock({ nameOf, activityPipeline, granularity, scope, owner, ra
     <div className="flex flex-col gap-3">
       <SectionHead title="Outreach Detail" />
       <div className="flex flex-col overflow-hidden rounded-xl border border-border-strong bg-surface">
-        <div className="border-b border-border-strong bg-surface-2 px-4 py-3 text-[13px] font-bold text-ink-2">Assigned &amp; Contacted</div>
+        <div className="flex flex-wrap items-baseline gap-2 border-b border-border-strong bg-surface-2 px-4 py-3">
+          <span className="text-[13px] font-bold text-ink-2">Assigned &amp; Contacted</span>
+          {/* Both columns count entries INTO a stage during the period. Contacts
+              with no stage stamp can't be placed in time, so they're named here
+              rather than quietly missing from the totals. */}
+          {undated > 0 ? (
+            <span className="text-[11px] text-ink-4"
+              title="These contacts have no stage timestamp, so no period can claim them. The stage-history grant fills most of them in.">
+              {undated} without a stage date, not counted
+            </span>
+          ) : null}
+        </div>
         <table className="w-full text-[12.5px]">
           <thead><tr className="bg-surface-2 text-left text-[10.5px] uppercase tracking-wide text-ink-3">
             <th className="py-2.5 pl-3.5 pr-2 text-left font-bold">Owner</th>
-            <th className="px-2 py-2.5 text-right font-bold" title="Contacts in this owner's assigned queue — click to list them">Assigned set</th>
-            <th className="px-2 py-2.5 text-right font-bold" title="Moved to initial outreach inside the selected period — click to list them">Contacted / assigned</th>
+            <th className="px-2 py-2.5 text-right font-bold" title="Contacts that entered this owner's queue inside the selected period — click to list them">Assigned</th>
+            <th className="px-2 py-2.5 text-right font-bold" title="Of the contacts that entered in this period, how many reached initial outreach — click to list them">Contacted / assigned</th>
             <th className="w-[34%] px-3 py-2.5 text-left font-bold">Progress</th>
           </tr></thead>
           <tbody>
@@ -659,7 +784,7 @@ function ThisWeekBlock({ nameOf, activityPipeline, granularity, scope, owner, ra
                     <td className="px-2 py-1.5 text-right tabular-nums">
                       {total > 0 ? (
                         <button type="button" onClick={() => toggle("assigned")}
-                          title={`List the ${r.assigned.length} contacts in the assigned queue`}
+                          title={`List the ${total} contacts that entered this period`}
                           className={cn("hover:underline", openWhich === "assigned" ? "text-accent" : "text-ink-2 hover:text-accent")}>
                           {total}
                         </button>
@@ -668,7 +793,7 @@ function ThisWeekBlock({ nameOf, activityPipeline, granularity, scope, owner, ra
                     <td className="px-2 py-1.5 text-right tabular-nums">
                       {r.contacted.length > 0 ? (
                         <button type="button" onClick={() => toggle("contacted")}
-                          title={`List the ${r.contacted.length} contacted in this period`}
+                          title={`List the ${r.contacted.length} of ${total} reached in this period`}
                           className={cn("font-semibold hover:underline", openWhich === "contacted" ? "text-accent" : "text-green hover:text-accent")}>
                           {r.contacted.length}
                         </button>
@@ -687,7 +812,7 @@ function ThisWeekBlock({ nameOf, activityPipeline, granularity, scope, owner, ra
                       <td colSpan={4} className="px-3 py-2">
                         <ContactCellDrill
                           label={openWhich === "assigned"
-                            ? `${nameOf(email)} · assigned set`
+                            ? `${nameOf(email)} · entered this period`
                             : `${nameOf(email)} · contacted this period`}
                           // "Assigned set" is the queue PLUS those already
                           // contacted, so its drill must list both — otherwise
@@ -1255,6 +1380,11 @@ export function JobsOutreach() {
           const canonical = staff.find((st) => st.email.toLowerCase() === email)?.email ?? email;
           setOwner(owner.toLowerCase() === email ? "" : canonical);
         }} />
+
+      {/* Follow-up depth sits under Outreach Detail: same cohort, next
+          question — of the contacts that entered, how many did we work more
+          than once. */}
+      <TouchDepthPanel depth={sc?.touch_depth} nameOf={nameOf} />
 
       <div className="flex flex-col gap-3">
         <SectionHead title="Campaigns · coverage" />

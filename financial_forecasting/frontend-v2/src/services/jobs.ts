@@ -491,7 +491,14 @@ export interface JobsAccount {
   sf_account_id?: string | null;
   owner_email: string | null;
   account_status: JobsAccountStatus;
+  /** Firmographics from public.companies — read-only in Bedrock; other systems
+   *  own this data, so the UI displays it and never edits it. */
   industry?: string | null;
+  size_bucket?: string | null;
+  hq_location?: string | null;
+  company_stage?: string | null;
+  /** Raw headcount. Null until the 2026-08-05 migration adds the column. */
+  employee_count?: number | null;
   opportunities: JobsAccountOpp[];
   /** Prospects are NOT nested in the list payload (~38k rows) — fetch them
    *  lazily per account via useAccountProspects. Only the count ships here. */
@@ -1180,6 +1187,32 @@ export interface BySenderRow {
   cold: number;
 }
 
+export interface TouchDepthContact {
+  contact_id: number;
+  name: string | null;
+  company: string | null;
+  owner: string | null;
+  touches: number;
+  last_touch_at: string | null;
+}
+export interface TouchDepthBucket {
+  key: string;
+  label: string;
+  count: number;
+  pct: number;
+  contacts: TouchDepthContact[];
+  /** Members beyond the response cap, so the panel can say what it's hiding. */
+  truncated: number;
+}
+/** Follow-up depth for the contacts that entered initial outreach this period.
+ *  `undated` = contacts whose stage entry has no timestamp, so no period can
+ *  claim them (the stage-history grant fills most of these in). */
+export interface TouchDepth {
+  total: number;
+  undated: number;
+  buckets: TouchDepthBucket[];
+}
+
 export interface OutreachScorecard {
   granularity: OutreachGranularity;
   scope: OutreachScopeKind;
@@ -1187,6 +1220,7 @@ export interface OutreachScorecard {
   user_pipeline: ScorecardRow[];
   activity_pipeline: ScorecardRow[];
   by_sender: BySenderRow[];
+  touch_depth?: TouchDepth;
 }
 
 function outreachParams(granularity: OutreachGranularity, scope: OutreachScopeKind, owner?: string, range?: OutreachDateRange) {
