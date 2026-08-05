@@ -6600,6 +6600,32 @@ async def update_contact(
 
 
 # ── My Network (staff LinkedIn connections) ───────────────────────────────────
+# The vote vocabulary behind the 👍/👎 column. Renamed 2026-08-05 to match what
+# the column actually asks ("Expect a response") rather than what it used to
+# ("Willing to reach out").
+#
+# NOTE: bedrock.intro_request ALSO has a 'declined' status. It is a separate
+# column on a separate table meaning a connector turned down an intro request —
+# unrelated to this, and untouched by the rename.
+CONNECTION_STATUSES = ("new", "expect_response", "dont_expect_response")
+# Pre-rename spellings, still accepted on write and normalised on read, so the
+# code and the data migration can land in EITHER order without a window where the
+# 123 recorded votes read as "no vote". Safe to delete once
+# db/migrations/2026-08-05-rename-connection-status.sql has been applied and no
+# older client is still deployed.
+LEGACY_CONNECTION_STATUSES = {
+    "will_reach_out": "expect_response",
+    "declined": "dont_expect_response",
+}
+
+
+def _normalize_connection_status(value: Optional[str]) -> str:
+    """Legacy spelling -> current one. Anything unrecognised reads as 'new'."""
+    v = LEGACY_CONNECTION_STATUSES.get(value or "new", value or "new")
+    return v if v in CONNECTION_STATUSES else "new"
+
+
+
 @router.get("/my-network")
 async def my_network(
     q: Optional[str] = Query(None, description="Search name/company/title"),
@@ -6784,7 +6810,8 @@ async def my_network(
             "co_connections": r["co_connections"] or 0,
             "company_hired_before": r["company_hired_before"],
             "has_open_opp": r["has_open_opp"],
-            "status": r["status"] or "new",
+            # Normalised so a pre-rename row still renders as a real vote.
+            "status": _normalize_connection_status(r["status"]),
             "status_reason": r["status_reason"],
             "tags": list(r["tags"] or []),
             "priority": r["priority"],
@@ -6836,7 +6863,7 @@ async def my_network_facets(
 
 class ConnectionStatusUpdate(BaseModel):
     contact_id: int
-    status: str            # new | will_reach_out | declined
+    status: str            # new | expect_response | dont_expect_response
     reason: Optional[str] = None
     note: Optional[str] = None
 
@@ -6848,10 +6875,15 @@ async def set_connection_status(
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
-    """Set a staff member's disposition toward one of their connections
-    (new | will_reach_out | declined, with optional reason/note). Stored per
-    (staff, contact) in bedrock.connection_status."""
-    if body.status not in ("new", "will_reach_out", "declined"):
+    """Set a staff member's read on one of their connections
+    (new | expect_response | dont_expect_response, with optional reason/note).
+    Stored per (staff, contact) in bedrock.connection_status.
+
+    Legacy spellings are accepted and rewritten to the current ones, so a client
+    that hasn't been redeployed still records a usable vote."""
+    status = _normalize_connection_status(body.status)
+    # Reject genuine junk, but not the old vocabulary.
+    if body.status not in CONNECTION_STATUSES and body.status not in LEGACY_CONNECTION_STATUSES:
         raise HTTPException(400, "invalid status")
     email = (staff_email or (user.get("email") if isinstance(user, dict) else getattr(user, "email", None)) or "").lower()
     sid = await conn.fetchval("SELECT staff_user_id FROM bedrock.staff_user_id_map WHERE lower(email)=$1", email)
@@ -6862,8 +6894,8 @@ async def set_connection_status(
            VALUES ($1,$2,$3,$4,$5,$6,now())
            ON CONFLICT (staff_user_id, contact_id) DO UPDATE
              SET status=$3, reason=$4, note=$5, updated_by=$6, updated_at=now()""",
-        sid, body.contact_id, body.status, body.reason, body.note, email)
-    return {"success": True, "data": {"contact_id": body.contact_id, "status": body.status}}
+        sid, body.contact_id, status, body.reason, body.note, email)
+    return {"success": True, "data": {"contact_id": body.contact_id, "status": status}}
 
 
 # ── Candidate review queue ────────────────────────────────────────────────────

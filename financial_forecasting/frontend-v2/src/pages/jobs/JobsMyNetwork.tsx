@@ -47,10 +47,23 @@ function Section({ title, count, action, children }: {
 // priority | name | company | last touch | connected | staff | signals | note | willing.
 const NET_GRID = "grid grid-cols-[34px_minmax(0,2.2fr)_minmax(0,1.3fr)_minmax(0,1.1fr)_72px_52px_minmax(0,1.1fr)_44px_76px] items-center gap-2";
 type NetSortKey = "name" | "company" | "touch" | "connected" | "staff" | "status" | "priority";
+// The stored vote vocabulary (bedrock.connection_status.status). Legacy spellings
+// are still recognised so a row written before the 2026-08-05 rename renders as a
+// real vote whether or not the data migration has run yet — the server normalises
+// too, this is the belt to its braces.
+const VOTE_UP = "expect_response";
+const VOTE_DOWN = "dont_expect_response";
+const VOTE_NONE = "new";
+const LEGACY_UP = "will_reach_out";
+const LEGACY_DOWN = "declined";
 // Sorting on the vote groups 👍 / no-vote / 👎 in that order. The stored strings
-// would sort "declined" before "new" before "will_reach_out" — alphabetical, and
-// meaningless to a human scanning the column.
-const VOTE_RANK: Record<string, number> = { will_reach_out: 0, new: 1, declined: 2 };
+// would sort alphabetically otherwise, which is meaningless to a human scanning
+// the column.
+const VOTE_RANK: Record<string, number> = {
+  [VOTE_UP]: 0, [LEGACY_UP]: 0,
+  [VOTE_NONE]: 1,
+  [VOTE_DOWN]: 2, [LEGACY_DOWN]: 2,
+};
 const NET_SORT_VALUE: Record<NetSortKey, (c: NetworkConnection) => unknown> = {
   name: (c) => c.full_name,
   company: (c) => c.current_company,
@@ -273,19 +286,15 @@ function RowNote({ c }: { c: NetworkConnection }) {
 // ── Expect a response: 👍 / 👎 ───────────────────────────────────────────────
 // Replaces the three-state dropdown. Clicking the active thumb clears the vote.
 //
-// The STORED vocabulary is deliberately unchanged — bedrock.connection_status
-// still holds will_reach_out | declined | new — so the votes imported from the
-// old outreach tracker keep reading correctly and no migration is needed. That
-// means the column's label and its stored values no longer use the same words:
-// 'will_reach_out' backs 👍 on a column that now asks whether a reply is likely.
-// Renaming the data to chase the label would rewrite 123 existing rows and break
-// scripts/repair_outreach_links.py for no functional gain.
+// Stored as expect_response | dont_expect_response | new, so the data reads the
+// same as the column label. Pre-rename rows (will_reach_out / declined) are still
+// recognised until the data migration has run everywhere.
 function VoteButtons({ status, onVote }: { status: string; onVote: (status: string) => void }) {
-  const up = status === "will_reach_out";
-  const down = status === "declined";
+  const up = status === VOTE_UP || status === LEGACY_UP;
+  const down = status === VOTE_DOWN || status === LEGACY_DOWN;
   const vote = (e: React.MouseEvent, target: string, active: boolean) => {
     e.stopPropagation();          // a vote must not expand the row
-    onVote(active ? "new" : target);
+    onVote(active ? VOTE_NONE : target);
   };
   return (
     <div className="flex items-center justify-center gap-0.5">
@@ -293,7 +302,7 @@ function VoteButtons({ status, onVote }: { status: string; onVote: (status: stri
         type="button"
         aria-pressed={up}
         title={up ? "Expect a response — click to clear" : "Expect a response"}
-        onClick={(e) => vote(e, "will_reach_out", up)}
+        onClick={(e) => vote(e, VOTE_UP, up)}
         className={cn("grid h-7 w-7 place-items-center rounded border",
           up ? "border-green/40 bg-green/10 text-green" : "border-transparent text-ink-4 hover:border-border-strong hover:text-ink-2")}
       >
@@ -303,7 +312,7 @@ function VoteButtons({ status, onVote }: { status: string; onVote: (status: stri
         type="button"
         aria-pressed={down}
         title={down ? "Don't expect a response — click to clear" : "Don't expect a response"}
-        onClick={(e) => vote(e, "declined", down)}
+        onClick={(e) => vote(e, VOTE_DOWN, down)}
         className={cn("grid h-7 w-7 place-items-center rounded border",
           down ? "border-red/40 bg-red/10 text-red" : "border-transparent text-ink-4 hover:border-border-strong hover:text-ink-2")}
       >
@@ -396,7 +405,14 @@ function MyNetworkZone() {
   if (warmOnly) conns = conns.filter((c) => c.warm);
   if (sort.key) {
     const val = NET_SORT_VALUE[sort.key];
-    conns = [...conns].sort((a, b) => compare(val(a), val(b), sort.direction));
+    // With "prioritized" on, the band stays the primary key and the chosen column
+    // orders WITHIN each band. Sorting on the column alone would silently throw
+    // away the server's ranking, making the checkbox look broken the moment you
+    // click any header.
+    const band = (c: NetworkConnection) => (c.priority ?? "ZZ");
+    conns = [...conns].sort((a, b) =>
+      (prioritized && sort.key !== "priority" ? compare(band(a), band(b), "asc") : 0)
+      || compare(val(a), val(b), sort.direction));
   }
   const shown = showAll ? conns : conns.slice(0, 25);
   // Group the shown rows by company (largest group first, no-company last).
