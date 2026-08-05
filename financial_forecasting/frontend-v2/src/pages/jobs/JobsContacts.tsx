@@ -9,7 +9,7 @@
  */
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { Briefcase, CheckSquare, ExternalLink, Linkedin, Plus, Search, X, Zap } from "lucide-react";
+import { Briefcase, CheckSquare, Download, ExternalLink, Linkedin, Plus, Search, X, Zap } from "lucide-react";
 import { toast } from "sonner";
 
 import { PageHeader } from "@/components/PageHeader";
@@ -39,6 +39,7 @@ import {
   useFlagContactsForJobs, useUnflagJobsContact, useUpdateJobsMembership, MEMBERSHIP_STAGE_LABELS, MEMBERSHIP_STAGES,
   useContactTagCatalog, useStaff, useUpdateContact, useBulkContactOwner, useBulkProspect,
   type JobStage, type JobContactWithDeal, type ContactSearchResult, type ContactCreateBody, type MembershipStage,
+  exportJobsRows,
 } from "@/services/jobs";
 
 // Humanize a tag slug so chips never flash the raw slug (e.g. "prior_commit_partner")
@@ -330,6 +331,7 @@ export function JobsContacts({ initialQuery, initialContactId, initialConnectedO
   const [showNewContact, setShowNewContact] = useState(false);
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [exporting, setExporting] = useState(false);
   const [bulkBusy, setBulkBusy] = useState(false);
   const [pendingStage, setPendingStage] = useState("");   // "" = leave unchanged
   const [pendingOwner, setPendingOwner] = useState("");   // "" = leave, "__clear__" = clear owner
@@ -553,6 +555,25 @@ export function JobsContacts({ initialQuery, initialContactId, initialConnectedO
           <span className="mx-1 h-4 w-px bg-accent/30" />
           <button type="button" disabled={bulkBusy || bulkProspect.isPending} onClick={() => bulkProspect.mutate({ contact_ids: [...selected], value: true }, { onSuccess: () => setSelected(new Set()) })} className="inline-flex h-7 items-center gap-1 rounded border border-accent bg-surface px-3 font-medium text-accent hover:bg-accent-soft disabled:opacity-50" title="Mark as jobs prospects (no pipeline stage)"><Plus size={12} /> Add as prospect</button>
           <button type="button" disabled={bulkBusy} onClick={async () => { const ids = [...selected]; if (!window.confirm(`Clear the jobs stage from ${ids.length} contact${ids.length === 1 ? "" : "s"}?`)) return; setBulkBusy(true); const r = await Promise.allSettled(ids.map((id) => unflag.mutateAsync(id))); setBulkBusy(false); const failed = r.filter((x) => x.status === "rejected").length; if (failed) toast.error(`${failed} of ${ids.length} could not be cleared`); setSelected(new Set()); }} className="h-7 rounded border border-border-strong bg-surface px-3 text-ink-2 hover:text-ink disabled:opacity-50" title="Remove the jobs stage (membership) from the selected contacts">Clear stage</button>
+          {/* Export the selection as .xlsx. Read-only, so it sits after the
+              mutating actions and never clears the selection — you may well want
+              to act on the same rows next. */}
+          <button type="button" disabled={exporting}
+            onClick={async () => {
+              setExporting(true);
+              try {
+                await exportJobsRows("contacts", [...selected]);
+                toast.success(`Exported ${selected.size} contact${selected.size === 1 ? "" : "s"}`);
+              } catch {
+                toast.error("Export failed");
+              } finally {
+                setExporting(false);
+              }
+            }}
+            className="inline-flex h-7 items-center gap-1 rounded border border-border-strong bg-surface px-3 font-medium text-ink-2 hover:text-ink disabled:opacity-50"
+            title={`Download the ${selected.size} selected contact${selected.size === 1 ? "" : "s"} as an Excel file`}>
+            <Download size={12} /> {exporting ? "Exporting…" : "Export"}
+          </button>
           <button type="button" onClick={() => setSelected(new Set())} className="ml-1 text-[11.5px] font-medium text-ink-3 underline-offset-4 hover:text-ink-2 hover:underline">Clear selection</button>
         </div>
       )}

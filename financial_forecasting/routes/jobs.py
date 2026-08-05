@@ -10,6 +10,7 @@
 
 import asyncio
 import asyncpg
+import io
 import json
 import logging
 import re
@@ -18,6 +19,7 @@ from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from auth import require_auth
@@ -8009,3 +8011,191 @@ async def update_builder_profile(user_id: int, body: BuilderProfileUpdate,
     d = dict(row)
     d["intake"] = _jsonb(d.get("intake"))
     return {"success": True, "data": d}
+
+
+# ── Export ────────────────────────────────────────────────────────────────────
+# Phase 1 per the build plan: server-generated .xlsx returned as a download. No
+# Drive write — that needs a new OAuth scope or a delegated service account, which
+# is an access conversation with Jac rather than a coding task.
+#
+# openpyxl is already in requirements.txt (3.1+), so this adds no dependency.
+
+class ExportRequest(BaseModel):
+    """Rows to export. `ids` are the selected records; omit to export the whole
+    (already filtered) set the caller is looking at, capped server-side."""
+    ids: Optional[list[str]] = None
+    # Column keys to include, in order. Omitted → the entity's default set, so a
+    # caller that doesn't care doesn't have to enumerate them.
+    columns: Optional[list[str]] = None
+
+
+# entity → (label, id column, source SQL, default column list).
+# Each SELECT is read-only and already-scoped to non-deleted rows. The id column
+# is cast to text so contacts (int) and opportunities (uuid) share one code path.
+_EXPORT_SPECS: dict[str, dict] = {
+    "contacts": {
+        "label": "Contacts",
+        "sql": """
+            SELECT c.contact_id::text AS id, c.full_name, c.email, c.current_title,
+                   c.current_company, c.linkedin_url, m.stage AS jobs_stage,
+                   m.owner_email AS jobs_owner, m.assigned_at, m.first_outreach_at,
+                   (SELECT string_agg(t, ', ') FROM unnest(coalesce(c.tags,'{}')) t
+                     WHERE t IN (SELECT slug FROM bedrock.contact_tag_catalog)) AS campaign_tags
+            FROM public.contacts c
+            LEFT JOIN bedrock.jobs_contact_membership m ON m.contact_id = c.contact_id
+        """,
+        "columns": ["full_name", "email", "current_title", "current_company",
+                    "linkedin_url", "jobs_stage", "jobs_owner", "campaign_tags",
+                    "assigned_at", "first_outreach_at"],
+        "headers": {"full_name": "Name", "email": "Email", "current_title": "Title",
+                    "current_company": "Company", "linkedin_url": "LinkedIn",
+                    "jobs_stage": "Jobs stage", "jobs_owner": "Jobs owner",
+                    "campaign_tags": "Campaigns", "assigned_at": "Assigned",
+                    "first_outreach_at": "First outreach"},
+    },
+    "opportunities": {
+        "label": "Opportunities",
+        "sql": """
+            SELECT o.id::text AS id, o.account_name, o.title, o.stage, o.deal_type,
+                   o.owner_email, o.salary_expected, o.num_roles, o.likelihood,
+                   o.priority, o.segment, o.touch_count, o.follow_up_date,
+                   o.target_close_date, o.created_at, o.closed_at,
+                   o.closed_lost_reason, o.closed_lost_note
+            FROM bedrock.jobs_opportunity o
+            WHERE o.deleted_at IS NULL
+        """,
+        "columns": ["account_name", "title", "stage", "deal_type", "owner_email",
+                    "salary_expected", "num_roles", "likelihood", "priority",
+                    "segment", "touch_count", "follow_up_date", "target_close_date",
+                    "created_at", "closed_at", "closed_lost_reason", "closed_lost_note"],
+        "headers": {"account_name": "Account", "title": "Title", "stage": "Stage",
+                    "deal_type": "Deal type", "owner_email": "Owner",
+                    "salary_expected": "Salary", "num_roles": "Roles",
+                    "likelihood": "Likelihood", "priority": "Priority",
+                    "segment": "Segment", "touch_count": "Touches",
+                    "follow_up_date": "Follow up", "target_close_date": "Target close",
+                    "created_at": "Created", "closed_at": "Closed",
+                    "closed_lost_reason": "Lost reason", "closed_lost_note": "Lost note"},
+    },
+    "accounts": {
+        "label": "Accounts",
+        # Accounts are keyed by normalized company name, and the account list is
+        # assembled in Python from several sources. Export the durable core here
+        # (the jobs_account row plus firmographics) rather than trying to
+        # reproduce the whole derived hub payload in one query.
+        "sql": """
+            SELECT ja.account_key AS id, ja.display_name, ja.owner_email,
+                   ja.status_override, ja.notes,
+                   co.industry, co.size_bucket, co.hq_location, co.stage AS company_stage,
+                   (SELECT count(*) FROM bedrock.jobs_opportunity o
+                     WHERE o.deleted_at IS NULL
+                       AND lower(trim(o.account_name)) = ja.account_key) AS opportunities
+            FROM bedrock.jobs_account ja
+            LEFT JOIN LATERAL (
+                SELECT industry, size_bucket, hq_location, stage
+                FROM public.companies
+                WHERE lower(trim(name)) = ja.account_key LIMIT 1
+            ) co ON true
+        """,
+        "columns": ["display_name", "owner_email", "status_override", "industry",
+                    "size_bucket", "hq_location", "company_stage", "opportunities", "notes"],
+        "headers": {"display_name": "Account", "owner_email": "Jobs owner",
+                    "status_override": "Status", "industry": "Industry",
+                    "size_bucket": "Size", "hq_location": "HQ",
+                    "company_stage": "Company stage", "opportunities": "Opps",
+                    "notes": "Notes"},
+    },
+}
+
+# Ceiling on an unselected ("export everything I'm looking at") request. Excel
+# handles far more, but a 40k-row build holds a pool connection and a few hundred
+# MB of memory; past this the answer is to filter first.
+_EXPORT_CAP = 5000
+
+
+@router.post("/export/{entity}")
+async def jobs_export(
+    entity: str,
+    body: ExportRequest,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Export contacts / accounts / opportunities as .xlsx.
+
+    Pass `ids` for the selected rows; omit it to export the whole set (capped).
+    Read-only: this touches nothing, it just reads and formats."""
+    spec = _EXPORT_SPECS.get(entity)
+    if spec is None:
+        raise HTTPException(404, f"Nothing to export for '{entity}'")
+
+    cols = [c for c in (body.columns or spec["columns"]) if c in spec["columns"]]
+    if not cols:
+        cols = spec["columns"]
+
+    # Filter OUTSIDE the spec's SQL, never by appending to it. Appending needed a
+    # "does this already have a WHERE" guess, and substring-matching WHERE is
+    # wrong twice over: the contacts SQL has a WHERE inside a subquery (so the
+    # guess produced `LEFT JOIN ... AND id = ANY(...)`, a syntax error), and the
+    # accounts SQL has one inside a LATERAL (so the filter attached to a LEFT JOIN
+    # ON clause and silently exported every account instead of the selection).
+    # Every spec aliases its key as `id`, so one wrapper covers all three.
+    params: list = []
+    if body.ids:
+        # Cap the id list too: a pathological request shouldn't build a 100k-term
+        # array. 5000 selected rows is already far past a usable spreadsheet.
+        params.append([str(i) for i in body.ids][:_EXPORT_CAP])
+        sql = f"SELECT * FROM ({spec['sql']}) src WHERE src.id::text = ANY($1::text[])"
+    else:
+        sql = f"SELECT * FROM ({spec['sql']}) src LIMIT {_EXPORT_CAP}"
+
+    try:
+        rows = await conn.fetch(sql, *params)
+    except asyncpg.exceptions.InsufficientPrivilegeError as e:
+        raise HTTPException(503, f"Export needs a read this role doesn't have: {e}")
+
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+    from openpyxl.utils import get_column_letter
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = spec["label"][:31]     # Excel caps sheet names at 31 chars
+
+    headers = [spec["headers"].get(c, c.replace("_", " ").title()) for c in cols]
+    ws.append(headers)
+    for cell in ws[1]:
+        cell.font = Font(bold=True)
+    ws.freeze_panes = "A2"
+
+    for r in rows:
+        out = []
+        for c in cols:
+            v = r.get(c)
+            if isinstance(v, (list, tuple)):
+                v = ", ".join(str(x) for x in v)
+            elif hasattr(v, "tzinfo") and v is not None:
+                # Excel has no timezone concept; a tz-aware datetime raises on
+                # write, so normalise to naive UTC rather than losing the row.
+                v = v.replace(tzinfo=None)
+            elif isinstance(v, (dict,)):
+                v = json.dumps(v)
+            out.append(v)
+        ws.append(out)
+
+    # Width from the widest cell in each column, clamped: unbounded widths make a
+    # notes column 600px and push everything else off screen.
+    for i, header in enumerate(headers, start=1):
+        longest = max([len(str(header))] + [len(str(r.get(cols[i - 1]) or "")) for r in rows[:200]])
+        ws.column_dimensions[get_column_letter(i)].width = min(48, max(10, longest + 2))
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    filename = f"bedrock-{entity}-{stamp}.xlsx"
+    logger.info("export: %s rows=%d by=%s", entity, len(rows), user.get("email"))
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )

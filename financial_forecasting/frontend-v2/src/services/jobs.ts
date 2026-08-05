@@ -2376,3 +2376,33 @@ export function useRespondedContacts(owner?: string) {
     staleTime: 60_000,
   });
 }
+
+// ── Export ────────────────────────────────────────────────────────────────────
+
+export type ExportEntity = "contacts" | "accounts" | "opportunities";
+
+/** Download an .xlsx of the given rows. Pass ids for a selection; omit for the
+ *  whole (server-capped) set. Returns the row count the server wrote.
+ *
+ *  Uses a blob + object URL rather than navigating: the endpoint is a POST (the
+ *  id list can be thousands long, well past a URL), and axios already carries
+ *  the auth cookie. */
+export async function exportJobsRows(
+  entity: ExportEntity,
+  ids?: (string | number)[],
+): Promise<void> {
+  const res = await api.post(`/api/jobs/export/${entity}`,
+    { ids: ids?.map(String) },
+    { responseType: "blob" });
+  const stamp = new Date().toISOString().slice(0, 10);
+  const url = URL.createObjectURL(res.data as Blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `bedrock-${entity}-${stamp}.xlsx`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  // Revoke on the next tick — revoking synchronously can cancel the download in
+  // Safari before it starts.
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
