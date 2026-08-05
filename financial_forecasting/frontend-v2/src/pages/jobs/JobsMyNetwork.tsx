@@ -4,9 +4,9 @@
  * current user's LinkedIn imports mapped to Bedrock contacts, with last-touch,
  * co-connection, and pipeline signals, expanding inline to the contact's tabs.
  */
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { ChevronRight, Linkedin, ThumbsDown, ThumbsUp } from "lucide-react";
+import { ChevronRight, Linkedin, MessageSquare, Send, ThumbsDown, ThumbsUp } from "lucide-react";
 
 import { PageHeader } from "@/components/PageHeader";
 import { Tag } from "@/components/ui/Tag";
@@ -19,6 +19,7 @@ import {
   type MyNetworkFacets, type NetworkConnection,
 } from "@/services/jobs";
 import { relDay } from "@/lib/format";
+import { useCreateJobsComment, useJobsComments } from "@/services/jobsComments";
 import {
   AddFilterButton, FilterChip, describeRule, ruleApplies,
   type FieldMeta, type FilterRule,
@@ -42,9 +43,10 @@ function Section({ title, count, action, children }: {
   );
 }
 
-// Fixed grid so columns line up: name | company | last touch | connected | staff | signals | your call.
-const NET_GRID = "grid grid-cols-[minmax(0,2.2fr)_minmax(0,1.4fr)_minmax(0,1.1fr)_72px_52px_minmax(0,1.2fr)_76px] items-center gap-2";
-type NetSortKey = "name" | "company" | "touch" | "connected" | "staff" | "status";
+// Fixed grid so columns line up:
+// priority | name | company | last touch | connected | staff | signals | note | willing.
+const NET_GRID = "grid grid-cols-[34px_minmax(0,2.2fr)_minmax(0,1.3fr)_minmax(0,1.1fr)_72px_52px_minmax(0,1.1fr)_44px_76px] items-center gap-2";
+type NetSortKey = "name" | "company" | "touch" | "connected" | "staff" | "status" | "priority";
 // Sorting on the vote groups 👍 / no-vote / 👎 in that order. The stored strings
 // would sort "declined" before "new" before "will_reach_out" — alphabetical, and
 // meaningless to a human scanning the column.
@@ -56,6 +58,8 @@ const NET_SORT_VALUE: Record<NetSortKey, (c: NetworkConnection) => unknown> = {
   connected: (c) => c.connected_date,
   staff: (c) => c.co_connections,
   status: (c) => VOTE_RANK[c.status] ?? 1,
+  // Unranked sorts after both bands rather than before "P1" alphabetically.
+  priority: (c) => c.priority ?? "ZZ",
 };
 
 // ── Filters ──────────────────────────────────────────────────────────────────
@@ -138,7 +142,135 @@ function makeRenderFilterValue(tagCatalog: { slug: string; label: string }[]) {
   };
 }
 
-// ── Your call: 👍 / 👎 ───────────────────────────────────────────────────────
+// ── Priority badge ───────────────────────────────────────────────────────────
+// Banded server-side (routes/jobs.py _net_priority_case). Unranked renders as
+// nothing at all — a badge is meant to mean "act on this", so a third grey tier
+// for everyone else would dilute it.
+function PriorityBadge({ c }: { c: NetworkConnection }) {
+  if (!c.priority) return <span />;
+  const fits = [
+    c.headcount_band === "51-200" && "headcount 51-200",
+    (c.tristate === "Yes" || c.tristate === "Unknown") &&
+      (c.tristate === "Yes" ? "tri-state HQ" : "tri-state unknown (counts as a fit)"),
+    (c.seniority === "High" || c.seniority === "Highest") && `seniority ${c.seniority?.toLowerCase()}`,
+  ].filter(Boolean) as string[];
+  const why = [c.is_portco && "portfolio company", ...fits].filter(Boolean).join(" · ");
+  return (
+    <span
+      title={`${c.priority} — ${why || "no criteria matched"}`}
+      className={cn("grid h-5 w-6 place-items-center rounded text-[10.5px] font-bold tabular-nums",
+        c.priority === "P1" ? "bg-accent text-surface" : "bg-accent-soft text-accent-ink")}
+    >
+      {c.priority}
+    </span>
+  );
+}
+
+// ── Shared note on the row ───────────────────────────────────────────────────
+// Writes a real bedrock.jobs_comment (parent_type='prospect'), so it's the SAME
+// thread the row's Comments tab shows and is visible to the whole team — not a
+// private scratchpad. Opens in place so a note never costs an expand.
+function RowNote({ c }: { c: NetworkConnection }) {
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState("");
+  const boxRef = useRef<HTMLDivElement>(null);
+  const id = String(c.contact_id);
+  const { data: comments = [], isLoading } = useJobsComments("prospect", open ? id : undefined);
+  const create = useCreateJobsComment("prospect", id);
+
+  // Close on an outside click or Escape.
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (boxRef.current && !boxRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  const submit = () => {
+    const body = draft.trim();
+    if (!body || create.isPending) return;
+    create.mutate(body, { onSuccess: () => setDraft("") });
+  };
+
+  return (
+    <div className="relative" onClick={(e) => e.stopPropagation()}>
+      <button
+        type="button"
+        aria-expanded={open}
+        title={c.comment_count > 0 ? `${c.comment_count} team note${c.comment_count === 1 ? "" : "s"}` : "Add a team note"}
+        onClick={() => setOpen((o) => !o)}
+        className={cn("flex h-7 w-full items-center justify-center gap-0.5 rounded border text-[11px]",
+          c.comment_count > 0
+            ? "border-border-strong bg-surface-2/60 font-medium text-ink-2"
+            : "border-transparent text-ink-4 hover:border-border-strong hover:text-ink-2")}
+      >
+        <MessageSquare size={12} aria-hidden />
+        {c.comment_count > 0 ? <span className="tabular-nums">{c.comment_count}</span> : null}
+      </button>
+      {open && (
+        <div
+          ref={boxRef}
+          className="absolute right-0 top-8 z-30 w-80 rounded-lg border border-border-strong bg-surface p-2 shadow-lg"
+        >
+          <div className="mb-1.5 flex items-baseline justify-between">
+            <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-4">
+              Team notes{comments.length ? ` (${comments.length})` : ""}
+            </span>
+            <span className="text-[10px] text-ink-4">visible to staff</span>
+          </div>
+          <div className="max-h-40 overflow-y-auto">
+            {isLoading ? (
+              <p className="py-2 text-[11.5px] text-ink-4">Loading…</p>
+            ) : comments.length === 0 ? (
+              <p className="py-1 text-[11.5px] text-ink-4">No notes yet.</p>
+            ) : (
+              comments.map((cm) => (
+                <div key={cm.id} className="border-t border-border-strong py-1.5 first:border-t-0">
+                  <p className="whitespace-pre-wrap text-[11.5px] leading-snug text-ink-2">{cm.content}</p>
+                  <p className="mt-0.5 text-[10px] text-ink-4">
+                    {cm.author_email ?? "unknown"}
+                    {cm.created_at ? ` · ${relDay(cm.created_at)}` : ""}
+                  </p>
+                </div>
+              ))
+            )}
+          </div>
+          <div className="mt-1.5 flex items-end gap-1.5">
+            <textarea
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                // Enter submits; Shift+Enter for a second line.
+                if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); }
+              }}
+              rows={2}
+              placeholder="Add a note for the team…"
+              className="min-h-[38px] flex-1 resize-y rounded border border-border-strong bg-surface px-2 py-1 text-[12px] text-ink outline-none focus:border-accent"
+            />
+            <button
+              type="button"
+              onClick={submit}
+              disabled={!draft.trim() || create.isPending}
+              className="grid h-7 w-7 shrink-0 place-items-center rounded border border-ink bg-ink text-surface disabled:opacity-40"
+              title="Post note (Enter)"
+            >
+              <Send size={12} aria-hidden />
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Willing to reach out: 👍 / 👎 ────────────────────────────────────────────
 // Replaces the three-state dropdown. Stored vocabulary is unchanged
 // (bedrock.connection_status: will_reach_out | declined | new), so the votes
 // imported from the old outreach tracker still read correctly. Clicking the
@@ -188,6 +320,7 @@ function NetworkRow({ c, expanded, onToggle }: { c: NetworkConnection; expanded:
         onClick={onToggle}
         className={cn(NET_GRID, "cursor-pointer border-t border-border-strong px-3 py-1.5 text-[12.5px] hover:bg-surface-2/40", expanded && "bg-surface-2/40")}
       >
+        <PriorityBadge c={c} />
         <div className="flex min-w-0 items-center gap-1.5">
           <ChevronRight size={12} className={cn("shrink-0 text-ink-4 transition-transform", expanded && "rotate-90")} />
           {c.warm ? <span title={`You've been in touch (${c.my_activity_count})`} className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400" />
@@ -219,10 +352,12 @@ function NetworkRow({ c, expanded, onToggle }: { c: NetworkConnection; expanded:
           {c.co_connections > 0 ? `+${c.co_connections}` : "—"}
         </div>
         <div className="flex min-w-0 flex-wrap items-center gap-1">
+          {c.is_portco && <Tag variant="default">portco</Tag>}
           {c.is_jobs_contact && <Tag variant="default">pipeline</Tag>}
           {c.has_open_opp && <Tag variant="green">open opp</Tag>}
           {c.company_hired_before && <Tag variant="default">hired before</Tag>}
         </div>
+        <RowNote c={c} />
         <VoteButtons status={c.status} onVote={(status) => setStatus.mutate({ contact_id: c.contact_id, status })} />
       </div>
       {expanded && (
@@ -241,8 +376,9 @@ function MyNetworkZone() {
   const [byCompany, setByCompany] = useState(false);
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [rules, setRules] = useState<FilterRule<Field>[]>([]);
+  const [prioritized, setPrioritized] = useState(false);
   const { sort, toggle: toggleSort } = useSort<NetSortKey>();
-  const { data, isLoading } = useMyNetwork(q || undefined, rules);
+  const { data, isLoading } = useMyNetwork(q || undefined, rules, prioritized);
   const { data: facets } = useMyNetworkFacets();
   const { data: tagCatalog = EMPTY_TAGS } = useContactTagCatalog();
   const selectOptions = useMemo(() => buildSelectOptions(facets, tagCatalog), [facets, tagCatalog]);
@@ -286,6 +422,14 @@ function MyNetworkZone() {
       </label>
       <label className="flex items-center gap-1 text-[11px] text-ink-4">
         <input type="checkbox" checked={byCompany} onChange={(e) => setByCompany(e.target.checked)} className="accent-accent" /> by company
+      </label>
+      <label
+        className="flex items-center gap-1 text-[11px] text-ink-4"
+        title="Rank P1 / P2 first. P1 = headcount 51-200, tri-state (or unknown) and high seniority; P2 = two of the three. A portfolio company is at least P2, and P1 on two of three. Pursuit staff and alumni are never banded."
+      >
+        <input type="checkbox" checked={prioritized}
+          onChange={(e) => { setPrioritized(e.target.checked); setShowAll(false); }}
+          className="accent-accent" /> prioritized
       </label>
       <AddFilterButton<Field>
         filterable={FILTERABLE as Record<Field, FieldMeta<unknown>>}
@@ -355,13 +499,15 @@ function MyNetworkZone() {
         ) : (
           <>
             <div className={cn(NET_GRID, "bg-surface-2/60 px-3 py-1.5")}>
+              <SortableHeader label="P" sortKey="priority" sort={sort} onToggle={toggleSort} />
               <SortableHeader label="Connection" sortKey="name" sort={sort} onToggle={toggleSort} />
               <SortableHeader label="Company" sortKey="company" sort={sort} onToggle={toggleSort} />
               <SortableHeader label="Last touch" sortKey="touch" sort={sort} onToggle={toggleSort} />
               <SortableHeader label="Connected" sortKey="connected" sort={sort} onToggle={toggleSort} />
               <SortableHeader label="Staff" sortKey="staff" sort={sort} onToggle={toggleSort} />
               <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">Signals</span>
-              <SortableHeader label="Your call" sortKey="status" sort={sort} onToggle={toggleSort} />
+              <span className="text-center text-[11px] font-semibold uppercase tracking-wider text-ink-3">Note</span>
+              <SortableHeader label="Willing to reach out" sortKey="status" sort={sort} onToggle={toggleSort} />
             </div>
             {groups ? groups.map(([company, rows]) => (
               <div key={company}>

@@ -2479,11 +2479,102 @@ CASE
 END"""
 
 
-# The COMPLETE output domains of the two expressions below. Both CASEs are total
+def _tristate_case(col: str) -> str:
+    """Map a company HQ string to tri-state presence.
+
+    Yields 'Yes' | 'HQ elsewhere' | 'Unknown' and DELIBERATELY NEVER 'No'.
+    Presence is not headquarters: Google, Amazon and Microsoft all run large New
+    York offices from out-of-state HQs. An HQ can confirm presence; only research
+    can refute it. Anything stronger than 'HQ elsewhere' would be a claim this
+    column cannot support."""
+    return f"""
+CASE
+  WHEN coalesce({col}, '') = '' OR lower({col}) = 'null' THEN 'Unknown'
+  WHEN {col} ~* '(,\\s*(NY|NJ|CT)\\s*$)|(,\\s*(NY|NJ|CT)\\s*,)'
+       OR {col} ~* '(new york|brooklyn|bronx|queens|manhattan|staten island|long island city|yonkers|white plains|new rochelle|mount vernon|westchester|hoboken|newark|jersey city|princeton|hackensack|paramus|morristown|stamford|greenwich|norwalk|bridgeport|hartford|new haven|danbury|westport|darien)'
+       THEN 'Yes'
+  ELSE 'HQ elsewhere'
+END"""
+
+
+# The COMPLETE output domains of the two expressions above. Both CASEs are total
 # (every input lands on a branch, NULL included), so these lists need no query to
 # discover — which keeps them out of the per-request facet scan.
 _SENIORITY_RUNGS = ["Highest", "High", "Medium", "Low", "Lowest"]
 _TRISTATE_VALUES = ["Yes", "HQ elsewhere", "Unknown"]
+
+
+# ── My Network priority banding ──────────────────────────────────────────────
+# Jac's rule, 2026-08-05. Three "fits" are scored, then portfolio-company status
+# promotes, then an exclusion overrides everything:
+#
+#   fits = (headcount 51-200) + (tri-state Yes|Unknown) + (seniority High|Highest)
+#
+#   portco  fits   priority
+#   -----------------------
+#   no      3      P1
+#   no      2      P2
+#   no      0-1    NULL (unranked — a badge means "act on this")
+#   yes     >=2    P1
+#   yes     0-1    P2
+#
+# Excluded from P1/P2 entirely: anyone at Pursuit, and anyone carrying an
+# alumni_* tag. They aren't employer leads.
+#
+# Tri-state counts Unknown as a fit ON PURPOSE: the value is derived from HQ, and
+# an unknown HQ is missing data, not an absent office. Treating it as a miss
+# would quietly bury leads for the ~40% of companies with no HQ on file.
+_PRIORITY_HEADCOUNT = "51-200"
+_PRIORITY_TRISTATE = ("Yes", "Unknown")
+_PRIORITY_SENIORITY = ("High", "Highest")
+
+
+def _net_priority_case(portco_expr: Optional[str] = None) -> str:
+    """SQL CASE returning 'P1' | 'P2' | NULL for one network row.
+
+    `portco_expr` is a boolean SQL expression, or None when
+    bedrock.company_investor hasn't been created yet — in which case nothing is a
+    portco and the banding degrades to the headcount/tri-state/seniority rules
+    alone. The endpoint checks for the table per request, so applying the
+    migration starts the portco clause working with no code change.
+    """
+    tri = ", ".join(f"'{v}'" for v in _PRIORITY_TRISTATE)
+    sen = ", ".join(f"'{v}'" for v in _PRIORITY_SENIORITY)
+    # Every term is coalesced to false before being summed. Without it, a NULL
+    # size_bucket (14% of the network has no headcount on file) makes the whole
+    # sum NULL, every comparison against it NULL, and the row falls through to
+    # unranked — silently dropping ~1,080 contacts who DID hit the other two
+    # criteria. A missing headcount is one criterion unmet, not a void score.
+    fits = (
+        f"(coalesce(co.size_bucket = '{_PRIORITY_HEADCOUNT}', false)::int"
+        f" + coalesce(({_tristate_case('co.hq_location')}) IN ({tri}), false)::int"
+        f" + coalesce(({_seniority_case('c.current_title')}) IN ({sen}), false)::int)"
+    )
+    # Anchored on the "pursuit" prefix, NOT a bare ILIKE '%pursuit%' — the loose
+    # form also swallows "In Wild Pursuit", a real founder lead, while the prefix
+    # still catches "Pursuit Fellow" and the "Pursuit Company - …" import artifact.
+    excluded = (
+        "(lower(btrim(coalesce(c.current_company,''))) ~ '^pursuit($|[^a-z])'"
+        " OR EXISTS (SELECT 1 FROM unnest(coalesce(c.tags, '{}'::text[])) t WHERE t LIKE 'alumni%'))"
+    )
+    portco = portco_expr or "false"
+    return f"""
+CASE
+  WHEN {excluded} THEN NULL
+  WHEN ({portco}) AND {fits} >= 2 THEN 'P1'
+  WHEN ({portco})                 THEN 'P2'
+  WHEN {fits} = 3                 THEN 'P1'
+  WHEN {fits} = 2                 THEN 'P2'
+  ELSE NULL
+END"""
+
+
+# Portfolio-company test, used only when the table exists. account_key is the
+# normalised company name the jobs app already groups on.
+_PORTCO_EXISTS = (
+    "EXISTS (SELECT 1 FROM bedrock.company_investor ci"
+    " WHERE ci.account_key = lower(btrim(coalesce(c.current_company, ''))))"
+)
 
 
 _STAFF_EMAIL_TOKEN = ":staff_email"
@@ -2563,24 +2654,6 @@ def _net_rule_clause(
         return f"lower(coalesce({expr}, '')) {sym} lower(${len(params)})", params
 
     raise HTTPException(400, f"unsupported op '{op}' for {field}")
-
-
-def _tristate_case(col: str) -> str:
-    """Map a company HQ string to tri-state presence.
-
-    Yields 'Yes' | 'HQ elsewhere' | 'Unknown' and DELIBERATELY NEVER 'No'.
-    Presence is not headquarters: Google, Amazon and Microsoft all run large New
-    York offices from out-of-state HQs. An HQ can confirm presence; only research
-    can refute it. Anything stronger than 'HQ elsewhere' would be a claim this
-    column cannot support."""
-    return f"""
-CASE
-  WHEN coalesce({col}, '') = '' OR lower({col}) = 'null' THEN 'Unknown'
-  WHEN {col} ~* '(,\\s*(NY|NJ|CT)\\s*$)|(,\\s*(NY|NJ|CT)\\s*,)'
-       OR {col} ~* '(new york|brooklyn|bronx|queens|manhattan|staten island|long island city|yonkers|white plains|new rochelle|mount vernon|westchester|hoboken|newark|jersey city|princeton|hackensack|paramus|morristown|stamford|greenwich|norwalk|bridgeport|hartford|new haven|danbury|westport|darien)'
-       THEN 'Yes'
-  ELSE 'HQ elsewhere'
-END"""
 
 
 # Canonical placement-status derivation for a jobs_role, so every screen (Home,
@@ -6533,6 +6606,7 @@ async def my_network(
     limit: int = Query(500, le=2000),
     staff_email: Optional[str] = Query(None, description="Admin override; else the caller"),
     filter_rules: Optional[str] = Query(None, alias="filters", description="JSON array of {field,op,values} rules — applied in SQL so filters see the whole network, not the loaded page"),
+    prioritized: bool = Query(False, description="Order P1 then P2 then the rest — ranked in SQL so the top band is drawn from the whole network, not just the page"),
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
@@ -6559,6 +6633,14 @@ async def my_network(
     NET_FROM = ("public.staff_contact_relationships r "
                 "JOIN public.contacts c ON c.contact_id = r.contact_id "
                 "LEFT JOIN public.companies co ON co.company_id = c.company_id")
+
+    # bedrock.company_investor may not be created yet (its migration is applied by
+    # hand). Checked per request rather than cached at import, so the portco half
+    # of the priority rule starts working the moment the migration lands — no
+    # restart, no code change. A missing table means "nothing is a portco", never
+    # a 500.
+    has_portco = await conn.fetchval("SELECT to_regclass('bedrock.company_investor') IS NOT NULL")
+    priority_case = _net_priority_case(_PORTCO_EXISTS if has_portco else None)
 
     params: list = [sid]
     where = "r.staff_user_id = $1 AND coalesce(c.contact_stage,'') <> 'merged'"
@@ -6623,6 +6705,10 @@ async def my_network(
     params.append(f"%{email}%"); p_email = len(params)   # staff-specific activity match
     params.append(sid);          p_sid = len(params)       # connection_status join
     params.append(limit);        p_lim = len(params)
+    # Ranking in SQL, not in the browser: with 5,000+ connections and a 2,000-row
+    # page, sorting client-side would only rank the window and could leave P1s
+    # off-screen entirely. NULLS LAST keeps unranked rows below the bands.
+    priority_order = f"({priority_case}) ASC NULLS LAST," if prioritized else ""
     rows = await conn.fetch(
         f"""
         SELECT c.contact_id, c.full_name, c.current_title, c.current_company, c.email,
@@ -6637,7 +6723,10 @@ async def my_network(
                coalesce(c.tags, '{{}}'::text[]) AS tags,
                co.size_bucket AS headcount_band, co.industry AS industry, co.hq_location,
                ({_tristate_case('co.hq_location')}) AS tristate,
-               ({_seniority_case('c.current_title')}) AS seniority
+               ({_seniority_case('c.current_title')}) AS seniority,
+               ({priority_case}) AS priority,
+               {'(' + _PORTCO_EXISTS + ')' if has_portco else 'false'} AS is_portco,
+               coalesce(cmt.n, 0) AS comment_count
         FROM public.staff_contact_relationships r
         JOIN public.contacts c ON c.contact_id = r.contact_id
         LEFT JOIN public.companies co ON co.company_id = c.company_id
@@ -6667,9 +6756,13 @@ async def my_network(
             WHERE o.deleted_at IS NULL AND o.stage LIKE 'active%'
               AND lower(trim(o.account_name)) = lower(trim(c.current_company)) LIMIT 1
         ) opp ON true
+        LEFT JOIN LATERAL (
+            SELECT count(*) n FROM bedrock.jobs_comment jc
+            WHERE jc.parent_type = 'prospect' AND jc.parent_id = c.contact_id::text
+        ) cmt ON true
         LEFT JOIN bedrock.connection_status cs ON cs.contact_id = c.contact_id AND cs.staff_user_id = ${p_sid}
         WHERE {where}
-        ORDER BY (mine.n > 0) DESC, (act.n > 0) DESC, coalesce(mine.last, act.last) DESC NULLS LAST, c.full_name
+        ORDER BY {priority_order} (mine.n > 0) DESC, (act.n > 0) DESC, coalesce(mine.last, act.last) DESC NULLS LAST, c.full_name
         LIMIT ${p_lim}
         """, *params)
     return {"success": True, "data": {
@@ -6694,6 +6787,9 @@ async def my_network(
             "status": r["status"] or "new",
             "status_reason": r["status_reason"],
             "tags": list(r["tags"] or []),
+            "priority": r["priority"],
+            "is_portco": r["is_portco"],
+            "comment_count": r["comment_count"] or 0,
             "headcount_band": r["headcount_band"],
             "industry": r["industry"],
             "hq_location": r["hq_location"],

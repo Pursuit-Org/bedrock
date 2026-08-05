@@ -1636,6 +1636,14 @@ export interface NetworkConnection {
   tristate: string | null; seniority: string | null;
   /** Curated CRM tags (bedrock.contact_tag_catalog slugs). */
   tags: string[];
+  /** "P1" | "P2" | null. Banded in SQL — see _net_priority_case in routes/jobs.py.
+   *  null means unranked, not "low priority". */
+  priority: string | null;
+  /** Company is in bedrock.company_investor. Always false until that migration
+   *  is applied. */
+  is_portco: boolean;
+  /** Shared jobs_comment count for this contact (team-visible, not per-staff). */
+  comment_count: number;
 }
 /** The filter menu's option lists for this staff member's network. */
 export interface MyNetworkFacets {
@@ -1664,17 +1672,24 @@ export function useMyNetworkFacets() {
     staleTime: 10 * 60_000,
   });
 }
-export function useMyNetwork(q?: string, rules?: FilterRule[]) {
+export function useMyNetwork(q?: string, rules?: FilterRule[], prioritized = false) {
   // Filters go to the SERVER: seven staff have >2,000 connections, so sifting
-  // only the loaded page would under-report without saying so.
+  // only the loaded page would under-report without saying so. Ranking is
+  // server-side for the same reason — a client-side sort could only order the
+  // loaded window and would leave P1s off-screen.
   const serialized = rules?.length ? JSON.stringify(serializeRulesForServer(rules)) : "";
   return useQuery<MyNetwork>({
-    queryKey: ["jobs", "my-network", q ?? "", serialized],
+    queryKey: ["jobs", "my-network", q ?? "", serialized, prioritized],
     queryFn: async () => {
       // limit=2000 (server max) — the default 500 silently hid connections for
       // anyone with a bigger network ("total 647, loaded 500").
       const { data } = await api.get<ApiResponse<MyNetwork>>("/api/jobs/my-network", {
-        params: { limit: 2000, ...(q ? { q } : {}), ...(serialized ? { filters: serialized } : {}) },
+        params: {
+          limit: 2000,
+          ...(q ? { q } : {}),
+          ...(serialized ? { filters: serialized } : {}),
+          ...(prioritized ? { prioritized: true } : {}),
+        },
       });
       return data.data;
     },
