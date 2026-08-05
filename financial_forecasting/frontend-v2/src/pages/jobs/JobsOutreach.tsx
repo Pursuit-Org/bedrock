@@ -357,21 +357,38 @@ const CELL_DRILL_CAP = 10;
 /** Connected staff as a count you hover rather than a list of names — five
  *  names inline pushed the table into a horizontal scroll, and the question is
  *  usually "does anyone here know them?" not "who exactly". */
+/** Connected staff, named on the row rather than hidden behind a tooltip.
+ *
+ *  This used to be a count with the names only in a `title`. Two problems: a
+ *  native tooltip takes about a second and is easy to miss entirely, and
+ *  `cursor-help` renders as a question-mark cursor — so hovering "3" gave you a
+ *  question mark and nothing else. A popover wouldn't help either: the drill
+ *  card clips with overflow-hidden, so an absolutely positioned one gets cut
+ *  off mid-table. First names fit the column and need no interaction at all. */
 function StaffBadge({ names }: { names?: string[] }) {
   const list = names ?? [];
   if (list.length === 0) return <span className="text-[11px] text-ink-4">—</span>;
+  const head = list.slice(0, STAFF_INLINE_CAP);
+  const rest = list.slice(STAFF_INLINE_CAP);
   return (
     <span
       title={`Connected staff: ${list.join(", ")}`}
-      className="inline-flex cursor-help items-center gap-1 rounded-full border border-border-strong bg-surface-2 px-1.5 py-0.5 text-[10.5px] font-medium text-ink-2">
+      className="inline-flex max-w-[190px] items-center gap-1 rounded-full border border-border-strong bg-surface-2 px-1.5 py-0.5 text-[10.5px] font-medium text-ink-2">
       <Users size={10} className="shrink-0 text-ink-3" />
-      {list.length === 1 ? firstNameOf(list[0]) : list.length}
+      <span className="truncate">
+        {head.map(firstNameOf).join(", ")}
+        {rest.length > 0 ? ` +${rest.length}` : ""}
+      </span>
     </span>
   );
 }
 
-/** First name only — "Avni Nahar" → "Avni". Keeps a single connection legible
- *  in a narrow cell; the full name is in the tooltip. */
+/** Names shown before falling back to "+n". Three first names fit the column;
+ *  the title still carries the full list. */
+const STAFF_INLINE_CAP = 3;
+
+/** First name only — "Avni Nahar" → "Avni". Keeps several connections legible
+ *  in a narrow cell; the full names are in the title. */
 function firstNameOf(name: string) {
   return name.trim().split(/\s+/)[0] || name;
 }
