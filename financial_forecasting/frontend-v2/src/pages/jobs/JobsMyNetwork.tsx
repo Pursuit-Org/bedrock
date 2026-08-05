@@ -270,11 +270,16 @@ function RowNote({ c }: { c: NetworkConnection }) {
   );
 }
 
-// ── Willing to reach out: 👍 / 👎 ────────────────────────────────────────────
-// Replaces the three-state dropdown. Stored vocabulary is unchanged
-// (bedrock.connection_status: will_reach_out | declined | new), so the votes
-// imported from the old outreach tracker still read correctly. Clicking the
-// active thumb clears the vote.
+// ── Expect a response: 👍 / 👎 ───────────────────────────────────────────────
+// Replaces the three-state dropdown. Clicking the active thumb clears the vote.
+//
+// The STORED vocabulary is deliberately unchanged — bedrock.connection_status
+// still holds will_reach_out | declined | new — so the votes imported from the
+// old outreach tracker keep reading correctly and no migration is needed. That
+// means the column's label and its stored values no longer use the same words:
+// 'will_reach_out' backs 👍 on a column that now asks whether a reply is likely.
+// Renaming the data to chase the label would rewrite 123 existing rows and break
+// scripts/repair_outreach_links.py for no functional gain.
 function VoteButtons({ status, onVote }: { status: string; onVote: (status: string) => void }) {
   const up = status === "will_reach_out";
   const down = status === "declined";
@@ -287,7 +292,7 @@ function VoteButtons({ status, onVote }: { status: string; onVote: (status: stri
       <button
         type="button"
         aria-pressed={up}
-        title={up ? "Will reach out — click to clear" : "Will reach out"}
+        title={up ? "Expect a response — click to clear" : "Expect a response"}
         onClick={(e) => vote(e, "will_reach_out", up)}
         className={cn("grid h-7 w-7 place-items-center rounded border",
           up ? "border-green/40 bg-green/10 text-green" : "border-transparent text-ink-4 hover:border-border-strong hover:text-ink-2")}
@@ -297,7 +302,7 @@ function VoteButtons({ status, onVote }: { status: string; onVote: (status: stri
       <button
         type="button"
         aria-pressed={down}
-        title={down ? "Not a fit — click to clear" : "Not a fit"}
+        title={down ? "Don't expect a response — click to clear" : "Don't expect a response"}
         onClick={(e) => vote(e, "declined", down)}
         className={cn("grid h-7 w-7 place-items-center rounded border",
           down ? "border-red/40 bg-red/10 text-red" : "border-transparent text-ink-4 hover:border-border-strong hover:text-ink-2")}
@@ -507,7 +512,7 @@ function MyNetworkZone() {
               <SortableHeader label="Staff" sortKey="staff" sort={sort} onToggle={toggleSort} />
               <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">Signals</span>
               <span className="text-center text-[11px] font-semibold uppercase tracking-wider text-ink-3">Note</span>
-              <SortableHeader label="Willing to reach out" sortKey="status" sort={sort} onToggle={toggleSort} />
+              <SortableHeader label="Expect a response" sortKey="status" sort={sort} onToggle={toggleSort} />
             </div>
             {groups ? groups.map(([company, rows]) => (
               <div key={company}>
