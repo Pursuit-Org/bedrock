@@ -21,7 +21,22 @@
 
 BEGIN;
 
--- ── 1. retire the six seeded duplicates that have a real counterpart ─────────
+-- ── 1. move Yoshi's profile BEFORE retiring his seed row ────────────────────
+-- Ordering matters here and nowhere else. yoshi@pursuit.org is plainly the real
+-- login — created 2026-07-09 with a google_id, and user_id 124 in public.users —
+-- but it carries NO permission profile, while the seed row holds Project Manager.
+-- Retiring the seed first would silently demote him to the default profile
+-- (Relationship Manager). Every other pair already has a profile on the surviving
+-- row, so this transfer is needed only for him.
+INSERT INTO bedrock.user_config (org_user_id, profile_id)
+SELECT keep.id, uc.profile_id
+  FROM public.org_users keep
+  JOIN public.org_users seed ON lower(seed.email) = 'yoshiyuki.minami@pursuit.org'
+  JOIN bedrock.user_config uc ON uc.org_user_id = seed.id
+ WHERE lower(keep.email) = 'yoshi@pursuit.org'
+ON CONFLICT (org_user_id) DO NOTHING;
+
+-- ── 2. retire the seven seeded duplicates that have a real counterpart ──────
 UPDATE public.org_users
    SET is_active = false, updated_at = now()
  WHERE lower(email) IN (
@@ -30,15 +45,19 @@ UPDATE public.org_users
         'joanna.patterson@pursuit.org',  -- real: joanna@pursuit.org       (5 comments)
         'kirstie.chen@pursuit.org',      -- real: kirstie@pursuit.org      (Admin)
         'stefano.barros@pursuit.org',    -- real: stefano@pursuit.org      (google_id set)
-        'victoria.mayo@pursuit.org'      -- real: victoriam@pursuit.org    (google_id set)
+        'victoria.mayo@pursuit.org',     -- real: victoriam@pursuit.org    (google_id set)
+        'yoshiyuki.minami@pursuit.org'   -- real: yoshi@pursuit.org        (google_id set)
        )
    AND is_active;
 
--- ── 2. the real counterparts are ALL already mapped ─────────────────────────
+-- ── 3. map the surviving logins ─────────────────────────────────────────────
 -- Verified 2026-08-05: gregh@=5, guilherme@=335, victoriam@=232, joanna@=4,
--- kirstie@=119, stefano@=10. So retiring the dotted seeds costs nobody access —
--- every one of these six people can already save under their real login. Nothing
--- to insert here; the step is kept as a record of the check.
+-- kirstie@=119, stefano@=10 are ALREADY mapped, so retiring their seeds costs
+-- nobody access. yoshi@ was not, so he is added here.
+INSERT INTO bedrock.staff_user_id_map (staff_user_id, email, display_name, notes)
+VALUES
+    (124, 'yoshi@pursuit.org', 'Yoshiyuki Minami', 'dedupe 2026-08-05')
+ON CONFLICT (staff_user_id) DO NOTHING;
 
 -- ── 3. the two dotted logins that are NOT duplicates ────────────────────────
 -- afiya.augustine@ and laziah.bernstine@ have no short-email counterpart in
@@ -67,16 +86,18 @@ END $$;
 
 COMMIT;
 
--- STILL UNMAPPABLE, and no migration can fix it — these have no public.users record
--- under any name or address, so there is no staff_user_id to point at. They need a
+-- STILL UNMAPPABLE, and no migration can fix it — no public.users record under any
+-- name or address, so there is no staff_user_id to point at. Needs a
 -- learning-platform record created first:
 --   angielausche@pursuit.org     (Relationship Manager)
---   yoshiyuki.minami@pursuit.org (Project Manager)
 -- Deliberately untouched (service / placeholder accounts):
 --   systems@pursuit.org, nobody@pursuit.org, bug-fix-agent@pursuit-factory.local
 
 -- ── rollback ────────────────────────────────────────────────────────────────
 -- UPDATE public.org_users SET is_active = true WHERE lower(email) IN
 --   ('greg.hogue@pursuit.org','guilherme.barros@pursuit.org','joanna.patterson@pursuit.org',
---    'kirstie.chen@pursuit.org','stefano.barros@pursuit.org','victoria.mayo@pursuit.org');
--- DELETE FROM bedrock.staff_user_id_map WHERE staff_user_id IN (5, 9, 129, 232, 335);
+--    'kirstie.chen@pursuit.org','stefano.barros@pursuit.org','victoria.mayo@pursuit.org',
+--    'yoshiyuki.minami@pursuit.org');
+-- DELETE FROM bedrock.staff_user_id_map WHERE staff_user_id IN (9, 124, 129);
+-- DELETE FROM bedrock.user_config WHERE org_user_id =
+--   (SELECT id FROM public.org_users WHERE lower(email)='yoshi@pursuit.org');

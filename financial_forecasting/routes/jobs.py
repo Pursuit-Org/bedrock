@@ -2518,17 +2518,15 @@ _TRISTATE_VALUES = ["Yes", "HQ elsewhere", "Unknown"]
 #   yes     >=2    P1
 #   yes     0-1    P2
 #
-# Plus an override (Jac, 2026-08-05): seniority 'Highest' AND headcount above 10 is
-# P1, whatever else is true. That rung is founder / co-founder / CEO / owner /
-# proprietor / managing or founding partner — someone who can decide to hire
-# without asking anyone. The headcount floor is what keeps it useful: 'Highest'
-# alone banded 4,524 people P1, more than P2 held, because every one-person
-# consultancy has a founder.
+# Plus an override (Jac, 2026-08-05): seniority 'Highest' at a company of roughly
+# 10 to 5,000 people is P1, whatever else is true. That rung is founder /
+# co-founder / CEO / owner / proprietor / managing or founding partner — someone who
+# can decide to hire without asking anyone.
 #
-# "Above 10" is written as "known, and not the 1-10 band" rather than as a list of
-# the bands above it, so a new size band added later counts automatically. A NULL
-# size_bucket does NOT qualify: "more than 10 staff" is a positive claim and 14% of
-# the network has no headcount on file. Flipping that costs one coalesce here.
+# The headcount window is what makes it useful rather than noise; see
+# _PRIORITY_SENIORITY_HEADCOUNT_WINDOW for what each end excludes and why. A NULL
+# size_bucket does not qualify either — "10 to 5,000 people" is a positive claim and
+# 14% of the network has no headcount on file.
 #
 # Excluded from P1/P2 entirely: anyone at Pursuit, and anyone carrying an
 # alumni_* tag. They aren't employer leads, and the exclusion outranks every rule
@@ -2540,11 +2538,21 @@ _TRISTATE_VALUES = ["Yes", "HQ elsewhere", "Unknown"]
 _PRIORITY_HEADCOUNT = "51-200"
 _PRIORITY_TRISTATE = ("Yes", "Unknown")
 _PRIORITY_SENIORITY = ("High", "Highest")
-# The rung that is P1 on its own, provided the company clears the headcount floor
+# The rung that is P1 on its own, provided the company sits in the headcount window
 # below. Must be one of _SENIORITY_RUNGS.
 _PRIORITY_SENIORITY_TOP = "Highest"
-# The only band that does NOT clear "headcount above 10".
-_PRIORITY_HEADCOUNT_FLOOR_EXCLUDES = "1-10"
+# The window in which "Highest seniority" alone earns P1: roughly 10 to 5,000 people
+# (Jac, 2026-08-05). Both ends are doing work.
+#   * 1-10 excluded: every one-person consultancy has a founder. Without this floor
+#     the rung banded 4,524 people P1 — more than P2 held.
+#   * 5000+ excluded: at that size the seniority ladder's 'owner' and
+#     'managing partner' patterns stop meaning ownership. The measured false
+#     positives were all of that shape — "Product Portfolio Owner" and "Pittsburgh
+#     Office Managing Partner" at PwC — people who cannot decide to hire anyone.
+#
+# An ALLOW-list, not an exclusion list: if a new size band is added later it will
+# not silently start earning P1. Conservative is the right default for a promotion.
+_PRIORITY_SENIORITY_HEADCOUNT_WINDOW = ("11-50", "51-200", "201-1000", "1001-5000")
 
 
 def _net_priority_case(portco_expr: Optional[str] = None) -> str:
@@ -2576,11 +2584,11 @@ def _net_priority_case(portco_expr: Optional[str] = None) -> str:
         " OR EXISTS (SELECT 1 FROM unnest(coalesce(c.tags, '{}'::text[])) t WHERE t LIKE 'alumni%'))"
     )
     portco = portco_expr or "false"
-    # "Highest seniority at a company with more than 10 people."
+    # "Highest seniority at a company of roughly 10 to 5,000 people."
+    window = ", ".join(f"'{b}'" for b in _PRIORITY_SENIORITY_HEADCOUNT_WINDOW)
     top_decider = (
         f"(({_seniority_case('c.current_title')}) = '{_PRIORITY_SENIORITY_TOP}'"
-        f" AND co.size_bucket IS NOT NULL"
-        f" AND co.size_bucket <> '{_PRIORITY_HEADCOUNT_FLOOR_EXCLUDES}')"
+        f" AND co.size_bucket IN ({window}))"
     )
     return f"""
 CASE
