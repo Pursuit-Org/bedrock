@@ -1633,10 +1633,11 @@ export interface NetworkConnection {
   /** The Note cell. Backed by the most recent team comment on this contact whose
    *  body starts with "relationship context:", with the prefix stripped. */
   relationship_context: string | null;
-  /** That comment's id and author, so the cell knows whether it may edit in place
-   *  (author-only) or must add its own. */
+  /** The id of that comment, so an edit updates it in place instead of appending. */
   relationship_context_id: string | null;
-  relationship_context_by: string | null;
+  /** How many OTHER people have left relationship context on this contact. The
+   *  cell stays theirs alone; this is only a hint that more exists in the thread. */
+  relationship_context_others: number;
   // Firmographics behind the page's filters. headcount_band/industry come from
   // public.companies; tristate/seniority are derived in SQL (see routes/jobs.py
   // _tristate_case / _seniority_case). tristate is 'Yes' | 'HQ elsewhere' |
@@ -1732,10 +1733,9 @@ export const RELATIONSHIP_CONTEXT_PREFIX = "relationship context:";
 
 /** Save the Note cell as a real team comment on the contact.
  *
- *  Routes to create / update / delete depending on what's there: editing your own
- *  note updates that comment in place, an empty save deletes it, and a note
- *  written by someone else is never touched — you get your own comment instead,
- *  since the comment API is author-only on edit. */
+ *  The cell only ever holds the caller's OWN note, so this is a straight
+ *  create / update / delete of that one comment — no author check needed, and a
+ *  colleague's note can't be touched because it was never in the cell. */
 export function useSaveRelationshipContext() {
   const qc = useQueryClient();
   return useMutation({

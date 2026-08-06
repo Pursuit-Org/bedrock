@@ -22,7 +22,6 @@ import {
   useContactTagCatalog, useMyNetwork, useMyNetworkFacets, useSaveRelationshipContext,
   useSetConnectionStatus, type MyNetworkFacets, type NetworkConnection, type NetworkScope,
 } from "@/services/jobs";
-import { useCurrentUser } from "@/services/auth";
 import { usePermissions } from "@/services/permissions";
 import {
   AddFilterButton, FilterChip, describeRule, ruleApplies,
@@ -259,25 +258,20 @@ function ThumbsCell({
   );
 }
 
-/** Note cell — a real team comment, not a private field.
+/** Note cell — YOUR note, stored as a real team comment.
  *
- *  Saves to bedrock.jobs_comment (parent_type='prospect') with the body prefixed
- *  "relationship context: ", so the note appears in the contact's Comments thread
- *  labelled with where it came from. Editing your own note updates that comment in
- *  place; if a colleague wrote the current one you add yours instead, because the
- *  comment API is author-only on edit and silently overwriting a teammate would be
- *  wrong. Clearing your own note deletes the comment. */
+ *  Blank for each person until they write one: the row returns only the caller's
+ *  own "relationship context:" comment. It still lands in the contact's Comments
+ *  thread, so colleagues can read it — but their notes never appear in your cell
+ *  and yours never overwrites theirs. `relationship_context_others` says how many
+ *  other people have written here; the full thread is in the row expand. */
 function NoteCell({ c }: { c: NetworkConnection }) {
   const value = c.relationship_context;
+  const others = c.relationship_context_others;
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value ?? "");
   const inputRef = useRef<HTMLInputElement>(null);
-  const { data: me } = useCurrentUser();
   const save = useSaveRelationshipContext();
-
-  const mine = !!c.relationship_context_id
-    && !!me?.email
-    && (c.relationship_context_by ?? "").toLowerCase() === me.email.toLowerCase();
 
   // Re-sync when the row's saved value changes underneath us (another tab, or the
   // refetch after our own save) — but never while typing, or we'd fight the user.
@@ -288,29 +282,26 @@ function NoteCell({ c }: { c: NetworkConnection }) {
     setEditing(false);
     const next = draft.trim();
     if (next === (value ?? "")) return;
-    save.mutate({
-      contact_id: c.contact_id,
-      text: next,
-      // Only edit in place when it's genuinely ours; otherwise append.
-      existing_id: mine ? c.relationship_context_id : null,
-    });
+    // Always our own comment, so this is a plain update / create / delete.
+    save.mutate({ contact_id: c.contact_id, text: next, existing_id: c.relationship_context_id });
   };
 
   if (!editing) {
-    const byOther = value && !mine && c.relationship_context_by;
     return (
       <button
         type="button"
         onClick={(e) => { e.stopPropagation(); setEditing(true); }}
-        title={value
-          ? `${value}${byOther ? `\n\n— ${c.relationship_context_by} (typing here adds your own)` : ""}`
-          : "Click to add relationship context — saved to the contact's comments"}
-        className={cn("h-6 w-full truncate rounded border border-transparent px-1.5 text-left text-[11.5px]",
+        title={[value || "Click to add your relationship context — saved to the contact's comments",
+                others > 0 ? `${others} other ${others === 1 ? "person has" : "people have"} left context — see Comments in the row expand` : ""]
+          .filter(Boolean).join("\n\n")}
+        className={cn("flex h-6 w-full items-center gap-1 rounded border border-transparent px-1.5 text-left text-[11.5px]",
           "hover:border-border-strong hover:bg-surface",
           value ? "text-ink-2" : "text-ink-4")}
       >
-        {value || "—"}
-        {byOther ? <span className="ml-1 text-[10px] text-ink-4">·{c.relationship_context_by?.split("@")[0]}</span> : null}
+        <span className="min-w-0 flex-1 truncate">{value || "—"}</span>
+        {others > 0 && (
+          <span className="shrink-0 rounded bg-surface-2 px-1 text-[9.5px] tabular-nums text-ink-4">+{others}</span>
+        )}
       </button>
     );
   }
@@ -327,7 +318,7 @@ function NoteCell({ c }: { c: NetworkConnection }) {
         if (e.key === "Enter") { e.preventDefault(); commit(); }
         if (e.key === "Escape") { e.preventDefault(); setDraft(value ?? ""); setEditing(false); }
       }}
-      placeholder={mine || !value ? "Relationship context…" : "Add your own context…"}
+      placeholder="Relationship context…"
       className="h-6 w-full rounded border border-accent bg-surface px-1.5 text-[11.5px] text-ink outline-none"
     />
   );

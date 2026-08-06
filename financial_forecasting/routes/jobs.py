@@ -6871,6 +6871,7 @@ async def my_network(
 
     params.append(f"%{email}%"); p_email = len(params)   # staff-specific activity match
     params.append(RELATIONSHIP_CONTEXT_PREFIX); p_ctx_prefix = len(params)
+    params.append(email);        p_author = len(params)   # the caller's own note
     params.append(limit);        p_lim = len(params)
     # Ranking in SQL, not in the browser: with 5,000+ connections and a 2,000-row
     # page, sorting client-side would only rank the window and could leave P1s
@@ -6887,7 +6888,8 @@ async def my_network(
                (opp.has_open IS NOT NULL) AS has_open_opp,
                cs.status AS status, cs.reason AS status_reason,
                {hiring_fit_sel} AS hiring_fit,
-               rc.id AS rc_id, rc.content AS rc_content, rc.author_email AS rc_by,
+               rc.id AS rc_id, rc.content AS rc_content,
+               coalesce(rco.n, 0) AS rc_others,
                -- firmographics behind the page's filters
                coalesce(c.tags, '{{}}'::text[]) AS tags,
                co.size_bucket AS headcount_band, co.industry AS industry, co.hq_location,
@@ -6927,18 +6929,29 @@ async def my_network(
             SELECT count(*) n FROM bedrock.jobs_comment jc
             WHERE jc.parent_type = 'prospect' AND jc.parent_id = c.contact_id::text
         ) cmt ON true
-        -- The row's Note cell. It is a real team comment, tagged with a prefix so
-        -- it's identifiable in the thread and can be round-tripped back into the
-        -- cell. Most recent wins; the id and author come along so the client knows
-        -- whether it may edit in place (author-only) or must add its own.
+        -- The row's Note cell: THE CALLER'S OWN note, blank until they write one.
+        -- Stored as a real team comment (so it shows up in the contact's thread and
+        -- colleagues can read it), but scoped to author_email here — with several
+        -- people working the same Pursuit list, a cell showing whoever wrote last
+        -- would overwrite itself under them and never be theirs to fill in.
         LEFT JOIN LATERAL (
-            SELECT jc.id, jc.content, jc.author_email
+            SELECT jc.id, jc.content
             FROM bedrock.jobs_comment jc
             WHERE jc.parent_type = 'prospect' AND jc.parent_id = c.contact_id::text
               AND jc.content ILIKE ${p_ctx_prefix} || '%'
+              AND lower(jc.author_email) = ${p_author}
             ORDER BY jc.created_at DESC, jc.id DESC
             LIMIT 1
         ) rc ON true
+        -- How many OTHER people have left context here. Not shown in the cell —
+        -- just a hint so 13 execs don't each write the same thing blind.
+        LEFT JOIN LATERAL (
+            SELECT count(*) n
+            FROM bedrock.jobs_comment jc
+            WHERE jc.parent_type = 'prospect' AND jc.parent_id = c.contact_id::text
+              AND jc.content ILIKE ${p_ctx_prefix} || '%'
+              AND lower(coalesce(jc.author_email,'')) <> ${p_author}
+        ) rco ON true
         WHERE {where}
         ORDER BY {priority_order} (mine.n > 0) DESC, (act.n > 0) DESC, coalesce(mine.last, act.last) DESC NULLS LAST, c.full_name
         LIMIT ${p_lim}
@@ -6969,10 +6982,11 @@ async def my_network(
             "status": _normalize_connection_status(r["status"]),
             "status_reason": r["status_reason"],
             "hiring_fit": r["hiring_fit"],
-            # The Note cell, round-tripped out of the comment thread.
+            # The Note cell — this staff member's OWN note, blank until they write
+            # one. Others' notes are only counted, never shown in the cell.
             "relationship_context": _strip_relationship_context(r["rc_content"]),
             "relationship_context_id": str(r["rc_id"]) if r["rc_id"] else None,
-            "relationship_context_by": r["rc_by"],
+            "relationship_context_others": r["rc_others"] or 0,
             "tags": list(r["tags"] or []),
             "priority": r["priority"],
             "is_portco": r["is_portco"],
