@@ -31,7 +31,7 @@ import { ContactExpandTabs, OwnerSelect } from "@/components/jobs/jobsEntity";
 import { OppRolesSection } from "@/components/jobs/OppRolesSection";
 import { OppBuilderActivity } from "@/components/jobs/OppBuilderActivity";
 import { CommittedRolesModal } from "@/components/jobs/CommittedRolesModal";
-import { DealExpandPanel, PlacementsModal, ClosedLostModal, stageOptionsFor } from "./JobsTeam";
+import { DealExpandPanel, PlacementsModal, ClosedLostModal, useOppStageOptions } from "./JobsTeam";
 import { cn } from "@/lib/utils";
 import { relDay } from "@/lib/format";
 import { useSort, sortBy } from "@/lib/sort";
@@ -409,6 +409,10 @@ function OppTableRow({ o, needs, expanded, onToggle, showOwner, resolveName, onR
   onCommittedRoles: (deal: { id: string; account_name: string }) => void;
 }) {
   const updateOpp = useUpdateOpportunity();
+  // Gated on what the database accepts: Reviewing Builders is rejected
+  // until the 2026-08-05 migration lands, so it shows disabled here
+  // rather than failing the save.
+  const oppStageOptions = useOppStageOptions(o.stage);
   // Keep in sync with DealRow.saveStage (JobsTeam.tsx) — same modal gating.
   function saveStage(stage: JobStage) {
     if (stage === o.stage) return Promise.resolve();
@@ -447,7 +451,7 @@ function OppTableRow({ o, needs, expanded, onToggle, showOwner, resolveName, onR
         <td className="px-2 py-1.5" onClick={(e) => e.stopPropagation()}>
           <InlineSelect<JobStage>
             value={o.stage}
-            options={stageOptionsFor(o.stage)}
+            options={oppStageOptions}
             onSave={saveStage}
             renderValue={(v) => (
               <span className="flex items-center gap-1 text-[12.5px] text-ink-2">

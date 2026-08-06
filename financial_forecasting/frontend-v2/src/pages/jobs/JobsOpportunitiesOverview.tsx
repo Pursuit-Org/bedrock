@@ -51,7 +51,7 @@ import { Drawer } from "@/components/ui/Drawer";
 import { JobsFunnels } from "@/components/jobs/JobsFunnels";
 import { PeriodBar, defaultPeriod } from "@/components/jobs/PeriodBar";
 import { CommittedRolesModal } from "@/components/jobs/CommittedRolesModal";
-import { DealExpandPanel, PlacementsModal, ClosedLostModal, stageOptionsFor, displayPriority } from "./JobsTeam";
+import { DealExpandPanel, PlacementsModal, ClosedLostModal, useOppStageOptions, displayPriority } from "./JobsTeam";
 import { relDay } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
@@ -396,6 +396,10 @@ function ManagedOppRow({ o, sub, detail, right, nextTask, expandedId, setExpande
 } & RowHandlers) {
   const updateOpp = useUpdateOpportunity();
   const expanded = expandedId === o.id;
+  // Gated on what the database accepts: Reviewing Builders is rejected
+  // until the 2026-08-05 migration lands, so it shows disabled here
+  // rather than failing the save.
+  const oppStageOptions = useOppStageOptions(o.stage);
   // Keep in sync with DealRow.saveStage (JobsTeam.tsx) — same modal gating.
   function saveStage(stage: JobStage) {
     if (stage === o.stage) return Promise.resolve();
@@ -432,7 +436,7 @@ function ManagedOppRow({ o, sub, detail, right, nextTask, expandedId, setExpande
         <span onClick={(e) => e.stopPropagation()}>
           <InlineSelect<JobStage>
             value={o.stage}
-            options={stageOptionsFor(o.stage)}
+            options={oppStageOptions}
             onSave={saveStage}
             renderValue={(v) => (
               <span className="rounded-full bg-surface-2 px-2 py-0.5 text-[11px] font-medium text-ink-2">{v ? STAGE_LABELS[v] : "—"}</span>

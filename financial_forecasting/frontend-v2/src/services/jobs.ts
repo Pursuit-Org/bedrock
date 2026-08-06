@@ -19,6 +19,11 @@ function invalidateOppDependents(qc: QueryClient, extra: string[][] = []) {
     ["jobs", "funnel"],
     ["jobs", "this-week-summary"],
     ["jobs", "interview-pipeline"],
+    // Closing a deal as revisit files a jobs_task for the owner. These are the
+    // real task keys — "jobs-tasks" per parent and "jobs-tasks-all" for the Jobs
+    // Home widget; ["jobs","tasks"] matches nothing.
+    ["jobs-tasks"],
+    ["jobs-tasks-all"],
     ...extra,
   ];
   for (const queryKey of families) qc.invalidateQueries({ queryKey });
@@ -454,10 +459,18 @@ export function useUpdateJobsMembership() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["jobs", "contacts"] });
       qc.invalidateQueries({ queryKey: ["jobs", "accounts"] });
-      // A revisit files a jobs_task, so the Jobs Home task widget is now stale.
-      qc.invalidateQueries({ queryKey: ["jobs", "tasks"] });
+      // A revisit files a jobs_task, so the Jobs Home task widget is stale.
+      // Keys are "jobs-tasks" / "jobs-tasks-all" (see services/jobsTasks.ts).
+      qc.invalidateQueries({ queryKey: ["jobs-tasks"] });
+      qc.invalidateQueries({ queryKey: ["jobs-tasks-all"] });
     },
-    onError: () => toast.error("Failed to update stage"),
+    // Surface the server's reason when it gave one: a 409 here means the stage
+    // needs the pending migration, and "Failed to update stage" sent the user
+    // hunting for a bug that isn't in the app.
+    onError: (e: unknown) => {
+      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      toast.error(detail || "Failed to update stage");
+    },
   });
 }
 

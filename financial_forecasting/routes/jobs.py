@@ -4701,12 +4701,21 @@ async def _has_column(schema: str, table: str, column: str) -> bool:
 _STAGE_VOCAB_CACHE: dict[str, list[str]] = {}
 
 
-async def _writable_stages(table: str, constraint: str, fallback: list[str]) -> list[str]:
+async def _writable_stages(table: str, constraint: str, fallback: list[str],
+                           settles_when: Optional[str] = None) -> list[str]:
     """Stage values this table's CHECK constraint currently allows, in the order
     given by `fallback` (constraint order is not meaningful). Falls back to the
-    full list if there's no constraint to read."""
-    if table in _STAGE_VOCAB_CACHE:
-        return _STAGE_VOCAB_CACHE[table]
+    full list if there's no constraint to read.
+
+    Only caches the POST-migration answer. Caching the pre-migration list would
+    pin it for the life of the process: Jac applies the migration, the constraint
+    changes underneath us, and every request keeps serving the stale vocabulary
+    until someone restarts the API — which defeats the entire point of probing.
+    `settles_when` names a value that only the new constraint contains; until it
+    shows up we re-read each time (one indexed catalog lookup)."""
+    cached = _STAGE_VOCAB_CACHE.get(table)
+    if cached is not None:
+        return cached
     pool = get_pool()
     try:
         definition = await pool.fetchval(
@@ -4719,7 +4728,8 @@ async def _writable_stages(table: str, constraint: str, fallback: list[str]) -> 
     allowed = [v for v in fallback if f"'{v}'" in definition]
     if not allowed:              # unrecognised shape — don't lock the UI out
         return fallback
-    _STAGE_VOCAB_CACHE[table] = allowed
+    if settles_when is None or settles_when in allowed:
+        _STAGE_VOCAB_CACHE[table] = allowed
     return allowed
 
 
@@ -4733,10 +4743,12 @@ async def stage_vocabulary(user=Depends(require_auth)):
         "jobs_opportunity", "jobs_opportunity_stage_check",
         OPPORTUNITY_STAGES_NEW + ["initial_outreach", "active_builder_interview",
                                   "on_hold_not_selected", "on_hold_not_interested",
-                                  "on_hold_not_responsive"])
+                                  "on_hold_not_responsive"],
+        settles_when="reviewing_builders")
     mem = await _writable_stages(
         "jobs_contact_membership", "jobs_contact_membership_stage_vals",
-        MEMBERSHIP_STAGES_NEW + ["on_hold"])
+        MEMBERSHIP_STAGES_NEW + ["on_hold"],
+        settles_when="call_booked")
     # Report the TARGET vocabulary with an `available` flag, not just what's
     # writable. Filtering the unavailable ones out entirely made Call Booked and
     # Revisit simply missing from the dropdown, which reads as "not built" rather
@@ -5575,8 +5587,16 @@ async def update_jobs_membership(contact_id: int, body: MembershipPatch,
         return {"success": True}
     sets.append("updated_at = now()")
     async with conn.transaction():
-        res = await conn.execute(
-            f"UPDATE bedrock.jobs_contact_membership SET {', '.join(sets)} WHERE contact_id = $1", *params)
+        try:
+            res = await conn.execute(
+                f"UPDATE bedrock.jobs_contact_membership SET {', '.join(sets)} WHERE contact_id = $1", *params)
+        except asyncpg.exceptions.CheckViolationError:
+            # call_booked / revisit until the 2026-08-05 migration enables them.
+            # The pickers already grey these out, so this is the belt to that
+            # braces — but a raw 500 here told the user nothing.
+            raise HTTPException(
+                409, f"'{MEMBERSHIP_STAGE_LABELS.get(body.stage, body.stage)}' isn't accepted by "
+                     "the database yet — it needs the 2026-08-05 pipeline-stage migration.")
         # Row can vanish between the pre-fetch and the UPDATE (unflag race) —
         # bail before recording a phantom transition.
         if res == "UPDATE 0":
@@ -6845,10 +6865,20 @@ async def update_opportunity(
 
     params.append(opp_id)
     async with conn.transaction():
-        await conn.execute(
-            f"UPDATE bedrock.jobs_opportunity SET {', '.join(sets)} WHERE id=${i}",
-            *params,
-        )
+        try:
+            await conn.execute(
+                f"UPDATE bedrock.jobs_opportunity SET {', '.join(sets)} WHERE id=${i}",
+                *params,
+            )
+        except asyncpg.exceptions.CheckViolationError as e:
+            # Almost always a stage the 2026-08-05 migration hasn't enabled yet
+            # (reviewing_builders is the only new value). Raw, this surfaced as a
+            # 500 with no hint of what to do about it.
+            if "stage" in str(e):
+                raise HTTPException(
+                    409, f"'{STAGE_LABELS.get(body.stage, body.stage)}' isn't accepted by the "
+                         "database yet — it needs the 2026-08-05 pipeline-stage migration.")
+            raise HTTPException(400, f"That value isn't allowed: {e}")
         if stage_changed:
             await conn.execute(
                 """

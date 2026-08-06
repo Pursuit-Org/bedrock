@@ -5,6 +5,7 @@ import {
   useJobsOpportunity,
   useUpdateOpportunity,
   useContactTagCatalog,
+  useStageVocabulary,
   useDeleteOpportunity,
   useCreateOpportunity,
   useLogActivity,
@@ -1321,6 +1322,28 @@ export function stageOptionsFor(stage: JobStage): { value: JobStage; label: stri
     : OPP_STAGE_OPTIONS;
 }
 
+/** Opportunity stage options gated on what the database currently accepts.
+ *
+ *  Without this the picker offered Reviewing Builders — the one new value the
+ *  pre-migration CHECK constraint rejects — so choosing it failed the save. The
+ *  contact picker already worked this way; the opportunity one didn't, which is
+ *  exactly the kind of asymmetry that only shows up when someone clicks it. */
+export function useOppStageOptions(stage: JobStage) {
+  const { data: vocab } = useStageVocabulary();
+  return useMemo(() => {
+    const base = stageOptionsFor(stage);
+    if (!vocab) return base;
+    const byValue = new Map(vocab.opportunity_stages.map((o) => [o.value, o]));
+    return base.map((o) => {
+      const v = byValue.get(o.value);
+      // Unknown to the vocabulary (a legacy value pinned in for the current
+      // row) stays selectable — it's already stored, so it can be written back.
+      if (!v || v.available) return o;
+      return { ...o, disabled: true, title: v.unavailable_reason ?? undefined };
+    });
+  }, [vocab, stage]);
+}
+
 // Structured closed-lost reasons (drives the "why deals die" analysis).
 // The combined vocabulary (Kwame 2026-08-05): the seven already in use plus the
 // four from the stage simplification, rather than replacing one list with the
@@ -1463,6 +1486,10 @@ function DealRow({
   }
 
   /** Stage change fires the committed-roles / placements / closed-lost modals. */
+  // Gated on what the database accepts: Reviewing Builders is rejected
+  // until the 2026-08-05 migration lands, so it shows disabled here
+  // rather than failing the save.
+  const oppStageOptions = useOppStageOptions(deal.stage);
   function saveStage(stage: JobStage) {
     if (stage === deal.stage) return Promise.resolve();
     return new Promise<void>((resolve, reject) => {
@@ -1517,7 +1544,7 @@ function DealRow({
     stage: (
       <InlineSelect<JobStage>
         value={deal.stage}
-        options={stageOptionsFor(deal.stage)}
+        options={oppStageOptions}
         onSave={saveStage}
         renderValue={(v) => (
           <span className="flex items-center gap-1 text-[12.5px] text-ink-2">
