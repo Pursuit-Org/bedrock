@@ -1786,8 +1786,10 @@ export function useSaveRelationshipContext() {
       for (const [key, data] of ctx?.snapshot ?? []) qc.setQueryData(key, data);
       toast.error("Failed to save the note");
     },
+    // Same reasoning as the vote mutation: the optimistic patch already holds the
+    // text, so the 2,000-row list is not refetched. The contact's own comment
+    // thread IS invalidated — it's small, and the expand panel reads it.
     onSettled: (_d, _e, { contact_id }) => {
-      qc.invalidateQueries({ queryKey: ["jobs", "my-network"] });
       qc.invalidateQueries({ queryKey: ["jobs-comments", "prospect", String(contact_id)] });
     },
   });
@@ -1820,10 +1822,37 @@ export function useSetConnectionStatus() {
       );
       return { snapshot };
     },
+    // Confirm from the RESPONSE, never by refetching. The endpoint returns the
+    // stored row, so it is already authoritative — and a full my-network refetch
+    // costs ~5s over 2,000 rows with per-row LATERALs. At real entry rates (one
+    // click every ~3s) those refetches overlapped continuously and each new click
+    // cancelled the one in flight, which is what made cells appear to empty and
+    // refill. Nothing about a vote changes another row, the sort, or the bands, so
+    // there is nothing to refetch for.
+    onSuccess: (data, body) => {
+      const stored = (data ?? {}) as { status?: string; hiring_fit?: string | null };
+      qc.setQueriesData<MyNetwork>({ queryKey: ["jobs", "my-network"] }, (prev) =>
+        prev
+          ? {
+              ...prev,
+              connections: prev.connections.map((c) =>
+                c.contact_id === body.contact_id
+                  ? {
+                      ...c,
+                      ...(stored.status !== undefined ? { status: stored.status } : {}),
+                      ...(stored.hiring_fit !== undefined
+                        ? { hiring_fit: stored.hiring_fit || null }
+                        : {}),
+                    }
+                  : c,
+              ),
+            }
+          : prev,
+      );
+    },
     onError: (_err, _body, ctx) => {
       for (const [key, data] of ctx?.snapshot ?? []) qc.setQueryData(key, data);
     },
-    onSettled: () => qc.invalidateQueries({ queryKey: ["jobs", "my-network"] }),
   });
 }
 
