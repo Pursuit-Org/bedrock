@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import { useMutation, useQuery, useQueryClient, keepPreviousData, type QueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
+import { serializeRulesForServer, type FilterRule } from "@/pages/cleanup/Filters";
 
 /**
  * Invalidate the query families that depend on opportunities/activity — opp
@@ -1627,29 +1628,202 @@ export interface NetworkConnection {
   touched: boolean;   // anyone at Pursuit has activity with them
   co_connections: number; company_hired_before: boolean; has_open_opp: boolean;
   status: string; status_reason: string | null;
+  /** "yes" | "no" | null (unanswered). Null until the hiring-fit migration runs. */
+  hiring_fit: string | null;
+  /** The Note cell. Backed by the most recent team comment on this contact whose
+   *  body starts with "relationship context:", with the prefix stripped. */
+  relationship_context: string | null;
+  /** The id of that comment, so an edit updates it in place instead of appending. */
+  relationship_context_id: string | null;
+  /** How many OTHER people have left relationship context on this contact. The
+   *  cell stays theirs alone; this is only a hint that more exists in the thread. */
+  relationship_context_others: number;
+  // Firmographics behind the page's filters. headcount_band/industry come from
+  // public.companies; tristate/seniority are derived in SQL (see routes/jobs.py
+  // _tristate_case / _seniority_case). tristate is 'Yes' | 'HQ elsewhere' |
+  // 'Unknown' — never 'No', because an HQ cannot refute an office.
+  headcount_band: string | null; industry: string | null; hq_location: string | null;
+  tristate: string | null; seniority: string | null;
+  /** Curated CRM tags (bedrock.contact_tag_catalog slugs). */
+  tags: string[];
+  /** "P1" | "P2" | null. Banded in SQL — see _net_priority_case in routes/jobs.py.
+   *  null means unranked, not "low priority". */
+  priority: string | null;
+  /** Company is in bedrock.company_investor. Always false until that migration
+   *  is applied. */
+  is_portco: boolean;
+  /** Shared jobs_comment count for this contact (team-visible, not per-staff). */
+  comment_count: number;
+  /** What LinkedIn says today, from bedrock.contact_enrichment — sent ONLY when it
+   *  disagrees with current_title / current_company, and null otherwise (including
+   *  for every contact not yet re-enriched). These are NOT authoritative: the
+   *  network's title/employer come from a LinkedIn CSV import that measured 64%
+   *  stale, and a change only reaches current_* after review, because
+   *  current_company is what resolves the company's firmographics. */
+  live_title: string | null;
+  live_company: string | null;
+  /** When this contact was last re-enriched, whatever the outcome. */
+  enriched_at: string | null;
 }
-export interface MyNetwork { mapped: boolean; total: number; connections: NetworkConnection[]; message?: string }
-export function useMyNetwork(q?: string) {
+/** The filter menu's option lists for this staff member's network. */
+export interface MyNetworkFacets {
+  headcount: string[]; industry: string[]; tristate: string[]; seniority: string[];
+}
+export interface MyNetwork {
+  mapped: boolean;
+  /** The whole network, ignoring search + filters. */
+  total: number;
+  /** How many match the active search + filters — counted in SQL, so it stays
+   *  right even when more match than the 2,000 `connections` can hold. */
+  matched: number;
+  /** False until db/migrations/2026-08-05-connection-hiring-fit.sql is applied.
+   *  The UI greys the Hiring fit cells rather than offering a control whose
+   *  writes the endpoint would refuse. */
+  hiring_fit_available: boolean;
+  connections: NetworkConnection[];
+  message?: string;
+}
+
+/** Facets live on their own key because they depend only on whose network it is,
+ *  not on the query — folded into useMyNetwork they re-ran on every keystroke. */
+export function useMyNetworkFacets(scope: NetworkScope = "mine", enabled = true) {
+  return useQuery<MyNetworkFacets>({
+    queryKey: ["jobs", "my-network-facets", scope],
+    queryFn: async () => {
+      const { data } = await api.get<ApiResponse<MyNetworkFacets>>("/api/jobs/my-network/facets", {
+        params: scope !== "mine" ? { scope } : {},
+      });
+      return data.data;
+    },
+    enabled,
+    staleTime: 10 * 60_000,
+  });
+}
+export type NetworkScope = "mine" | "pursuit";
+export function useMyNetwork(q?: string, rules?: FilterRule[], prioritized = false, scope: NetworkScope = "mine") {
+  // Filters go to the SERVER: seven staff have >2,000 connections, so sifting
+  // only the loaded page would under-report without saying so. Ranking is
+  // server-side for the same reason — a client-side sort could only order the
+  // loaded window and would leave P1s off-screen.
+  const serialized = rules?.length ? JSON.stringify(serializeRulesForServer(rules)) : "";
   return useQuery<MyNetwork>({
-    queryKey: ["jobs", "my-network", q ?? ""],
+    queryKey: ["jobs", "my-network", scope, q ?? "", serialized, prioritized],
     queryFn: async () => {
       // limit=2000 (server max) — the default 500 silently hid connections for
       // anyone with a bigger network ("total 647, loaded 500").
-      const { data } = await api.get<ApiResponse<MyNetwork>>("/api/jobs/my-network", { params: { limit: 2000, ...(q ? { q } : {}) } });
+      const { data } = await api.get<ApiResponse<MyNetwork>>("/api/jobs/my-network", {
+        params: {
+          limit: 2000,
+          ...(q ? { q } : {}),
+          ...(serialized ? { filters: serialized } : {}),
+          ...(prioritized ? { prioritized: true } : {}),
+          ...(scope !== "mine" ? { scope } : {}),
+        },
+      });
       return data.data;
     },
     staleTime: 60_000,
   });
 }
 
+/** One cell of a My Network row. Every field is optional — the endpoint updates
+ *  only what's sent, so saving one cell can't blank its neighbours. Clear with
+ *  status:"new" or hiring_fit:"". The Note cell does NOT go through here; see
+ *  useSaveRelationshipContext. */
+export interface ConnectionRowUpdate {
+  contact_id: number;
+  status?: string;
+  hiring_fit?: string;
+  reason?: string;
+}
+
+/** Prefix that marks the comment owned by the row's Note cell. Must match
+ *  RELATIONSHIP_CONTEXT_PREFIX in routes/jobs.py. */
+export const RELATIONSHIP_CONTEXT_PREFIX = "relationship context:";
+
+/** Save the Note cell as a real team comment on the contact.
+ *
+ *  The cell only ever holds the caller's OWN note, so this is a straight
+ *  create / update / delete of that one comment — no author check needed, and a
+ *  colleague's note can't be touched because it was never in the cell. */
+export function useSaveRelationshipContext() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ contact_id, text, existing_id }: {
+      contact_id: number; text: string; existing_id?: string | null;
+    }) => {
+      const body = `${RELATIONSHIP_CONTEXT_PREFIX} ${text}`.trim();
+      if (existing_id && !text) {
+        await api.delete(`/api/jobs/jobs-comments/${existing_id}`);
+        return;
+      }
+      if (!text) return;                     // nothing to add
+      if (existing_id) {
+        await api.patch(`/api/jobs/jobs-comments/${existing_id}`, { content: body });
+        return;
+      }
+      await api.post("/api/jobs/jobs-comments", {
+        parent_type: "prospect", parent_id: String(contact_id), content: body,
+      });
+    },
+    // Optimistic on the row so the cell doesn't flicker, and the contact's own
+    // comment thread is invalidated too — the expand panel reads that key.
+    onMutate: async ({ contact_id, text }) => {
+      await qc.cancelQueries({ queryKey: ["jobs", "my-network"] });
+      const snapshot = qc.getQueriesData<MyNetwork>({ queryKey: ["jobs", "my-network"] });
+      qc.setQueriesData<MyNetwork>({ queryKey: ["jobs", "my-network"] }, (prev) =>
+        prev
+          ? {
+              ...prev,
+              connections: prev.connections.map((c) =>
+                c.contact_id === contact_id ? { ...c, relationship_context: text || null } : c),
+            }
+          : prev,
+      );
+      return { snapshot };
+    },
+    onError: (_e, _v, ctx) => {
+      for (const [key, data] of ctx?.snapshot ?? []) qc.setQueryData(key, data);
+      toast.error("Failed to save the note");
+    },
+    onSettled: (_d, _e, { contact_id }) => {
+      qc.invalidateQueries({ queryKey: ["jobs", "my-network"] });
+      qc.invalidateQueries({ queryKey: ["jobs-comments", "prospect", String(contact_id)] });
+    },
+  });
+}
+
 export function useSetConnectionStatus() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (body: { contact_id: number; status: string; reason?: string; note?: string }) => {
+    mutationFn: async (body: ConnectionRowUpdate) => {
       const { data } = await api.patch<ApiResponse<unknown>>("/api/jobs/my-network/status", body);
       return data.data;
     },
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["jobs", "my-network"] }),
+    // Optimistic: these cells are a rapid-entry control, and invalidating on
+    // success refetched up to 2,000 rows per edit. Patch every cached my-network
+    // page (they vary by search + filters), roll back on failure.
+    onMutate: async (body) => {
+      await qc.cancelQueries({ queryKey: ["jobs", "my-network"] });
+      const snapshot = qc.getQueriesData<MyNetwork>({ queryKey: ["jobs", "my-network"] });
+      const patch = (c: NetworkConnection): NetworkConnection => ({
+        ...c,
+        ...(body.status !== undefined ? { status: body.status } : {}),
+        // "" clears, and the server stores NULL — mirror that locally so the cell
+        // doesn't flash the old value back before the refetch lands.
+        ...(body.hiring_fit !== undefined ? { hiring_fit: body.hiring_fit || null } : {}),
+      });
+      qc.setQueriesData<MyNetwork>({ queryKey: ["jobs", "my-network"] }, (prev) =>
+        prev
+          ? { ...prev, connections: prev.connections.map((c) => (c.contact_id === body.contact_id ? patch(c) : c)) }
+          : prev,
+      );
+      return { snapshot };
+    },
+    onError: (_err, _body, ctx) => {
+      for (const [key, data] of ctx?.snapshot ?? []) qc.setQueryData(key, data);
+    },
+    onSettled: () => qc.invalidateQueries({ queryKey: ["jobs", "my-network"] }),
   });
 }
 

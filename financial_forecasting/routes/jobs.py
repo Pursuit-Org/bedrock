@@ -2449,6 +2449,266 @@ def _jobs_relevant(alias: str) -> str:
             f"OR {alias}.type NOT IN ('email','meeting'))")
 
 
+# ── firmographic derivations (My Network filters) ─────────────────────────────
+# Both ladders are PORTED VERBATIM from ~/employer-prospect-ranking/scripts/lib_sql.py,
+# which implements the "Prioritizing our employer prospect list" doc
+# (1C3BNx4gbEA91BXciq22UP58OoUgAZGbXdzUsC42jshQ). They were reviewed against that
+# doc's own tables — do not re-derive them here. If one changes, change both.
+
+def _seniority_case(col: str) -> str:
+    """Map a job title to the doc's seniority ladder.
+
+    Evaluated top to bottom, first match wins, so the narrowest patterns come
+    first. Two judgment calls, both settled by the doc's "when in doubt, rate it
+    down": SVP → Medium (its High is "C-suite or EVP", and SVP is neither) and
+    Managing Director → Medium (senior finance, but not C-suite; plain Director
+    stays Low)."""
+    return f"""
+CASE
+  WHEN {col} IS NULL OR btrim({col}) = '' THEN 'Lowest'
+  WHEN {col} ~* '(chief executive|(^|[^a-z])ceo([^a-z]|$)|founder|co[- ]?founder|(^|[^a-z])owner([^a-z]|$)|proprietor|managing partner|founding partner)'
+       THEN 'Highest'
+  WHEN {col} ~* '(^|[^a-z])(chief[a-z ]*officer|chief [a-z]+|cto|cfo|coo|chro|cio|cmo|cro|cpo|cso|cdo|cco|ciso|cxo)([^a-z]|$)'
+       OR {col} ~* '(^|[^a-z])(evp|executive vice president|president|chairman|chairwoman|chairperson|general partner)([^a-z]|$)'
+       THEN 'High'
+  WHEN {col} ~* '(^|[^a-z])(svp|senior vice president|vp|vice president|head of|global head|managing director|(^|[^a-z])partner([^a-z]|$))'
+       THEN 'Medium'
+  WHEN {col} ~* '(^|[^a-z])(director|manager|principal|team lead|tech lead|supervisor)([^a-z]|$)'
+       THEN 'Low'
+  ELSE 'Lowest'
+END"""
+
+
+def _tristate_case(col: str) -> str:
+    """Map a company HQ string to tri-state presence.
+
+    Yields 'Yes' | 'HQ elsewhere' | 'Unknown' and DELIBERATELY NEVER 'No'.
+    Presence is not headquarters: Google, Amazon and Microsoft all run large New
+    York offices from out-of-state HQs. An HQ can confirm presence; only research
+    can refute it. Anything stronger than 'HQ elsewhere' would be a claim this
+    column cannot support."""
+    return f"""
+CASE
+  WHEN coalesce({col}, '') = '' OR lower({col}) = 'null' THEN 'Unknown'
+  WHEN {col} ~* '(,\\s*(NY|NJ|CT)\\s*$)|(,\\s*(NY|NJ|CT)\\s*,)'
+       OR {col} ~* '(new york|brooklyn|bronx|queens|manhattan|staten island|long island city|yonkers|white plains|new rochelle|mount vernon|westchester|hoboken|newark|jersey city|princeton|hackensack|paramus|morristown|stamford|greenwich|norwalk|bridgeport|hartford|new haven|danbury|westport|darien)'
+       THEN 'Yes'
+  ELSE 'HQ elsewhere'
+END"""
+
+
+# The COMPLETE output domains of the two expressions above. Both CASEs are total
+# (every input lands on a branch, NULL included), so these lists need no query to
+# discover — which keeps them out of the per-request facet scan.
+_SENIORITY_RUNGS = ["Highest", "High", "Medium", "Low", "Lowest"]
+_TRISTATE_VALUES = ["Yes", "HQ elsewhere", "Unknown"]
+
+
+# ── My Network priority banding ──────────────────────────────────────────────
+# Jac's rule, 2026-08-05. Three "fits" are scored, then portfolio-company status
+# promotes, then an exclusion overrides everything:
+#
+#   fits = (headcount 51-200) + (tri-state Yes|Unknown) + (seniority High|Highest)
+#
+#   portco  fits   priority
+#   -----------------------
+#   no      3      P1
+#   no      2      P2
+#   no      0-1    NULL (unranked — a badge means "act on this")
+#   yes     >=2    P1
+#   yes     0-1    P2
+#
+# Plus an override (Jac, 2026-08-05): seniority 'Highest' at a company of roughly
+# 10 to 5,000 people is P1, whatever else is true. That rung is founder /
+# co-founder / CEO / owner / proprietor / managing or founding partner — someone who
+# can decide to hire without asking anyone.
+#
+# The headcount window is what makes it useful rather than noise; see
+# _PRIORITY_SENIORITY_HEADCOUNT_WINDOW for what each end excludes and why. A NULL
+# size_bucket does not qualify either — "10 to 5,000 people" is a positive claim and
+# 14% of the network has no headcount on file.
+#
+# Excluded from P1/P2 entirely: anyone at Pursuit, and anyone carrying an
+# alumni_* tag. They aren't employer leads, and the exclusion outranks every rule
+# above including the Highest override.
+#
+# Tri-state counts Unknown as a fit ON PURPOSE: the value is derived from HQ, and
+# an unknown HQ is missing data, not an absent office. Treating it as a miss
+# would quietly bury leads for the ~40% of companies with no HQ on file.
+_PRIORITY_HEADCOUNT = "51-200"
+_PRIORITY_TRISTATE = ("Yes", "Unknown")
+_PRIORITY_SENIORITY = ("High", "Highest")
+# The rung that is P1 on its own, provided the company sits in the headcount window
+# below. Must be one of _SENIORITY_RUNGS.
+_PRIORITY_SENIORITY_TOP = "Highest"
+# The window in which "Highest seniority" alone earns P1: roughly 10 to 5,000 people
+# (Jac, 2026-08-05). Both ends are doing work.
+#   * 1-10 excluded: every one-person consultancy has a founder. Without this floor
+#     the rung banded 4,524 people P1 — more than P2 held.
+#   * 5000+ excluded: at that size the seniority ladder's 'owner' and
+#     'managing partner' patterns stop meaning ownership. The measured false
+#     positives were all of that shape — "Product Portfolio Owner" and "Pittsburgh
+#     Office Managing Partner" at PwC — people who cannot decide to hire anyone.
+#
+# An ALLOW-list, not an exclusion list: if a new size band is added later it will
+# not silently start earning P1. Conservative is the right default for a promotion.
+_PRIORITY_SENIORITY_HEADCOUNT_WINDOW = ("11-50", "51-200", "201-1000", "1001-5000")
+
+
+def _net_priority_case(portco_expr: Optional[str] = None,
+                       account_floor_expr: Optional[str] = None) -> str:
+    """SQL CASE returning 'P1' | 'P2' | NULL for one network row.
+
+    `portco_expr` is a boolean SQL expression, or None when
+    bedrock.company_investor hasn't been created yet — in which case nothing is a
+    portco and the banding degrades to the headcount/tri-state/seniority rules
+    alone. The endpoint checks for the table per request, so applying the
+    migration starts the portco clause working with no code change.
+
+    `account_floor_expr` is a scalar subquery yielding a band ('P2') for accounts
+    that guarantee a minimum, or None while bedrock.priority_account_floor is
+    absent. It is evaluated LAST on purpose — see the comment at the branch.
+    """
+    tri = ", ".join(f"'{v}'" for v in _PRIORITY_TRISTATE)
+    sen = ", ".join(f"'{v}'" for v in _PRIORITY_SENIORITY)
+    # Every term is coalesced to false before being summed. Without it, a NULL
+    # size_bucket (14% of the network has no headcount on file) makes the whole
+    # sum NULL, every comparison against it NULL, and the row falls through to
+    # unranked — silently dropping ~1,080 contacts who DID hit the other two
+    # criteria. A missing headcount is one criterion unmet, not a void score.
+    fits = (
+        f"(coalesce(co.size_bucket = '{_PRIORITY_HEADCOUNT}', false)::int"
+        f" + coalesce(({_tristate_case('co.hq_location')}) IN ({tri}), false)::int"
+        f" + coalesce(({_seniority_case('c.current_title')}) IN ({sen}), false)::int)"
+    )
+    # Anchored on the "pursuit" prefix, NOT a bare ILIKE '%pursuit%' — the loose
+    # form also swallows "In Wild Pursuit", a real founder lead, while the prefix
+    # still catches "Pursuit Fellow" and the "Pursuit Company - …" import artifact.
+    excluded = (
+        "(lower(btrim(coalesce(c.current_company,''))) ~ '^pursuit($|[^a-z])'"
+        " OR EXISTS (SELECT 1 FROM unnest(coalesce(c.tags, '{}'::text[])) t WHERE t LIKE 'alumni%'))"
+    )
+    portco = portco_expr or "false"
+    # "Highest seniority at a company of roughly 10 to 5,000 people."
+    window = ", ".join(f"'{b}'" for b in _PRIORITY_SENIORITY_HEADCOUNT_WINDOW)
+    top_decider = (
+        f"(({_seniority_case('c.current_title')}) = '{_PRIORITY_SENIORITY_TOP}'"
+        f" AND co.size_bucket IN ({window}))"
+    )
+    # NULL::text, not "false" — this one yields a band, not a boolean.
+    floor = account_floor_expr or "NULL::text"
+    return f"""
+CASE
+  WHEN {excluded} THEN NULL
+  WHEN {top_decider} THEN 'P1'
+  WHEN ({portco}) AND {fits} >= 2 THEN 'P1'
+  WHEN ({portco})                 THEN 'P2'
+  WHEN {fits} = 3                 THEN 'P1'
+  WHEN {fits} = 2                 THEN 'P2'
+  -- Account floor, LAST on purpose. "P2 minimum" may only RAISE a row that would
+  -- otherwise be unranked: every P1 path above has already been taken, so this
+  -- branch can never demote anyone. It also sits below the exclusion at the top,
+  -- so a Pursuit staffer or an alumnus at a Work-now account stays unbanded.
+  WHEN ({floor}) IS NOT NULL      THEN ({floor})
+  ELSE NULL
+END"""
+
+
+# Portfolio-company test, used only when the table exists. account_key is the
+# normalised company name the jobs app already groups on.
+_PORTCO_EXISTS = (
+    "EXISTS (SELECT 1 FROM bedrock.company_investor ci"
+    " WHERE ci.account_key = lower(btrim(coalesce(c.current_company, ''))))"
+)
+
+# Account-level floor: "anyone at a Work-now account is P2 minimum" (Jac,
+# 2026-08-06). Same name-keyed join as the portco test. Used only when
+# bedrock.priority_account_floor exists.
+_ACCOUNT_FLOOR_BAND = (
+    "(SELECT paf.floor_band FROM bedrock.priority_account_floor paf"
+    " WHERE paf.account_key = lower(btrim(coalesce(c.current_company, ''))))"
+)
+
+
+_STAFF_EMAIL_TOKEN = ":staff_email"
+
+
+def _net_rule_clause(
+    rule: dict,
+    fields: dict[str, tuple[str, str]],
+    params: list,
+    staff_email: str = "",
+) -> tuple[str, list]:
+    """Translate one {field,op,values} filter rule into a SQL clause.
+
+    Returns (clause, params); an empty clause means "no-op, skip this rule".
+    Values are always bound, never interpolated, and `fields` is a whitelist —
+    an unrecognised field or an op the field's type doesn't support raises 400
+    rather than silently matching everything, which would under-filter without
+    telling anyone.
+
+    An expression may contain the literal `:staff_email` token; it is bound on
+    demand, only for the rules that actually use it. Binding it up front instead
+    would hand the count queries a parameter their WHERE never references, and
+    asyncpg rejects an argument count that doesn't match the statement.
+
+    list_contacts has its own larger translator (see `_RULE_FIELDS` there) that
+    also covers number/date/recency. That one is load-bearing and carries
+    filter-fuzzing fixes from 2026-07-16, so it was left alone rather than
+    refactored underneath. This helper is the place to consolidate to when
+    someone has the appetite to migrate it.
+    """
+    field, op = rule.get("field"), rule.get("op")
+    values = [str(v) for v in (rule.get("values") or [])]
+    spec = fields.get(field)
+    if spec is None:
+        raise HTTPException(400, f"unfilterable field: {field}")
+    ftype, expr = spec
+
+    if _STAFF_EMAIL_TOKEN in expr:
+        # One binding, substituted into every occurrence in this expression.
+        params.append(f"%{staff_email}%")
+        expr = expr.replace(_STAFF_EMAIL_TOKEN, f"${len(params)}")
+
+    if op == "is_empty":
+        if ftype == "tags":
+            return f"coalesce(array_length({expr}, 1), 0) = 0", params
+        if ftype == "boolean":
+            return f"NOT {expr}", params          # a boolean is never "empty"
+        return f"(({expr}) IS NULL OR ({expr})::text = '')", params
+    if op == "is_not_empty":
+        if ftype == "tags":
+            return f"coalesce(array_length({expr}, 1), 0) > 0", params
+        if ftype == "boolean":
+            return expr, params
+        return f"(({expr}) IS NOT NULL AND ({expr})::text <> '')", params
+
+    if ftype == "boolean" and op in ("equals", "not_equals"):
+        # "yes"/"no" from the picker, flipped again by not_equals.
+        want = ((values[0] if values else "") == "yes") ^ (op == "not_equals")
+        return (expr if want else f"NOT {expr}"), params
+
+    if not values:
+        return "", params                          # nothing selected yet — no-op
+
+    neg = "NOT " if op == "not_equals" else ""
+    if ftype == "tags" and op in ("equals", "not_equals"):
+        params.append(values)
+        return f"{neg}(coalesce({expr}, '{{}}'::text[]) && ${len(params)}::text[])", params
+    if ftype == "select" and op in ("equals", "not_equals"):
+        params.append(values)
+        return f"{neg}(coalesce(({expr})::text, '') = ANY(${len(params)}::text[]))", params
+    if ftype == "text" and op in ("contains", "equals", "not_equals"):
+        if op == "contains":
+            params.append(f"%{values[0]}%")
+            return f"lower(coalesce({expr}, '')) LIKE lower(${len(params)})", params
+        params.append(values[0])
+        sym = "=" if op == "equals" else "<>"
+        return f"lower(coalesce({expr}, '')) {sym} lower(${len(params)})", params
+
+    raise HTTPException(400, f"unsupported op '{op}' for {field}")
+
+
 # Canonical placement-status derivation for a jobs_role, so every screen (Home,
 # Accounts, drills) agrees. Stakeholder vocabulary (JOBS_REVIEW_PLAN.md #9):
 #   ft_placed       — a builder is placed full-time (the FT seat is filled)
@@ -6392,35 +6652,336 @@ async def update_contact(
     return {"success": True, "data": dict(row)}
 
 
-# ── My Network (staff LinkedIn connections) ───────────────────────────────────
+# ── My Network / Pursuit Network ──────────────────────────────────────────────
+# Two scopes on one endpoint, because everything except the row universe is shared
+# — the filters, the priority banding, the vote/fit/note cells:
+#
+#   scope=mine     the caller's own LinkedIn connections (staff_contact_relationships)
+#   scope=pursuit  every tagged contact at Pursuit, leadership only
+#
+# The Pursuit scope's universe is Jac's definition (2026-08-05): a contact carrying
+# at least one CURATED tag that is neither an alumni_* cohort nor 'influence'.
+#   - Curated means present in bedrock.contact_tag_catalog. That deliberately
+#     excludes 'email_review', which is not a catalog tag — it marks 2,624
+#     auto-created contacts from unidentified email addresses, a triage queue
+#     rather than a network.
+#   - 'influence' is excluded as too broad (it alone carried 2,646 rows).
+#   - An alumni tag does NOT disqualify a contact that also carries a qualifying
+#     tag: an alumnus who is now a hiring partner is precisely who this view is
+#     for. 148 contacts land that way.
+# Currently 4,658 contacts, 2,853 of them via volunteer_historical.
+_PURSUIT_TAG_EXCLUDED = ("influence",)
+_PURSUIT_UNIVERSE = f"""EXISTS (
+    SELECT 1 FROM unnest(c.tags) t
+    JOIN bedrock.contact_tag_catalog cat ON cat.slug = t
+    WHERE t NOT LIKE 'alumni%'
+      AND t NOT IN ({', '.join(f"'{x}'" for x in _PURSUIT_TAG_EXCLUDED)})
+)"""
+
+# Profiles allowed into the Pursuit scope. Enforced on the ENDPOINT, not only by
+# hiding the tab — a hidden tab is not access control.
+_PURSUIT_SCOPE_PROFILES = ("Executive", "Admin")
+
+
+async def _ensure_staff_mapping(email: str, conn) -> Optional[int]:
+    """This caller's staff_user_id, self-provisioning on first use.
+
+    Every write on these pages is keyed by staff_user_id (public.users.user_id).
+    Without a bedrock.staff_user_id_map row a staff member can open the page and
+    have every save refused, which is how six of thirteen leadership accounts —
+    including four of five Executives — ended up unable to do anything.
+
+    So the mapping is resolved lazily rather than waiting on a hand-written row.
+    Lazy rather than at login on purpose: it also repairs accounts that existed
+    before this code, not only new joiners.
+
+    Degrades safely. bedrock.resolve_staff_user_id is a postgres-owned SECURITY
+    DEFINER function (public.users has RLS that hides every row from bedrock_user);
+    until its migration is applied this returns None exactly as before, and the
+    endpoint reports the account unmapped instead of erroring.
+    """
+    sid = await conn.fetchval(
+        "SELECT staff_user_id FROM bedrock.staff_user_id_map WHERE lower(email) = $1", email)
+    if sid is not None or not email:
+        return sid
+
+    if not await conn.fetchval(
+            "SELECT to_regprocedure('bedrock.resolve_staff_user_id(text)') IS NOT NULL"):
+        return None
+    resolved = await conn.fetchval("SELECT bedrock.resolve_staff_user_id($1)", email)
+    if resolved is None:
+        # Not staff in the learning platform, or no record there at all. Two active
+        # logins are in that position (angielausche@, yoshiyuki.minami@) and no
+        # amount of retrying will fix them — they need a public.users row first.
+        return None
+
+    await conn.execute(
+        """INSERT INTO bedrock.staff_user_id_map (staff_user_id, email, display_name, notes)
+           VALUES ($1, $2, NULL, 'auto-mapped on first use')
+           ON CONFLICT (staff_user_id) DO NOTHING""", resolved, email)
+    sid = await conn.fetchval(
+        "SELECT staff_user_id FROM bedrock.staff_user_id_map WHERE lower(email) = $1", email)
+    if sid is not None:
+        return sid
+
+    # The id is already claimed by a DIFFERENT login — the same human with two
+    # addresses (firstname@ vs firstname.lastname@). Take it over only if that
+    # login has been retired; if both are live, leave it alone and let the account
+    # read as unmapped. Silently moving one active user's votes to another
+    # would be worse than the visible gap.
+    claimed_by_active = await conn.fetchval(
+        """SELECT coalesce(bool_or(coalesce(ou.is_active, true)), false)
+             FROM bedrock.staff_user_id_map m
+             LEFT JOIN public.org_users ou ON lower(ou.email) = lower(m.email)
+            WHERE m.staff_user_id = $1""", resolved)
+    if claimed_by_active:
+        logger.warning("staff_user_id %s already mapped to an active login; %s left unmapped",
+                       resolved, email)
+        return None
+    await conn.execute(
+        """UPDATE bedrock.staff_user_id_map
+              SET email = $2, notes = coalesce(notes,'') || ' | repointed from a retired login 2026-08-05',
+                  updated_at = now()
+            WHERE staff_user_id = $1""", resolved, email)
+    return resolved
+
+
+async def _assert_pursuit_scope_allowed(email: str, conn) -> None:
+    from routes.permissions import get_user_permissions
+    profile = (await get_user_permissions(email, conn) or {}).get("profile_name")
+    if profile not in _PURSUIT_SCOPE_PROFILES:
+        raise HTTPException(
+            403, "The Pursuit network is limited to leadership "
+                 f"({' or '.join(_PURSUIT_SCOPE_PROFILES)} profile)")
+
+
+
+# The vote vocabulary behind the 👍/👎 column. Renamed 2026-08-05 to match what
+# the column actually asks ("Expect a response") rather than what it used to
+# ("Willing to reach out").
+#
+# NOTE: bedrock.intro_request ALSO has a 'declined' status. It is a separate
+# column on a separate table meaning a connector turned down an intro request —
+# unrelated to this, and untouched by the rename.
+CONNECTION_STATUSES = ("new", "expect_response", "dont_expect_response")
+# Pre-rename spellings, still accepted on write and normalised on read, so the
+# code and the data migration can land in EITHER order without a window where the
+# 123 recorded votes read as "no vote". Safe to delete once
+# db/migrations/2026-08-05-rename-connection-status.sql has been applied and no
+# older client is still deployed.
+LEGACY_CONNECTION_STATUSES = {
+    "will_reach_out": "expect_response",
+    "declined": "dont_expect_response",
+}
+
+
+def _normalize_connection_status(value: Optional[str]) -> str:
+    """Legacy spelling -> current one. Anything unrecognised reads as 'new'."""
+    v = LEGACY_CONNECTION_STATUSES.get(value or "new", value or "new")
+    return v if v in CONNECTION_STATUSES else "new"
+
+
+HIRING_FIT_VALUES = ("yes", "no")
+
+# The My Network Note cell is stored as a real team comment
+# (bedrock.jobs_comment, parent_type='prospect') rather than a private field, so
+# it shows up in the contact's Comments thread like any other note. This prefix is
+# what makes it round-trippable: it marks which comment the cell owns, and it
+# labels the note in the thread for anyone reading it there.
+RELATIONSHIP_CONTEXT_PREFIX = "relationship context:"
+
+
+def _strip_relationship_context(content: Optional[str]) -> Optional[str]:
+    """Comment body -> what the cell should show (the prefix removed)."""
+    if not content:
+        return None
+    body = content[len(RELATIONSHIP_CONTEXT_PREFIX):] \
+        if content[:len(RELATIONSHIP_CONTEXT_PREFIX)].lower() == RELATIONSHIP_CONTEXT_PREFIX \
+        else content
+    return body.strip() or None
+
+
+async def _connection_status_has_hiring_fit(conn) -> bool:
+    """Whether db/migrations/2026-08-05-connection-hiring-fit.sql has been applied.
+
+    Checked per request, not cached at import, so the column starts working the
+    moment the migration lands — no restart. to_regclass can't see columns, hence
+    information_schema."""
+    return bool(await conn.fetchval(
+        """SELECT EXISTS (SELECT 1 FROM information_schema.columns
+             WHERE table_schema = 'bedrock' AND table_name = 'connection_status'
+               AND column_name = 'hiring_fit')"""))
+
+
+
 @router.get("/my-network")
 async def my_network(
     q: Optional[str] = Query(None, description="Search name/company/title"),
     limit: int = Query(500, le=2000),
     staff_email: Optional[str] = Query(None, description="Admin override; else the caller"),
+    filter_rules: Optional[str] = Query(None, alias="filters", description="JSON array of {field,op,values} rules — applied in SQL so filters see the whole network, not the loaded page"),
+    prioritized: bool = Query(True, description="Order P1 then P2 then the rest — ranked in SQL so the top band is drawn from the whole network, not just the page. Defaults ON (Jac, 2026-08-05): pass prioritized=false for the older warmth/recency order"),
+    scope: str = Query("mine", pattern="^(mine|pursuit)$", description="'mine' = the caller's LinkedIn connections; 'pursuit' = every curated-tagged contact (leadership only)"),
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
     """The logged-in staff member's LinkedIn connections (from
     staff_contact_relationships), joined to contacts + company, with flags for
     whether we've had activity with them (warm) and whether they're already a
-    jobs prospect. Drives the "My Network" home zone. Sputnik staff ids are
-    mapped to emails via bedrock.staff_user_id_map."""
+    jobs prospect. Drives the "My Network" page. Sputnik staff ids are
+    mapped to emails via bedrock.staff_user_id_map.
+
+    Returns `total` (the whole network) alongside `matched` (the count under the
+    active filters) so the UI can say "412 of 5,121" and warn honestly when a
+    filtered result exceeds `limit`. Seven staff have more than 2,000
+    connections, so a filter that only sifted the loaded page would under-report
+    without saying so."""
     email = (staff_email or (user.get("email") if isinstance(user, dict) else getattr(user, "email", None)) or "").lower()
-    sid = await conn.fetchval("SELECT staff_user_id FROM bedrock.staff_user_id_map WHERE lower(email)=$1", email)
+    if scope == "pursuit":
+        await _assert_pursuit_scope_allowed(email, conn)
+    sid = await _ensure_staff_mapping(email, conn)
     if sid is None:
-        return {"success": True, "data": {"mapped": False, "connections": [], "total": 0,
-                "message": "No LinkedIn connections mapped for this account yet."}}
+        # The Pursuit scope doesn't depend on the caller having LinkedIn imports —
+        # it's every tagged contact — but the vote/fit/note cells are stored per
+        # staff_user_id, so without a mapping there is nowhere to write.
+        return {"success": True, "data": {"mapped": False, "connections": [], "total": 0, "matched": 0,
+                "hiring_fit_available": False,
+                # Mapping self-provisions on first use (see _ensure_staff_mapping), so
+                # reaching here means the lookup genuinely found nothing: no active
+                # staff record in the learning platform under this address.
+                "message": "This account has no staff record in the learning platform, "
+                           "so there is nowhere to save your answers. Ask an admin to "
+                           "check the email on your Pursuit staff record."}}
+
+    # Scope decides the row universe; everything downstream is identical, which is
+    # why both FROMs expose the same r / c / co / cs aliases.
+    #
+    # `mine` inner-joins the relationship table. `pursuit` starts from contacts and
+    # LEFT joins the caller's own relationship, so warmth and connected-date still
+    # light up for the tagged contacts an exec happens to know, and are simply NULL
+    # for the rest.
+    #
+    # The companies AND connection_status joins are unconditional on every query
+    # below: the shared `where` string may reference `co.` or `cs.`, so both must
+    # resolve identically in the count, the rows, and the facet queries. Both are
+    # keyed joins, so the cost is negligible.
+    if scope == "pursuit":
+        NET_FROM = ("public.contacts c "
+                    "LEFT JOIN public.staff_contact_relationships r "
+                    "  ON r.contact_id = c.contact_id AND r.staff_user_id = $1 "
+                    "LEFT JOIN public.companies co ON co.company_id = c.company_id "
+                    "LEFT JOIN bedrock.connection_status cs "
+                    "  ON cs.contact_id = c.contact_id AND cs.staff_user_id = $1")
+    else:
+        NET_FROM = ("public.staff_contact_relationships r "
+                    "JOIN public.contacts c ON c.contact_id = r.contact_id "
+                    "LEFT JOIN public.companies co ON co.company_id = c.company_id "
+                    "LEFT JOIN bedrock.connection_status cs "
+                    "  ON cs.contact_id = c.contact_id AND cs.staff_user_id = $1")
+
+    # bedrock.company_investor may not be created yet (its migration is applied by
+    # hand). Checked per request rather than cached at import, so the portco half
+    # of the priority rule starts working the moment the migration lands — no
+    # restart, no code change. A missing table means "nothing is a portco", never
+    # a 500.
+    has_portco = await conn.fetchval("SELECT to_regclass('bedrock.company_investor') IS NOT NULL")
+    # Same story for the account floor ("Work now" accounts are P2 minimum) — its
+    # table is loaded from a snapshot and may not exist yet.
+    has_floor = await conn.fetchval("SELECT to_regclass('bedrock.priority_account_floor') IS NOT NULL")
+    priority_case = _net_priority_case(
+        _PORTCO_EXISTS if has_portco else None,
+        _ACCOUNT_FLOOR_BAND if has_floor else None)
+    # Same story for the hiring_fit column — checked per request so the page works
+    # either side of its migration. Reads as unset until then; the PATCH refuses
+    # rather than silently discarding a write (see set_connection_status).
+    has_hiring_fit = await _connection_status_has_hiring_fit(conn)
+    hiring_fit_sel = "cs.hiring_fit" if has_hiring_fit else "NULL::text"
+    # And again for the LinkedIn re-enrichment landing table, so the page works
+    # either side of db/migrations/2026-08-06-contact-enrichment.sql.
+    has_enrichment = await conn.fetchval(
+        "SELECT to_regclass('bedrock.contact_enrichment') IS NOT NULL")
+
     params: list = [sid]
-    where = "r.staff_user_id = $1 AND coalesce(c.contact_stage,'') <> 'merged'"
+    # $1 is consumed by the joins in NET_FROM for both scopes, so it is always bound
+    # even where the WHERE clause doesn't mention it.
+    where = ("coalesce(c.contact_stage,'') <> 'merged' AND " + _PURSUIT_UNIVERSE) \
+        if scope == "pursuit" else \
+        "r.staff_user_id = $1 AND coalesce(c.contact_stage,'') <> 'merged'"
+    # `base_where` excludes the search box and the filter rules — the facet lists
+    # describe the WHOLE universe, so the filter menu offers a stable set of
+    # options that doesn't shrink as you narrow.
+    base_where = where
     if q:
         params.append(f"%{q}%")
         where += f" AND (c.full_name ILIKE ${len(params)} OR c.current_company ILIKE ${len(params)} OR c.current_title ILIKE ${len(params)})"
-    total = await conn.fetchval(
-        f"SELECT count(*) FROM public.staff_contact_relationships r JOIN public.contacts c ON c.contact_id=r.contact_id WHERE {where}", *params)
+
+    # ── Filter rules (the page's Filter menu) ─────────────────────────────────
+    # Each UI field maps to a whitelisted (type, SQL expression) pair mirroring
+    # the column the page displays. An unknown field or op is a 400, never a
+    # silent pass-through that would under-filter.
+    _NET_RULE_FIELDS: dict[str, tuple[str, str]] = {
+        # firmographics
+        "headcount": ("select", "co.size_bucket"),
+        "industry":  ("select", "co.industry"),
+        "tristate":  ("select", _tristate_case("co.hq_location")),
+        "seniority": ("select", _seniority_case("c.current_title")),
+        # the contact themselves
+        "company":   ("text", "c.current_company"),
+        "title":     ("text", "c.current_title"),
+        "tags":      ("tags", "c.tags"),
+        # signals — the same three chips the row renders, so the filter and the
+        # badge can never disagree.
+        "is_jobs":   ("boolean", "(c.is_jobs_contact = true)"),
+        "has_open_opp": ("boolean",
+            "EXISTS (SELECT 1 FROM bedrock.jobs_opportunity o2 WHERE o2.deleted_at IS NULL"
+            " AND o2.stage LIKE 'active%'"
+            " AND lower(trim(o2.account_name)) = lower(trim(c.current_company)))"),
+        "hired_before": ("boolean",
+            "EXISTS (SELECT 1 FROM public.employment_records e2 WHERE c.current_company IS NOT NULL"
+            " AND lower(e2.company_name) = lower(c.current_company))"),
+        # "warm" = THIS staff member has touched them; "touched" = anyone has.
+        # Mirrors the two LATERALs in the rows query, including the relevance
+        # gate. :staff_email is bound on demand — see _net_rule_clause.
+        "warm": ("boolean",
+            f"EXISTS (SELECT 1 FROM bedrock.activity a2 WHERE a2.participant_public_contact_id = c.contact_id"
+            f" AND a2.deleted_at IS NULL AND {_jobs_relevant('a2')}"
+            f" AND (a2.email_from ILIKE {_STAFF_EMAIL_TOKEN} OR a2.logged_by ILIKE {_STAFF_EMAIL_TOKEN}))"),
+        "touched": ("boolean",
+            f"EXISTS (SELECT 1 FROM bedrock.activity a2 WHERE a2.participant_public_contact_id = c.contact_id"
+            f" AND a2.deleted_at IS NULL AND {_jobs_relevant('a2')})"),
+        # The caller's own two answers. Normalised to yes/no/'' so the filter reads
+        # the same as the thumbs regardless of which vocabulary the row was stored
+        # under, and so is_empty means "not answered yet".
+        "expect_response": ("select",
+            "CASE"
+            f" WHEN cs.status IN ('{CONNECTION_STATUSES[1]}', 'will_reach_out') THEN 'yes'"
+            f" WHEN cs.status IN ('{CONNECTION_STATUSES[2]}', 'declined') THEN 'no'"
+            " ELSE '' END"),
+        "hiring_fit": ("select", hiring_fit_sel),
+    }
+    if filter_rules:
+        try:
+            parsed_rules = json.loads(filter_rules)
+            assert isinstance(parsed_rules, list)
+        except Exception:
+            raise HTTPException(400, "filters must be a JSON array of {field,op,values}")
+        for rule in parsed_rules[:20]:
+            clause, params = _net_rule_clause(rule, _NET_RULE_FIELDS, params, email)
+            if clause:
+                where += f" AND {clause}"
+
+    # `total` is the whole network; `matched` is what the filters + search leave.
+    total = await conn.fetchval(f"SELECT count(*) FROM {NET_FROM} WHERE {base_where}", sid)
+    matched = await conn.fetchval(f"SELECT count(*) FROM {NET_FROM} WHERE {where}", *params)
+
     params.append(f"%{email}%"); p_email = len(params)   # staff-specific activity match
-    params.append(sid);          p_sid = len(params)       # connection_status join
+    params.append(RELATIONSHIP_CONTEXT_PREFIX); p_ctx_prefix = len(params)
+    params.append(email);        p_author = len(params)   # the caller's own note
     params.append(limit);        p_lim = len(params)
+    # Ranking in SQL, not in the browser: with 5,000+ connections and a 2,000-row
+    # page, sorting client-side would only rank the window and could leave P1s
+    # off-screen entirely. NULLS LAST keeps unranked rows below the bands.
+    priority_order = f"({priority_case}) ASC NULLS LAST," if prioritized else ""
     rows = await conn.fetch(
         f"""
         SELECT c.contact_id, c.full_name, c.current_title, c.current_company, c.email,
@@ -6430,9 +6991,39 @@ async def my_network(
                coalesce(cc.n, 0) AS co_connections,
                (hire.hired IS NOT NULL) AS company_hired_before,
                (opp.has_open IS NOT NULL) AS has_open_opp,
-               cs.status AS status, cs.reason AS status_reason
-        FROM public.staff_contact_relationships r
-        JOIN public.contacts c ON c.contact_id = r.contact_id
+               cs.status AS status, cs.reason AS status_reason,
+               {hiring_fit_sel} AS hiring_fit,
+               rc.id AS rc_id, rc.content AS rc_content,
+               coalesce(rco.n, 0) AS rc_others,
+               -- firmographics behind the page's filters
+               coalesce(c.tags, '{{}}'::text[]) AS tags,
+               co.size_bucket AS headcount_band, co.industry AS industry, co.hq_location,
+               ({_tristate_case('co.hq_location')}) AS tristate,
+               ({_seniority_case('c.current_title')}) AS seniority,
+               ({priority_case}) AS priority,
+               {'(' + _PORTCO_EXISTS + ')' if has_portco else 'false'} AS is_portco,
+               coalesce(cmt.n, 0) AS comment_count,
+               -- Live LinkedIn values, when this contact has been re-enriched.
+               -- The row keeps rendering c.current_* as the authoritative value;
+               -- these ride alongside as "there is something fresher". Nothing
+               -- here feeds the priority banding or the filters — promoting a
+               -- change into contacts is a separate reviewed step, because
+               -- current_company is the join key to the firmographics.
+               {'ce.live_title'   if has_enrichment else 'NULL::text'} AS live_title,
+               {'ce.live_company' if has_enrichment else 'NULL::text'} AS live_company,
+               {'ce.enriched_at'  if has_enrichment else 'NULL::timestamptz'} AS enriched_at,
+               -- Compared against c.current_* as it is NOW, not against the
+               -- prior_* snapshot the loader took: if someone has since fixed the
+               -- contact by hand, the row must stop claiming a difference.
+               {'''(ce.live_title IS NOT NULL
+                    AND lower(btrim(ce.live_title)) IS DISTINCT FROM lower(btrim(coalesce(c.current_title,''))))'''
+                 if has_enrichment else 'false'} AS live_title_differs,
+               {'''(ce.live_company IS NOT NULL
+                    AND lower(btrim(ce.live_company)) IS DISTINCT FROM lower(btrim(coalesce(c.current_company,''))))'''
+                 if has_enrichment else 'false'} AS live_company_differs
+        FROM {NET_FROM}
+        {"LEFT JOIN bedrock.contact_enrichment ce ON ce.contact_id = c.contact_id AND ce.status = 'ok'"
+         if has_enrichment else ""}
         LEFT JOIN LATERAL (
             SELECT count(*) n, max(activity_date) last,
                    (array_agg(type ORDER BY activity_date DESC))[1] AS last_type
@@ -6459,13 +7050,42 @@ async def my_network(
             WHERE o.deleted_at IS NULL AND o.stage LIKE 'active%'
               AND lower(trim(o.account_name)) = lower(trim(c.current_company)) LIMIT 1
         ) opp ON true
-        LEFT JOIN bedrock.connection_status cs ON cs.contact_id = c.contact_id AND cs.staff_user_id = ${p_sid}
+        LEFT JOIN LATERAL (
+            SELECT count(*) n FROM bedrock.jobs_comment jc
+            WHERE jc.parent_type = 'prospect' AND jc.parent_id = c.contact_id::text
+        ) cmt ON true
+        -- The row's Note cell: THE CALLER'S OWN note, blank until they write one.
+        -- Stored as a real team comment (so it shows up in the contact's thread and
+        -- colleagues can read it), but scoped to author_email here — with several
+        -- people working the same Pursuit list, a cell showing whoever wrote last
+        -- would overwrite itself under them and never be theirs to fill in.
+        LEFT JOIN LATERAL (
+            SELECT jc.id, jc.content
+            FROM bedrock.jobs_comment jc
+            WHERE jc.parent_type = 'prospect' AND jc.parent_id = c.contact_id::text
+              AND jc.content ILIKE ${p_ctx_prefix} || '%'
+              AND lower(jc.author_email) = ${p_author}
+            ORDER BY jc.created_at DESC, jc.id DESC
+            LIMIT 1
+        ) rc ON true
+        -- How many OTHER people have left context here. Not shown in the cell —
+        -- just a hint so 13 execs don't each write the same thing blind.
+        LEFT JOIN LATERAL (
+            SELECT count(*) n
+            FROM bedrock.jobs_comment jc
+            WHERE jc.parent_type = 'prospect' AND jc.parent_id = c.contact_id::text
+              AND jc.content ILIKE ${p_ctx_prefix} || '%'
+              AND lower(coalesce(jc.author_email,'')) <> ${p_author}
+        ) rco ON true
         WHERE {where}
-        ORDER BY (mine.n > 0) DESC, (act.n > 0) DESC, coalesce(mine.last, act.last) DESC NULLS LAST, c.full_name
+        ORDER BY {priority_order} (mine.n > 0) DESC, (act.n > 0) DESC, coalesce(mine.last, act.last) DESC NULLS LAST, c.full_name
         LIMIT ${p_lim}
         """, *params)
     return {"success": True, "data": {
-        "mapped": True, "total": total,
+        "mapped": True, "total": total, "matched": matched,
+        # Lets the UI grey out the Hiring fit cells rather than offer a control
+        # whose writes would be refused.
+        "hiring_fit_available": has_hiring_fit,
         "connections": [{
             "contact_id": r["contact_id"], "full_name": r["full_name"], "current_title": r["current_title"],
             "current_company": r["current_company"], "email": r["email"], "linkedin_url": r["linkedin_url"],
@@ -6483,16 +7103,93 @@ async def my_network(
             "co_connections": r["co_connections"] or 0,
             "company_hired_before": r["company_hired_before"],
             "has_open_opp": r["has_open_opp"],
-            "status": r["status"] or "new",
+            # Normalised so a pre-rename row still renders as a real vote.
+            "status": _normalize_connection_status(r["status"]),
             "status_reason": r["status_reason"],
+            "hiring_fit": r["hiring_fit"],
+            # The Note cell — this staff member's OWN note, blank until they write
+            # one. Others' notes are only counted, never shown in the cell.
+            "relationship_context": _strip_relationship_context(r["rc_content"]),
+            "relationship_context_id": str(r["rc_id"]) if r["rc_id"] else None,
+            "relationship_context_others": r["rc_others"] or 0,
+            "tags": list(r["tags"] or []),
+            "priority": r["priority"],
+            "is_portco": r["is_portco"],
+            "comment_count": r["comment_count"] or 0,
+            # Re-enrichment: what LinkedIn says today, only when it disagrees with
+            # what we hold. Sending the value only when it differs keeps the row
+            # from rendering a "fresher" marker that says the same thing twice.
+            "live_title": r["live_title"] if r["live_title_differs"] else None,
+            "live_company": r["live_company"] if r["live_company_differs"] else None,
+            "enriched_at": r["enriched_at"].isoformat() if r["enriched_at"] else None,
+            "headcount_band": r["headcount_band"],
+            "industry": r["industry"],
+            "hq_location": r["hq_location"],
+            "tristate": r["tristate"],
+            "seniority": r["seniority"],
         } for r in rows]}}
+
+
+@router.get("/my-network/facets")
+async def my_network_facets(
+    staff_email: Optional[str] = Query(None, description="Admin override; else the caller"),
+    scope: str = Query("mine", pattern="^(mine|pursuit)$"),
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """The option lists for the My Network filter menu.
+
+    Separate from /my-network on purpose: these depend only on WHOSE network it
+    is, never on the search box or the active filters, but the scan costs about
+    as much as the row query itself. Folded into the main response it re-ran on
+    every keystroke; on its own key the client fetches it once.
+
+    Headcount and industry are discovered from the data so a new value can't go
+    missing from the menu. Tri-state and seniority are the complete output
+    domains of two total CASE expressions, so they need no scan at all."""
+    email = (staff_email or (user.get("email") if isinstance(user, dict) else getattr(user, "email", None)) or "").lower()
+    if scope == "pursuit":
+        await _assert_pursuit_scope_allowed(email, conn)
+    sid = await _ensure_staff_mapping(email, conn)
+    if sid is None:
+        return {"success": True, "data": {"headcount": [], "industry": [], "tristate": [], "seniority": []}}
+    if scope == "pursuit":
+        src = ("public.contacts c LEFT JOIN public.companies co ON co.company_id = c.company_id "
+               f"WHERE coalesce(c.contact_stage,'') <> 'merged' AND {_PURSUIT_UNIVERSE}")
+        args: tuple = ()
+    else:
+        src = ("public.staff_contact_relationships r "
+               "JOIN public.contacts c ON c.contact_id = r.contact_id "
+               "LEFT JOIN public.companies co ON co.company_id = c.company_id "
+               "WHERE r.staff_user_id = $1 AND coalesce(c.contact_stage,'') <> 'merged'")
+        args = (sid,)
+    row = await conn.fetchrow(
+        f"""SELECT array_agg(DISTINCT co.size_bucket) FILTER (WHERE co.size_bucket IS NOT NULL) AS headcount,
+                   array_agg(DISTINCT co.industry)    FILTER (WHERE co.industry    IS NOT NULL) AS industry
+            FROM {src}""", *args)
+    return {"success": True, "data": {
+        # Ordering is the client's job — it holds the size/seniority ladders. Tag
+        # options aren't here: the client already has the full curated catalog from
+        # useContactTagCatalog(), so discovering them per scope would be redundant.
+        "headcount": sorted(row["headcount"] or []),
+        "industry": sorted(row["industry"] or []),
+        "tristate": _TRISTATE_VALUES,
+        "seniority": _SENIORITY_RUNGS,
+    }}
 
 
 class ConnectionStatusUpdate(BaseModel):
     contact_id: int
-    status: str            # new | will_reach_out | declined
+    # PARTIAL: None means "leave alone", so editing one cell of the row can't
+    # blank the other. Clearing is explicit — status='new', hiring_fit=''.
+    #
+    # The Note cell is deliberately NOT here: it writes a real team comment via
+    # /api/jobs/jobs-comments (see RELATIONSHIP_CONTEXT_PREFIX), not a private
+    # column on this row.
+    status: Optional[str] = None          # new | expect_response | dont_expect_response
+    hiring_fit: Optional[str] = None      # yes | no | '' to clear
+    note: Optional[str] = None            # legacy field, still honoured if sent
     reason: Optional[str] = None
-    note: Optional[str] = None
 
 
 @router.patch("/my-network/status")
@@ -6502,22 +7199,57 @@ async def set_connection_status(
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
-    """Set a staff member's disposition toward one of their connections
-    (new | will_reach_out | declined, with optional reason/note). Stored per
-    (staff, contact) in bedrock.connection_status."""
-    if body.status not in ("new", "will_reach_out", "declined"):
-        raise HTTPException(400, "invalid status")
+    """Update a staff member's row for one of their connections — the vote
+    ("expect a response"), the hiring-fit call, and the inline note. Stored per
+    (staff, contact) in bedrock.connection_status.
+
+    A partial update by design: the page saves one cell at a time, and the
+    previous version wrote all columns on every call, so toggling a vote silently
+    erased the note beside it. Only fields present in the body are touched.
+
+    Legacy status spellings are accepted and rewritten, so a client that hasn't
+    been redeployed still records a usable vote."""
     email = (staff_email or (user.get("email") if isinstance(user, dict) else getattr(user, "email", None)) or "").lower()
-    sid = await conn.fetchval("SELECT staff_user_id FROM bedrock.staff_user_id_map WHERE lower(email)=$1", email)
+    sid = await _ensure_staff_mapping(email, conn)
     if sid is None:
         raise HTTPException(400, "No connection mapping for this account")
+
+    sets: dict[str, object] = {}
+    if body.status is not None:
+        if body.status not in CONNECTION_STATUSES and body.status not in LEGACY_CONNECTION_STATUSES:
+            raise HTTPException(400, "invalid status")
+        sets["status"] = _normalize_connection_status(body.status)
+    if body.hiring_fit is not None:
+        if body.hiring_fit not in HIRING_FIT_VALUES and body.hiring_fit != "":
+            raise HTTPException(400, "hiring_fit must be 'yes', 'no', or '' to clear")
+        if not await _connection_status_has_hiring_fit(conn):
+            # Refuse rather than accept-and-drop: a 200 that quietly loses the
+            # answer is worse than a clear error naming the missing migration.
+            raise HTTPException(
+                503, "hiring_fit is not available yet — apply "
+                     "db/migrations/2026-08-05-connection-hiring-fit.sql")
+        sets["hiring_fit"] = body.hiring_fit or None
+    if body.note is not None:
+        sets["note"] = body.note.strip() or None
+    if body.reason is not None:
+        sets["reason"] = body.reason or None
+    if not sets:
+        raise HTTPException(400, "nothing to update")
+
+    # INSERT needs a status for the NOT NULL column; the table defaults it to
+    # 'new', which is right for a row created by a note or hiring-fit edit alone.
+    cols = list(sets)
+    insert_cols = ", ".join(["staff_user_id", "contact_id", *cols, "updated_by", "updated_at"])
+    insert_vals = ", ".join(["$1", "$2", *(f"${i + 3}" for i in range(len(cols))),
+                             f"${len(cols) + 3}", "now()"])
+    updates = ", ".join(f"{c}=EXCLUDED.{c}" for c in cols)
     await conn.execute(
-        """INSERT INTO bedrock.connection_status (staff_user_id, contact_id, status, reason, note, updated_by, updated_at)
-           VALUES ($1,$2,$3,$4,$5,$6,now())
-           ON CONFLICT (staff_user_id, contact_id) DO UPDATE
-             SET status=$3, reason=$4, note=$5, updated_by=$6, updated_at=now()""",
-        sid, body.contact_id, body.status, body.reason, body.note, email)
-    return {"success": True, "data": {"contact_id": body.contact_id, "status": body.status}}
+        f"""INSERT INTO bedrock.connection_status ({insert_cols})
+            VALUES ({insert_vals})
+            ON CONFLICT (staff_user_id, contact_id) DO UPDATE
+              SET {updates}, updated_by=EXCLUDED.updated_by, updated_at=now()""",
+        sid, body.contact_id, *(sets[c] for c in cols), email)
+    return {"success": True, "data": {"contact_id": body.contact_id, **sets}}
 
 
 # ── Candidate review queue ────────────────────────────────────────────────────
