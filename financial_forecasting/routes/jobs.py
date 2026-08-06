@@ -6655,6 +6655,69 @@ _PURSUIT_UNIVERSE = f"""EXISTS (
 _PURSUIT_SCOPE_PROFILES = ("Executive", "Admin")
 
 
+async def _ensure_staff_mapping(email: str, conn) -> Optional[int]:
+    """This caller's staff_user_id, self-provisioning on first use.
+
+    Every write on these pages is keyed by staff_user_id (public.users.user_id).
+    Without a bedrock.staff_user_id_map row a staff member can open the page and
+    have every save refused, which is how six of thirteen leadership accounts —
+    including four of five Executives — ended up unable to do anything.
+
+    So the mapping is resolved lazily rather than waiting on a hand-written row.
+    Lazy rather than at login on purpose: it also repairs accounts that existed
+    before this code, not only new joiners.
+
+    Degrades safely. bedrock.resolve_staff_user_id is a postgres-owned SECURITY
+    DEFINER function (public.users has RLS that hides every row from bedrock_user);
+    until its migration is applied this returns None exactly as before, and the
+    endpoint reports the account unmapped instead of erroring.
+    """
+    sid = await conn.fetchval(
+        "SELECT staff_user_id FROM bedrock.staff_user_id_map WHERE lower(email) = $1", email)
+    if sid is not None or not email:
+        return sid
+
+    if not await conn.fetchval(
+            "SELECT to_regprocedure('bedrock.resolve_staff_user_id(text)') IS NOT NULL"):
+        return None
+    resolved = await conn.fetchval("SELECT bedrock.resolve_staff_user_id($1)", email)
+    if resolved is None:
+        # Not staff in the learning platform, or no record there at all. Two active
+        # logins are in that position (angielausche@, yoshiyuki.minami@) and no
+        # amount of retrying will fix them — they need a public.users row first.
+        return None
+
+    await conn.execute(
+        """INSERT INTO bedrock.staff_user_id_map (staff_user_id, email, display_name, notes)
+           VALUES ($1, $2, NULL, 'auto-mapped on first use')
+           ON CONFLICT (staff_user_id) DO NOTHING""", resolved, email)
+    sid = await conn.fetchval(
+        "SELECT staff_user_id FROM bedrock.staff_user_id_map WHERE lower(email) = $1", email)
+    if sid is not None:
+        return sid
+
+    # The id is already claimed by a DIFFERENT login — the same human with two
+    # addresses (firstname@ vs firstname.lastname@). Take it over only if that
+    # login has been retired; if both are live, leave it alone and let the account
+    # read as unmapped. Silently moving one active user's votes to another
+    # would be worse than the visible gap.
+    claimed_by_active = await conn.fetchval(
+        """SELECT coalesce(bool_or(coalesce(ou.is_active, true)), false)
+             FROM bedrock.staff_user_id_map m
+             LEFT JOIN public.org_users ou ON lower(ou.email) = lower(m.email)
+            WHERE m.staff_user_id = $1""", resolved)
+    if claimed_by_active:
+        logger.warning("staff_user_id %s already mapped to an active login; %s left unmapped",
+                       resolved, email)
+        return None
+    await conn.execute(
+        """UPDATE bedrock.staff_user_id_map
+              SET email = $2, notes = coalesce(notes,'') || ' | repointed from a retired login 2026-08-05',
+                  updated_at = now()
+            WHERE staff_user_id = $1""", resolved, email)
+    return resolved
+
+
 async def _assert_pursuit_scope_allowed(email: str, conn) -> None:
     from routes.permissions import get_user_permissions
     profile = (await get_user_permissions(email, conn) or {}).get("profile_name")
@@ -6748,14 +6811,19 @@ async def my_network(
     email = (staff_email or (user.get("email") if isinstance(user, dict) else getattr(user, "email", None)) or "").lower()
     if scope == "pursuit":
         await _assert_pursuit_scope_allowed(email, conn)
-    sid = await conn.fetchval("SELECT staff_user_id FROM bedrock.staff_user_id_map WHERE lower(email)=$1", email)
+    sid = await _ensure_staff_mapping(email, conn)
     if sid is None:
         # The Pursuit scope doesn't depend on the caller having LinkedIn imports —
         # it's every tagged contact — but the vote/fit/note cells are stored per
         # staff_user_id, so without a mapping there is nowhere to write.
         return {"success": True, "data": {"mapped": False, "connections": [], "total": 0, "matched": 0,
                 "hiring_fit_available": False,
-                "message": "No staff mapping for this account yet — ask an admin to add you to bedrock.staff_user_id_map."}}
+                # Mapping self-provisions on first use (see _ensure_staff_mapping), so
+                # reaching here means the lookup genuinely found nothing: no active
+                # staff record in the learning platform under this address.
+                "message": "This account has no staff record in the learning platform, "
+                           "so there is nowhere to save your answers. Ask an admin to "
+                           "check the email on your Pursuit staff record."}}
 
     # Scope decides the row universe; everything downstream is identical, which is
     # why both FROMs expose the same r / c / co / cs aliases.
@@ -7019,7 +7087,7 @@ async def my_network_facets(
     email = (staff_email or (user.get("email") if isinstance(user, dict) else getattr(user, "email", None)) or "").lower()
     if scope == "pursuit":
         await _assert_pursuit_scope_allowed(email, conn)
-    sid = await conn.fetchval("SELECT staff_user_id FROM bedrock.staff_user_id_map WHERE lower(email)=$1", email)
+    sid = await _ensure_staff_mapping(email, conn)
     if sid is None:
         return {"success": True, "data": {"headcount": [], "industry": [], "tristate": [], "seniority": []}}
     if scope == "pursuit":
@@ -7079,7 +7147,7 @@ async def set_connection_status(
     Legacy status spellings are accepted and rewritten, so a client that hasn't
     been redeployed still records a usable vote."""
     email = (staff_email or (user.get("email") if isinstance(user, dict) else getattr(user, "email", None)) or "").lower()
-    sid = await conn.fetchval("SELECT staff_user_id FROM bedrock.staff_user_id_map WHERE lower(email)=$1", email)
+    sid = await _ensure_staff_mapping(email, conn)
     if sid is None:
         raise HTTPException(400, "No connection mapping for this account")
 
