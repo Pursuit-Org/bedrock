@@ -45,6 +45,9 @@ const FUNNEL_NOUN: Record<FunnelType, string> = {
 
 // Final/won stage keys per funnel — these render green.
 const WON_STAGE_KEYS = new Set(["closed_won", "accepted"]);
+// Lost/parked terminals. Rendering these in the same purple as the active
+// stages made a funnel of losses look like a funnel of progress.
+const LOST_STAGE_KEYS = new Set(["closed_lost", "revisit", "not_a_fit", "on_hold"]);
 
 const RECORD_CAP = 60;
 
@@ -365,9 +368,12 @@ function FunnelCard({
           {stages.map((stage, i) => {
             const isExpanded = expanded === stage.key;
             const isWon = WON_STAGE_KEYS.has(stage.key);
+            const isLost = LOST_STAGE_KEYS.has(stage.key);
             const barGradient = isWon
               ? "linear-gradient(90deg, #15b87f 0%, #3ad29a 100%)"
-              : "linear-gradient(90deg, #6d5efc 0%, #8b7dff 100%)";
+              : isLost
+                ? "linear-gradient(90deg, #8f2f3f 0%, #b8556a 100%)"
+                : "linear-gradient(90deg, #6d5efc 0%, #8b7dff 100%)";
             // Taper: the band narrows down the funnel with volume. Floored at 6%
             // so a near-empty stage is still visible rather than vanishing.
             const width = Math.max(6, stage.pct_of_max);

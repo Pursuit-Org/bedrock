@@ -1705,7 +1705,8 @@ async def builder_segments(user=Depends(require_auth), conn=Depends(get_db)):
 # Stages that must not advertise a conversion rate into whatever follows them in
 # `stage_order`: the next row isn't a forward step. On Hold is a parking state and
 # Converted is the end of the contact funnel.
-_NO_CONVERSION_FROM = {"converted_to_opportunity", "revisit", "on_hold", "closed_won"}
+_NO_CONVERSION_FROM = {"converted_to_opportunity", "revisit", "on_hold",
+                       "closed_won", "closed_lost"}
 
 
 @router.get("/funnel/{ftype}")
@@ -1758,15 +1759,18 @@ async def get_funnel(
     movement_by_stage: dict = {}  # stage_key -> list of recent transitions touching it
 
     if ftype == "opportunities":
-        # Initial Outreach is being retired, so the funnel starts at In
-        # Discussions (2026-08-03). Opps still sitting in initial_outreach keep
-        # counting everywhere else on the Pipeline page — this hides the row,
-        # it doesn't drop the deals.
+        # Initial Outreach is retired (2026-08-05), so the funnel starts at In
+        # Discussions. Closed Lost is a row of its own rather than an omission:
+        # a funnel that only shows the wins overstates the pipeline, and lost is
+        # where the on_hold_* deals now land, so leaving it out would have hidden
+        # them entirely. It sits after Closed Won as a second terminal row —
+        # neither converts into anything, so no rate is drawn between them.
         stage_order = [
             ("active_in_discussions", "In Discussions"),
             ("active_opportunity_confirmed", "Opportunity Confirmed"),
             ("reviewing_builders", "Reviewing Builders"),
             ("closed_won", "Closed — Won"),
+            ("closed_lost", "Closed — Lost"),
         ]
         record_columns = [
             {"key": "name", "label": "Company"},

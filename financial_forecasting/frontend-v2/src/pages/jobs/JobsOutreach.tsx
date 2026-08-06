@@ -25,6 +25,7 @@ import {
   type OutreachDateRange,
   type ScorecardRow,
   type TouchDepth,
+  type TouchDepthBucket,
   type JobContactWithDeal,
   type MembershipStage,
 } from "@/services/jobs";
@@ -41,6 +42,8 @@ import { cn } from "@/lib/utils";
 const DRILL_PAGE = 25;
 /** Touches shown before "Show n older" in a contact's inline touch log. */
 const TOUCH_LOG_CAP = 5;
+/** Contacts shown per touch-depth bucket before "Show n more". */
+const TOUCH_DRILL_PAGE = 5;
 /** Fallback only — the live list comes from useStageVocabulary(), so the picker
  *  can't offer a stage the database CHECK constraint would reject. */
 const MEMBERSHIP_STAGE_OPTIONS = MEMBERSHIP_STAGES.map((s) => ({ value: s, label: MEMBERSHIP_STAGE_LABELS[s] }));
@@ -254,6 +257,60 @@ function TargetingPanel({ granularity, scope, owner, range }: {
   );
 }
 
+/** The contacts behind one touch-depth bucket: name, touches, owner. Opens at
+ *  five — enough to see who's in there without the panel swallowing the page —
+ *  with the rest a click away. */
+function TouchDepthDrill({ bucket, nameOf }: {
+  bucket: TouchDepthBucket;
+  nameOf: (email: string) => string;
+}) {
+  const [showAll, setShowAll] = useState(false);
+  const shown = showAll ? bucket.contacts : bucket.contacts.slice(0, TOUCH_DRILL_PAGE);
+  const hidden = bucket.contacts.length - shown.length;
+  return (
+    <div className="mb-1 overflow-hidden rounded-lg border border-border-strong">
+      <table className="w-full text-[12px]">
+        <thead>
+          <tr className="bg-surface-2/60 text-left text-[10.5px] uppercase tracking-wider text-ink-3">
+            <th className="px-3 py-1.5 font-semibold">Contact</th>
+            <th className="px-2 py-1.5 font-semibold">Company</th>
+            <th className="px-2 py-1.5 text-right font-semibold">Touches</th>
+            <th className="px-2 py-1.5 font-semibold">Owner</th>
+          </tr>
+        </thead>
+        <tbody>
+          {shown.map((c) => (
+            <tr key={c.contact_id} className="border-t border-border-strong">
+              <td className="px-3 py-1.5">
+                <Link to={`/jobs/contacts/${c.contact_id}`}
+                  className="font-medium text-ink hover:text-accent hover:underline">
+                  {c.name ?? "—"}
+                </Link>
+              </td>
+              <td className="max-w-[220px] truncate px-2 py-1.5 text-ink-2">{c.company ?? "—"}</td>
+              <td className="px-2 py-1.5 text-right font-semibold tabular-nums text-ink">{c.touches}</td>
+              <td className="px-2 py-1.5 text-ink-3">{c.owner ? nameOf(c.owner) : "—"}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {hidden > 0 ? (
+        <button type="button" onClick={() => setShowAll(true)}
+          className="w-full border-t border-border-strong px-3 py-1.5 text-left text-[11.5px] font-medium text-accent hover:bg-surface-2">
+          Show {hidden} more
+        </button>
+      ) : null}
+      {/* The server caps each bucket, so say what isn't here rather than
+          implying the list is complete. */}
+      {showAll && bucket.truncated > 0 ? (
+        <div className="border-t border-border-strong px-3 py-1.5 text-[11px] text-ink-4">
+          {bucket.truncated} beyond the first {bucket.contacts.length} not loaded
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 // ── Follow-up depth ───────────────────────────────────────────────────────────
 // "Are we actually following up, or touching once and moving on." Cohort is the
 // contacts that entered initial outreach this period; the bars are how many
@@ -289,68 +346,46 @@ function TouchDepthPanel({ depth, nameOf }: {
         </div>
       ) : (
         <div className="flex flex-col">
-          {buckets.map((b) => (
-            <div key={b.key}>
-              <div className="grid grid-cols-[104px_1fr_74px] items-center gap-3 py-[7px]">
-                <span className={cn("text-[12.5px] font-medium",
-                  b.key === "0" ? "text-[var(--amber)]" : "text-ink")}>{b.label}</span>
-                <span className="h-2.5 overflow-hidden rounded-full bg-surface-2">
-                  <span className="block h-full rounded-full transition-[width] duration-500"
-                    style={{ width: `${Math.round((100 * b.count) / max)}%`,
-                             background: b.key === "0"
-                               ? "linear-gradient(90deg,#d99a2b,#e8b657)"
-                               : "linear-gradient(90deg,#6d5efc,#8b7dff)" }} />
-                </span>
-                <span className="text-right text-[12px] tabular-nums text-ink-2">
-                  {b.count > 0 ? (
-                    <button type="button" onClick={() => setOpen(open === b.key ? null : b.key)}
-                      title={`List the ${b.count} contacts with ${b.label.toLowerCase()}`}
-                      className={cn("font-semibold hover:underline",
-                        open === b.key ? "text-accent" : "text-ink hover:text-accent")}>
+          {buckets.map((b) => {
+            const isOpen = open === b.key;
+            const zero = b.key === "0";
+            // The whole row is the control — label, bar and count all open the
+            // same list. Clicking a bar and having nothing happen is the kind of
+            // dead affordance that makes people stop trying.
+            const toggle = () => b.count > 0 && setOpen(isOpen ? null : b.key);
+            return (
+              <div key={b.key}>
+                <div
+                  role={b.count > 0 ? "button" : undefined}
+                  tabIndex={b.count > 0 ? 0 : undefined}
+                  onClick={toggle}
+                  onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } }}
+                  title={b.count > 0 ? `Show the ${b.count} contacts with ${b.label.toLowerCase()}` : undefined}
+                  className={cn("grid grid-cols-[150px_1fr_74px] items-center gap-3 rounded-md px-1 py-[7px]",
+                    b.count > 0 && "cursor-pointer hover:bg-surface-2/50",
+                    isOpen && "bg-surface-2/50")}
+                >
+                  <span className={cn("text-[12.5px] font-medium",
+                    zero ? "text-[#8f2f3f]" : "text-ink")}>{b.label}</span>
+                  <span className="h-2.5 overflow-hidden rounded-full bg-surface-2">
+                    <span className="block h-full rounded-full transition-[width] duration-500"
+                      style={{ width: `${Math.round((100 * b.count) / max)}%`,
+                               background: zero
+                                 ? "linear-gradient(90deg,#7a2233,#b8556a)"
+                                 : "linear-gradient(90deg,#6d5efc,#8b7dff)" }} />
+                  </span>
+                  <span className="text-right text-[12px] tabular-nums text-ink-2">
+                    <span className={cn("font-semibold",
+                      b.count === 0 ? "text-ink-4" : isOpen ? "text-accent" : zero ? "text-[#8f2f3f]" : "text-ink")}>
                       {b.count}
-                    </button>
-                  ) : <span className="font-semibold text-ink-4">0</span>}
-                  <span className="text-ink-4"> · {b.pct}%</span>
-                </span>
-              </div>
-              {open === b.key ? (
-                <div className="mb-1 overflow-hidden rounded-lg border border-border-strong">
-                  <table className="w-full text-[12px]">
-                    <thead>
-                      <tr className="bg-surface-2/60 text-left text-[10.5px] uppercase tracking-wider text-ink-3">
-                        <th className="px-3 py-1.5 font-semibold">Contact</th>
-                        <th className="px-2 py-1.5 font-semibold">Company</th>
-                        <th className="px-2 py-1.5 font-semibold">Owner</th>
-                        <th className="px-2 py-1.5 text-right font-semibold">Last touch</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {b.contacts.map((c) => (
-                        <tr key={c.contact_id} className="border-t border-border-strong">
-                          <td className="px-3 py-1.5">
-                            <Link to={`/jobs/contacts/${c.contact_id}`}
-                              className="font-medium text-ink hover:text-accent hover:underline">
-                              {c.name ?? "—"}
-                            </Link>
-                          </td>
-                          <td className="max-w-[200px] truncate px-2 py-1.5 text-ink-2">{c.company ?? "—"}</td>
-                          <td className="px-2 py-1.5 text-ink-3">{c.owner ? nameOf(c.owner) : "—"}</td>
-                          <td className="whitespace-nowrap px-2 py-1.5 text-right tabular-nums text-ink-4">
-                            {relDay(c.last_touch_at) ?? "—"}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                  {b.truncated > 0 ? (
-                    <div className="border-t border-border-strong px-3 py-1.5 text-[11px] text-ink-4">
-                      {b.truncated} more not shown
-                    </div>
-                  ) : null}
+                    </span>
+                    <span className="text-ink-4"> · {b.pct}%</span>
+                  </span>
                 </div>
-              ) : null}
-            </div>
-          ))}
+                {isOpen ? <TouchDepthDrill bucket={b} nameOf={nameOf} /> : null}
+              </div>
+            );
+          })}
         </div>
       )}
     </Panel>
