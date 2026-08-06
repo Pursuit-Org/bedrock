@@ -1794,7 +1794,9 @@ async def get_funnel(
         """, dt)
         by_stage: dict = {}
         for r in rows:
-            by_stage.setdefault(r["stage"], []).append(
+            # Canonical stage, so a deal still stored as active_builder_interview
+            # lands in the Reviewing Builders row instead of no row at all.
+            by_stage.setdefault(canon_stage(r["stage"]), []).append(
                 {"name": r["name"], "deal_type": r["deal_type"], "owner": r["owner"],
                  "roles": r["roles"] or "—"}
             )
@@ -1816,18 +1818,19 @@ async def get_funnel(
             LIMIT 100
         """, dt)
         for h in hist:
-            fi, ti = idx.get(h["from_stage"]), idx.get(h["to_stage"])
+            h_from, h_to = canon_stage(h["from_stage"]), canon_stage(h["to_stage"])
+            fi, ti = idx.get(h_from), idx.get(h_to)
             direction = "advanced" if (fi is not None and ti is not None and ti > fi) else "regressed"
             item = {
                 "name": h["account_name"],
-                "from_label": label_of.get(h["from_stage"], h["from_stage"]),
-                "to_label": label_of.get(h["to_stage"], h["to_stage"]),
+                "from_label": label_of.get(h_from, h_from),
+                "to_label": label_of.get(h_to, h_to),
                 "direction": direction,
                 "when": h["changed_at"].isoformat() if h["changed_at"] else None,
             }
             # attach to the destination stage (moved into) and origin stage (moved out of)
-            movement_by_stage.setdefault(h["to_stage"], []).append({**item, "flow": "in"})
-            movement_by_stage.setdefault(h["from_stage"], []).append({**item, "flow": "out"})
+            movement_by_stage.setdefault(h_to, []).append({**item, "flow": "in"})
+            movement_by_stage.setdefault(h_from, []).append({**item, "flow": "out"})
 
     elif ftype == "prospects":
         # The Contacts funnel runs on the jobs-pipeline membership stage
@@ -1858,7 +1861,7 @@ async def get_funnel(
         """, dt)
         by_stage = {}
         for r in rows:
-            by_stage.setdefault(r["stage"], []).append({"name": r["name"], "company": r["company"]})
+            by_stage.setdefault(canon_membership_stage(r["stage"]), []).append({"name": r["name"], "company": r["company"]})
         # Ever-reached counts (stage-entry stamps), so conversion is a real
         # cohort rate: of everyone who entered a stage, how many got to the next.
         reach = await conn.fetchrow("""
@@ -1989,8 +1992,9 @@ async def get_funnel(
                     "2026-08-03 membership-stage-history-grant migration.")
                 hrows = []
             for r in hrows:
-                key = (r["contact_id"], r["to_stage"])
-                if r["to_stage"] not in period_entries or key in seen:
+                to_stage = canon_membership_stage(r["to_stage"])
+                key = (r["contact_id"], to_stage)
+                if to_stage not in period_entries or key in seen:
                     continue
                 seen[key] = {
                     "name": r["name"], "company": r["company"], "owner": r["owner"],
@@ -2199,6 +2203,42 @@ _OPP_AGE_BUCKETS = [
 _OPP_STATUS_LABELS = {"new": "New (<1w)", "active": "Active", "stalled": "Stalled"}
 
 
+# Read-time stage normalisation to the post-2026-08-05 vocabulary.
+#
+# The migration that rewrites these values is applied by Jac, so until it lands
+# the database still holds the retired names. Canonicalising on READ means the UI
+# shows the new vocabulary immediately — 'active_builder_interview' deals appear
+# under Reviewing Builders rather than falling into no row at all and quietly
+# vanishing from the heatmap and funnel. After the migration this is a no-op.
+_STAGE_CANON = {
+    "active_builder_interview": "reviewing_builders",
+    "initial_outreach": "active_in_discussions",
+    "on_hold_not_interested": "closed_lost",
+    "on_hold_not_responsive": "closed_lost",
+    "on_hold_not_selected": "closed_lost",
+}
+_MEMBERSHIP_CANON = {"on_hold": "revisit"}
+
+
+def canon_stage(stage: Optional[str]) -> Optional[str]:
+    return _STAGE_CANON.get(stage, stage) if stage else stage
+
+
+def canon_membership_stage(stage: Optional[str]) -> Optional[str]:
+    return _MEMBERSHIP_CANON.get(stage, stage) if stage else stage
+
+
+def canon_stage_sql(col: str = "o.stage") -> str:
+    """The same mapping as an SQL expression, for GROUP BY / filters."""
+    whens = " ".join(f"WHEN '{k}' THEN '{v}'" for k, v in _STAGE_CANON.items())
+    return f"(CASE {col} {whens} ELSE {col} END)"
+
+
+def canon_membership_sql(col: str = "m.stage") -> str:
+    whens = " ".join(f"WHEN '{k}' THEN '{v}'" for k, v in _MEMBERSHIP_CANON.items())
+    return f"(CASE {col} {whens} ELSE {col} END)"
+
+
 def _opp_age_bucket(days: int) -> int:
     if days < 14: return 0
     if days < 28: return 1
@@ -2344,8 +2384,8 @@ async def opportunities_overview(
         return {
             "opportunity_id": str(r["id"]),
             "account": r["account_name"],
-            "stage": r["stage"],
-            "stage_label": STAGE_LABELS.get(r["stage"], r["stage"]),
+            "stage": canon_stage(r["stage"]),
+            "stage_label": STAGE_LABELS.get(canon_stage(r["stage"]), r["stage"]),
             "owner": r["owner_email"],
             "at": at.isoformat() if at else None,
         }
@@ -2399,8 +2439,8 @@ async def opportunities_overview(
             "opportunity_id": str(r["id"]),
             "account": r["account_name"],
             "owner": r["owner_email"],
-            "stage": r["stage"],
-            "stage_label": STAGE_LABELS.get(r["stage"], r["stage"]),
+            "stage": canon_stage(r["stage"]),
+            "stage_label": STAGE_LABELS.get(canon_stage(r["stage"]), r["stage"]),
             "priority": r["priority"] if r["priority"] in (1, 2, 3, 4, 5) else None,
             "age_bucket": bi,
             "days_in_stage": stage_days,
@@ -2410,7 +2450,7 @@ async def opportunities_overview(
             "owner_key": owner_key,
         })
 
-        stage_heat.setdefault(r["stage"], [0, 0, 0, 0, 0])[bi] += 1
+        stage_heat.setdefault(canon_stage(r["stage"]), [0, 0, 0, 0, 0])[bi] += 1
         if r["priority"] in (1, 2, 3, 4, 5):
             prio_heat.setdefault(r["priority"], [0, 0, 0, 0, 0])[bi] += 1
         else:
@@ -2427,7 +2467,7 @@ async def opportunities_overview(
             needs.append({
                 "opportunity_id": str(r["id"]),
                 "account": r["account_name"], "owner": r["owner_email"],
-                "stage": r["stage"], "stage_label": STAGE_LABELS.get(r["stage"], r["stage"]),
+                "stage": r["stage"], "stage_label": STAGE_LABELS.get(canon_stage(r["stage"]), r["stage"]),
                 "days_in_stage": stage_days, "days_since_activity": act_days,
                 "stage_from_created": bool(r["stage_from_created"]),
                 "why": " · ".join(why_bits),
@@ -2489,17 +2529,18 @@ async def opportunities_overview(
     for r in added_rows:
         recent_activity.append({
             "type": "added", "opportunity_id": str(r["id"]), "account": r["account_name"],
-            "deal_type": r["deal_type"], "stage_label": STAGE_LABELS.get(r["stage"], r["stage"]),
+            "deal_type": r["deal_type"], "stage_label": STAGE_LABELS.get(canon_stage(r["stage"]), r["stage"]),
             "detail": "Added to the set", "at": r["at"].isoformat() if r["at"] else None,
             "actor": r["actor"],
         })
     for r in moved_rows:
-        to = r["to_stage"]
+        to = canon_stage(r["to_stage"])
+        frm = canon_stage(r["from_stage"])
         recent_activity.append({
             "type": "won" if to == "closed_won" else "lost" if to == "closed_lost" else "moved",
             "opportunity_id": str(r["id"]), "account": r["account_name"], "deal_type": r["deal_type"],
             "stage_label": STAGE_LABELS.get(to, to),
-            "detail": f"{STAGE_LABELS.get(r['from_stage'], r['from_stage'])} → {STAGE_LABELS.get(to, to)}",
+            "detail": f"{STAGE_LABELS.get(frm, frm)} → {STAGE_LABELS.get(to, to)}",
             "at": r["at"].isoformat() if r["at"] else None, "actor": r["actor"],
         })
     # 'Stalled' events deliberately NOT in this feed (2026-07-30 review): the
@@ -2635,7 +2676,7 @@ async def get_roles(user=Depends(require_auth), conn=Depends(get_db)):
             "role_title": r["role_title"] or "—",
             "company_name": r["company_name"] or "—",
             "salary": r["salary"],
-            "stage": r["stage"],
+            "stage": canon_stage(r["stage"]),
             "segment": seg_map.get(r["stage"], "other"),
         })
 
@@ -5736,7 +5777,7 @@ async def account_builders(key: str = Query(...), user=Depends(require_auth), co
             summary[r["stage"]] += 1
         out.append({
             "job_application_id": r["job_application_id"], "builder": r["builder"],
-            "company_name": r["company_name"], "role_title": r["role_title"], "stage": r["stage"],
+            "company_name": r["company_name"], "role_title": r["role_title"], "stage": canon_stage(r["stage"]),
             "jobs_role_id": str(r["jobs_role_id"]) if r["jobs_role_id"] else None,
             "date_applied": r["date_applied"].isoformat() if r["date_applied"] else None,
             "opportunity_id": str(r["jobs_opportunity_id"]) if r["jobs_opportunity_id"] else None,
@@ -6201,7 +6242,7 @@ async def contact_opportunities(
                 "id": str(r["id"]),
                 "account_name": r["account_name"],
                 "title": r["title"],
-                "stage": r["stage"],
+                "stage": canon_stage(r["stage"]),
                 "deal_type": r["deal_type"],
                 "owner_email": r["owner_email"],
                 "num_roles": r["num_roles"],
@@ -7018,7 +7059,7 @@ async def tag_campaign_records(
         "contact_id": r["contact_id"],
         "full_name": r["full_name"],
         "company": r["company"],
-        "stage": r["stage"],
+        "stage": canon_stage(r["stage"]),
         "stage_entered_at": r["stage_entered_at"].isoformat() if r["stage_entered_at"] else None,
         "owner": r["owner_email"],
         "touches": int(r["touches"] or 0),

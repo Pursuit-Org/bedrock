@@ -26,14 +26,19 @@ function invalidateOppDependents(qc: QueryClient, extra: string[][] = []) {
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
+// The 2026-08-05 simplification: six stages. The legacy values stay in the union
+// so rows written before the migration still type-check and render a label —
+// they just aren't offered as choices (see STAGES_ORDERED / useStageVocabulary).
 export type JobStage =
   | "lead_submitted"
-  | "initial_outreach"
   | "active_in_discussions"
   | "active_opportunity_confirmed"
-  | "active_builder_interview"
+  | "reviewing_builders"
   | "closed_won"
   | "closed_lost"
+  // legacy, pre-2026-08-05
+  | "initial_outreach"
+  | "active_builder_interview"
   | "on_hold_not_selected"
   | "on_hold_not_interested"
   | "on_hold_not_responsive";
@@ -168,12 +173,14 @@ export interface OpportunityFilters {
 
 export const STAGE_LABELS: Record<JobStage, string> = {
   lead_submitted:               "Lead Submitted",
-  initial_outreach:             "Initial Outreach",
   active_in_discussions:        "In Discussions",
   active_opportunity_confirmed: "Opportunity Confirmed",
-  active_builder_interview:     "Builder Interview",
+  reviewing_builders:           "Reviewing Builders",
   closed_won:                   "Closed — Won",
   closed_lost:                  "Closed — Lost",
+  // Legacy — labelled so un-migrated rows and history read as words, not slugs.
+  initial_outreach:             "Initial Outreach",
+  active_builder_interview:     "Builder Interview",
   on_hold_not_selected:         "Not Selected",
   on_hold_not_interested:       "Not Interested",
   on_hold_not_responsive:       "Not Responsive",
@@ -188,14 +195,23 @@ export const DEAL_TYPE_LABELS: Record<DealType, string> = {
   pilot:       "Pilot",
 };
 
+/** Board columns and pickers, in pipeline order. Six stages as of 2026-08-05.
+ *  Legacy values are deliberately absent: a picker must not offer a stage the
+ *  team has retired. Anything still stored under one renders via STAGE_LABELS
+ *  and moves to a current stage on the next edit. */
 export const STAGES_ORDERED: JobStage[] = [
   "lead_submitted",
-  "initial_outreach",
   "active_in_discussions",
   "active_opportunity_confirmed",
-  "active_builder_interview",
+  "reviewing_builders",
   "closed_won",
   "closed_lost",
+];
+
+/** Legacy stages that still exist in un-migrated data. Rendered, never offered. */
+export const LEGACY_STAGES: JobStage[] = [
+  "initial_outreach",
+  "active_builder_interview",
   "on_hold_not_selected",
   "on_hold_not_interested",
   "on_hold_not_responsive",
@@ -204,7 +220,7 @@ export const STAGES_ORDERED: JobStage[] = [
 export const ACTIVE_STAGES: JobStage[] = [
   "active_in_discussions",
   "active_opportunity_confirmed",
-  "active_builder_interview",
+  "reviewing_builders",
 ];
 
 // ── Hooks ────────────────────────────────────────────────────────────────────
