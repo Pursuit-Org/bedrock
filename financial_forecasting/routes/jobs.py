@@ -2555,7 +2555,8 @@ _PRIORITY_SENIORITY_TOP = "Highest"
 _PRIORITY_SENIORITY_HEADCOUNT_WINDOW = ("11-50", "51-200", "201-1000", "1001-5000")
 
 
-def _net_priority_case(portco_expr: Optional[str] = None) -> str:
+def _net_priority_case(portco_expr: Optional[str] = None,
+                       account_floor_expr: Optional[str] = None) -> str:
     """SQL CASE returning 'P1' | 'P2' | NULL for one network row.
 
     `portco_expr` is a boolean SQL expression, or None when
@@ -2563,6 +2564,10 @@ def _net_priority_case(portco_expr: Optional[str] = None) -> str:
     portco and the banding degrades to the headcount/tri-state/seniority rules
     alone. The endpoint checks for the table per request, so applying the
     migration starts the portco clause working with no code change.
+
+    `account_floor_expr` is a scalar subquery yielding a band ('P2') for accounts
+    that guarantee a minimum, or None while bedrock.priority_account_floor is
+    absent. It is evaluated LAST on purpose — see the comment at the branch.
     """
     tri = ", ".join(f"'{v}'" for v in _PRIORITY_TRISTATE)
     sen = ", ".join(f"'{v}'" for v in _PRIORITY_SENIORITY)
@@ -2590,6 +2595,8 @@ def _net_priority_case(portco_expr: Optional[str] = None) -> str:
         f"(({_seniority_case('c.current_title')}) = '{_PRIORITY_SENIORITY_TOP}'"
         f" AND co.size_bucket IN ({window}))"
     )
+    # NULL::text, not "false" — this one yields a band, not a boolean.
+    floor = account_floor_expr or "NULL::text"
     return f"""
 CASE
   WHEN {excluded} THEN NULL
@@ -2598,6 +2605,11 @@ CASE
   WHEN ({portco})                 THEN 'P2'
   WHEN {fits} = 3                 THEN 'P1'
   WHEN {fits} = 2                 THEN 'P2'
+  -- Account floor, LAST on purpose. "P2 minimum" may only RAISE a row that would
+  -- otherwise be unranked: every P1 path above has already been taken, so this
+  -- branch can never demote anyone. It also sits below the exclusion at the top,
+  -- so a Pursuit staffer or an alumnus at a Work-now account stays unbanded.
+  WHEN ({floor}) IS NOT NULL      THEN ({floor})
   ELSE NULL
 END"""
 
@@ -2607,6 +2619,14 @@ END"""
 _PORTCO_EXISTS = (
     "EXISTS (SELECT 1 FROM bedrock.company_investor ci"
     " WHERE ci.account_key = lower(btrim(coalesce(c.current_company, ''))))"
+)
+
+# Account-level floor: "anyone at a Work-now account is P2 minimum" (Jac,
+# 2026-08-06). Same name-keyed join as the portco test. Used only when
+# bedrock.priority_account_floor exists.
+_ACCOUNT_FLOOR_BAND = (
+    "(SELECT paf.floor_band FROM bedrock.priority_account_floor paf"
+    " WHERE paf.account_key = lower(btrim(coalesce(c.current_company, ''))))"
 )
 
 
@@ -6865,7 +6885,12 @@ async def my_network(
     # restart, no code change. A missing table means "nothing is a portco", never
     # a 500.
     has_portco = await conn.fetchval("SELECT to_regclass('bedrock.company_investor') IS NOT NULL")
-    priority_case = _net_priority_case(_PORTCO_EXISTS if has_portco else None)
+    # Same story for the account floor ("Work now" accounts are P2 minimum) — its
+    # table is loaded from a snapshot and may not exist yet.
+    has_floor = await conn.fetchval("SELECT to_regclass('bedrock.priority_account_floor') IS NOT NULL")
+    priority_case = _net_priority_case(
+        _PORTCO_EXISTS if has_portco else None,
+        _ACCOUNT_FLOOR_BAND if has_floor else None)
     # Same story for the hiring_fit column — checked per request so the page works
     # either side of its migration. Reads as unset until then; the PATCH refuses
     # rather than silently discarding a write (see set_connection_status).
