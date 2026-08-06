@@ -34,10 +34,11 @@ COMMENT ON COLUMN bedrock.connection_status.hiring_fit IS
     'NULL (unanswered). Set per staff member, same grain as status.';
 
 COMMENT ON COLUMN bedrock.connection_status.note IS
-    'Free-text working note for this staff member on this connection. Overwritten '
-    'in place — the row''s inline note cell. Team discussion lives in '
-    'bedrock.jobs_comment (parent_type=''prospect'') instead, which is append-only '
-    'and shown in the row expand.';
+    'UNUSED. The My Network Note cell writes a real team comment instead — '
+    'bedrock.jobs_comment, parent_type=''prospect'', body prefixed '
+    '''relationship context:'' — so a note appears in the contact''s thread rather '
+    'than hiding on this row. Kept only because a handful of rows may carry values '
+    'from before that decision; safe to drop once confirmed empty.';
 
 COMMIT;
 

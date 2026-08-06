@@ -6627,6 +6627,23 @@ def _normalize_connection_status(value: Optional[str]) -> str:
 
 HIRING_FIT_VALUES = ("yes", "no")
 
+# The My Network Note cell is stored as a real team comment
+# (bedrock.jobs_comment, parent_type='prospect') rather than a private field, so
+# it shows up in the contact's Comments thread like any other note. This prefix is
+# what makes it round-trippable: it marks which comment the cell owns, and it
+# labels the note in the thread for anyone reading it there.
+RELATIONSHIP_CONTEXT_PREFIX = "relationship context:"
+
+
+def _strip_relationship_context(content: Optional[str]) -> Optional[str]:
+    """Comment body -> what the cell should show (the prefix removed)."""
+    if not content:
+        return None
+    body = content[len(RELATIONSHIP_CONTEXT_PREFIX):] \
+        if content[:len(RELATIONSHIP_CONTEXT_PREFIX)].lower() == RELATIONSHIP_CONTEXT_PREFIX \
+        else content
+    return body.strip() or None
+
 
 async def _connection_status_has_hiring_fit(conn) -> bool:
     """Whether db/migrations/2026-08-05-connection-hiring-fit.sql has been applied.
@@ -6751,6 +6768,7 @@ async def my_network(
 
     params.append(f"%{email}%"); p_email = len(params)   # staff-specific activity match
     params.append(sid);          p_sid = len(params)       # connection_status join
+    params.append(RELATIONSHIP_CONTEXT_PREFIX); p_ctx_prefix = len(params)
     params.append(limit);        p_lim = len(params)
     # Ranking in SQL, not in the browser: with 5,000+ connections and a 2,000-row
     # page, sorting client-side would only rank the window and could leave P1s
@@ -6766,7 +6784,8 @@ async def my_network(
                (hire.hired IS NOT NULL) AS company_hired_before,
                (opp.has_open IS NOT NULL) AS has_open_opp,
                cs.status AS status, cs.reason AS status_reason,
-               {hiring_fit_sel} AS hiring_fit, cs.note AS note,
+               {hiring_fit_sel} AS hiring_fit,
+               rc.id AS rc_id, rc.content AS rc_content, rc.author_email AS rc_by,
                -- firmographics behind the page's filters
                coalesce(c.tags, '{{}}'::text[]) AS tags,
                co.size_bucket AS headcount_band, co.industry AS industry, co.hq_location,
@@ -6808,6 +6827,18 @@ async def my_network(
             SELECT count(*) n FROM bedrock.jobs_comment jc
             WHERE jc.parent_type = 'prospect' AND jc.parent_id = c.contact_id::text
         ) cmt ON true
+        -- The row's Note cell. It is a real team comment, tagged with a prefix so
+        -- it's identifiable in the thread and can be round-tripped back into the
+        -- cell. Most recent wins; the id and author come along so the client knows
+        -- whether it may edit in place (author-only) or must add its own.
+        LEFT JOIN LATERAL (
+            SELECT jc.id, jc.content, jc.author_email
+            FROM bedrock.jobs_comment jc
+            WHERE jc.parent_type = 'prospect' AND jc.parent_id = c.contact_id::text
+              AND jc.content ILIKE ${p_ctx_prefix} || '%'
+            ORDER BY jc.created_at DESC, jc.id DESC
+            LIMIT 1
+        ) rc ON true
         LEFT JOIN bedrock.connection_status cs ON cs.contact_id = c.contact_id AND cs.staff_user_id = ${p_sid}
         WHERE {where}
         ORDER BY {priority_order} (mine.n > 0) DESC, (act.n > 0) DESC, coalesce(mine.last, act.last) DESC NULLS LAST, c.full_name
@@ -6839,7 +6870,10 @@ async def my_network(
             "status": _normalize_connection_status(r["status"]),
             "status_reason": r["status_reason"],
             "hiring_fit": r["hiring_fit"],
-            "note": r["note"],
+            # The Note cell, round-tripped out of the comment thread.
+            "relationship_context": _strip_relationship_context(r["rc_content"]),
+            "relationship_context_id": str(r["rc_id"]) if r["rc_id"] else None,
+            "relationship_context_by": r["rc_by"],
             "tags": list(r["tags"] or []),
             "priority": r["priority"],
             "is_portco": r["is_portco"],
@@ -6890,12 +6924,15 @@ async def my_network_facets(
 
 class ConnectionStatusUpdate(BaseModel):
     contact_id: int
-    # All three are PARTIAL: None means "leave alone", so editing one cell of the
-    # row can't blank the other two. Clearing is explicit — status='new',
-    # hiring_fit='' and note=''.
+    # PARTIAL: None means "leave alone", so editing one cell of the row can't
+    # blank the other. Clearing is explicit — status='new', hiring_fit=''.
+    #
+    # The Note cell is deliberately NOT here: it writes a real team comment via
+    # /api/jobs/jobs-comments (see RELATIONSHIP_CONTEXT_PREFIX), not a private
+    # column on this row.
     status: Optional[str] = None          # new | expect_response | dont_expect_response
     hiring_fit: Optional[str] = None      # yes | no | '' to clear
-    note: Optional[str] = None            # free text, '' to clear
+    note: Optional[str] = None            # legacy field, still honoured if sent
     reason: Optional[str] = None
 
 

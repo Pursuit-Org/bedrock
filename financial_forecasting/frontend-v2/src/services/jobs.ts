@@ -1630,9 +1630,13 @@ export interface NetworkConnection {
   status: string; status_reason: string | null;
   /** "yes" | "no" | null (unanswered). Null until the hiring-fit migration runs. */
   hiring_fit: string | null;
-  /** This staff member's inline working note — overwritten in place. Team
-   *  discussion is separate (bedrock.jobs_comment, shown in the row expand). */
-  note: string | null;
+  /** The Note cell. Backed by the most recent team comment on this contact whose
+   *  body starts with "relationship context:", with the prefix stripped. */
+  relationship_context: string | null;
+  /** That comment's id and author, so the cell knows whether it may edit in place
+   *  (author-only) or must add its own. */
+  relationship_context_id: string | null;
+  relationship_context_by: string | null;
   // Firmographics behind the page's filters. headcount_band/industry come from
   // public.companies; tristate/seniority are derived in SQL (see routes/jobs.py
   // _tristate_case / _seniority_case). tristate is 'Yes' | 'HQ elsewhere' |
@@ -1708,13 +1712,70 @@ export function useMyNetwork(q?: string, rules?: FilterRule[], prioritized = fal
 
 /** One cell of a My Network row. Every field is optional — the endpoint updates
  *  only what's sent, so saving one cell can't blank its neighbours. Clear with
- *  status:"new", hiring_fit:"" or note:"". */
+ *  status:"new" or hiring_fit:"". The Note cell does NOT go through here; see
+ *  useSaveRelationshipContext. */
 export interface ConnectionRowUpdate {
   contact_id: number;
   status?: string;
   hiring_fit?: string;
-  note?: string;
   reason?: string;
+}
+
+/** Prefix that marks the comment owned by the row's Note cell. Must match
+ *  RELATIONSHIP_CONTEXT_PREFIX in routes/jobs.py. */
+export const RELATIONSHIP_CONTEXT_PREFIX = "relationship context:";
+
+/** Save the Note cell as a real team comment on the contact.
+ *
+ *  Routes to create / update / delete depending on what's there: editing your own
+ *  note updates that comment in place, an empty save deletes it, and a note
+ *  written by someone else is never touched — you get your own comment instead,
+ *  since the comment API is author-only on edit. */
+export function useSaveRelationshipContext() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ contact_id, text, existing_id }: {
+      contact_id: number; text: string; existing_id?: string | null;
+    }) => {
+      const body = `${RELATIONSHIP_CONTEXT_PREFIX} ${text}`.trim();
+      if (existing_id && !text) {
+        await api.delete(`/api/jobs/jobs-comments/${existing_id}`);
+        return;
+      }
+      if (!text) return;                     // nothing to add
+      if (existing_id) {
+        await api.patch(`/api/jobs/jobs-comments/${existing_id}`, { content: body });
+        return;
+      }
+      await api.post("/api/jobs/jobs-comments", {
+        parent_type: "prospect", parent_id: String(contact_id), content: body,
+      });
+    },
+    // Optimistic on the row so the cell doesn't flicker, and the contact's own
+    // comment thread is invalidated too — the expand panel reads that key.
+    onMutate: async ({ contact_id, text }) => {
+      await qc.cancelQueries({ queryKey: ["jobs", "my-network"] });
+      const snapshot = qc.getQueriesData<MyNetwork>({ queryKey: ["jobs", "my-network"] });
+      qc.setQueriesData<MyNetwork>({ queryKey: ["jobs", "my-network"] }, (prev) =>
+        prev
+          ? {
+              ...prev,
+              connections: prev.connections.map((c) =>
+                c.contact_id === contact_id ? { ...c, relationship_context: text || null } : c),
+            }
+          : prev,
+      );
+      return { snapshot };
+    },
+    onError: (_e, _v, ctx) => {
+      for (const [key, data] of ctx?.snapshot ?? []) qc.setQueryData(key, data);
+      toast.error("Failed to save the note");
+    },
+    onSettled: (_d, _e, { contact_id }) => {
+      qc.invalidateQueries({ queryKey: ["jobs", "my-network"] });
+      qc.invalidateQueries({ queryKey: ["jobs-comments", "prospect", String(contact_id)] });
+    },
+  });
 }
 
 export function useSetConnectionStatus() {
@@ -1736,7 +1797,6 @@ export function useSetConnectionStatus() {
         // "" clears, and the server stores NULL — mirror that locally so the cell
         // doesn't flash the old value back before the refetch lands.
         ...(body.hiring_fit !== undefined ? { hiring_fit: body.hiring_fit || null } : {}),
-        ...(body.note !== undefined ? { note: body.note.trim() || null } : {}),
       });
       qc.setQueriesData<MyNetwork>({ queryKey: ["jobs", "my-network"] }, (prev) =>
         prev

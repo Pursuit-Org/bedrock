@@ -11,7 +11,7 @@
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { ChevronRight, Linkedin } from "lucide-react";
+import { ChevronRight, Linkedin, ThumbsDown, ThumbsUp } from "lucide-react";
 
 import { PageHeader } from "@/components/PageHeader";
 import { cn } from "@/lib/utils";
@@ -19,9 +19,10 @@ import { ContactExpandTabs } from "@/components/jobs/jobsEntity";
 import { SortableHeader } from "@/components/ui/SortableHeader";
 import { useSort, compare } from "@/lib/sort";
 import {
-  useContactTagCatalog, useMyNetwork, useMyNetworkFacets, useSetConnectionStatus,
-  type MyNetworkFacets, type NetworkConnection,
+  useContactTagCatalog, useMyNetwork, useMyNetworkFacets, useSaveRelationshipContext,
+  useSetConnectionStatus, type MyNetworkFacets, type NetworkConnection,
 } from "@/services/jobs";
+import { useCurrentUser } from "@/services/auth";
 import {
   AddFilterButton, FilterChip, describeRule, ruleApplies,
   type FieldMeta, type FilterRule,
@@ -76,7 +77,7 @@ const NET_SORT_VALUE: Record<NetSortKey, (c: NetworkConnection) => unknown> = {
   // yes first, then unanswered, then no — same shape as VOTE_RANK.
   fit: (c) => (c.hiring_fit === "yes" ? 0 : c.hiring_fit === "no" ? 2 : 1),
   // Rows with a note first; alphabetical within.
-  note: (c) => (c.note ? `0${c.note.toLowerCase()}` : "1"),
+  note: (c) => (c.relationship_context ? `0${c.relationship_context.toLowerCase()}` : "1"),
   // Unranked sorts after both bands rather than before "P1" alphabetically.
   priority: (c) => c.priority ?? "ZZ",
 };
@@ -191,8 +192,9 @@ function PriorityBadge({ c }: { c: NetworkConnection }) {
 // All three save through one partial PATCH, so editing one cell never disturbs
 // its neighbours. Writes are optimistic — nothing waits on the network.
 
-/** Yes/No cell. Clicking the active side clears it back to unanswered. */
-function YesNoCell({
+/** Thumbs cell. Clicking the active thumb clears it back to unanswered. Used for
+ *  both yes/no columns so they read as one gesture. */
+function ThumbsCell({
   value, onChange, yesLabel, noLabel, disabled, disabledHint,
 }: {
   value: "yes" | "no" | null;
@@ -205,38 +207,54 @@ function YesNoCell({
   const pick = (e: React.MouseEvent, target: "yes" | "no") => {
     e.stopPropagation();                       // must not expand the row
     if (disabled) return;
-    onChange(value === target ? "" : target);   // click the active side to clear
+    onChange(value === target ? "" : target);   // click the active thumb to clear
   };
-  const base = "grid h-6 flex-1 place-items-center text-[11px] font-semibold";
+  const base = "grid h-6 flex-1 place-items-center";
+  const hint = (label: string, active: boolean) =>
+    disabled ? disabledHint : active ? `${label} — click to clear` : label;
   return (
     <div
       title={disabled ? disabledHint : undefined}
       className={cn("flex overflow-hidden rounded border border-border-strong",
         disabled && "opacity-40")}
     >
-      <button type="button" aria-pressed={value === "yes"} title={disabled ? disabledHint : yesLabel}
+      <button type="button" aria-pressed={value === "yes"} aria-label={yesLabel}
+        title={hint(yesLabel, value === "yes")}
         onClick={(e) => pick(e, "yes")}
         className={cn(base, "border-r border-border-strong",
           value === "yes" ? "bg-green/15 text-green" : "text-ink-4 hover:bg-surface-2 hover:text-ink-2")}>
-        Y
+        <ThumbsUp size={13} aria-hidden />
       </button>
-      <button type="button" aria-pressed={value === "no"} title={disabled ? disabledHint : noLabel}
+      <button type="button" aria-pressed={value === "no"} aria-label={noLabel}
+        title={hint(noLabel, value === "no")}
         onClick={(e) => pick(e, "no")}
         className={cn(base,
           value === "no" ? "bg-red/15 text-red" : "text-ink-4 hover:bg-surface-2 hover:text-ink-2")}>
-        N
+        <ThumbsDown size={13} aria-hidden />
       </button>
     </div>
   );
 }
 
-/** Note cell: reads as text, becomes an input on click. Enter or blur saves,
- *  Escape reverts. Overwrites in place — the append-only team thread is still in
- *  the row expand's Comments tab. */
-function NoteCell({ value, onSave }: { value: string | null; onSave: (next: string) => void }) {
+/** Note cell — a real team comment, not a private field.
+ *
+ *  Saves to bedrock.jobs_comment (parent_type='prospect') with the body prefixed
+ *  "relationship context: ", so the note appears in the contact's Comments thread
+ *  labelled with where it came from. Editing your own note updates that comment in
+ *  place; if a colleague wrote the current one you add yours instead, because the
+ *  comment API is author-only on edit and silently overwriting a teammate would be
+ *  wrong. Clearing your own note deletes the comment. */
+function NoteCell({ c }: { c: NetworkConnection }) {
+  const value = c.relationship_context;
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value ?? "");
   const inputRef = useRef<HTMLInputElement>(null);
+  const { data: me } = useCurrentUser();
+  const save = useSaveRelationshipContext();
+
+  const mine = !!c.relationship_context_id
+    && !!me?.email
+    && (c.relationship_context_by ?? "").toLowerCase() === me.email.toLowerCase();
 
   // Re-sync when the row's saved value changes underneath us (another tab, or the
   // refetch after our own save) — but never while typing, or we'd fight the user.
@@ -246,20 +264,30 @@ function NoteCell({ value, onSave }: { value: string | null; onSave: (next: stri
   const commit = () => {
     setEditing(false);
     const next = draft.trim();
-    if (next !== (value ?? "")) onSave(next);
+    if (next === (value ?? "")) return;
+    save.mutate({
+      contact_id: c.contact_id,
+      text: next,
+      // Only edit in place when it's genuinely ours; otherwise append.
+      existing_id: mine ? c.relationship_context_id : null,
+    });
   };
 
   if (!editing) {
+    const byOther = value && !mine && c.relationship_context_by;
     return (
       <button
         type="button"
         onClick={(e) => { e.stopPropagation(); setEditing(true); }}
-        title={value || "Click to add a note"}
+        title={value
+          ? `${value}${byOther ? `\n\n— ${c.relationship_context_by} (typing here adds your own)` : ""}`
+          : "Click to add relationship context — saved to the contact's comments"}
         className={cn("h-6 w-full truncate rounded border border-transparent px-1.5 text-left text-[11.5px]",
           "hover:border-border-strong hover:bg-surface",
           value ? "text-ink-2" : "text-ink-4")}
       >
         {value || "—"}
+        {byOther ? <span className="ml-1 text-[10px] text-ink-4">·{c.relationship_context_by?.split("@")[0]}</span> : null}
       </button>
     );
   }
@@ -276,7 +304,7 @@ function NoteCell({ value, onSave }: { value: string | null; onSave: (next: stri
         if (e.key === "Enter") { e.preventDefault(); commit(); }
         if (e.key === "Escape") { e.preventDefault(); setDraft(value ?? ""); setEditing(false); }
       }}
-      placeholder="Note…"
+      placeholder={mine || !value ? "Relationship context…" : "Add your own context…"}
       className="h-6 w-full rounded border border-accent bg-surface px-1.5 text-[11.5px] text-ink outline-none"
     />
   );
@@ -320,7 +348,7 @@ function NetworkRow({ c, expanded, onToggle, fitEnabled }: {
         <div className="min-w-0 truncate text-[11.5px] text-ink-3" title={c.current_company ?? undefined}>
           {c.current_company || "—"}
         </div>
-        <YesNoCell
+        <ThumbsCell
           value={expectValue}
           yesLabel="Expect a response" noLabel="Don't expect a response"
           onChange={(next) => save.mutate({
@@ -328,17 +356,14 @@ function NetworkRow({ c, expanded, onToggle, fitEnabled }: {
             status: next === "yes" ? VOTE_UP : next === "no" ? VOTE_DOWN : VOTE_NONE,
           })}
         />
-        <YesNoCell
+        <ThumbsCell
           value={(c.hiring_fit as "yes" | "no" | null) ?? null}
           yesLabel="Hiring fit" noLabel="Not a hiring fit"
           disabled={!fitEnabled}
           disabledHint="Hiring fit needs db/migrations/2026-08-05-connection-hiring-fit.sql applied"
           onChange={(next) => save.mutate({ contact_id: c.contact_id, hiring_fit: next })}
         />
-        <NoteCell
-          value={c.note}
-          onSave={(note) => save.mutate({ contact_id: c.contact_id, note })}
-        />
+        <NoteCell c={c} />
       </div>
       {expanded && (
         <div className="border-t border-border-strong bg-surface-2/20">
