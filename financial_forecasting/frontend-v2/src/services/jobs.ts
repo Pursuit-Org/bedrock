@@ -239,12 +239,44 @@ export interface JobContactWithDeal extends JobContact {
 // carries a real funnel stage a user sets; a jobs prospect with NO membership
 // has no stage yet (blank). 'assigned' is the first real stage (deliberately
 // set), not an auto-applied placeholder.
-export type MembershipStage = "assigned" | "initial_outreach" | "converted_to_opportunity" | "on_hold" | "not_a_fit";
-export const MEMBERSHIP_STAGES: MembershipStage[] = ["assigned", "initial_outreach", "converted_to_opportunity", "on_hold", "not_a_fit"];
+// `on_hold` is the pre-2026-08-05 value, replaced by `revisit` (which carries a
+// date and files a task). It stays in the union so rows written before the
+// migration still type-check and render a label.
+export type MembershipStage =
+  | "assigned" | "initial_outreach" | "call_booked"
+  | "converted_to_opportunity" | "revisit" | "not_a_fit"
+  | "on_hold";
+export const MEMBERSHIP_STAGES: MembershipStage[] = [
+  "assigned", "initial_outreach", "call_booked", "converted_to_opportunity", "revisit", "not_a_fit",
+];
 export const MEMBERSHIP_STAGE_LABELS: Record<MembershipStage, string> = {
-  assigned: "Assigned", initial_outreach: "Initial outreach",
-  converted_to_opportunity: "Converted to opportunity", on_hold: "On hold", not_a_fit: "Not a fit",
+  assigned: "Assigned", initial_outreach: "Initial outreach", call_booked: "Call booked",
+  converted_to_opportunity: "Converted to opportunity", revisit: "Revisit", not_a_fit: "Not a fit",
+  on_hold: "On hold",
 };
+
+/** What the database will actually accept right now. The stage migration is
+ *  applied by Jac out-of-band, so the writable vocabulary can change without a
+ *  deploy — building pickers from this is what stops the UI offering a stage the
+ *  CHECK constraint rejects (which would fail saves for everyone). */
+export interface StageVocabulary {
+  opportunity_stages: { value: string; label: string }[];
+  membership_stages: { value: MembershipStage; label: string }[];
+  closed_lost_reasons: { value: string; label: string }[];
+  /** True once the 2026-08-05 stage migration has landed. */
+  migrated: boolean;
+}
+
+export function useStageVocabulary() {
+  return useQuery<StageVocabulary>({
+    queryKey: ["jobs", "stage-vocabulary"],
+    queryFn: async () => {
+      const { data } = await api.get<ApiResponse<StageVocabulary>>("/api/jobs/stage-vocabulary");
+      return data.data;
+    },
+    staleTime: 300_000,
+  });
+}
 
 export interface ContactFilters {
   stage?: string;
@@ -385,12 +417,14 @@ export function useFlagContactsForJobs() {
 export function useUpdateJobsMembership() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async ({ contact_id, ...body }: { contact_id: number; stage?: string; owner_email?: string; first_outreach_by?: string; not_a_fit_reason?: string }) => {
+    mutationFn: async ({ contact_id, ...body }: { contact_id: number; stage?: string; owner_email?: string; first_outreach_by?: string; not_a_fit_reason?: string; revisit_date?: string }) => {
       await api.patch(`/api/jobs/contacts/${contact_id}/jobs-membership`, body);
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["jobs", "contacts"] });
       qc.invalidateQueries({ queryKey: ["jobs", "accounts"] });
+      // A revisit files a jobs_task, so the Jobs Home task widget is now stale.
+      qc.invalidateQueries({ queryKey: ["jobs", "tasks"] });
     },
     onError: () => toast.error("Failed to update stage"),
   });
@@ -497,6 +531,12 @@ export interface JobsAccount {
   size_bucket?: string | null;
   hq_location?: string | null;
   company_stage?: string | null;
+  /** The investor/owner of this company — itself an account, so the link is
+   *  navigable. Null until the 2026-08-05 migration adds the column. */
+  investor_account_key?: string | null;
+  investor_name?: string | null;
+  /** How many companies name THIS account as their investor. */
+  portfolio_count?: number;
   opportunities: JobsAccountOpp[];
   /** Prospects are NOT nested in the list payload (~38k rows) — fetch them
    *  lazily per account via useAccountProspects. Only the count ships here. */
@@ -717,6 +757,8 @@ export interface JobsAccountUpdate {
   owner_email?: string;
   status_override?: string;
   notes?: string;
+  /** account_key of the investor; "" clears it. */
+  investor_account_key?: string;
 }
 
 export function useUpdateJobsAccount() {

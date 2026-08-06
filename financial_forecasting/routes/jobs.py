@@ -33,12 +33,44 @@ from services.jobs_activity_link import has_membership_history
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 
+# Every stage the app UNDERSTANDS, old and new. The 2026-08-05 simplification
+# drops initial_outreach and the three on_hold_* values and renames
+# active_builder_interview -> reviewing_builders, but the legacy values stay
+# listed here so the app can still read and label rows written before the
+# migration (and so it keeps working if the migration hasn't been applied yet).
+# What can actually be WRITTEN is decided by the database CHECK constraint —
+# see _writable_stages(), which is what the UI's pickers are built from.
 VALID_STAGES = {
-    "lead_submitted", "initial_outreach",
-    "active_in_discussions", "active_opportunity_confirmed", "active_builder_interview",
+    "lead_submitted",
+    "active_in_discussions", "active_opportunity_confirmed", "reviewing_builders",
     "closed_won", "closed_lost",
+    # legacy, pre-2026-08-05
+    "initial_outreach", "active_builder_interview",
     "on_hold_not_selected", "on_hold_not_interested", "on_hold_not_responsive",
 }
+
+# Post-migration stage lists, in funnel order. These drive the UI once the
+# database accepts them.
+OPPORTUNITY_STAGES_NEW = [
+    "lead_submitted", "active_in_discussions", "active_opportunity_confirmed",
+    "reviewing_builders", "closed_won", "closed_lost",
+]
+MEMBERSHIP_STAGES_NEW = [
+    "assigned", "initial_outreach", "call_booked",
+    "converted_to_opportunity", "revisit", "not_a_fit",
+]
+MEMBERSHIP_STAGES_LEGACY = [
+    "assigned", "initial_outreach", "converted_to_opportunity", "on_hold", "not_a_fit",
+]
+
+CLOSED_LOST_REASONS = [
+    ("budget", "No budget"), ("timing", "Timing / not now"),
+    ("hired_elsewhere", "Hired elsewhere"), ("not_a_fit", "Not a fit"),
+    ("no_response", "Went cold"), ("role_cancelled", "Role cancelled"),
+    ("not_interested", "Not interested"), ("not_selected", "Not selected"),
+    ("not_responsive", "Not responsive"), ("revisit", "Revisit later"),
+    ("other", "Other"),
+]
 
 VALID_DEAL_TYPES = {"ft", "pt_contract", "capstone", "volunteer", "workshop", "pilot"}
 
@@ -128,9 +160,22 @@ STAGE_LABELS = {
     "active_builder_interview":     "Builder Interview",
     "closed_won":                   "Closed — Won",
     "closed_lost":                  "Closed — Lost",
+    "reviewing_builders":           "Reviewing Builders",
+    # Legacy values — kept so history and un-migrated rows still render a name
+    # rather than a raw slug.
     "on_hold_not_selected":         "On Hold: Not Selected",
     "on_hold_not_interested":       "On Hold: Not Interested",
     "on_hold_not_responsive":       "On Hold: Not Responsive",
+}
+
+MEMBERSHIP_STAGE_LABELS = {
+    "assigned":                 "Assigned",
+    "initial_outreach":         "Initial Outreach",
+    "call_booked":              "Call Booked",
+    "converted_to_opportunity": "Converted to Opportunity",
+    "revisit":                  "Revisit",
+    "not_a_fit":                "Not a Fit",
+    "on_hold":                  "On Hold",   # legacy, pre-2026-08-05
 }
 
 
@@ -180,6 +225,10 @@ class OpportunityUpdate(BaseModel):
     priority: Optional[int] = None
     segment: Optional[str] = None
     intro_by: Optional[str] = None
+    # Campaign tags, same vocabulary as contacts (bedrock.contact_tag_catalog).
+    # Column arrives with the 2026-08-05 migration; writes are skipped until then
+    # rather than 42703-ing the whole update.
+    tags: Optional[list[str]] = None
 
 
 @router.get("/metrics/{key}")
@@ -476,7 +525,7 @@ async def metric_drilldown(
         "active_orgs":          ("Active Orgs",              lambda: deals("stage LIKE 'active_%'")),
         "active_companies":     ("Active Companies",         lambda: deals("stage LIKE 'active_%'")),
         "in_discussion":        ("In Discussion",            lambda: deals("stage='active_in_discussions'")),
-        "builder_interviews":   ("Builder Interview",        lambda: deals("stage='active_builder_interview'")),
+        "builder_interviews":   ("Reviewing Builders",        lambda: deals("stage IN ('reviewing_builders','active_builder_interview')")),
         "placements":           ("FT Roles Secured", lambda: placements("true")),
         "ft_salaries":          ("FT Salaries", lambda: salaries("true")),
         "candidates_submitted": ("Companies w/ Candidates Submitted", lambda: companies("stage IN ('applied','interview','accepted')")),
@@ -1656,7 +1705,7 @@ async def builder_segments(user=Depends(require_auth), conn=Depends(get_db)):
 # Stages that must not advertise a conversion rate into whatever follows them in
 # `stage_order`: the next row isn't a forward step. On Hold is a parking state and
 # Converted is the end of the contact funnel.
-_NO_CONVERSION_FROM = {"converted_to_opportunity", "on_hold", "closed_won"}
+_NO_CONVERSION_FROM = {"converted_to_opportunity", "revisit", "on_hold", "closed_won"}
 
 
 @router.get("/funnel/{ftype}")
@@ -1716,7 +1765,7 @@ async def get_funnel(
         stage_order = [
             ("active_in_discussions", "In Discussions"),
             ("active_opportunity_confirmed", "Opportunity Confirmed"),
-            ("active_builder_interview", "Builder Interview"),
+            ("reviewing_builders", "Reviewing Builders"),
             ("closed_won", "Closed — Won"),
         ]
         record_columns = [
@@ -1789,8 +1838,9 @@ async def get_funnel(
         stage_order = [
             ("assigned", "Assigned"),
             ("initial_outreach", "Initial Outreach"),
+            ("call_booked", "Call Booked"),
             ("converted_to_opportunity", "Converted to Opportunity"),
-            ("on_hold", "On Hold"),
+            ("revisit", "Revisit"),
         ]
         record_columns = [
             {"key": "name", "label": "Contact"},
@@ -2131,12 +2181,16 @@ async def get_funnel(
 # High-level, read-only view of the employer-deal pipeline. "Time in pipeline" is
 # time in the CURRENT stage (from jobs_stage_history), not age since sourced.
 # The active "set" = working-stage opps (initial_outreach + active_*).
-_OPP_INSET = "(o.stage = 'initial_outreach' OR o.stage LIKE 'active_%')"
-# Stage×Time heatmap rows. Initial Outreach is intentionally omitted from the
-# heatmap — the team is retiring that stage; it stays in the data (and in_set),
-# just isn't surfaced as a row here.
+# 'active_%' covers the two remaining active stages; reviewing_builders is named
+# explicitly since the rename dropped its 'active_' prefix. initial_outreach is
+# retained only so un-migrated rows still count as in-set.
+_OPP_INSET = "(o.stage IN ('initial_outreach','reviewing_builders') OR o.stage LIKE 'active_%')"
+# Stage×Time heatmap rows. Initial Outreach is gone as of the 2026-08-05
+# simplification (its rows were remapped to In Discussions), so the heatmap's
+# column totals now agree with the aging bars instead of sitting below them by
+# the count of initial_outreach deals.
 _OPP_STAGE_ORDER = [
-    "active_in_discussions", "active_opportunity_confirmed", "active_builder_interview",
+    "active_in_discussions", "active_opportunity_confirmed", "reviewing_builders",
 ]
 _OPP_AGE_BUCKETS = [
     ("lt2w", "< 2 weeks"), ("2_4w", "2–4 weeks"), ("4_6w", "4–6 weeks"),
@@ -3048,6 +3102,7 @@ _ACTIVITY_TIER = {
 }
 _STAGE_ENTERED_COL = {
     "assigned": "assigned_at", "initial_outreach": "first_outreach_at",
+    "call_booked": "call_booked_at",
     "converted_to_opportunity": "converted_at",
 }
 
@@ -4548,6 +4603,84 @@ async def jobs_account_names(
     return {"success": True, "data": [{"account_key": r["key"], "account": r["name"]} for r in rows]}
 
 
+# ── Schema probes ─────────────────────────────────────────────────────────────
+# Migrations are applied by Jac, not by the app, so a feature can ship before its
+# column exists. Probing lets the same build work on both sides of a migration
+# and light up on apply — referencing a missing column would 42703 the request.
+# Cached: columns are only ever ADDED, so a True is permanent; a False is
+# re-checked, which is what makes the feature appear without a restart.
+_COLUMN_CACHE: dict[tuple[str, str, str], bool] = {}
+
+
+async def _has_column(schema: str, table: str, column: str) -> bool:
+    key = (schema, table, column)
+    if _COLUMN_CACHE.get(key):
+        return True
+    pool = get_pool()
+    found = bool(await pool.fetchval(
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_schema = $1 AND table_name = $2 AND column_name = $3",
+        schema, table, column))
+    _COLUMN_CACHE[key] = found
+    return found
+
+
+# ── Stage vocabulary probe ────────────────────────────────────────────────────
+# The 2026-08-05 stage migration is applied by Jac, not by the app, so at any
+# moment the database may be on the old vocabulary or the new one. Rather than
+# guess, read the CHECK constraint and report what it actually accepts. The UI
+# builds its stage pickers from this, so it can never offer a value the database
+# will reject — which is the failure mode that would break saves for the whole
+# team during the window between migration and deploy.
+_STAGE_VOCAB_CACHE: dict[str, list[str]] = {}
+
+
+async def _writable_stages(table: str, constraint: str, fallback: list[str]) -> list[str]:
+    """Stage values this table's CHECK constraint currently allows, in the order
+    given by `fallback` (constraint order is not meaningful). Falls back to the
+    full list if there's no constraint to read."""
+    if table in _STAGE_VOCAB_CACHE:
+        return _STAGE_VOCAB_CACHE[table]
+    pool = get_pool()
+    try:
+        definition = await pool.fetchval(
+            "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = $1",
+            constraint)
+    except Exception:            # nosec - probe only; never block a request on it
+        definition = None
+    if not definition:
+        return fallback
+    allowed = [v for v in fallback if f"'{v}'" in definition]
+    if not allowed:              # unrecognised shape — don't lock the UI out
+        return fallback
+    _STAGE_VOCAB_CACHE[table] = allowed
+    return allowed
+
+
+@router.get("/stage-vocabulary")
+async def stage_vocabulary(user=Depends(require_auth)):
+    """What the database will accept for each stage column right now, plus the
+    labels. Lets the UI stay correct across the stage migration without a
+    coordinated deploy: pre-migration it offers the old values, post-migration
+    the new ones, with no code change in between."""
+    opp = await _writable_stages(
+        "jobs_opportunity", "jobs_opportunity_stage_check",
+        OPPORTUNITY_STAGES_NEW + ["initial_outreach", "active_builder_interview",
+                                  "on_hold_not_selected", "on_hold_not_interested",
+                                  "on_hold_not_responsive"])
+    mem = await _writable_stages(
+        "jobs_contact_membership", "jobs_contact_membership_stage_vals",
+        MEMBERSHIP_STAGES_NEW + ["on_hold"])
+    return {"success": True, "data": {
+        "opportunity_stages": [{"value": v, "label": STAGE_LABELS.get(v, v)} for v in opp],
+        "membership_stages": [{"value": v, "label": MEMBERSHIP_STAGE_LABELS.get(v, v)} for v in mem],
+        "closed_lost_reasons": [{"value": v, "label": l} for v, l in CLOSED_LOST_REASONS],
+        # True once the stage migration has landed — the UI uses this to decide
+        # whether the Revisit date picker and Call Booked are offered.
+        "migrated": "call_booked" in mem,
+    }}
+
+
 @router.get("/accounts")
 async def jobs_accounts(
     deal_type: Optional[str] = Query(None),
@@ -4565,6 +4698,15 @@ async def jobs_accounts(
     rows; scope=all includes cold linkedin imports.
     """
     eng = "" if scope == "all" else f"AND {_engaged_clause('c')}"
+
+    # investor_account_key arrives with the 2026-08-05 migration. Selected only
+    # once it exists — naming a missing column would 42703 the whole accounts
+    # list, and this endpoint is the Accounts page. Named columns rather than
+    # SELECT *: `notes` is free text across every account and has no business
+    # riding along in a list payload.
+    investor_select = (
+        ", investor_account_key"
+        if await _has_column("bedrock", "jobs_account", "investor_account_key") else "")
 
     # Every input below is an independent read. Run sequentially on one
     # connection they cost ~2.6s; gather them across the pool so wall-time ≈ the
@@ -4606,7 +4748,8 @@ async def jobs_accounts(
             GROUP BY 1
             """),
         # Persistent account record (owner, manual status override, SF link).
-        pool.fetch("SELECT account_key, display_name, owner_email, status_override, sf_account_id FROM bedrock.jobs_account"),
+        pool.fetch("SELECT account_key, display_name, owner_email, status_override, sf_account_id"
+                   f"{investor_select} FROM bedrock.jobs_account"),
         # Open account-level tasks per account_key.
         pool.fetch(
             "SELECT parent_id, count(*) AS n FROM bedrock.jobs_account_task "
@@ -4809,6 +4952,15 @@ async def jobs_accounts(
         prospect_counts[key] = r["n"]
 
     ja = {r["account_key"]: r for r in ja_rows}
+    # Pretty name for an investor key, and the reverse count (how many companies
+    # name this account as their investor). Derived from the rows already
+    # fetched — no extra query, and no-op before the migration adds the column.
+    display_by_key = {r["account_key"]: (r["display_name"] or r["account_key"]) for r in ja_rows}
+    portfolio_counts: dict[str, int] = {}
+    for r in ja_rows:
+        inv = dict(r).get("investor_account_key")
+        if inv:
+            portfolio_counts[inv] = portfolio_counts.get(inv, 0) + 1
     company_by_key = {r["key"]: dict(r) for r in industry_rows}
     contact_totals = {r["key"]: r["n"] for r in contact_total_rows}
     # domain → the name variant that actually holds flagged prospects
@@ -4930,6 +5082,14 @@ async def jobs_accounts(
         g["size_bucket"] = co.get("size_bucket")
         g["hq_location"] = co.get("hq_location")
         g["company_stage"] = co.get("company_stage")
+        # Investor link both ways: who owns this company, and (for an investor
+        # account) which companies it owns. Present only after the 2026-08-05
+        # migration; `ja` rows simply won't carry the key before then.
+        _ja = ja.get(key)
+        inv_key = dict(_ja).get("investor_account_key") if _ja else None
+        g["investor_account_key"] = inv_key
+        g["investor_name"] = display_by_key.get(inv_key) if inv_key else None
+        g["portfolio_count"] = portfolio_counts.get(key, 0)
         _src, _app = listings_by_key.get(key, (0, 0))
         g["roles_sourced"] = _src
         g["roles_applied"] = _app
@@ -4973,6 +5133,10 @@ class JobsAccountUpdate(BaseModel):
     owner_email: Optional[str] = None
     status_override: Optional[str] = None     # "" clears the override (back to derived)
     notes: Optional[str] = None
+    # account_key of the investor that owns this company. "" clears it. The
+    # investor is itself a jobs_account, so the link is navigable both ways.
+    # Column arrives with the 2026-08-05 migration.
+    investor_account_key: Optional[str] = None
 
 
 @router.patch("/accounts")
@@ -5003,17 +5167,32 @@ async def update_jobs_account(
     if body.notes is not None:
         sets.append("notes = EXCLUDED.notes")
 
+    # The investor column ships with the 2026-08-05 migration. Before it lands,
+    # accept the request and skip the write rather than 42703-ing an otherwise
+    # valid owner/status/notes save that happened to travel with it.
+    has_investor = await _has_column("bedrock", "jobs_account", "investor_account_key")
+    cols, vals = "", ""
+    if body.investor_account_key is not None and has_investor:
+        # Self-reference guard: an account that is its own investor renders as an
+        # infinite portfolio loop in the UI.
+        inv = body.investor_account_key.strip().lower() or None
+        if inv == key:
+            raise HTTPException(400, "an account cannot be its own investor")
+        cols, vals = ", investor_account_key", ", $6"
+        sets.append("investor_account_key = EXCLUDED.investor_account_key")
+
+    params = [key, body.account.strip(), body.owner_email or None,
+              body.status_override or None, body.notes or None]
+    if cols:
+        params.append(inv)
+
     await conn.execute(
         f"""
-        INSERT INTO bedrock.jobs_account (account_key, display_name, owner_email, status_override, notes)
-        VALUES ($1, $2, $3, $4, $5)
+        INSERT INTO bedrock.jobs_account (account_key, display_name, owner_email, status_override, notes{cols})
+        VALUES ($1, $2, $3, $4, $5{vals})
         ON CONFLICT (account_key) DO UPDATE SET {', '.join(sets)}
         """,
-        key,
-        body.account.strip(),
-        body.owner_email or None,
-        body.status_override or None,
-        body.notes or None,
+        *params,
     )
     return {"success": True}
 
@@ -5144,7 +5323,12 @@ async def account_prospects(
 
 
 # ── Jobs contact activation (flag + funnel membership) ────────────────────────
-_MEMBERSHIP_STAGES = ('assigned', 'initial_outreach', 'converted_to_opportunity', 'on_hold', 'not_a_fit')
+# Accepts both vocabularies: 'on_hold' until the 2026-08-05 migration lands,
+# 'call_booked'/'revisit' after. The database CHECK is the real gate — this only
+# catches typos, so being permissive here costs nothing and avoids rejecting a
+# valid stage in whichever direction the schema currently sits.
+_MEMBERSHIP_STAGES = ('assigned', 'initial_outreach', 'call_booked',
+                      'converted_to_opportunity', 'revisit', 'on_hold', 'not_a_fit')
 
 
 # TKT-161: placements whose linked opportunity was soft-deleted (data-entry
@@ -5179,6 +5363,15 @@ async def _flag_contacts(conn, contact_ids: list[int], owner_email: Optional[str
         conflict_stamp = (
             "converted_at = CASE WHEN EXCLUDED.stage = 'converted_to_opportunity' AND jobs_contact_membership.stage "
             "IS DISTINCT FROM 'converted_to_opportunity' THEN now() ELSE jobs_contact_membership.converted_at END,")
+        # call_booked_at arrives with the 2026-08-05 migration. Referencing a
+        # column that doesn't exist yet would 42703 every flag/advance call, so
+        # it's added only once the column is there.
+        if await _has_column("bedrock", "jobs_contact_membership", "call_booked_at"):
+            stamp_cols += ", call_booked_at"
+            stamp_vals += ", CASE WHEN $6 = 'call_booked' THEN now() END"
+            conflict_stamp += (
+                "call_booked_at = CASE WHEN EXCLUDED.stage = 'call_booked' AND jobs_contact_membership.stage "
+                "IS DISTINCT FROM 'call_booked' THEN now() ELSE jobs_contact_membership.call_booked_at END,")
     else:
         conflict_stage = stamp_cols = stamp_vals = conflict_stamp = ""
     async with conn.transaction():
@@ -5245,6 +5438,10 @@ class MembershipPatch(BaseModel):
     first_outreach_by: Optional[str] = None
     opportunity_id: Optional[str] = None
     not_a_fit_reason: Optional[str] = None
+    # Set with stage='revisit': when to pick this contact back up. Stored on the
+    # membership AND turned into a jobs_task so it surfaces in the owner's Jobs
+    # Home widget on the day, which is the whole point of Revisit over On Hold.
+    revisit_date: Optional[str] = None
 
 
 @router.patch("/contacts/{contact_id}/jobs-membership")
@@ -5273,6 +5470,17 @@ async def update_jobs_membership(contact_id: int, body: MembershipPatch,
         if body.stage == "converted_to_opportunity":
             sets.append("converted_at = CASE WHEN jobs_contact_membership.stage "
                         "IS DISTINCT FROM 'converted_to_opportunity' THEN now() ELSE jobs_contact_membership.converted_at END")
+        if body.stage == "call_booked" and await _has_column(
+                "bedrock", "jobs_contact_membership", "call_booked_at"):
+            sets.append("call_booked_at = CASE WHEN jobs_contact_membership.stage "
+                        "IS DISTINCT FROM 'call_booked' THEN now() ELSE jobs_contact_membership.call_booked_at END")
+    if body.revisit_date is not None and await _has_column(
+            "bedrock", "jobs_contact_membership", "revisit_date"):
+        try:
+            _rd = date.fromisoformat(body.revisit_date)
+        except ValueError:
+            raise HTTPException(400, "invalid revisit_date; use YYYY-MM-DD")
+        sets.append(f"revisit_date = ${i}"); params.append(_rd); i += 1
     if body.owner_email is not None:
         sets.append(f"owner_email = ${i}"); params.append(body.owner_email); i += 1
     if body.opportunity_id is not None:
@@ -5294,7 +5502,47 @@ async def update_jobs_membership(contact_id: int, body: MembershipPatch,
                 "INSERT INTO bedrock.jobs_membership_stage_history "
                 "(contact_id, from_stage, to_stage, changed_by) VALUES ($1, $2, $3, $4)",
                 contact_id, old_stage, body.stage, _user_email(user))
+        if body.revisit_date:
+            await _ensure_revisit_task(conn, contact_id, body.revisit_date, _user_email(user))
     return {"success": True}
+
+
+async def _ensure_revisit_task(conn, contact_id: int, when: str, actor: Optional[str]) -> None:
+    """Put the revisit on the owner's task list for that date.
+
+    Reuses bedrock.jobs_task, which already drives the Jobs Home Overdue/Today/
+    Upcoming widget — so Revisit needs no new surface, it just files a row the
+    existing widget already renders. Idempotent per contact: re-setting the date
+    moves the open task rather than stacking a second one, otherwise changing your
+    mind three times leaves three reminders."""
+    row = await conn.fetchrow(
+        "SELECT m.owner_email, c.full_name, c.current_company "
+        "FROM bedrock.jobs_contact_membership m "
+        "JOIN public.contacts c ON c.contact_id = m.contact_id "
+        "WHERE m.contact_id = $1", contact_id)
+    if row is None:
+        return
+    who = row["full_name"] or f"contact {contact_id}"
+    where = f", {row['current_company']}" if row["current_company"] else ""
+    title = f"Revisit: {who}{where}"
+    owner = row["owner_email"] or actor
+    existing = await conn.fetchval(
+        "SELECT id FROM bedrock.jobs_task "
+        "WHERE parent_type = 'prospect' AND parent_id = $1 AND deleted_at IS NULL "
+        "  AND status <> 'Completed' AND title LIKE 'Revisit:%' LIMIT 1",
+        str(contact_id))
+    if existing:
+        await conn.execute(
+            "UPDATE bedrock.jobs_task SET deadline = $2::date, title = $3, updated_at = now() "
+            "WHERE id = $1", existing, when, title)
+        return
+    # status must be one of jobs_task_status_check's values ('todo' is rejected),
+    # and owner is NOT NULL DEFAULT '' — an unowned contact would otherwise
+    # violate the column rather than simply having no assignee.
+    await conn.execute(
+        "INSERT INTO bedrock.jobs_task (parent_type, parent_id, title, status, owner, deadline) "
+        "VALUES ('prospect', $1, $2, 'Not Started', $3, $4::date)",
+        str(contact_id), title, owner or "", when)
 
 
 @router.delete("/contacts/{contact_id}/jobs-membership")
@@ -5738,7 +5986,7 @@ async def list_contacts(
     _stamp_fallback = ("CASE m.stage"
                        " WHEN 'initial_outreach' THEN m.first_outreach_at"
                        " WHEN 'converted_to_opportunity' THEN m.converted_at"
-                       " END")
+                       " END")   # call_booked_at joins this once the column exists
     entered_expr = (
         f"COALESCE((SELECT max(h.changed_at) FROM bedrock.jobs_membership_stage_history h"
         f" WHERE h.contact_id = c.contact_id AND h.to_stage = m.stage), {_stamp_fallback}, m.assigned_at)"
@@ -6477,9 +6725,12 @@ async def update_opportunity(
                   "num_roles", "likelihood",
                   "source", "owner_email", "relationship_owner", "sf_contact_ids", "builder_ids",
                   "follow_up_date", "target_close_date", "touch_count", "sf_opportunity_id",
-                  "closed_lost_reason", "closed_lost_note", "priority", "segment", "intro_by"):
+                  "closed_lost_reason", "closed_lost_note", "priority", "segment", "intro_by",
+                  "tags"):
         if field not in fields_set:
             continue
+        if field == "tags" and not await _has_column("bedrock", "jobs_opportunity", "tags"):
+            continue   # pre-migration: silently no-op rather than fail the save
         val = getattr(body, field, None)
         if val is None and field == "stage":
             continue

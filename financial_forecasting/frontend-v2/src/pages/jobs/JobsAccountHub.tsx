@@ -55,24 +55,24 @@ const dealTypesOf = (a: JobsAccount) =>
   [...new Set(a.opportunities.map((o) => o.deal_type).filter(Boolean))] as string[];
 
 // ── columns ──────────────────────────────────────────────────────────────────
-type ColKey = "account" | "status" | "owner" | "size" | "hq" | "industry" | "opps" | "contacts" | "listings" | "hired" | "tasks" | "deal_types" | "last_activity";
-const COLUMN_ORDER: ColKey[] = ["account", "status", "owner", "size", "hq", "industry", "opps", "contacts", "listings", "hired", "tasks", "deal_types", "last_activity"];
+type ColKey = "account" | "status" | "owner" | "investor" | "size" | "hq" | "industry" | "opps" | "contacts" | "listings" | "hired" | "tasks" | "deal_types" | "last_activity";
+const COLUMN_ORDER: ColKey[] = ["account", "status", "owner", "investor", "size", "hq", "industry", "opps", "contacts", "listings", "hired", "tasks", "deal_types", "last_activity"];
 // Size / HQ / Industry are all default-visible: they were asked for explicitly,
 // and useColumnVisibility only auto-reveals a NEW column to an existing saved
 // layout when it's in this list. Hide them per-user via the column picker.
-const DEFAULT_VISIBLE: ColKey[] = ["account", "status", "owner", "size", "hq", "industry", "opps", "contacts", "listings", "hired", "tasks", "last_activity"];
+const DEFAULT_VISIBLE: ColKey[] = ["account", "status", "owner", "investor", "size", "hq", "industry", "opps", "contacts", "listings", "hired", "tasks", "last_activity"];
 const COL_LABELS: Record<ColKey, string> = {
   account: "Account", status: "Status", owner: "Jobs owner",
-  size: "Size", hq: "HQ", industry: "Industry", opps: "Opps",
+  investor: "Investor", size: "Size", hq: "HQ", industry: "Industry", opps: "Opps",
   contacts: "Contacts", listings: "Roles", hired: "Hired", tasks: "Open tasks", deal_types: "Deal types", last_activity: "Last touch",
 };
 // Default pixel widths — user-resizable via drag handles (useColumnWidths),
 // same grid components as the Opportunities table.
 const DEFAULT_WIDTHS: Record<ColKey, number> = {
-  account: 250, status: 125, owner: 135, size: 100, hq: 140, industry: 150,
+  account: 250, status: 125, owner: 135, investor: 150, size: 100, hq: 140, industry: 150,
   opps: 75, contacts: 90, listings: 80, hired: 80, tasks: 90, deal_types: 115, last_activity: 100,
 };
-const SORTABLE = new Set<ColKey>(["account", "status", "owner", "size", "hq", "industry", "opps", "contacts", "listings", "hired", "tasks", "last_activity"]);
+const SORTABLE = new Set<ColKey>(["account", "status", "owner", "investor", "size", "hq", "industry", "opps", "contacts", "listings", "hired", "tasks", "last_activity"]);
 
 /** Size bands sort by headcount order, not alphabetically — "1001-5000" would
  *  otherwise sort before "51-200". Unknown sorts last. */
@@ -93,6 +93,7 @@ function extract(a: JobsAccount, key: ColKey): string | number {
     // Sort by the band's lower bound, not the label — alphabetically "1001-5000"
     // sorts before "51-200", which is not what anyone means by sorting on size.
     case "size":          return sizeRank(a);
+    case "investor":      return (a.investor_name ?? "").toLowerCase();
     case "hq":            return (a.hq_location ?? "").toLowerCase();
     case "industry":      return (a.industry ?? "").toLowerCase();
     case "opps":          return a.opp_count;
@@ -167,6 +168,20 @@ function AccountRow({
       <span className="text-[12px] tabular-nums text-ink-2"
         title={account.company_stage ? `${account.size_bucket} · stage: ${account.company_stage}` : account.size_bucket}>
         {account.size_bucket}
+      </span>
+    ) : <span className="text-ink-4">—</span>,
+    investor: account.investor_name ? (
+      <Link to={jobsAccountPath(account.investor_account_key!)} onClick={(e) => e.stopPropagation()}
+        className="block truncate text-[12px] text-accent hover:underline"
+        title={`Investor: ${account.investor_name}`}>
+        {account.investor_name}
+      </Link>
+    ) : (account.portfolio_count ?? 0) > 0 ? (
+      // No investor of its own, but other accounts point at it — so this one is
+      // the investor. Saying so beats an empty cell on a Blackstone row.
+      <span className="text-[11.5px] text-ink-3"
+        title={`${account.portfolio_count} portfolio compan${account.portfolio_count === 1 ? "y" : "ies"}`}>
+        {account.portfolio_count} portfolio
       </span>
     ) : <span className="text-ink-4">—</span>,
     hq: account.hq_location

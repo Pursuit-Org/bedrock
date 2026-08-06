@@ -16,6 +16,7 @@ import {
   useStuckContacts,
   useRespondedContacts,
   useUpdateJobsMembership,
+  useStageVocabulary,
   inScope,
   MEMBERSHIP_STAGES,
   MEMBERSHIP_STAGE_LABELS,
@@ -29,6 +30,7 @@ import {
 } from "@/services/jobs";
 import { InlineSelect } from "@/components/ui/InlineEdit";
 import { TagCampaigns } from "@/components/jobs/TagCampaigns";
+import { RevisitDialog } from "@/components/jobs/RevisitDialog";
 import { JobsFunnels } from "@/components/jobs/JobsFunnels";
 import { Panel, BreakdownBars } from "./JobsOpportunitiesOverview";
 import { ActivityTrends } from "@/components/jobs/ActivityTrends";
@@ -39,6 +41,8 @@ import { cn } from "@/lib/utils";
 const DRILL_PAGE = 25;
 /** Touches shown before "Show n older" in a contact's inline touch log. */
 const TOUCH_LOG_CAP = 5;
+/** Fallback only — the live list comes from useStageVocabulary(), so the picker
+ *  can't offer a stage the database CHECK constraint would reject. */
 const MEMBERSHIP_STAGE_OPTIONS = MEMBERSHIP_STAGES.map((s) => ({ value: s, label: MEMBERSHIP_STAGE_LABELS[s] }));
 
 
@@ -1049,6 +1053,13 @@ function StuckContactsPanel({ owner, nameOf }: { owner?: string; nameOf: (e: str
   const { data: raw = [], isLoading } = useStuckContacts(3, owner);
   const [sort, setSort] = useState("touches");
   const [ownerF, setOwnerF] = useState("");
+  // Stage options come from the database's own CHECK constraint, so before the
+  // 2026-08-05 migration this offers On Hold and after it offers Call Booked /
+  // Revisit — with no deploy in between and no chance of offering a stage the
+  // constraint would reject.
+  const { data: vocab } = useStageVocabulary();
+  const stageOptions = vocab?.membership_stages ?? MEMBERSHIP_STAGE_OPTIONS;
+  const [revisitFor, setRevisitFor] = useState<{ id: number; name: string } | null>(null);
   const owners = useMemo(() => ownerOptions(raw, (r) => r.owner_email), [raw]);
   const data = useMemo(() => {
     const rows = ownerF
@@ -1101,9 +1112,16 @@ function StuckContactsPanel({ owner, nameOf }: { owner?: string; nameOf: (e: str
               <td className="px-2 py-1.5">
                 <InlineSelect<string>
                   value="initial_outreach"
-                  options={MEMBERSHIP_STAGE_OPTIONS}
+                  options={stageOptions}
                   onSave={(v) => new Promise<void>((resolve, reject) => {
                     if (!v || v === "initial_outreach") return resolve();
+                    // Revisit is meaningless without a date — that's the whole
+                    // difference from the On Hold it replaces — so ask before
+                    // writing rather than saving a parked contact with no return.
+                    if (v === "revisit") {
+                      setRevisitFor({ id: c.contact_id, name: c.full_name ?? "this contact" });
+                      return resolve();
+                    }
                     updateMembership.mutate({ contact_id: c.contact_id, stage: v }, {
                       onSuccess: () => {
                         toast.success(`Moved ${c.full_name ?? "contact"} to ${MEMBERSHIP_STAGE_LABELS[v as MembershipStage] ?? v}`);
@@ -1139,6 +1157,20 @@ function StuckContactsPanel({ owner, nameOf }: { owner?: string; nameOf: (e: str
         </button>
       )}
     </div>
+    {revisitFor && (
+      <RevisitDialog
+        contactName={revisitFor.name}
+        onCancel={() => setRevisitFor(null)}
+        onSave={(dateStr) => {
+          const { id, name } = revisitFor;
+          setRevisitFor(null);
+          updateMembership.mutate(
+            { contact_id: id, stage: "revisit", revisit_date: dateStr },
+            { onSuccess: () => toast.success(`${name} set to revisit on ${dateStr} — task filed for the owner`) },
+          );
+        }}
+      />
+    )}
     </div>
   );
 }
