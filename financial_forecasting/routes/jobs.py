@@ -1705,7 +1705,7 @@ async def builder_segments(user=Depends(require_auth), conn=Depends(get_db)):
 # Stages that must not advertise a conversion rate into whatever follows them in
 # `stage_order`: the next row isn't a forward step. On Hold is a parking state and
 # Converted is the end of the contact funnel.
-_NO_CONVERSION_FROM = {"converted_to_opportunity", "revisit", "on_hold",
+_NO_CONVERSION_FROM = {"converted_to_opportunity", "revisit", "not_a_fit", "on_hold",
                        "closed_won", "closed_lost"}
 
 
@@ -1842,12 +1842,17 @@ async def get_funnel(
         # manages on the Contacts page — not the legacy contacts.contact_stage.
         # on_hold shows as a terminal parking stage; not_a_fit is a dead
         # disposition and stays out of the funnel.
+        # Both off-ramps are rows, not omissions: Revisit is work you've parked
+        # and Not a Fit is work you've ruled out, and a funnel that shows neither
+        # implies every contact is still live. Terminal rows draw no conversion
+        # into whatever follows them (see _NO_CONVERSION_FROM).
         stage_order = [
             ("assigned", "Assigned"),
             ("initial_outreach", "Initial Outreach"),
             ("call_booked", "Call Booked"),
             ("converted_to_opportunity", "Converted to Opportunity"),
             ("revisit", "Revisit"),
+            ("not_a_fit", "Not a Fit"),
         ]
         record_columns = [
             {"key": "name", "label": "Contact"},
@@ -3559,11 +3564,11 @@ async def outreach_scorecard(
 # common state on production, and precisely the follow-up gap the panel exists to
 # show. It leads the list and is coloured as a problem.
 _TOUCH_BUCKETS = [
-    ("0", "No touches in window", 0, 0),
-    ("1", "1 touch", 1, 1),
-    ("2", "2 touches", 2, 2),
-    ("3", "3 touches", 3, 3),
-    ("4plus", "4+ touches", 4, None),
+    ("0", "0 Touches", 0, 0),
+    ("1", "1 Touch", 1, 1),
+    ("2", "2 Touches", 2, 2),
+    ("3", "3 Touches", 3, 3),
+    ("4plus", "4+ Touches", 4, None),
 ]
 _TOUCH_DEPTH_CAP = 40   # contacts listed per bucket for the inline drill
 
@@ -4743,8 +4748,12 @@ async def stage_vocabulary(user=Depends(require_auth)):
                 "unavailable_reason": None if ok else
                 "Available once the 2026-08-05 stage migration is applied"}
 
-    membership_target = MEMBERSHIP_STAGES_NEW if "call_booked" in mem or "revisit" in mem \
-        else MEMBERSHIP_STAGES_NEW + [v for v in mem if v not in MEMBERSHIP_STAGES_NEW]
+    # on_hold is deliberately NOT appended when the database still accepts it:
+    # Revisit replaces it outright (Kwame 2026-08-05), so offering both would let
+    # someone park a contact in the stage we're retiring. Until the migration
+    # lands Revisit shows disabled, which means parking is briefly unavailable —
+    # the alternative is writing more rows into a stage about to be renamed.
+    membership_target = MEMBERSHIP_STAGES_NEW
     opp_target = OPPORTUNITY_STAGES_NEW
 
     return {"success": True, "data": {
@@ -5887,8 +5896,12 @@ async def list_contacts(
         filters.append(("EXISTS" if flagged else "NOT EXISTS")
                        + " (SELECT 1 FROM bedrock.jobs_contact_membership m WHERE m.contact_id = c.contact_id)")
     if membership_stage:
-        filters.append(f"EXISTS (SELECT 1 FROM bedrock.jobs_contact_membership m WHERE m.contact_id = c.contact_id AND m.stage = ${i})")
-        params.append(membership_stage); i += 1
+        # Compare canonically so ?membership_stage=revisit still finds the rows
+        # stored as on_hold before the migration rewrites them.
+        filters.append(
+            f"EXISTS (SELECT 1 FROM bedrock.jobs_contact_membership m "
+            f"WHERE m.contact_id = c.contact_id AND {canon_membership_sql('m.stage')} = ${i})")
+        params.append(canon_membership_stage(membership_stage)); i += 1
     if industry:
         filters.append(f"EXISTS (SELECT 1 FROM public.companies co WHERE co.company_id = c.company_id AND co.industry ILIKE ${i})")
         params.append(f"%{industry}%"); i += 1
@@ -6095,7 +6108,9 @@ async def list_contacts(
             jo2.account_name AS deal_account_by_company,
             jo2.stage        AS deal_stage_by_company,
             -- jobs activation membership (the flag + funnel)
-            m.stage          AS membership_stage,
+            -- Canonical: 'on_hold' rows read as 'revisit' until the migration
+            -- rewrites them, so the UI never shows a stage it no longer offers.
+            {canon_membership_sql('m.stage')} AS membership_stage,
             m.owner_email    AS membership_owner,
             m.first_outreach_by AS first_outreach_by,
             {entered_expr}   AS membership_stage_entered_at,
@@ -6462,7 +6477,7 @@ async def get_contact(
             "connected_staff": connected_staff,
             "open_roles_list": open_roles,
             "builder_applications": builder_apps,
-            "membership_stage": mem["stage"] if mem else None,
+            "membership_stage": canon_membership_stage(mem["stage"]) if mem else None,
             "membership_owner": mem["owner_email"] if mem else None,
             "first_outreach_by": mem["first_outreach_by"] if mem else None,
         },

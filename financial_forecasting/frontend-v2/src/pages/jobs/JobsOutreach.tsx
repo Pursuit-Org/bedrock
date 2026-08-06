@@ -16,9 +16,7 @@ import {
   useStuckContacts,
   useRespondedContacts,
   useUpdateJobsMembership,
-  useStageVocabulary,
   inScope,
-  MEMBERSHIP_STAGES,
   MEMBERSHIP_STAGE_LABELS,
   type OutreachGranularity,
   type OutreachScopeKind,
@@ -31,7 +29,7 @@ import {
 } from "@/services/jobs";
 import { InlineSelect } from "@/components/ui/InlineEdit";
 import { TagCampaigns } from "@/components/jobs/TagCampaigns";
-import { RevisitDialog } from "@/components/jobs/RevisitDialog";
+import { useContactStageChange } from "@/lib/useContactStageChange";
 import { JobsFunnels } from "@/components/jobs/JobsFunnels";
 import { Panel, BreakdownBars } from "./JobsOpportunitiesOverview";
 import { ActivityTrends } from "@/components/jobs/ActivityTrends";
@@ -46,7 +44,6 @@ const TOUCH_LOG_CAP = 5;
 const TOUCH_DRILL_PAGE = 5;
 /** Fallback only — the live list comes from useStageVocabulary(), so the picker
  *  can't offer a stage the database CHECK constraint would reject. */
-const MEMBERSHIP_STAGE_OPTIONS = MEMBERSHIP_STAGES.map((s) => ({ value: s, label: MEMBERSHIP_STAGE_LABELS[s] }));
 
 
 
@@ -1009,11 +1006,16 @@ function RespondedPanel({ owner, nameOf }: { owner?: string; nameOf: (e: string)
     return rows.sort((a, b) => key(a).localeCompare(key(b)));  // oldest reply first
   }, [raw, sort, ownerF]);
   const update = useUpdateJobsMembership();
+  const stageChange = useContactStageChange();
   const [showAll, setShowAll] = useState(false);
-  const move = (c: { contact_id: number; full_name: string | null }, stage: MembershipStage) =>
+  const move = (c: { contact_id: number; full_name: string | null }, stage: MembershipStage) => {
+    // Revisit goes through the shared handler so it asks for a date and files
+    // the follow-up task; the other decisions are one-click.
+    if (stage === "revisit") { void stageChange.change(c.contact_id, c.full_name ?? "Contact", stage); return; }
     update.mutate({ contact_id: c.contact_id, stage }, {
       onSuccess: () => toast.success(`${c.full_name ?? "Contact"} → ${MEMBERSHIP_STAGE_LABELS[stage]}`),
     });
+  };
   const shown = showAll ? data : data.slice(0, 8);
   return (
     <Panel
@@ -1056,9 +1058,10 @@ function RespondedPanel({ owner, nameOf }: { owner?: string; nameOf: (e: string)
                   className="rounded-full border border-[var(--green)]/40 bg-[var(--green-soft)] px-2 py-0.5 text-[10.5px] font-semibold text-[var(--green)] hover:brightness-95">
                   Converted
                 </button>
-                <button type="button" onClick={() => move(c, "on_hold")}
+                <button type="button" onClick={() => move(c, "revisit")}
+                  title="Park with a date — files a task for the owner"
                   className="rounded-full border border-[var(--amber)]/40 bg-[var(--amber-soft)] px-2 py-0.5 text-[10.5px] font-semibold text-[var(--amber)] hover:brightness-95">
-                  On hold
+                  Revisit
                 </button>
                 <button type="button" onClick={() => move(c, "not_a_fit")}
                   className="rounded-full border border-border-strong bg-surface-2 px-2 py-0.5 text-[10.5px] font-semibold text-ink-3 hover:text-ink-2">
@@ -1073,6 +1076,7 @@ function RespondedPanel({ owner, nameOf }: { owner?: string; nameOf: (e: string)
           )}
         </div>
       )}
+      {stageChange.dialog}
     </Panel>
   );
 }
@@ -1083,13 +1087,10 @@ function StuckContactsPanel({ owner, nameOf }: { owner?: string; nameOf: (e: str
   const { data: raw = [], isLoading } = useStuckContacts(3, owner);
   const [sort, setSort] = useState("touches");
   const [ownerF, setOwnerF] = useState("");
-  // Stage options come from the database's own CHECK constraint, so before the
-  // 2026-08-05 migration this offers On Hold and after it offers Call Booked /
-  // Revisit — with no deploy in between and no chance of offering a stage the
-  // constraint would reject.
-  const { data: vocab } = useStageVocabulary();
-  const stageOptions = vocab?.membership_stages ?? MEMBERSHIP_STAGE_OPTIONS;
-  const [revisitFor, setRevisitFor] = useState<{ id: number; name: string } | null>(null);
+  // One shared handler: it builds the options from what the database accepts
+  // (greying out anything the migration hasn't enabled) and routes Revisit
+  // through its date dialog.
+  const stageChange = useContactStageChange();
   const owners = useMemo(() => ownerOptions(raw, (r) => r.owner_email), [raw]);
   const data = useMemo(() => {
     const rows = ownerF
@@ -1101,7 +1102,6 @@ function StuckContactsPanel({ owner, nameOf }: { owner?: string; nameOf: (e: str
   }, [raw, sort, ownerF]);
   // Stage editable in place: the usual next move here is On hold / Not a fit,
   // or Converted if the account came good through another contact.
-  const updateMembership = useUpdateJobsMembership();
   const [showAll, setShowAll] = useState(false);
   if (isLoading) return <div className="flex items-center gap-2 px-1 py-4 text-[12.5px] text-ink-3"><Loader2 size={13} className="animate-spin" /> Loading…</div>;
   if (data.length === 0) {
@@ -1142,24 +1142,11 @@ function StuckContactsPanel({ owner, nameOf }: { owner?: string; nameOf: (e: str
               <td className="px-2 py-1.5">
                 <InlineSelect<string>
                   value="initial_outreach"
-                  options={stageOptions}
-                  onSave={(v) => new Promise<void>((resolve, reject) => {
-                    if (!v || v === "initial_outreach") return resolve();
-                    // Revisit is meaningless without a date — that's the whole
-                    // difference from the On Hold it replaces — so ask before
-                    // writing rather than saving a parked contact with no return.
-                    if (v === "revisit") {
-                      setRevisitFor({ id: c.contact_id, name: c.full_name ?? "this contact" });
-                      return resolve();
-                    }
-                    updateMembership.mutate({ contact_id: c.contact_id, stage: v }, {
-                      onSuccess: () => {
-                        toast.success(`Moved ${c.full_name ?? "contact"} to ${MEMBERSHIP_STAGE_LABELS[v as MembershipStage] ?? v}`);
-                        resolve();
-                      },
-                      onError: reject,
-                    });
-                  })}
+                  options={stageChange.options}
+                  onSave={(v) => {
+                    if (!v || v === "initial_outreach") return Promise.resolve();
+                    return stageChange.change(c.contact_id, c.full_name ?? "this contact", v);
+                  }}
                   renderValue={() => (
                     <span className="rounded-full bg-surface-2 px-1.5 py-0.5 text-[10.5px] font-medium text-ink-3">Initial outreach</span>
                   )}
@@ -1187,20 +1174,7 @@ function StuckContactsPanel({ owner, nameOf }: { owner?: string; nameOf: (e: str
         </button>
       )}
     </div>
-    {revisitFor && (
-      <RevisitDialog
-        contactName={revisitFor.name}
-        onCancel={() => setRevisitFor(null)}
-        onSave={(dateStr) => {
-          const { id, name } = revisitFor;
-          setRevisitFor(null);
-          updateMembership.mutate(
-            { contact_id: id, stage: "revisit", revisit_date: dateStr },
-            { onSuccess: () => toast.success(`${name} set to revisit on ${dateStr} — task filed for the owner`) },
-          );
-        }}
-      />
-    )}
+    {stageChange.dialog}
     </div>
   );
 }
