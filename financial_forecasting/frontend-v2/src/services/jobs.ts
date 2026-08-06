@@ -1208,8 +1208,12 @@ export interface TouchDepthBucket {
  *  `undated` = contacts whose stage entry has no timestamp, so no period can
  *  claim them (the stage-history grant fills most of these in). */
 export interface TouchDepth {
+  /** Contacts with at least one linked touch — the denominator for `pct`. */
   total: number;
   undated: number;
+  /** In the cohort but with no activity linked to them: a linkage gap, not a
+   *  genuine zero, so they're excluded from the shares and reported instead. */
+  unlinked: number;
   buckets: TouchDepthBucket[];
 }
 

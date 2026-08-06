@@ -57,7 +57,10 @@ const dealTypesOf = (a: JobsAccount) =>
 // ── columns ──────────────────────────────────────────────────────────────────
 type ColKey = "account" | "status" | "owner" | "size" | "hq" | "industry" | "opps" | "contacts" | "listings" | "hired" | "tasks" | "deal_types" | "last_activity";
 const COLUMN_ORDER: ColKey[] = ["account", "status", "owner", "size", "hq", "industry", "opps", "contacts", "listings", "hired", "tasks", "deal_types", "last_activity"];
-const DEFAULT_VISIBLE: ColKey[] = ["account", "status", "owner", "size", "opps", "contacts", "listings", "hired", "tasks", "last_activity"];
+// Size / HQ / Industry are all default-visible: they were asked for explicitly,
+// and useColumnVisibility only auto-reveals a NEW column to an existing saved
+// layout when it's in this list. Hide them per-user via the column picker.
+const DEFAULT_VISIBLE: ColKey[] = ["account", "status", "owner", "size", "hq", "industry", "opps", "contacts", "listings", "hired", "tasks", "last_activity"];
 const COL_LABELS: Record<ColKey, string> = {
   account: "Account", status: "Status", owner: "Jobs owner",
   size: "Size", hq: "HQ", industry: "Industry", opps: "Opps",

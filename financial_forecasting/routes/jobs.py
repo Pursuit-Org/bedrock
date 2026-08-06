@@ -3452,11 +3452,13 @@ async def outreach_scorecard(
     }}
 
 
-# Buckets for the follow-up question. 0 is its own row rather than being folded
-# into 1: "moved to outreach with nothing logged against them" is a different
-# problem from "we touched them once and stopped".
+# The cohort has reached initial outreach, so by definition everyone in it was
+# touched at least once — there is no "0 touches" row to show. A contact that
+# nonetheless counts zero has activity that was never linked to them
+# (activity.participant_public_contact_id), which is a linkage gap, not a real
+# zero: 8 of 497 across Jun–Aug 2026. Those are reported as `unlinked` and kept
+# out of the denominator so the shares describe contacts we can actually measure.
 _TOUCH_BUCKETS = [
-    ("0", "No logged touch", 0, 0),
     ("1", "1 touch", 1, 1),
     ("2", "2 touches", 2, 2),
     ("3", "3 touches", 3, 3),
@@ -3530,10 +3532,14 @@ async def _touch_depth(conn, start, end, scope: str, owner: Optional[str]) -> di
         WHERE m.stage = 'initial_outreach' AND {owner_pred} AND {entered} IS NULL
     """) or 0
 
-    total = len(rows)
+    # Denominator = contacts with at least one linked touch, so a percentage
+    # can't be quietly diluted by rows the panel no longer displays.
+    unlinked = sum(1 for r in rows if r["touches"] == 0)
+    measured = [r for r in rows if r["touches"] > 0]
+    total = len(measured)
     buckets = []
     for key, label, lo, hi in _TOUCH_BUCKETS:
-        members = [r for r in rows if r["touches"] >= lo and (hi is None or r["touches"] <= hi)]
+        members = [r for r in measured if r["touches"] >= lo and (hi is None or r["touches"] <= hi)]
         buckets.append({
             "key": key, "label": label, "count": len(members),
             "pct": round(100 * len(members) / total) if total else 0,
@@ -3545,7 +3551,7 @@ async def _touch_depth(conn, start, end, scope: str, owner: Optional[str]) -> di
             } for r in members[:_TOUCH_DEPTH_CAP]],
             "truncated": max(0, len(members) - _TOUCH_DEPTH_CAP),
         })
-    return {"total": total, "undated": undated, "buckets": buckets}
+    return {"total": total, "undated": undated, "unlinked": unlinked, "buckets": buckets}
 
 
 def _touch_direction(type_: str, email_from: Optional[str]) -> str:
