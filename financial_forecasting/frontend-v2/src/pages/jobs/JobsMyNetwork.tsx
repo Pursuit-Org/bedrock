@@ -168,13 +168,21 @@ function makeRenderFilterValue(tagCatalog: { slug: string; label: string }[]) {
 // for everyone else would dilute it.
 function PriorityBadge({ c }: { c: NetworkConnection }) {
   if (!c.priority) return <span />;
+  // A P1 can now come from the decision-maker override alone, so name that first
+  // — otherwise the tooltip lists one fit and the badge looks unexplained.
+  const decider = c.seniority === "Highest"
+    && !!c.headcount_band && c.headcount_band !== "1-10";
   const fits = [
     c.headcount_band === "51-200" && "headcount 51-200",
     (c.tristate === "Yes" || c.tristate === "Unknown") &&
       (c.tristate === "Yes" ? "tri-state HQ" : "tri-state unknown (counts as a fit)"),
     (c.seniority === "High" || c.seniority === "Highest") && `seniority ${c.seniority?.toLowerCase()}`,
   ].filter(Boolean) as string[];
-  const why = [c.is_portco && "portfolio company", ...fits].filter(Boolean).join(" · ");
+  const why = [
+    decider && `decision-maker at ${c.headcount_band}`,
+    c.is_portco && "portfolio company",
+    ...fits,
+  ].filter(Boolean).join(" · ");
   return (
     <span
       title={`${c.priority} — ${why || "no criteria matched"}`}

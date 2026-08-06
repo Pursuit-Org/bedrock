@@ -2518,8 +2518,21 @@ _TRISTATE_VALUES = ["Yes", "HQ elsewhere", "Unknown"]
 #   yes     >=2    P1
 #   yes     0-1    P2
 #
+# Plus an override (Jac, 2026-08-05): seniority 'Highest' AND headcount above 10 is
+# P1, whatever else is true. That rung is founder / co-founder / CEO / owner /
+# proprietor / managing or founding partner — someone who can decide to hire
+# without asking anyone. The headcount floor is what keeps it useful: 'Highest'
+# alone banded 4,524 people P1, more than P2 held, because every one-person
+# consultancy has a founder.
+#
+# "Above 10" is written as "known, and not the 1-10 band" rather than as a list of
+# the bands above it, so a new size band added later counts automatically. A NULL
+# size_bucket does NOT qualify: "more than 10 staff" is a positive claim and 14% of
+# the network has no headcount on file. Flipping that costs one coalesce here.
+#
 # Excluded from P1/P2 entirely: anyone at Pursuit, and anyone carrying an
-# alumni_* tag. They aren't employer leads.
+# alumni_* tag. They aren't employer leads, and the exclusion outranks every rule
+# above including the Highest override.
 #
 # Tri-state counts Unknown as a fit ON PURPOSE: the value is derived from HQ, and
 # an unknown HQ is missing data, not an absent office. Treating it as a miss
@@ -2527,6 +2540,11 @@ _TRISTATE_VALUES = ["Yes", "HQ elsewhere", "Unknown"]
 _PRIORITY_HEADCOUNT = "51-200"
 _PRIORITY_TRISTATE = ("Yes", "Unknown")
 _PRIORITY_SENIORITY = ("High", "Highest")
+# The rung that is P1 on its own, provided the company clears the headcount floor
+# below. Must be one of _SENIORITY_RUNGS.
+_PRIORITY_SENIORITY_TOP = "Highest"
+# The only band that does NOT clear "headcount above 10".
+_PRIORITY_HEADCOUNT_FLOOR_EXCLUDES = "1-10"
 
 
 def _net_priority_case(portco_expr: Optional[str] = None) -> str:
@@ -2558,9 +2576,16 @@ def _net_priority_case(portco_expr: Optional[str] = None) -> str:
         " OR EXISTS (SELECT 1 FROM unnest(coalesce(c.tags, '{}'::text[])) t WHERE t LIKE 'alumni%'))"
     )
     portco = portco_expr or "false"
+    # "Highest seniority at a company with more than 10 people."
+    top_decider = (
+        f"(({_seniority_case('c.current_title')}) = '{_PRIORITY_SENIORITY_TOP}'"
+        f" AND co.size_bucket IS NOT NULL"
+        f" AND co.size_bucket <> '{_PRIORITY_HEADCOUNT_FLOOR_EXCLUDES}')"
+    )
     return f"""
 CASE
   WHEN {excluded} THEN NULL
+  WHEN {top_decider} THEN 'P1'
   WHEN ({portco}) AND {fits} >= 2 THEN 'P1'
   WHEN ({portco})                 THEN 'P2'
   WHEN {fits} = 3                 THEN 'P1'
