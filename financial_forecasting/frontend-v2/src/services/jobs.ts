@@ -1628,6 +1628,11 @@ export interface NetworkConnection {
   touched: boolean;   // anyone at Pursuit has activity with them
   co_connections: number; company_hired_before: boolean; has_open_opp: boolean;
   status: string; status_reason: string | null;
+  /** "yes" | "no" | null (unanswered). Null until the hiring-fit migration runs. */
+  hiring_fit: string | null;
+  /** This staff member's inline working note — overwritten in place. Team
+   *  discussion is separate (bedrock.jobs_comment, shown in the row expand). */
+  note: string | null;
   // Firmographics behind the page's filters. headcount_band/industry come from
   // public.companies; tristate/seniority are derived in SQL (see routes/jobs.py
   // _tristate_case / _seniority_case). tristate is 'Yes' | 'HQ elsewhere' |
@@ -1656,6 +1661,10 @@ export interface MyNetwork {
   /** How many match the active search + filters — counted in SQL, so it stays
    *  right even when more match than the 2,000 `connections` can hold. */
   matched: number;
+  /** False until db/migrations/2026-08-05-connection-hiring-fit.sql is applied.
+   *  The UI greys the Hiring fit cells rather than offering a control whose
+   *  writes the endpoint would refuse. */
+  hiring_fit_available: boolean;
   connections: NetworkConnection[];
   message?: string;
 }
@@ -1697,27 +1706,41 @@ export function useMyNetwork(q?: string, rules?: FilterRule[], prioritized = fal
   });
 }
 
+/** One cell of a My Network row. Every field is optional — the endpoint updates
+ *  only what's sent, so saving one cell can't blank its neighbours. Clear with
+ *  status:"new", hiring_fit:"" or note:"". */
+export interface ConnectionRowUpdate {
+  contact_id: number;
+  status?: string;
+  hiring_fit?: string;
+  note?: string;
+  reason?: string;
+}
+
 export function useSetConnectionStatus() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (body: { contact_id: number; status: string; reason?: string; note?: string }) => {
+    mutationFn: async (body: ConnectionRowUpdate) => {
       const { data } = await api.patch<ApiResponse<unknown>>("/api/jobs/my-network/status", body);
       return data.data;
     },
-    // Optimistic: the thumbs are a rapid-triage control, and invalidating on
-    // success refetched up to 2,000 rows per click. Patch every cached
-    // my-network page (they vary by search + filters), roll back on failure.
+    // Optimistic: these cells are a rapid-entry control, and invalidating on
+    // success refetched up to 2,000 rows per edit. Patch every cached my-network
+    // page (they vary by search + filters), roll back on failure.
     onMutate: async (body) => {
       await qc.cancelQueries({ queryKey: ["jobs", "my-network"] });
       const snapshot = qc.getQueriesData<MyNetwork>({ queryKey: ["jobs", "my-network"] });
+      const patch = (c: NetworkConnection): NetworkConnection => ({
+        ...c,
+        ...(body.status !== undefined ? { status: body.status } : {}),
+        // "" clears, and the server stores NULL — mirror that locally so the cell
+        // doesn't flash the old value back before the refetch lands.
+        ...(body.hiring_fit !== undefined ? { hiring_fit: body.hiring_fit || null } : {}),
+        ...(body.note !== undefined ? { note: body.note.trim() || null } : {}),
+      });
       qc.setQueriesData<MyNetwork>({ queryKey: ["jobs", "my-network"] }, (prev) =>
         prev
-          ? {
-              ...prev,
-              connections: prev.connections.map((c) =>
-                c.contact_id === body.contact_id ? { ...c, status: body.status } : c,
-              ),
-            }
+          ? { ...prev, connections: prev.connections.map((c) => (c.contact_id === body.contact_id ? patch(c) : c)) }
           : prev,
       );
       return { snapshot };

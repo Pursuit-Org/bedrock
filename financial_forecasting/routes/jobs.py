@@ -6625,6 +6625,21 @@ def _normalize_connection_status(value: Optional[str]) -> str:
     return v if v in CONNECTION_STATUSES else "new"
 
 
+HIRING_FIT_VALUES = ("yes", "no")
+
+
+async def _connection_status_has_hiring_fit(conn) -> bool:
+    """Whether db/migrations/2026-08-05-connection-hiring-fit.sql has been applied.
+
+    Checked per request, not cached at import, so the column starts working the
+    moment the migration lands — no restart. to_regclass can't see columns, hence
+    information_schema."""
+    return bool(await conn.fetchval(
+        """SELECT EXISTS (SELECT 1 FROM information_schema.columns
+             WHERE table_schema = 'bedrock' AND table_name = 'connection_status'
+               AND column_name = 'hiring_fit')"""))
+
+
 
 @router.get("/my-network")
 async def my_network(
@@ -6632,7 +6647,7 @@ async def my_network(
     limit: int = Query(500, le=2000),
     staff_email: Optional[str] = Query(None, description="Admin override; else the caller"),
     filter_rules: Optional[str] = Query(None, alias="filters", description="JSON array of {field,op,values} rules — applied in SQL so filters see the whole network, not the loaded page"),
-    prioritized: bool = Query(False, description="Order P1 then P2 then the rest — ranked in SQL so the top band is drawn from the whole network, not just the page"),
+    prioritized: bool = Query(True, description="Order P1 then P2 then the rest — ranked in SQL so the top band is drawn from the whole network, not just the page. Defaults ON (Jac, 2026-08-05): pass prioritized=false for the older warmth/recency order"),
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
@@ -6651,6 +6666,7 @@ async def my_network(
     sid = await conn.fetchval("SELECT staff_user_id FROM bedrock.staff_user_id_map WHERE lower(email)=$1", email)
     if sid is None:
         return {"success": True, "data": {"mapped": False, "connections": [], "total": 0, "matched": 0,
+                "hiring_fit_available": False,
                 "message": "No LinkedIn connections mapped for this account yet."}}
 
     # The companies join is unconditional on every query below: the shared `where`
@@ -6667,6 +6683,11 @@ async def my_network(
     # a 500.
     has_portco = await conn.fetchval("SELECT to_regclass('bedrock.company_investor') IS NOT NULL")
     priority_case = _net_priority_case(_PORTCO_EXISTS if has_portco else None)
+    # Same story for the hiring_fit column — checked per request so the page works
+    # either side of its migration. Reads as unset until then; the PATCH refuses
+    # rather than silently discarding a write (see set_connection_status).
+    has_hiring_fit = await _connection_status_has_hiring_fit(conn)
+    hiring_fit_sel = "cs.hiring_fit" if has_hiring_fit else "NULL::text"
 
     params: list = [sid]
     where = "r.staff_user_id = $1 AND coalesce(c.contact_stage,'') <> 'merged'"
@@ -6745,6 +6766,7 @@ async def my_network(
                (hire.hired IS NOT NULL) AS company_hired_before,
                (opp.has_open IS NOT NULL) AS has_open_opp,
                cs.status AS status, cs.reason AS status_reason,
+               {hiring_fit_sel} AS hiring_fit, cs.note AS note,
                -- firmographics behind the page's filters
                coalesce(c.tags, '{{}}'::text[]) AS tags,
                co.size_bucket AS headcount_band, co.industry AS industry, co.hq_location,
@@ -6793,6 +6815,9 @@ async def my_network(
         """, *params)
     return {"success": True, "data": {
         "mapped": True, "total": total, "matched": matched,
+        # Lets the UI grey out the Hiring fit cells rather than offer a control
+        # whose writes would be refused.
+        "hiring_fit_available": has_hiring_fit,
         "connections": [{
             "contact_id": r["contact_id"], "full_name": r["full_name"], "current_title": r["current_title"],
             "current_company": r["current_company"], "email": r["email"], "linkedin_url": r["linkedin_url"],
@@ -6813,6 +6838,8 @@ async def my_network(
             # Normalised so a pre-rename row still renders as a real vote.
             "status": _normalize_connection_status(r["status"]),
             "status_reason": r["status_reason"],
+            "hiring_fit": r["hiring_fit"],
+            "note": r["note"],
             "tags": list(r["tags"] or []),
             "priority": r["priority"],
             "is_portco": r["is_portco"],
@@ -6863,9 +6890,13 @@ async def my_network_facets(
 
 class ConnectionStatusUpdate(BaseModel):
     contact_id: int
-    status: str            # new | expect_response | dont_expect_response
+    # All three are PARTIAL: None means "leave alone", so editing one cell of the
+    # row can't blank the other two. Clearing is explicit — status='new',
+    # hiring_fit='' and note=''.
+    status: Optional[str] = None          # new | expect_response | dont_expect_response
+    hiring_fit: Optional[str] = None      # yes | no | '' to clear
+    note: Optional[str] = None            # free text, '' to clear
     reason: Optional[str] = None
-    note: Optional[str] = None
 
 
 @router.patch("/my-network/status")
@@ -6875,27 +6906,57 @@ async def set_connection_status(
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
-    """Set a staff member's read on one of their connections
-    (new | expect_response | dont_expect_response, with optional reason/note).
-    Stored per (staff, contact) in bedrock.connection_status.
+    """Update a staff member's row for one of their connections — the vote
+    ("expect a response"), the hiring-fit call, and the inline note. Stored per
+    (staff, contact) in bedrock.connection_status.
 
-    Legacy spellings are accepted and rewritten to the current ones, so a client
-    that hasn't been redeployed still records a usable vote."""
-    status = _normalize_connection_status(body.status)
-    # Reject genuine junk, but not the old vocabulary.
-    if body.status not in CONNECTION_STATUSES and body.status not in LEGACY_CONNECTION_STATUSES:
-        raise HTTPException(400, "invalid status")
+    A partial update by design: the page saves one cell at a time, and the
+    previous version wrote all columns on every call, so toggling a vote silently
+    erased the note beside it. Only fields present in the body are touched.
+
+    Legacy status spellings are accepted and rewritten, so a client that hasn't
+    been redeployed still records a usable vote."""
     email = (staff_email or (user.get("email") if isinstance(user, dict) else getattr(user, "email", None)) or "").lower()
     sid = await conn.fetchval("SELECT staff_user_id FROM bedrock.staff_user_id_map WHERE lower(email)=$1", email)
     if sid is None:
         raise HTTPException(400, "No connection mapping for this account")
+
+    sets: dict[str, object] = {}
+    if body.status is not None:
+        if body.status not in CONNECTION_STATUSES and body.status not in LEGACY_CONNECTION_STATUSES:
+            raise HTTPException(400, "invalid status")
+        sets["status"] = _normalize_connection_status(body.status)
+    if body.hiring_fit is not None:
+        if body.hiring_fit not in HIRING_FIT_VALUES and body.hiring_fit != "":
+            raise HTTPException(400, "hiring_fit must be 'yes', 'no', or '' to clear")
+        if not await _connection_status_has_hiring_fit(conn):
+            # Refuse rather than accept-and-drop: a 200 that quietly loses the
+            # answer is worse than a clear error naming the missing migration.
+            raise HTTPException(
+                503, "hiring_fit is not available yet — apply "
+                     "db/migrations/2026-08-05-connection-hiring-fit.sql")
+        sets["hiring_fit"] = body.hiring_fit or None
+    if body.note is not None:
+        sets["note"] = body.note.strip() or None
+    if body.reason is not None:
+        sets["reason"] = body.reason or None
+    if not sets:
+        raise HTTPException(400, "nothing to update")
+
+    # INSERT needs a status for the NOT NULL column; the table defaults it to
+    # 'new', which is right for a row created by a note or hiring-fit edit alone.
+    cols = list(sets)
+    insert_cols = ", ".join(["staff_user_id", "contact_id", *cols, "updated_by", "updated_at"])
+    insert_vals = ", ".join(["$1", "$2", *(f"${i + 3}" for i in range(len(cols))),
+                             f"${len(cols) + 3}", "now()"])
+    updates = ", ".join(f"{c}=EXCLUDED.{c}" for c in cols)
     await conn.execute(
-        """INSERT INTO bedrock.connection_status (staff_user_id, contact_id, status, reason, note, updated_by, updated_at)
-           VALUES ($1,$2,$3,$4,$5,$6,now())
-           ON CONFLICT (staff_user_id, contact_id) DO UPDATE
-             SET status=$3, reason=$4, note=$5, updated_by=$6, updated_at=now()""",
-        sid, body.contact_id, status, body.reason, body.note, email)
-    return {"success": True, "data": {"contact_id": body.contact_id, "status": status}}
+        f"""INSERT INTO bedrock.connection_status ({insert_cols})
+            VALUES ({insert_vals})
+            ON CONFLICT (staff_user_id, contact_id) DO UPDATE
+              SET {updates}, updated_by=EXCLUDED.updated_by, updated_at=now()""",
+        sid, body.contact_id, *(sets[c] for c in cols), email)
+    return {"success": True, "data": {"contact_id": body.contact_id, **sets}}
 
 
 # ── Candidate review queue ────────────────────────────────────────────────────

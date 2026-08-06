@@ -1,15 +1,19 @@
 /**
- * /jobs/network — My Network (staff LinkedIn connections), moved off the Jobs
- * Home screen to its own page (nav: xOrg › My Network). Connections are the
- * current user's LinkedIn imports mapped to Bedrock contacts, with last-touch,
- * co-connection, and pipeline signals, expanding inline to the contact's tabs.
+ * /jobs/network — My Network (staff LinkedIn connections), on its own page
+ * (nav: xOrg › My Network). Connections are the current user's LinkedIn imports
+ * mapped to Bedrock contacts.
+ *
+ * The table is a DATA-ENTRY view, not a browsing one: six columns, always ranked
+ * by priority band, with three editable cells per row (expect a response, hiring
+ * fit, note) that each save on a single click. Last touch, co-connections and the
+ * pipeline signals moved into the row expand, which still carries the contact's
+ * full Activity / Opportunities / Job listings / Comments tabs.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { ChevronRight, Linkedin, MessageSquare, Send, ThumbsDown, ThumbsUp } from "lucide-react";
+import { ChevronRight, Linkedin } from "lucide-react";
 
 import { PageHeader } from "@/components/PageHeader";
-import { Tag } from "@/components/ui/Tag";
 import { cn } from "@/lib/utils";
 import { ContactExpandTabs } from "@/components/jobs/jobsEntity";
 import { SortableHeader } from "@/components/ui/SortableHeader";
@@ -18,8 +22,6 @@ import {
   useContactTagCatalog, useMyNetwork, useMyNetworkFacets, useSetConnectionStatus,
   type MyNetworkFacets, type NetworkConnection,
 } from "@/services/jobs";
-import { relDay } from "@/lib/format";
-import { useCreateJobsComment, useJobsComments } from "@/services/jobsComments";
 import {
   AddFilterButton, FilterChip, describeRule, ruleApplies,
   type FieldMeta, type FilterRule,
@@ -43,10 +45,13 @@ function Section({ title, count, action, children }: {
   );
 }
 
-// Fixed grid so columns line up:
-// priority | name | company | last touch | connected | staff | signals | note | willing.
-const NET_GRID = "grid grid-cols-[34px_minmax(0,2.2fr)_minmax(0,1.3fr)_minmax(0,1.1fr)_72px_52px_minmax(0,1.1fr)_44px_76px] items-center gap-2";
-type NetSortKey = "name" | "company" | "touch" | "connected" | "staff" | "status" | "priority";
+// Six columns, in Jac's order (2026-08-05):
+// priority | connection (name + title) | company | expect a response | hiring fit | note.
+// Last touch / connected / staff / signals were dropped from the table — all of it
+// is still one click away in the row expand, and the point of this view is now
+// rapid data entry, not browsing.
+const NET_GRID = "grid grid-cols-[34px_minmax(0,1.9fr)_minmax(0,1.2fr)_92px_92px_minmax(0,1.6fr)] items-center gap-2";
+type NetSortKey = "name" | "company" | "status" | "priority" | "fit" | "note";
 // The stored vote vocabulary (bedrock.connection_status.status). Legacy spellings
 // are still recognised so a row written before the 2026-08-05 rename renders as a
 // real vote whether or not the data migration has run yet — the server normalises
@@ -67,10 +72,11 @@ const VOTE_RANK: Record<string, number> = {
 const NET_SORT_VALUE: Record<NetSortKey, (c: NetworkConnection) => unknown> = {
   name: (c) => c.full_name,
   company: (c) => c.current_company,
-  touch: (c) => (c.my_activity_count > 0 ? c.my_last_activity : c.last_activity),
-  connected: (c) => c.connected_date,
-  staff: (c) => c.co_connections,
   status: (c) => VOTE_RANK[c.status] ?? 1,
+  // yes first, then unanswered, then no — same shape as VOTE_RANK.
+  fit: (c) => (c.hiring_fit === "yes" ? 0 : c.hiring_fit === "no" ? 2 : 1),
+  // Rows with a note first; alphabetical within.
+  note: (c) => (c.note ? `0${c.note.toLowerCase()}` : "1"),
   // Unranked sorts after both bands rather than before "P1" alphabetically.
   priority: (c) => c.priority ?? "ZZ",
 };
@@ -179,200 +185,160 @@ function PriorityBadge({ c }: { c: NetworkConnection }) {
   );
 }
 
-// ── Shared note on the row ───────────────────────────────────────────────────
-// Writes a real bedrock.jobs_comment (parent_type='prospect'), so it's the SAME
-// thread the row's Comments tab shows and is visible to the whole team — not a
-// private scratchpad. Opens in place so a note never costs an expand.
-function RowNote({ c }: { c: NetworkConnection }) {
-  const [open, setOpen] = useState(false);
-  const [draft, setDraft] = useState("");
-  const boxRef = useRef<HTMLDivElement>(null);
-  const id = String(c.contact_id);
-  const { data: comments = [], isLoading } = useJobsComments("prospect", open ? id : undefined);
-  const create = useCreateJobsComment("prospect", id);
+// ── Excel-style row cells ────────────────────────────────────────────────────
+// This view exists to be filled in fast, so every editable cell is one click:
+// y/n toggles immediately, the note becomes an input and saves on Enter or blur.
+// All three save through one partial PATCH, so editing one cell never disturbs
+// its neighbours. Writes are optimistic — nothing waits on the network.
 
-  // Close on an outside click or Escape.
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      if (boxRef.current && !boxRef.current.contains(e.target as Node)) setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-
-  const submit = () => {
-    const body = draft.trim();
-    if (!body || create.isPending) return;
-    create.mutate(body, { onSuccess: () => setDraft("") });
+/** Yes/No cell. Clicking the active side clears it back to unanswered. */
+function YesNoCell({
+  value, onChange, yesLabel, noLabel, disabled, disabledHint,
+}: {
+  value: "yes" | "no" | null;
+  onChange: (next: string) => void;
+  yesLabel: string;
+  noLabel: string;
+  disabled?: boolean;
+  disabledHint?: string;
+}) {
+  const pick = (e: React.MouseEvent, target: "yes" | "no") => {
+    e.stopPropagation();                       // must not expand the row
+    if (disabled) return;
+    onChange(value === target ? "" : target);   // click the active side to clear
   };
-
+  const base = "grid h-6 flex-1 place-items-center text-[11px] font-semibold";
   return (
-    <div className="relative" onClick={(e) => e.stopPropagation()}>
-      <button
-        type="button"
-        aria-expanded={open}
-        title={c.comment_count > 0 ? `${c.comment_count} team note${c.comment_count === 1 ? "" : "s"}` : "Add a team note"}
-        onClick={() => setOpen((o) => !o)}
-        className={cn("flex h-7 w-full items-center justify-center gap-0.5 rounded border text-[11px]",
-          c.comment_count > 0
-            ? "border-border-strong bg-surface-2/60 font-medium text-ink-2"
-            : "border-transparent text-ink-4 hover:border-border-strong hover:text-ink-2")}
-      >
-        <MessageSquare size={12} aria-hidden />
-        {c.comment_count > 0 ? <span className="tabular-nums">{c.comment_count}</span> : null}
+    <div
+      title={disabled ? disabledHint : undefined}
+      className={cn("flex overflow-hidden rounded border border-border-strong",
+        disabled && "opacity-40")}
+    >
+      <button type="button" aria-pressed={value === "yes"} title={disabled ? disabledHint : yesLabel}
+        onClick={(e) => pick(e, "yes")}
+        className={cn(base, "border-r border-border-strong",
+          value === "yes" ? "bg-green/15 text-green" : "text-ink-4 hover:bg-surface-2 hover:text-ink-2")}>
+        Y
       </button>
-      {open && (
-        <div
-          ref={boxRef}
-          className="absolute right-0 top-8 z-30 w-80 rounded-lg border border-border-strong bg-surface p-2 shadow-lg"
-        >
-          <div className="mb-1.5 flex items-baseline justify-between">
-            <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-4">
-              Team notes{comments.length ? ` (${comments.length})` : ""}
-            </span>
-            <span className="text-[10px] text-ink-4">visible to staff</span>
-          </div>
-          <div className="max-h-40 overflow-y-auto">
-            {isLoading ? (
-              <p className="py-2 text-[11.5px] text-ink-4">Loading…</p>
-            ) : comments.length === 0 ? (
-              <p className="py-1 text-[11.5px] text-ink-4">No notes yet.</p>
-            ) : (
-              comments.map((cm) => (
-                <div key={cm.id} className="border-t border-border-strong py-1.5 first:border-t-0">
-                  <p className="whitespace-pre-wrap text-[11.5px] leading-snug text-ink-2">{cm.content}</p>
-                  <p className="mt-0.5 text-[10px] text-ink-4">
-                    {cm.author_email ?? "unknown"}
-                    {cm.created_at ? ` · ${relDay(cm.created_at)}` : ""}
-                  </p>
-                </div>
-              ))
-            )}
-          </div>
-          <div className="mt-1.5 flex items-end gap-1.5">
-            <textarea
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              onKeyDown={(e) => {
-                // Enter submits; Shift+Enter for a second line.
-                if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); }
-              }}
-              rows={2}
-              placeholder="Add a note for the team…"
-              className="min-h-[38px] flex-1 resize-y rounded border border-border-strong bg-surface px-2 py-1 text-[12px] text-ink outline-none focus:border-accent"
-            />
-            <button
-              type="button"
-              onClick={submit}
-              disabled={!draft.trim() || create.isPending}
-              className="grid h-7 w-7 shrink-0 place-items-center rounded border border-ink bg-ink text-surface disabled:opacity-40"
-              title="Post note (Enter)"
-            >
-              <Send size={12} aria-hidden />
-            </button>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ── Expect a response: 👍 / 👎 ───────────────────────────────────────────────
-// Replaces the three-state dropdown. Clicking the active thumb clears the vote.
-//
-// Stored as expect_response | dont_expect_response | new, so the data reads the
-// same as the column label. Pre-rename rows (will_reach_out / declined) are still
-// recognised until the data migration has run everywhere.
-function VoteButtons({ status, onVote }: { status: string; onVote: (status: string) => void }) {
-  const up = status === VOTE_UP || status === LEGACY_UP;
-  const down = status === VOTE_DOWN || status === LEGACY_DOWN;
-  const vote = (e: React.MouseEvent, target: string, active: boolean) => {
-    e.stopPropagation();          // a vote must not expand the row
-    onVote(active ? VOTE_NONE : target);
-  };
-  return (
-    <div className="flex items-center justify-center gap-0.5">
-      <button
-        type="button"
-        aria-pressed={up}
-        title={up ? "Expect a response — click to clear" : "Expect a response"}
-        onClick={(e) => vote(e, VOTE_UP, up)}
-        className={cn("grid h-7 w-7 place-items-center rounded border",
-          up ? "border-green/40 bg-green/10 text-green" : "border-transparent text-ink-4 hover:border-border-strong hover:text-ink-2")}
-      >
-        <ThumbsUp size={13} aria-hidden />
-      </button>
-      <button
-        type="button"
-        aria-pressed={down}
-        title={down ? "Don't expect a response — click to clear" : "Don't expect a response"}
-        onClick={(e) => vote(e, VOTE_DOWN, down)}
-        className={cn("grid h-7 w-7 place-items-center rounded border",
-          down ? "border-red/40 bg-red/10 text-red" : "border-transparent text-ink-4 hover:border-border-strong hover:text-ink-2")}
-      >
-        <ThumbsDown size={13} aria-hidden />
+      <button type="button" aria-pressed={value === "no"} title={disabled ? disabledHint : noLabel}
+        onClick={(e) => pick(e, "no")}
+        className={cn(base,
+          value === "no" ? "bg-red/15 text-red" : "text-ink-4 hover:bg-surface-2 hover:text-ink-2")}>
+        N
       </button>
     </div>
   );
 }
 
-function NetworkRow({ c, expanded, onToggle }: { c: NetworkConnection; expanded: boolean; onToggle: () => void }) {
-  const setStatus = useSetConnectionStatus();
-  // Last touch: prefer MY touch (warm), fall back to team touch.
-  const mine = c.my_activity_count > 0;
-  const touchIso = mine ? c.my_last_activity : c.last_activity;
-  const chIcon = c.last_channel === "meeting" ? "📅" : c.last_channel === "email" ? "✉️" : "";
+/** Note cell: reads as text, becomes an input on click. Enter or blur saves,
+ *  Escape reverts. Overwrites in place — the append-only team thread is still in
+ *  the row expand's Comments tab. */
+function NoteCell({ value, onSave }: { value: string | null; onSave: (next: string) => void }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value ?? "");
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // Re-sync when the row's saved value changes underneath us (another tab, or the
+  // refetch after our own save) — but never while typing, or we'd fight the user.
+  useEffect(() => { if (!editing) setDraft(value ?? ""); }, [value, editing]);
+  useEffect(() => { if (editing) inputRef.current?.select(); }, [editing]);
+
+  const commit = () => {
+    setEditing(false);
+    const next = draft.trim();
+    if (next !== (value ?? "")) onSave(next);
+  };
+
+  if (!editing) {
+    return (
+      <button
+        type="button"
+        onClick={(e) => { e.stopPropagation(); setEditing(true); }}
+        title={value || "Click to add a note"}
+        className={cn("h-6 w-full truncate rounded border border-transparent px-1.5 text-left text-[11.5px]",
+          "hover:border-border-strong hover:bg-surface",
+          value ? "text-ink-2" : "text-ink-4")}
+      >
+        {value || "—"}
+      </button>
+    );
+  }
+  return (
+    <input
+      ref={inputRef}
+      autoFocus
+      value={draft}
+      onClick={(e) => e.stopPropagation()}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        e.stopPropagation();
+        if (e.key === "Enter") { e.preventDefault(); commit(); }
+        if (e.key === "Escape") { e.preventDefault(); setDraft(value ?? ""); setEditing(false); }
+      }}
+      placeholder="Note…"
+      className="h-6 w-full rounded border border-accent bg-surface px-1.5 text-[11.5px] text-ink outline-none"
+    />
+  );
+}
+
+function NetworkRow({ c, expanded, onToggle, fitEnabled }: {
+  c: NetworkConnection; expanded: boolean; onToggle: () => void; fitEnabled: boolean;
+}) {
+  const save = useSetConnectionStatus();
+  const expectValue = c.status === VOTE_UP || c.status === LEGACY_UP ? "yes"
+    : c.status === VOTE_DOWN || c.status === LEGACY_DOWN ? "no" : null;
   return (
     <>
       <div
         onClick={onToggle}
-        className={cn(NET_GRID, "cursor-pointer border-t border-border-strong px-3 py-1.5 text-[12.5px] hover:bg-surface-2/40", expanded && "bg-surface-2/40")}
+        className={cn(NET_GRID, "cursor-pointer border-t border-border-strong px-3 py-1 text-[12.5px] hover:bg-surface-2/40", expanded && "bg-surface-2/40")}
       >
         <PriorityBadge c={c} />
+        {/* Connection: name + title. The warmth dot and LinkedIn link stay — they
+            cost no column and the "last touch" column that carried that signal is
+            gone. Everything else moved into the expand. */}
         <div className="flex min-w-0 items-center gap-1.5">
           <ChevronRight size={12} className={cn("shrink-0 text-ink-4 transition-transform", expanded && "rotate-90")} />
           {c.warm ? <span title={`You've been in touch (${c.my_activity_count})`} className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400" />
                   : c.touched ? <span title="Pursuit has activity, but not you" className="h-1.5 w-1.5 shrink-0 rounded-full bg-border-strong" />
                   : <span className="h-1.5 w-1.5 shrink-0 rounded-full border border-border-strong" />}
-          <Link to={`/jobs/contacts/${c.contact_id}`} onClick={(e) => e.stopPropagation()} className="min-w-0 truncate font-medium text-ink hover:text-accent">
-            {c.full_name || "—"}
-          </Link>
+          <div className="min-w-0">
+            <Link to={`/jobs/contacts/${c.contact_id}`} onClick={(e) => e.stopPropagation()}
+              className="block truncate font-medium text-ink hover:text-accent">
+              {c.full_name || "—"}
+            </Link>
+            {c.current_title ? <span className="block truncate text-[10.5px] leading-tight text-ink-4">{c.current_title}</span> : null}
+          </div>
           {c.linkedin_url && (
             <a href={c.linkedin_url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}
               title="Open LinkedIn profile" className="shrink-0 text-ink-4 hover:text-accent">
               <Linkedin size={12} />
             </a>
           )}
-          {c.current_title ? <span className="hidden truncate text-[11px] text-ink-4 lg:inline"> · {c.current_title}</span> : null}
         </div>
-        <div className="min-w-0 truncate text-[11.5px] text-ink-3">{c.current_company || "—"}</div>
-        <div className="min-w-0 truncate text-[11px] tabular-nums" title={touchIso ? new Date(touchIso).toLocaleString() : "No activity"}>
-          {touchIso ? (
-            <span className={mine ? "text-amber-600" : "text-ink-4"}>
-              {chIcon} {relDay(touchIso)}{mine ? ` · you (${c.my_activity_count})` : c.touched ? ` · team (${c.activity_count})` : ""}
-            </span>
-          ) : <span className="text-ink-4">—</span>}
+        <div className="min-w-0 truncate text-[11.5px] text-ink-3" title={c.current_company ?? undefined}>
+          {c.current_company || "—"}
         </div>
-        <div className="truncate text-[11px] tabular-nums text-ink-4" title={c.connected_date ? `Connected ${c.connected_date}` : "Connection date unknown"}>
-          {c.connected_date ? relDay(c.connected_date) : "—"}
-        </div>
-        <div className="text-center text-[11.5px] tabular-nums text-ink-4" title="Other staff also connected">
-          {c.co_connections > 0 ? `+${c.co_connections}` : "—"}
-        </div>
-        <div className="flex min-w-0 flex-wrap items-center gap-1">
-          {c.is_portco && <Tag variant="default">portco</Tag>}
-          {c.is_jobs_contact && <Tag variant="default">pipeline</Tag>}
-          {c.has_open_opp && <Tag variant="green">open opp</Tag>}
-          {c.company_hired_before && <Tag variant="default">hired before</Tag>}
-        </div>
-        <RowNote c={c} />
-        <VoteButtons status={c.status} onVote={(status) => setStatus.mutate({ contact_id: c.contact_id, status })} />
+        <YesNoCell
+          value={expectValue}
+          yesLabel="Expect a response" noLabel="Don't expect a response"
+          onChange={(next) => save.mutate({
+            contact_id: c.contact_id,
+            status: next === "yes" ? VOTE_UP : next === "no" ? VOTE_DOWN : VOTE_NONE,
+          })}
+        />
+        <YesNoCell
+          value={(c.hiring_fit as "yes" | "no" | null) ?? null}
+          yesLabel="Hiring fit" noLabel="Not a hiring fit"
+          disabled={!fitEnabled}
+          disabledHint="Hiring fit needs db/migrations/2026-08-05-connection-hiring-fit.sql applied"
+          onChange={(next) => save.mutate({ contact_id: c.contact_id, hiring_fit: next })}
+        />
+        <NoteCell
+          value={c.note}
+          onSave={(note) => save.mutate({ contact_id: c.contact_id, note })}
+        />
       </div>
       {expanded && (
         <div className="border-t border-border-strong bg-surface-2/20">
@@ -390,13 +356,16 @@ function MyNetworkZone() {
   const [byCompany, setByCompany] = useState(false);
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [rules, setRules] = useState<FilterRule<Field>[]>([]);
-  const [prioritized, setPrioritized] = useState(false);
+  // Always ranked (Jac, 2026-08-05 — the checkbox is gone). Kept as a named const
+  // rather than inlined so the sort interaction below still reads clearly.
+  const prioritized = true;
   const { sort, toggle: toggleSort } = useSort<NetSortKey>();
   const { data, isLoading } = useMyNetwork(q || undefined, rules, prioritized);
   const { data: facets } = useMyNetworkFacets();
   const { data: tagCatalog = EMPTY_TAGS } = useContactTagCatalog();
   const selectOptions = useMemo(() => buildSelectOptions(facets, tagCatalog), [facets, tagCatalog]);
   const renderFilterValue = useMemo(() => makeRenderFilterValue(tagCatalog), [tagCatalog]);
+  const fitEnabled = data?.hiring_fit_available ?? false;
   let conns = data?.connections ?? [];
   // The server already applied these rules in SQL; re-applying them here is a
   // guard against a client/server semantic mismatch, the same belt-and-braces
@@ -443,14 +412,6 @@ function MyNetworkZone() {
       </label>
       <label className="flex items-center gap-1 text-[11px] text-ink-4">
         <input type="checkbox" checked={byCompany} onChange={(e) => setByCompany(e.target.checked)} className="accent-accent" /> by company
-      </label>
-      <label
-        className="flex items-center gap-1 text-[11px] text-ink-4"
-        title="Rank P1 / P2 first. P1 = headcount 51-200, tri-state (or unknown) and high seniority; P2 = two of the three. A portfolio company is at least P2, and P1 on two of three. Pursuit staff and alumni are never banded."
-      >
-        <input type="checkbox" checked={prioritized}
-          onChange={(e) => { setPrioritized(e.target.checked); setShowAll(false); }}
-          className="accent-accent" /> prioritized
       </label>
       <AddFilterButton<Field>
         filterable={FILTERABLE as Record<Field, FieldMeta<unknown>>}
@@ -523,21 +484,18 @@ function MyNetworkZone() {
               <SortableHeader label="P" sortKey="priority" sort={sort} onToggle={toggleSort} />
               <SortableHeader label="Connection" sortKey="name" sort={sort} onToggle={toggleSort} />
               <SortableHeader label="Company" sortKey="company" sort={sort} onToggle={toggleSort} />
-              <SortableHeader label="Last touch" sortKey="touch" sort={sort} onToggle={toggleSort} />
-              <SortableHeader label="Connected" sortKey="connected" sort={sort} onToggle={toggleSort} />
-              <SortableHeader label="Staff" sortKey="staff" sort={sort} onToggle={toggleSort} />
-              <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">Signals</span>
-              <span className="text-center text-[11px] font-semibold uppercase tracking-wider text-ink-3">Note</span>
               <SortableHeader label="Expect a response" sortKey="status" sort={sort} onToggle={toggleSort} />
+              <SortableHeader label="Hiring fit" sortKey="fit" sort={sort} onToggle={toggleSort} />
+              <SortableHeader label="Note" sortKey="note" sort={sort} onToggle={toggleSort} />
             </div>
             {groups ? groups.map(([company, rows]) => (
               <div key={company}>
                 <div className="flex items-baseline gap-2 border-t border-border-strong bg-surface-2/50 px-3 py-1 text-[11px] font-semibold text-ink-2">
                   {company} <span className="font-normal tabular-nums text-ink-4">{rows.length}</span>
                 </div>
-                {rows.map((c) => <NetworkRow key={c.contact_id} c={c} expanded={expandedId === c.contact_id} onToggle={() => toggle(c.contact_id)} />)}
+                {rows.map((c) => <NetworkRow key={c.contact_id} c={c} expanded={expandedId === c.contact_id} onToggle={() => toggle(c.contact_id)} fitEnabled={fitEnabled} />)}
               </div>
-            )) : shown.map((c) => <NetworkRow key={c.contact_id} c={c} expanded={expandedId === c.contact_id} onToggle={() => toggle(c.contact_id)} />)}
+            )) : shown.map((c) => <NetworkRow key={c.contact_id} c={c} expanded={expandedId === c.contact_id} onToggle={() => toggle(c.contact_id)} fitEnabled={fitEnabled} />)}
             {conns.length > shown.length && (
               <button type="button" onClick={() => setShowAll(true)}
                 className="border-t border-border-strong px-3 py-2 text-[12px] text-accent hover:bg-surface-2/50">Show all {conns.length} loaded</button>

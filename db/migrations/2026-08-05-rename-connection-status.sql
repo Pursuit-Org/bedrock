@@ -23,7 +23,12 @@
 
 BEGIN;
 
--- Expected before: 47 will_reach_out, 76 declined (123 rows, 2026-08-05).
+-- The table is a MIXED state by design: the tolerant code writes the new
+-- vocabulary while older rows keep the old, so expect a split (it was 47
+-- will_reach_out / 76 declined / 20 already-new when this was written, and the
+-- new side grows every time someone uses the page). These UPDATEs are keyed on
+-- the old values, so the exact counts don't matter.
+--
 -- 35 of the declined rows came from the old outreach tracker import and carry
 -- reason='not interested — imported from old outreach tracker'; that reason is
 -- preserved, only the status word changes.
