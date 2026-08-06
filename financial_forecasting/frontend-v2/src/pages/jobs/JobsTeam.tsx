@@ -603,7 +603,9 @@ const SEGMENT_OPTIONS: { value: string; label: string }[] = [
 const SEGMENT_LABELS: Record<string, string> = Object.fromEntries(SEGMENT_OPTIONS.map((s) => [s.value, s.label]));
 const CLOSED_LOST_LABELS: Record<string, string> = {
   budget: "No budget", timing: "Timing / not now", hired_elsewhere: "Hired elsewhere",
-  not_a_fit: "Not a fit", no_response: "Went cold", role_cancelled: "Role cancelled", other: "Other",
+  not_a_fit: "Not a fit", no_response: "Went cold", role_cancelled: "Role cancelled",
+  not_interested: "Not interested", not_selected: "Not selected",
+  not_responsive: "Not responsive", revisit: "Revisit later", other: "Other",
 };
 
 /** Compact editable context strip at the top of an expanded deal: priority,
@@ -1260,6 +1262,10 @@ export function stageOptionsFor(stage: JobStage): { value: JobStage; label: stri
 }
 
 // Structured closed-lost reasons (drives the "why deals die" analysis).
+// The combined vocabulary (Kwame 2026-08-05): the seven already in use plus the
+// four from the stage simplification, rather than replacing one list with the
+// other. `revisit` is the interesting one — picking it asks for a date and files
+// a task, which is how "come back to this" survives being closed lost.
 const CLOSED_LOST_REASONS: { value: string; label: string }[] = [
   { value: "budget",          label: "No budget" },
   { value: "timing",          label: "Timing / not now" },
@@ -1267,6 +1273,10 @@ const CLOSED_LOST_REASONS: { value: string; label: string }[] = [
   { value: "not_a_fit",       label: "Not a fit" },
   { value: "no_response",     label: "Went cold / no response" },
   { value: "role_cancelled",  label: "Role cancelled" },
+  { value: "not_interested",  label: "Not interested" },
+  { value: "not_selected",    label: "Not selected" },
+  { value: "not_responsive",  label: "Not responsive" },
+  { value: "revisit",         label: "Revisit later" },
   { value: "other",           label: "Other" },
 ];
 
@@ -2079,11 +2089,26 @@ export function ClosedLostModal({
 }) {
   const [reason, setReason] = useState("");
   const [note, setNote] = useState("");
+  // Revisit is the one reason that isn't an ending — it needs a date, or it's
+  // just Closed Lost with extra steps. Defaults a month out so the common case
+  // is one click.
+  const [revisitDate, setRevisitDate] = useState(() => {
+    const d = new Date(); d.setMonth(d.getMonth() + 1);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  });
+  const isRevisit = reason === "revisit";
   const updateOpp = useUpdateOpportunity();
 
   function save() {
     updateOpp.mutate(
-      { id: deal.id, closed_lost_reason: reason || null, closed_lost_note: note.trim() || null },
+      {
+        id: deal.id,
+        closed_lost_reason: reason || null,
+        closed_lost_note: note.trim() || null,
+        // Reuses follow_up_date — the column that already exists for exactly
+        // this. The backend turns it into a jobs_task for the deal's owner.
+        ...(isRevisit ? { follow_up_date: revisitDate } : {}),
+      },
       { onSuccess: () => onClose() },
     );
   }
@@ -2115,13 +2140,31 @@ export function ClosedLostModal({
               ))}
             </select>
           </div>
+          {isRevisit && (
+            <div className="flex flex-col gap-1 rounded-lg border border-accent/40 bg-accent-soft px-3 py-2">
+              <label className="text-[11px] font-semibold uppercase tracking-wider text-accent">
+                Come back to this on
+              </label>
+              <input
+                type="date"
+                value={revisitDate}
+                onChange={(e) => { if (e.target.value) setRevisitDate(e.target.value); }}
+                className="w-full rounded-md border border-border-strong bg-surface px-3 py-2 text-[13px] text-ink focus:outline-none focus:ring-1 focus:ring-accent/40"
+              />
+              <span className="text-[11px] text-accent">
+                Files a task for the deal's owner on that date.
+              </span>
+            </div>
+          )}
           <div className="flex flex-col gap-1">
             <label className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">Note (optional)</label>
             <textarea
               rows={3}
               value={note}
               onChange={(e) => setNote(e.target.value)}
-              placeholder="Context — what happened, who said what…"
+              placeholder={isRevisit
+                ? "Who to check back with, and why — e.g. \"check with Jane Doe once budget resets in Q1\""
+                : "Context — what happened, who said what…"}
               className="w-full resize-none rounded-md border border-border-strong bg-surface px-3 py-2 text-[13px] text-ink placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
             />
           </div>

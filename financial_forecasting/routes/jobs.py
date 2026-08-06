@@ -6803,9 +6803,45 @@ async def update_opportunity(
             )
         if body.sf_contact_ids is not None:
             await _flag_jobs_contacts(conn, list(body.sf_contact_ids or []))
+        # closed_lost + reason=revisit is "come back to this", not an ending, so
+        # it has to leave something behind that resurfaces. The date rides on the
+        # existing follow_up_date column; this turns it into a task for the
+        # deal's owner, which the Jobs Home widget already renders.
+        if body.closed_lost_reason == "revisit" and body.follow_up_date:
+            await _ensure_opp_revisit_task(
+                conn, str(opp_id), existing["account_name"],
+                body.owner_email or existing["owner_email"] or user_email,
+                body.follow_up_date)
 
     row = await conn.fetchrow("SELECT * FROM bedrock.jobs_opportunity WHERE id=$1", opp_id)
     return {"success": True, "data": dict(row)}
+
+
+async def _ensure_opp_revisit_task(conn, opp_id: str, account: Optional[str],
+                                   owner: Optional[str], when) -> None:
+    """File (or move) the revisit reminder for a closed-lost-but-come-back deal.
+
+    Mirrors _ensure_revisit_task on the contact side: idempotent per opportunity,
+    so changing the date moves the open task rather than stacking reminders.
+    status/owner match jobs_task's constraints — 'Not Started' is a valid status
+    where 'todo' is not, and owner is NOT NULL."""
+    title = f"Revisit: {account or 'opportunity'}"
+    # follow_up_date is a timestamp on the model but jobs_task.deadline is a date.
+    day = when.date() if hasattr(when, "date") else when
+    existing = await conn.fetchval(
+        "SELECT id FROM bedrock.jobs_task "
+        "WHERE parent_type = 'opportunity' AND parent_id = $1 AND deleted_at IS NULL "
+        "  AND status <> 'Completed' AND title LIKE 'Revisit:%' LIMIT 1",
+        opp_id)
+    if existing:
+        await conn.execute(
+            "UPDATE bedrock.jobs_task SET deadline = $2::date, title = $3, updated_at = now() "
+            "WHERE id = $1", existing, day, title)
+        return
+    await conn.execute(
+        "INSERT INTO bedrock.jobs_task (parent_type, parent_id, title, status, owner, deadline) "
+        "VALUES ('opportunity', $1, $2, 'Not Started', $3, $4::date)",
+        opp_id, title, owner or "", day)
 
 
 @router.delete("/opportunities/{opp_id}")

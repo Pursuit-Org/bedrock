@@ -24,6 +24,7 @@ import { SortableHeader } from "@/components/ui/SortableHeader";
 import { Toolbar } from "@/components/ui/Toolbar";
 import { RECENCY_OPTIONS, recencyLabel } from "@/lib/recencyFilter";
 import { useColumnVisibility } from "@/lib/columnVisibility";
+import { useContactStageChange } from "@/lib/useContactStageChange";
 import { useColumnWidths } from "@/lib/columnWidths";
 import { ResizableTh, ColGroup } from "@/components/ui/ResizableTable";
 import { useSessionState } from "@/lib/useSessionState";
@@ -224,6 +225,7 @@ function TagsCell({ contact }: { contact: JobContactWithDeal }) {
 // ── row ──────────────────────────────────────────────────────────────────────
 function ContactRow({ contact, expanded, onOpen, visibleCols, selected, onToggleSelect }: { contact: JobContactWithDeal; expanded: boolean; onOpen: () => void; visibleCols: ColKey[]; selected: boolean; onToggleSelect: () => void }) {
   const updateMembership = useUpdateJobsMembership();
+  const stageChange = useContactStageChange();
   const flagOne = useFlagContactsForJobs();
   const addToJobs = useAddContactToJobs();
   const updateContact = useUpdateContact();
@@ -272,10 +274,17 @@ function ContactRow({ contact, expanded, onOpen, visibleCols, selected, onToggle
     // a muted "—" (in pipeline via the prospect checkbox); the picker sets a
     // real stage, creating the membership.
     flag: contact.membership_stage
-      ? <InlineSelect<string> value={contact.membership_stage} options={MEMBERSHIP_STAGE_OPTIONS}
+      ? <InlineSelect<string> value={contact.membership_stage} options={stageChange.options}
           renderValue={(v) => <span className="rounded-full bg-accent-soft px-1.5 py-0.5 text-[10.5px] font-medium text-accent-ink">{MEMBERSHIP_STAGE_LABELS[(v ?? contact.membership_stage) as MembershipStage] ?? v}</span>}
-          onSave={(v) => new Promise<void>((res, rej) => updateMembership.mutate({ contact_id: contact.contact_id, stage: v || undefined }, { onSuccess: () => res(), onError: rej }))} />
-      : <InlineSelect<string> value="" options={MEMBERSHIP_STAGE_OPTIONS} emptyLabel="—"
+          onSave={(v) => {
+            if (!v) return Promise.resolve();
+            // Revisit asks for a date first (shared handler); anything else
+            // writes straight through.
+            if (v === "revisit") return stageChange.change(contact.contact_id, contact.full_name ?? "contact", v);
+            return new Promise<void>((res, rej) => updateMembership.mutate(
+              { contact_id: contact.contact_id, stage: v }, { onSuccess: () => res(), onError: rej }));
+          }} />
+      : <InlineSelect<string> value="" options={stageChange.options} emptyLabel="—"
           renderValue={(v) => v ? <span className="rounded-full bg-accent-soft px-1.5 py-0.5 text-[10.5px] font-medium text-accent-ink">{MEMBERSHIP_STAGE_LABELS[v as MembershipStage] ?? v}</span> : <span className="text-[11px] text-ink-4">—</span>}
           onSave={(v) => new Promise<void>((res, rej) => { if (!v) return res(); flagOne.mutate({ contact_ids: [contact.contact_id], stage: v }, { onSuccess: () => res(), onError: rej }); })} />,
     industry: <span className="truncate text-[12px] text-ink-3">{contact.company_industry || "—"}</span>,
@@ -314,6 +323,9 @@ function ContactRow({ contact, expanded, onOpen, visibleCols, selected, onToggle
         ))}
       </tr>
       {expanded && <tr className="bg-surface-2/20"><td colSpan={visibleCols.length} className="p-0"><ContactExpandTabs contactId={contact.contact_id} /></td></tr>}
+      {/* Rendered outside the cells: a modal can't live inside a <td> in a
+          ternary, and only the row you clicked has a pending revisit. */}
+      {stageChange.dialog}
     </Fragment>
   );
 }
