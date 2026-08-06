@@ -117,8 +117,8 @@ async def main():
                 f"[outreach-import:{o['id']}]%", cid, wrong)
             if (o["stage"] or "") == "Not Interested":
                 await conn.execute("""INSERT INTO bedrock.connection_status (staff_user_id, contact_id, status, reason, updated_by, updated_at)
-                    VALUES ($1,$2,'declined','not interested — imported from old outreach tracker','outreach_import',now())
-                    ON CONFLICT (staff_user_id, contact_id) DO UPDATE SET status='declined', reason=EXCLUDED.reason, updated_at=now()""",
+                    VALUES ($1,$2,'dont_expect_response','not interested — imported from old outreach tracker','outreach_import',now())
+                    ON CONFLICT (staff_user_id, contact_id) DO UPDATE SET status='dont_expect_response', reason=EXCLUDED.reason, updated_at=now()""",
                     o["staff_user_id"], cid)
             fixed += 1
             print(f"  outreach {o['id']} '{name}': {wrong} → {cid}")
