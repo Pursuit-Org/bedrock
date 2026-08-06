@@ -43,6 +43,17 @@ CREATE TABLE IF NOT EXISTS bedrock.contact_enrichment (
     live_company_linkedin_url text,
     headline                text,
     live_location           text,
+    -- Headshot. avatar_url is LinkedIn's CDN URL and is SIGNED AND EXPIRING —
+    -- every profile in the 2026-08-06 sample carried the same fixed-window
+    -- signature, good for 21 days. Storing it alone repeats the mistake already
+    -- sitting in public.companies.logo_url, whose Clearbit pointers are described
+    -- in routes/account_enrichment.py as "often-dead". The durable copy is
+    -- avatar_gcs_uri, written by scripts/rehost_contact_avatars.py; avatar_url is
+    -- kept only so that pass knows where to fetch from, and to detect a changed photo.
+    avatar_url              text,
+    avatar_expires_at       timestamptz,
+    avatar_gcs_uri          text,
+    avatar_rehosted_at      timestamptz,
     connections_count       integer,
     followers_count         integer,
     open_to_work            boolean,
@@ -67,10 +78,15 @@ CREATE TABLE IF NOT EXISTS bedrock.contact_enrichment (
 
     -- ── provenance ───────────────────────────────────────────────────────────
     source          text NOT NULL DEFAULT 'linkedpanda',
-    -- 'ok' | 'not_found' | 'error'. Non-ok rows are stored ON PURPOSE: they cost
-    -- money and they stop the next run from paying for the same dead profile.
+    -- 'ok' | 'not_found' | 'error' | 'payment_failed'. Non-ok rows are stored ON
+    -- PURPOSE: 'not_found' is terminal and stops the next run paying again for a
+    -- dead profile, while 'error' and 'payment_failed' stay eligible for retry.
+    -- Only 'not_found' and 'ok' cost money — a payment_failed row never settled.
     status          text NOT NULL DEFAULT 'ok',
     error_detail    text,
+    -- Cost of the MOST RECENT attempt on this contact, not a running total: a
+    -- re-scrape overwrites the row. sum(cost_usd) is therefore "what the current
+    -- state cost to obtain", NOT lifetime spend — `zero runs` is the real ledger.
     cost_usd        numeric(10,5),
     raw             jsonb,
     enriched_at     timestamptz NOT NULL DEFAULT now(),
@@ -83,8 +99,28 @@ CREATE TABLE IF NOT EXISTS bedrock.contact_enrichment (
     reviewed_at     timestamptz,
     promoted_at     timestamptz,
 
-    CONSTRAINT contact_enrichment_status_ck CHECK (status IN ('ok', 'not_found', 'error'))
+    CONSTRAINT contact_enrichment_status_ck
+        CHECK (status IN ('ok', 'not_found', 'error', 'payment_failed'))
 );
+
+-- The avatar columns were added after this table was first created on
+-- 2026-08-06. Re-stated as ALTERs so the file still brings an existing database
+-- up to the current shape — CREATE TABLE IF NOT EXISTS is a no-op there, which
+-- would otherwise leave the index below referencing a column that doesn't exist.
+-- Must stay ABOVE the indexes for that reason. No-ops on a fresh create.
+ALTER TABLE bedrock.contact_enrichment
+    ADD COLUMN IF NOT EXISTS avatar_url         text,
+    ADD COLUMN IF NOT EXISTS avatar_expires_at  timestamptz,
+    ADD COLUMN IF NOT EXISTS avatar_gcs_uri     text,
+    ADD COLUMN IF NOT EXISTS avatar_rehosted_at timestamptz;
+
+-- 'payment_failed' was added after the original CHECK shipped. Dropping and
+-- recreating is the only way to widen a CHECK; both halves are idempotent.
+ALTER TABLE bedrock.contact_enrichment
+    DROP CONSTRAINT IF EXISTS contact_enrichment_status_ck;
+ALTER TABLE bedrock.contact_enrichment
+    ADD CONSTRAINT contact_enrichment_status_ck
+        CHECK (status IN ('ok', 'not_found', 'error', 'payment_failed'));
 
 -- The review queue: "what changed and hasn't been looked at". Partial, because
 -- unchanged and already-reviewed rows are the majority and never queried here.
@@ -95,6 +131,12 @@ CREATE INDEX IF NOT EXISTS contact_enrichment_review_idx
 -- Drives the loader's "skip anything enriched in the last N days" gate.
 CREATE INDEX IF NOT EXISTS contact_enrichment_enriched_at_idx
     ON bedrock.contact_enrichment (enriched_at DESC);
+
+-- The re-host work queue: a headshot we have a live URL for but no durable copy.
+-- Partial and ordered by expiry, so the pass always drains the ones about to die.
+CREATE INDEX IF NOT EXISTS contact_enrichment_avatar_pending_idx
+    ON bedrock.contact_enrichment (avatar_expires_at)
+    WHERE avatar_url IS NOT NULL AND avatar_gcs_uri IS NULL;
 
 COMMENT ON TABLE bedrock.contact_enrichment IS
     'Live LinkedIn title/employer for My Network contacts, one row per contact. '

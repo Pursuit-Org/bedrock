@@ -41,8 +41,10 @@ import asyncio
 import json
 import os
 import sys
+from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 import asyncpg
 from dotenv import load_dotenv
@@ -90,16 +92,38 @@ def build_target_sql(portco: bool, stale_days: int) -> str:
         FROM net n
         LEFT JOIN bedrock.contact_enrichment e ON e.contact_id = n.contact_id
         WHERE (n.priority IS NOT NULL OR n.is_jobs_contact = true)
-          -- Don't re-pay for a profile scraped recently, and don't re-pay for one
-          -- that came back 404 — a dead slug stays dead until the URL is repaired.
           AND (e.contact_id IS NULL
-               OR (e.status = 'ok' AND e.enriched_at < now() - make_interval(days => {stale_days})))
+               -- Don't re-pay for a profile scraped recently.
+               OR (e.status = 'ok' AND e.enriched_at < now() - make_interval(days => {stale_days}))
+               -- ALWAYS retry a transient failure. Treating these as terminal is
+               -- how a run that hits an empty wallet permanently poisons every
+               -- contact it touched: they get an 'error' row and are then excluded
+               -- from every future run, silently and forever. Only 'not_found' is
+               -- terminal — a dead slug stays dead until the URL is repaired.
+               OR e.status IN ('error', 'payment_failed'))
         ORDER BY CASE WHEN n.priority = 'P1' THEN 0
                       WHEN n.is_jobs_contact THEN 1
                       WHEN n.priority = 'P2' THEN 2
                       ELSE 3 END,
                  n.contact_id
     """
+
+
+def avatar_expiry(url: str | None) -> "datetime | None":
+    """When LinkedIn's signed headshot URL stops working.
+
+    The CDN URL carries `?e=<unix seconds>` — 21 days out across the whole
+    2026-08-06 sample, one shared fixed-window signature. Parsed rather than
+    assumed, so a provider that changes the window doesn't quietly leave the
+    re-host pass thinking it has three weeks. Returns None if the URL has no
+    `e=`, which reads downstream as "expiry unknown, re-host it first".
+    """
+    if not url:
+        return None
+    raw = parse_qs(urlparse(url).query).get("e", [None])[0]
+    if not raw or not raw.isdigit():
+        return None
+    return datetime.fromtimestamp(int(raw), tz=timezone.utc)
 
 
 def prune_raw(body: dict) -> dict:
@@ -148,6 +172,15 @@ async def fetch_profile(slug: str, sem: asyncio.Semaphore) -> dict:
     # Charged even on a 404, so the cost is read from the envelope, never assumed.
     cost = Decimal(str((env.get("payment") or {}).get("amount") or 0))
     body = env.get("body")
+    # A 402 is the x402 payment CHALLENGE — the call never reached the provider
+    # and nothing settled on-chain. The envelope still carries a payment.amount
+    # (the price being ASKED, not paid), so billing it would over-report: three
+    # of these recorded $0.15 while the wallet moved $0.00. Distinguished from a
+    # generic error because it is retryable and, unlike anything else here, it
+    # means the WHOLE run should stop rather than burn through the target list.
+    if env.get("status") == 402 or (isinstance(body, dict) and "x402Version" in body):
+        return {"status": "payment_failed", "cost": Decimal(0),
+                "error": "x402 payment challenge — wallet could not settle (check `zero wallet balance`)"}
     if env.get("status") == 404:
         return {"status": "not_found", "cost": cost, "error": "LinkedIn profile not found"}
     if not env.get("ok") or not isinstance(body, dict) or not body.get("linkedinId"):
@@ -161,8 +194,9 @@ INSERT INTO bedrock.contact_enrichment (
     contact_id, linkedin_slug, live_title, live_company, live_company_domain,
     live_company_linkedin_url, headline, live_location, connections_count,
     followers_count, open_to_work, prior_title, prior_company,
-    source, status, error_detail, cost_usd, raw, enriched_at, review_state
-) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,now(),'pending')
+    source, status, error_detail, cost_usd, raw, avatar_url, avatar_expires_at,
+    enriched_at, review_state
+) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,now(),'pending')
 ON CONFLICT (contact_id) DO UPDATE SET
     linkedin_slug = EXCLUDED.linkedin_slug,
     live_title = EXCLUDED.live_title,
@@ -181,6 +215,22 @@ ON CONFLICT (contact_id) DO UPDATE SET
     error_detail = EXCLUDED.error_detail,
     cost_usd = EXCLUDED.cost_usd,
     raw = EXCLUDED.raw,
+    avatar_url = EXCLUDED.avatar_url,
+    avatar_expires_at = EXCLUDED.avatar_expires_at,
+    -- A re-scrape hands back a new signed URL, and possibly a different photo.
+    -- The durable copy must only be invalidated when the PHOTO changed, so the
+    -- comparison is on the CDN path with the query string stripped: the `t=`
+    -- signature is regenerated on every scrape whether or not the image moved,
+    -- so comparing whole URLs would discard and re-upload every headshot on
+    -- every run. The path carries the image's upload timestamp and is stable.
+    avatar_gcs_uri = CASE
+        WHEN split_part(bedrock.contact_enrichment.avatar_url, '?', 1)
+             IS NOT DISTINCT FROM split_part(EXCLUDED.avatar_url, '?', 1)
+        THEN bedrock.contact_enrichment.avatar_gcs_uri ELSE NULL END,
+    avatar_rehosted_at = CASE
+        WHEN split_part(bedrock.contact_enrichment.avatar_url, '?', 1)
+             IS NOT DISTINCT FROM split_part(EXCLUDED.avatar_url, '?', 1)
+        THEN bedrock.contact_enrichment.avatar_rehosted_at ELSE NULL END,
     enriched_at = now(),
     -- A re-scrape is new evidence, so it re-enters the queue. Rows already
     -- promoted into contacts stay promoted; re-queuing them would ask a
@@ -241,9 +291,15 @@ async def main() -> int:
             return 0
 
         spent = Decimal(0)
-        counts = {"ok": 0, "not_found": 0, "error": 0}
+        counts = {"ok": 0, "not_found": 0, "error": 0, "payment_failed": 0}
         changed = 0
         sem = asyncio.Semaphore(args.concurrency)
+        # A single asyncpg connection cannot take concurrent statements — it
+        # raises "another operation is in progress". The paid fetches SHOULD run
+        # concurrently, so only the write is serialised. Learned the hard way: a
+        # 3-row test passed on timing luck because the fetches finished far
+        # enough apart, and the failure only appears under real fan-out.
+        write_lock = asyncio.Lock()
 
         async def one(row) -> None:
             nonlocal spent, changed
@@ -251,15 +307,17 @@ async def main() -> int:
             spent += res["cost"]
             counts[res["status"]] += 1
             b = res.get("body") or {}
-            await conn.execute(
-                UPSERT, row["contact_id"], row["slug"],
-                b.get("title"), b.get("companyName"), b.get("companyDomain"),
-                b.get("companyLinkedinUrl"), b.get("headline"), b.get("location"),
-                b.get("connectionsCount"), b.get("followerCount"), b.get("openToWork"),
-                row["current_title"], row["current_company"],
-                SOURCE, res["status"], res.get("error"), res["cost"],
-                json.dumps(prune_raw(b)) if b else None,
-            )
+            async with write_lock:
+                await conn.execute(
+                    UPSERT, row["contact_id"], row["slug"],
+                    b.get("title"), b.get("companyName"), b.get("companyDomain"),
+                    b.get("companyLinkedinUrl"), b.get("headline"), b.get("location"),
+                    b.get("connectionsCount"), b.get("followerCount"), b.get("openToWork"),
+                    row["current_title"], row["current_company"],
+                    SOURCE, res["status"], res.get("error"), res["cost"],
+                    json.dumps(prune_raw(b)) if b else None,
+                    b.get("avatarUrl"), avatar_expiry(b.get("avatarUrl")),
+                )
             if res["status"] == "ok":
                 t_chg = (b.get("title") or "").strip().lower() != (row["current_title"] or "").strip().lower()
                 c_chg = (b.get("companyName") or "").strip().lower() != (row["current_company"] or "").strip().lower()
@@ -272,6 +330,14 @@ async def main() -> int:
             # call and a price change mid-run must stop the run, not overshoot.
             if spent + UNIT_COST > args.max_spend:
                 print(f"\nspend cap reached at ${spent} — stopping.")
+                break
+            if counts["payment_failed"]:
+                # An empty or unsettleable wallet will not fix itself partway
+                # through 2,000 contacts. Stopping on the first one keeps the run
+                # from writing a failure row for every remaining target.
+                print(f"\nPAYMENT FAILED — stopping after {sum(counts.values())} calls. "
+                      f"Check `zero wallet balance`; these contacts stay eligible "
+                      f"and will be picked up by the next run.")
                 break
             batch.append(asyncio.create_task(one(row)))
             if len(batch) >= args.concurrency * 4:
