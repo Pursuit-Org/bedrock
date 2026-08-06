@@ -157,16 +157,31 @@ branch) is therefore the first decision, not a formality.
   Additive, no backfill. employee_count was withdrawn, so this touches no shared
   table — it is bedrock-only now.
 
+## Built 2026-08-05 (second pass)
+
+- **A · Stage changes** — migration written (dry-run clean) + full code sweep.
+  Stages canonicalise on READ (`canon_stage`), so the new vocabulary shows before
+  the migration lands. Retired stages are visible-but-disabled in pickers rather
+  than hidden, so they read as "coming" not "missing".
+- **Call Booked / Revisit** — in the contact picker (disabled until the CHECK
+  allows them); Revisit opens a date dialog and files a jobs_task, wired at all
+  four stage-change sites via `useContactStageChange`.
+- **Closed Lost** — reasons trimmed to 8 (dropped Went cold, Timing, Hired
+  elsewhere); note is now REQUIRED; reason=Revisit reveals a date field and
+  files a task for the deal owner.
+- **C · Opportunity tags** — `DealTags` editor on the deal strip, sharing
+  `contact_tag_catalog`. Inert until the migration adds the column.
+- **B · Investor** — picker, list column, reverse portfolio list.
+- **Touch Depth** (was Follow-up Depth) — cohort = contacts in initial outreach
+  that entered in the period; measure = touches in the **4 weeks ending with the
+  period**. Window anchored to the period, not to today, so a past period always
+  reports the same number.
+
 ## Remaining
 
-1. **A · Stage changes** — the risky one. Migration + backfill (16 initial_outreach
-   remaps, 18 on-hold folds, 4 renames), code sweep across funnels/board/heatmap/
-   filters, coordinated deploy. Reasons vocabulary = existing seven + the four new.
-   Deliberately not started alongside other work: writes must not offer a stage
-   the live CHECK constraint rejects, and the backend talks to production.
-2. **C · Opportunity tags UI** — column exists only after the migration; needs the
-   tag editor on the opportunity panel and TagCampaigns counting opportunities.
-3. **B remainder** — investor picker + reverse portfolio list. Needs the
-   migration AND the UI, which is not written yet.
-4. **E remainder** — row selection on Accounts and Opportunities, then their
-   Export buttons (endpoint specs already built for both).
+1. **Jac applies both migrations** — everything above is written and running;
+   the stage/tag/investor COLUMNS are what's outstanding.
+2. **TagCampaigns opportunity counts** — the funnel bar still counts contacts
+   only; adding opportunities per tag needs the tags column populated first.
+3. **E remainder** — row selection on Accounts and Opportunities, then their
+   Export buttons (endpoint specs already built and tested for both).

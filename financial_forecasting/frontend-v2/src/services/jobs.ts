@@ -81,6 +81,9 @@ export interface JobsOpportunity {
   activity_count?: number;
   last_activity_at?: string | null;
   recent_activity_count?: number;
+  /** Campaign tags — same vocabulary as contacts. Empty until the
+   *  2026-08-05 migration adds the column. */
+  tags?: string[];
 }
 
 export interface JobContact {
@@ -275,10 +278,19 @@ export const MEMBERSHIP_STAGE_LABELS: Record<MembershipStage, string> = {
  *  applied by Jac out-of-band, so the writable vocabulary can change without a
  *  deploy — building pickers from this is what stops the UI offering a stage the
  *  CHECK constraint rejects (which would fail saves for everyone). */
+export interface StageOption {
+  value: string;
+  label: string;
+  /** False while the database CHECK constraint still rejects it — shown in the
+   *  picker but not selectable, so a pending migration reads as "coming" rather
+   *  than "missing". */
+  available: boolean;
+  unavailable_reason?: string | null;
+}
 export interface StageVocabulary {
-  opportunity_stages: { value: string; label: string }[];
-  membership_stages: { value: MembershipStage; label: string }[];
-  closed_lost_reasons: { value: string; label: string }[];
+  opportunity_stages: StageOption[];
+  membership_stages: (StageOption & { value: MembershipStage })[];
+  closed_lost_reasons: StageOption[];
   /** True once the 2026-08-05 stage migration has landed. */
   migrated: boolean;
 }
@@ -1264,12 +1276,14 @@ export interface TouchDepthBucket {
  *  `undated` = contacts whose stage entry has no timestamp, so no period can
  *  claim them (the stage-history grant fills most of these in). */
 export interface TouchDepth {
-  /** Contacts with at least one linked touch — the denominator for `pct`. */
+  /** Every contact in the cohort — the denominator for `pct`. */
   total: number;
   undated: number;
-  /** In the cohort but with no activity linked to them: a linkage gap, not a
-   *  genuine zero, so they're excluded from the shares and reported instead. */
-  unlinked: number;
+  /** Length of the touch-counting window, in weeks. */
+  weeks: number;
+  /** The window itself (YYYY-MM-DD), ending with the selected period. */
+  touch_from: string;
+  touch_to: string;
   buckets: TouchDepthBucket[];
 }
 

@@ -30,8 +30,16 @@ export function useContactStageChange() {
   const { data: vocab } = useStageVocabulary();
   const [pending, setPending] = useState<{ id: number; name: string } | null>(null);
 
-  /** Stages the database currently accepts, labelled. */
-  const options: { value: string; label: string }[] = vocab?.membership_stages ?? FALLBACK;
+  /** The target vocabulary, with anything the database can't accept yet marked
+   *  disabled rather than dropped — so Call Booked and Revisit are visibly on
+   *  their way instead of looking unbuilt. */
+  const options: { value: string; label: string; disabled?: boolean; title?: string }[] =
+    vocab?.membership_stages.map((o) => ({
+      value: o.value,
+      label: o.label,
+      disabled: !o.available,
+      title: o.unavailable_reason ?? undefined,
+    })) ?? FALLBACK;
 
   /**
    * Move a contact to `stage`. Returns a promise that settles when the write is

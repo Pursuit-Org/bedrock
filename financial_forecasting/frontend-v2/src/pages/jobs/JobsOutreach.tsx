@@ -268,24 +268,16 @@ function TouchDepthPanel({ depth, nameOf }: {
   const max = Math.max(1, ...buckets.map((b) => b.count));
   return (
     <Panel
-      title="Follow-up Depth"
+      title="Touch Depth"
+      // Spells out both halves of the measure, because "3 touches" is
+      // meaningless without knowing over what window and for whom.
       desc={depth
-        ? `All ${depth.total} contacts that received outreach this period, by how many touches they've had`
+        ? `The ${depth.total} contacts in initial outreach this period, by touches received in the ${depth.weeks} weeks to ${fmtDate(depth.touch_to)}`
         : "Loading…"}
-      action={depth && (depth.undated > 0 || depth.unlinked > 0) ? (
-        <span className="text-right text-[11px] leading-tight text-ink-4">
-          {depth.undated > 0 ? (
-            <span className="block"
-              title="No stage timestamp, so no period can claim them. The stage-history grant fills most of these in.">
-              {depth.undated} without a stage date
-            </span>
-          ) : null}
-          {depth.unlinked > 0 ? (
-            <span className="block"
-              title="Reached outreach but no activity is linked to them, so their touches can't be counted. A linkage gap, not a real zero — excluded from the shares.">
-              {depth.unlinked} with no linked activity
-            </span>
-          ) : null}
+      action={depth && depth.undated > 0 ? (
+        <span className="text-right text-[11px] leading-tight text-ink-4"
+          title="No stage timestamp, so no period can claim them. The stage-history grant fills most of these in.">
+          {depth.undated} without a stage date
         </span>
       ) : undefined}
     >
@@ -293,18 +285,21 @@ function TouchDepthPanel({ depth, nameOf }: {
         <div className="h-28 animate-pulse rounded bg-surface-2" />
       ) : depth.total === 0 ? (
         <div className="rounded-lg border border-dashed border-border-strong px-4 py-6 text-center text-[12.5px] text-ink-4">
-          Nobody received initial outreach in this period.
+          No contacts entered initial outreach in this period.
         </div>
       ) : (
         <div className="flex flex-col">
           {buckets.map((b) => (
             <div key={b.key}>
               <div className="grid grid-cols-[104px_1fr_74px] items-center gap-3 py-[7px]">
-                <span className="text-[12.5px] font-medium text-ink">{b.label}</span>
+                <span className={cn("text-[12.5px] font-medium",
+                  b.key === "0" ? "text-[var(--amber)]" : "text-ink")}>{b.label}</span>
                 <span className="h-2.5 overflow-hidden rounded-full bg-surface-2">
                   <span className="block h-full rounded-full transition-[width] duration-500"
                     style={{ width: `${Math.round((100 * b.count) / max)}%`,
-                             background: "linear-gradient(90deg,#6d5efc,#8b7dff)" }} />
+                             background: b.key === "0"
+                               ? "linear-gradient(90deg,#d99a2b,#e8b657)"
+                               : "linear-gradient(90deg,#6d5efc,#8b7dff)" }} />
                 </span>
                 <span className="text-right text-[12px] tabular-nums text-ink-2">
                   {b.count > 0 ? (

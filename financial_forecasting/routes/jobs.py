@@ -3548,13 +3548,14 @@ async def outreach_scorecard(
     }}
 
 
-# The cohort has reached initial outreach, so by definition everyone in it was
-# touched at least once — there is no "0 touches" row to show. A contact that
-# nonetheless counts zero has activity that was never linked to them
-# (activity.participant_public_contact_id), which is a linkage gap, not a real
-# zero: 8 of 497 across Jun–Aug 2026. Those are reported as `unlinked` and kept
-# out of the denominator so the shares describe contacts we can actually measure.
+# Zero is back, and it means something different now. When touches were counted
+# over a contact's lifetime, everyone in this cohort had at least one by
+# definition and the row was noise. Counting a fixed 3-week window instead, zero
+# means "reached at some point, but nothing inside the window" — a real and
+# common state on production, and precisely the follow-up gap the panel exists to
+# show. It leads the list and is coloured as a problem.
 _TOUCH_BUCKETS = [
+    ("0", "No touches in window", 0, 0),
     ("1", "1 touch", 1, 1),
     ("2", "2 touches", 2, 2),
     ("3", "3 touches", 3, 3),
@@ -3563,15 +3564,23 @@ _TOUCH_BUCKETS = [
 _TOUCH_DEPTH_CAP = 40   # contacts listed per bucket for the inline drill
 
 
-async def _touch_depth(conn, start, end, scope: str, owner: Optional[str]) -> dict:
-    """How deep the follow-up went for the contacts that entered initial outreach
-    in this window: 0 / 1 / 2 / 3 / 4+ logged touches.
+# The touch-counting window (Kwame 2026-08-05, revised to 4 weeks). Anchored to
+# the END OF THE SELECTED PERIOD rather than to today — otherwise looking back at
+# July would count touches from August, and the same period would report
+# different numbers depending on when you opened it. The UI reads the number from
+# the response, so changing it here changes the label too.
+_TOUCH_DEPTH_WEEKS = 4
 
-    Cohort is period-scoped (entered outreach in the window); the touch count is
-    the contact's LIFETIME jobs-relevant activity. For a cohort that only just
-    entered outreach those are near enough the same thing, and period-slicing the
-    touches would split a three-touch sequence that happened to straddle a
-    Sunday — which is the opposite of what a follow-up-depth number is for.
+
+async def _touch_depth(conn, start, end, scope: str, owner: Optional[str]) -> dict:
+    """Touch depth: for every contact sitting in initial outreach that entered in
+    the selected period, how many jobs touches they received in the 4 weeks
+    ending with that period.
+
+    Both halves are bounded on purpose. The cohort is period-scoped so it matches
+    the rest of the tab, and the touch count is a fixed 3-week window so the
+    buckets mean the same thing from one period to the next — a lifetime count
+    would make an old contact look well-worked purely for being old.
 
     Uses the same _jobs_relevant / _not_autoreply filters and the same
     stage-entry expression as the funnel and the drill-downs, so this can't
@@ -3605,6 +3614,7 @@ async def _touch_depth(conn, start, end, scope: str, owner: Optional[str]) -> di
                    (SELECT count(*) FROM bedrock.activity a
                      WHERE a.participant_public_contact_id = s.contact_id
                        AND a.deleted_at IS NULL
+                       AND a.activity_date >= $3 AND a.activity_date < $2
                        AND {_jobs_relevant('a')} AND {_not_autoreply('a')}) AS touches
             FROM scoped s
         )
@@ -3612,13 +3622,16 @@ async def _touch_depth(conn, start, end, scope: str, owner: Optional[str]) -> di
                p.full_name, p.current_company,
                (SELECT max(a2.activity_date) FROM bedrock.activity a2
                  WHERE a2.participant_public_contact_id = c.contact_id
-                   AND a2.deleted_at IS NULL AND {_jobs_relevant('a2')}) AS last_touch_at
+                   AND a2.deleted_at IS NULL
+                   AND a2.activity_date >= $3 AND a2.activity_date < $2
+                   AND {_jobs_relevant('a2')}) AS last_touch_at
         FROM counted c
         LEFT JOIN public.contacts p ON p.contact_id = c.contact_id
         ORDER BY c.touches, p.current_company NULLS LAST
     """
+    touch_from = end - timedelta(weeks=_TOUCH_DEPTH_WEEKS)
     try:
-        rows = await conn.fetch(sql, start, end)
+        rows = await conn.fetch(sql, start, end, touch_from)
     except asyncpg.exceptions.InsufficientPrivilegeError:
         logger.warning("touch depth: stage-history read refused — falling back to stamps only")
         rows = []
@@ -3628,10 +3641,9 @@ async def _touch_depth(conn, start, end, scope: str, owner: Optional[str]) -> di
         WHERE m.stage = 'initial_outreach' AND {owner_pred} AND {entered} IS NULL
     """) or 0
 
-    # Denominator = contacts with at least one linked touch, so a percentage
-    # can't be quietly diluted by rows the panel no longer displays.
-    unlinked = sum(1 for r in rows if r["touches"] == 0)
-    measured = [r for r in rows if r["touches"] > 0]
+    # Everyone in the cohort is counted: with a bounded window, zero is a real
+    # answer rather than a data gap, so excluding it would understate the problem.
+    measured = rows
     total = len(measured)
     buckets = []
     for key, label, lo, hi in _TOUCH_BUCKETS:
@@ -3647,7 +3659,11 @@ async def _touch_depth(conn, start, end, scope: str, owner: Optional[str]) -> di
             } for r in members[:_TOUCH_DEPTH_CAP]],
             "truncated": max(0, len(members) - _TOUCH_DEPTH_CAP),
         })
-    return {"total": total, "undated": undated, "unlinked": unlinked, "buckets": buckets}
+    return {"total": total, "undated": undated,
+            "weeks": _TOUCH_DEPTH_WEEKS,
+            "touch_from": touch_from.date().isoformat(),
+            "touch_to": end.date().isoformat(),
+            "buckets": buckets}
 
 
 def _touch_direction(type_: str, email_from: Optional[str]) -> str:
@@ -4712,12 +4728,26 @@ async def stage_vocabulary(user=Depends(require_auth)):
     mem = await _writable_stages(
         "jobs_contact_membership", "jobs_contact_membership_stage_vals",
         MEMBERSHIP_STAGES_NEW + ["on_hold"])
+    # Report the TARGET vocabulary with an `available` flag, not just what's
+    # writable. Filtering the unavailable ones out entirely made Call Booked and
+    # Revisit simply missing from the dropdown, which reads as "not built" rather
+    # than "waiting on the migration". Showing them disabled, with a reason on
+    # hover, tells the truth and still can't produce a failing save.
+    def _opt(v: str, label: str, allowed: list[str]):
+        ok = v in allowed
+        return {"value": v, "label": label, "available": ok,
+                "unavailable_reason": None if ok else
+                "Available once the 2026-08-05 stage migration is applied"}
+
+    membership_target = MEMBERSHIP_STAGES_NEW if "call_booked" in mem or "revisit" in mem \
+        else MEMBERSHIP_STAGES_NEW + [v for v in mem if v not in MEMBERSHIP_STAGES_NEW]
+    opp_target = OPPORTUNITY_STAGES_NEW
+
     return {"success": True, "data": {
-        "opportunity_stages": [{"value": v, "label": STAGE_LABELS.get(v, v)} for v in opp],
-        "membership_stages": [{"value": v, "label": MEMBERSHIP_STAGE_LABELS.get(v, v)} for v in mem],
-        "closed_lost_reasons": [{"value": v, "label": l} for v, l in CLOSED_LOST_REASONS],
-        # True once the stage migration has landed — the UI uses this to decide
-        # whether the Revisit date picker and Call Booked are offered.
+        "opportunity_stages": [_opt(v, STAGE_LABELS.get(v, v), opp) for v in opp_target],
+        "membership_stages": [_opt(v, MEMBERSHIP_STAGE_LABELS.get(v, v), mem) for v in membership_target],
+        "closed_lost_reasons": [{"value": v, "label": l, "available": True} for v, l in CLOSED_LOST_REASONS],
+        # True once the stage migration has landed.
         "migrated": "call_booked" in mem,
     }}
 
@@ -6541,9 +6571,17 @@ async def get_pipeline_summary(user=Depends(require_auth), conn=Depends(get_db))
 
 def _norm_opp(d: dict) -> dict:
     """Guarantee array fields are never None (the columns allow NULL, which
-    would crash the frontend pickers that call .map/.length on them)."""
+    would crash the frontend pickers that call .map/.length on them), and hand
+    the frontend a CANONICAL stage.
+
+    Every opportunity the API returns passes through here, so canonicalising in
+    one place is what keeps a row's stage chip, its board column and its status
+    roll-up agreeing with each other before the migration lands."""
     d["builder_ids"] = d.get("builder_ids") or []
     d["sf_contact_ids"] = d.get("sf_contact_ids") or []
+    d["tags"] = d.get("tags") or []
+    if d.get("stage"):
+        d["stage"] = canon_stage(d["stage"])
     return d
 
 
