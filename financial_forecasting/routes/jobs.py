@@ -4548,27 +4548,6 @@ async def jobs_account_names(
     return {"success": True, "data": [{"account_key": r["key"], "account": r["name"]} for r in rows]}
 
 
-# schema-probe cache: (schema, table, column) → bool. Columns only ever get
-# ADDED by a migration, so a True is permanent; a False is re-checked so the app
-# picks the column up after Jac applies without needing a restart.
-_COLUMN_CACHE: dict[tuple[str, str, str], bool] = {}
-
-
-async def _has_column(schema: str, table: str, column: str) -> bool:
-    """Does this column exist yet? Lets a feature ship ahead of its migration and
-    light up on apply, instead of 42703-ing every request until then."""
-    key = (schema, table, column)
-    if _COLUMN_CACHE.get(key):
-        return True
-    pool = get_pool()
-    found = bool(await pool.fetchval(
-        "SELECT 1 FROM information_schema.columns "
-        "WHERE table_schema = $1 AND table_name = $2 AND column_name = $3",
-        schema, table, column))
-    _COLUMN_CACHE[key] = found
-    return found
-
-
 @router.get("/accounts")
 async def jobs_accounts(
     deal_type: Optional[str] = Query(None),
@@ -4586,14 +4565,6 @@ async def jobs_accounts(
     rows; scope=all includes cold linkedin imports.
     """
     eng = "" if scope == "all" else f"AND {_engaged_clause('c')}"
-
-    # employee_count is added by the 2026-08-05 migration Jac applies. Probing
-    # for it rather than assuming means this endpoint works before AND after,
-    # and the column starts feeding the UI the moment it lands — no second
-    # deploy. Selecting a missing column would 42703 the whole accounts list.
-    employee_count_select = (
-        ", max(employee_count) AS employee_count"
-        if await _has_column("public", "companies", "employee_count") else "")
 
     # Every input below is an independent read. Run sequentially on one
     # connection they cost ~2.6s; gather them across the pool so wall-time ≈ the
@@ -4744,13 +4715,12 @@ async def jobs_accounts(
         # has ANY of the four: gating on industry alone hid the size band for
         # every company whose industry was never enriched.
         pool.fetch(
-            f"""
+            """
             SELECT lower(trim(name)) AS key,
                    max(industry)     AS industry,
                    max(size_bucket)  AS size_bucket,
                    max(hq_location)  AS hq_location,
                    max(stage)        AS company_stage
-                   {employee_count_select}
             FROM public.companies
             WHERE coalesce(trim(name),'') <> ''
               AND (coalesce(industry,'') <> '' OR coalesce(size_bucket,'') <> ''
@@ -4960,7 +4930,6 @@ async def jobs_accounts(
         g["size_bucket"] = co.get("size_bucket")
         g["hq_location"] = co.get("hq_location")
         g["company_stage"] = co.get("company_stage")
-        g["employee_count"] = co.get("employee_count")
         _src, _app = listings_by_key.get(key, (0, 0))
         g["roles_sourced"] = _src
         g["roles_applied"] = _app

@@ -74,20 +74,12 @@ const DEFAULT_WIDTHS: Record<ColKey, number> = {
 };
 const SORTABLE = new Set<ColKey>(["account", "status", "owner", "size", "hq", "industry", "opps", "contacts", "listings", "hired", "tasks", "last_activity"]);
 
-/** Size bands sort by headcount, not alphabetically. Raw employee_count wins
- *  when it's there (it's finer), else the band's lower bound; unknown sorts last. */
+/** Size bands sort by headcount order, not alphabetically — "1001-5000" would
+ *  otherwise sort before "51-200". Unknown sorts last. */
 const SIZE_BAND_ORDER = ["1-10", "11-50", "51-200", "201-1000", "1001-5000", "5000+"];
 function sizeRank(a: JobsAccount): number {
-  if (a.employee_count != null) return a.employee_count;
   const i = SIZE_BAND_ORDER.indexOf((a.size_bucket ?? "").trim());
   return i === -1 ? Number.MAX_SAFE_INTEGER : i;
-}
-
-/** The size cell: band, with the raw headcount when we have it. */
-function sizeLabel(a: JobsAccount): string {
-  const band = (a.size_bucket ?? "").trim();
-  if (a.employee_count != null) return band ? `${a.employee_count.toLocaleString()}` : String(a.employee_count);
-  return band || "—";
 }
 
 // Total hired = builders we placed (our DB) + historical Pursuit fellows (SF).
@@ -171,13 +163,10 @@ function AccountRow({
     owner: <OwnerSelect owner={account.owner_email} staff={staff} onSave={(email) => onSaveOwner(account.account, email)} />,
     // Firmographics from public.companies. Read-only on purpose: other systems
     // feed this, so making it editable here would invite two answers.
-    size: (account.size_bucket || account.employee_count != null) ? (
+    size: account.size_bucket ? (
       <span className="text-[12px] tabular-nums text-ink-2"
-        title={[account.size_bucket ? `Band: ${account.size_bucket}` : null,
-                account.employee_count != null ? `Headcount: ${account.employee_count.toLocaleString()}` : null,
-                account.company_stage ? `Stage: ${account.company_stage}` : null]
-                .filter(Boolean).join(" · ")}>
-        {sizeLabel(account)}
+        title={account.company_stage ? `${account.size_bucket} · stage: ${account.company_stage}` : account.size_bucket}>
+        {account.size_bucket}
       </span>
     ) : <span className="text-ink-4">—</span>,
     hq: account.hq_location

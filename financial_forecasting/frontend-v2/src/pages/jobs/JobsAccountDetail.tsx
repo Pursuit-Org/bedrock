@@ -115,10 +115,7 @@ export function JobsAccountDetailPage() {
       {/* Firmographics — read-only, from public.companies. Bedrock shows them;
           the enrichment pipeline owns them, so there's nothing to edit here. */}
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-        <Stat label="Company size"
-          value={account.employee_count != null
-            ? `${account.employee_count.toLocaleString()}${account.size_bucket ? ` (${account.size_bucket})` : ""}`
-            : account.size_bucket || "—"} />
+        <Stat label="Company size" value={account.size_bucket || "—"} />
         <Stat label="HQ" value={account.hq_location || "—"} />
         <Stat label="Industry" value={account.industry || "—"} />
         <Stat label="Company stage" value={account.company_stage || "—"} />

@@ -497,8 +497,6 @@ export interface JobsAccount {
   size_bucket?: string | null;
   hq_location?: string | null;
   company_stage?: string | null;
-  /** Raw headcount. Null until the 2026-08-05 migration adds the column. */
-  employee_count?: number | null;
   opportunities: JobsAccountOpp[];
   /** Prospects are NOT nested in the list payload (~38k rows) — fetch them
    *  lazily per account via useAccountProspects. Only the count ships here. */

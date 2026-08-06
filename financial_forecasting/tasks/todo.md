@@ -100,7 +100,8 @@ branch) is therefore the first decision, not a formality.
   One investor per account for now; if multi-investor is ever needed, this
   column promotes to a link table without UI change. No separate account_type
   flag — "is an investor" is derivable (has portfolio companies).
-- `companies.employee_count integer` — new, shared table, flag to Jac.
+- ~~`companies.employee_count`~~ — withdrawn by Kwame 2026-08-05; the
+  size_bucket band is enough, and it was the only shared-table change here.
 
 ### C. Opportunity campaigns = shared tag catalog
 - `jobs_opportunity.tags text[]` + GIN index; same catalog
@@ -152,9 +153,9 @@ branch) is therefore the first decision, not a formality.
 - **E (partial) · Export** — POST /api/jobs/export/{entity} streaming .xlsx,
   wired to the Contacts bulk bar.
 - **Migration for Jac** — `2026-08-05-account-fields-and-opportunity-tags.sql`:
-  employee_count on public.companies (shared table, flagged), investor_account_key
-  on jobs_account, tags + GIN index on jobs_opportunity. Additive, no backfill.
-  The API probes for employee_count, so it lights up on apply with no redeploy.
+  investor_account_key on jobs_account, tags + GIN index on jobs_opportunity.
+  Additive, no backfill. employee_count was withdrawn, so this touches no shared
+  table — it is bedrock-only now.
 
 ## Remaining
 
@@ -165,7 +166,7 @@ branch) is therefore the first decision, not a formality.
    the live CHECK constraint rejects, and the backend talks to production.
 2. **C · Opportunity tags UI** — column exists only after the migration; needs the
    tag editor on the opportunity panel and TagCampaigns counting opportunities.
-3. **B remainder** — investor picker + reverse portfolio list (needs the migration),
-   employee_count display.
+3. **B remainder** — investor picker + reverse portfolio list. Needs the
+   migration AND the UI, which is not written yet.
 4. **E remainder** — row selection on Accounts and Opportunities, then their
    Export buttons (endpoint specs already built for both).
