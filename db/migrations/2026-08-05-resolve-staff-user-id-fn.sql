@@ -31,10 +31,16 @@ STABLE
 -- a caller-controlled search_path.
 SET search_path = pg_catalog, public
 AS $$
+    -- BOTH 'staff' AND 'admin'. Checked against the people already mapped by hand:
+    -- jac, david and joanna are role='admin', not 'staff', so filtering on 'staff'
+    -- alone would have silently resolved nobody for three of the existing users and
+    -- for joe@ (also admin) — the exact failure this function exists to prevent.
+    -- Everything else in public.users is deliberately out: builder,
+    -- enterprise_builder, enterprise_admin, workshop_participant, volunteer.
     SELECT u.user_id
       FROM public.users u
      WHERE lower(u.email) = lower(btrim(p_email))
-       AND u.role = 'staff'
+       AND u.role IN ('staff', 'admin')
        AND coalesce(u.active, true)
      ORDER BY u.user_id
      LIMIT 1;
@@ -53,10 +59,14 @@ GRANT EXECUTE ON FUNCTION bedrock.resolve_staff_user_id(text) TO bedrock_user;
 COMMIT;
 
 -- Verify after applying (as bedrock_user, which is what the app uses):
---   SELECT bedrock.resolve_staff_user_id('jac@pursuit.org');      -- expect 6
---   SELECT bedrock.resolve_staff_user_id('nick@pursuit.org');     -- expect 467
+--   SELECT bedrock.resolve_staff_user_id('jac@pursuit.org');      -- expect 6    (role=admin)
+--   SELECT bedrock.resolve_staff_user_id('nick@pursuit.org');     -- expect 467  (role=staff)
+--   SELECT bedrock.resolve_staff_user_id('joe@pursuit.org');      -- expect 1007 (role=admin)
+--   SELECT bedrock.resolve_staff_user_id('frances@pursuit.org');  -- expect 334
 --   SELECT bedrock.resolve_staff_user_id('nobody@pursuit.org');   -- expect NULL
--- If those return NULL for jac/nick, the function was created by the wrong owner.
+-- All four ids NULL means the function was created by the wrong owner — RLS is
+-- hiding public.users from it. jac/joe NULL but nick fine means the role filter
+-- regressed to 'staff' only.
 
 -- ── rollback ────────────────────────────────────────────────────────────────
 -- DROP FUNCTION IF EXISTS bedrock.resolve_staff_user_id(text);
