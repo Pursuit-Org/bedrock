@@ -1654,6 +1654,16 @@ export interface NetworkConnection {
   is_portco: boolean;
   /** Shared jobs_comment count for this contact (team-visible, not per-staff). */
   comment_count: number;
+  /** What LinkedIn says today, from bedrock.contact_enrichment — sent ONLY when it
+   *  disagrees with current_title / current_company, and null otherwise (including
+   *  for every contact not yet re-enriched). These are NOT authoritative: the
+   *  network's title/employer come from a LinkedIn CSV import that measured 64%
+   *  stale, and a change only reaches current_* after review, because
+   *  current_company is what resolves the company's firmographics. */
+  live_title: string | null;
+  live_company: string | null;
+  /** When this contact was last re-enriched, whatever the outcome. */
+  enriched_at: string | null;
 }
 /** The filter menu's option lists for this staff member's network. */
 export interface MyNetworkFacets {

@@ -6871,6 +6871,10 @@ async def my_network(
     # rather than silently discarding a write (see set_connection_status).
     has_hiring_fit = await _connection_status_has_hiring_fit(conn)
     hiring_fit_sel = "cs.hiring_fit" if has_hiring_fit else "NULL::text"
+    # And again for the LinkedIn re-enrichment landing table, so the page works
+    # either side of db/migrations/2026-08-06-contact-enrichment.sql.
+    has_enrichment = await conn.fetchval(
+        "SELECT to_regclass('bedrock.contact_enrichment') IS NOT NULL")
 
     params: list = [sid]
     # $1 is consumed by the joins in NET_FROM for both scopes, so it is always bound
@@ -6973,8 +6977,28 @@ async def my_network(
                ({_seniority_case('c.current_title')}) AS seniority,
                ({priority_case}) AS priority,
                {'(' + _PORTCO_EXISTS + ')' if has_portco else 'false'} AS is_portco,
-               coalesce(cmt.n, 0) AS comment_count
+               coalesce(cmt.n, 0) AS comment_count,
+               -- Live LinkedIn values, when this contact has been re-enriched.
+               -- The row keeps rendering c.current_* as the authoritative value;
+               -- these ride alongside as "there is something fresher". Nothing
+               -- here feeds the priority banding or the filters — promoting a
+               -- change into contacts is a separate reviewed step, because
+               -- current_company is the join key to the firmographics.
+               {'ce.live_title'   if has_enrichment else 'NULL::text'} AS live_title,
+               {'ce.live_company' if has_enrichment else 'NULL::text'} AS live_company,
+               {'ce.enriched_at'  if has_enrichment else 'NULL::timestamptz'} AS enriched_at,
+               -- Compared against c.current_* as it is NOW, not against the
+               -- prior_* snapshot the loader took: if someone has since fixed the
+               -- contact by hand, the row must stop claiming a difference.
+               {'''(ce.live_title IS NOT NULL
+                    AND lower(btrim(ce.live_title)) IS DISTINCT FROM lower(btrim(coalesce(c.current_title,''))))'''
+                 if has_enrichment else 'false'} AS live_title_differs,
+               {'''(ce.live_company IS NOT NULL
+                    AND lower(btrim(ce.live_company)) IS DISTINCT FROM lower(btrim(coalesce(c.current_company,''))))'''
+                 if has_enrichment else 'false'} AS live_company_differs
         FROM {NET_FROM}
+        {"LEFT JOIN bedrock.contact_enrichment ce ON ce.contact_id = c.contact_id AND ce.status = 'ok'"
+         if has_enrichment else ""}
         LEFT JOIN LATERAL (
             SELECT count(*) n, max(activity_date) last,
                    (array_agg(type ORDER BY activity_date DESC))[1] AS last_type
@@ -7067,6 +7091,12 @@ async def my_network(
             "priority": r["priority"],
             "is_portco": r["is_portco"],
             "comment_count": r["comment_count"] or 0,
+            # Re-enrichment: what LinkedIn says today, only when it disagrees with
+            # what we hold. Sending the value only when it differs keeps the row
+            # from rendering a "fresher" marker that says the same thing twice.
+            "live_title": r["live_title"] if r["live_title_differs"] else None,
+            "live_company": r["live_company"] if r["live_company_differs"] else None,
+            "enriched_at": r["enriched_at"].isoformat() if r["enriched_at"] else None,
             "headcount_band": r["headcount_band"],
             "industry": r["industry"],
             "hq_location": r["hq_location"],

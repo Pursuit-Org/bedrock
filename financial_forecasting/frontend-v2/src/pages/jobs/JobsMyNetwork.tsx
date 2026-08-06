@@ -353,6 +353,15 @@ function NetworkRow({ c, expanded, onToggle, fitEnabled, scope, tagLabel }: {
               {c.full_name || "—"}
             </Link>
             {c.current_title ? <span className="block truncate text-[10.5px] leading-tight text-ink-4">{c.current_title}</span> : null}
+            {/* What LinkedIn says today, shown only when it contradicts the row.
+                The imported title stays above it and stays authoritative — this
+                is a prompt to look, not a correction that has been applied. */}
+            {c.live_title ? (
+              <span className="block truncate text-[10.5px] leading-tight text-amber-600"
+                title={`LinkedIn says "${c.live_title}"${c.enriched_at ? ` (checked ${new Date(c.enriched_at).toLocaleDateString()})` : ""} — not yet applied`}>
+                now: {c.live_title}
+              </span>
+            ) : null}
           </div>
           {c.linkedin_url && (
             <a href={c.linkedin_url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}
@@ -361,8 +370,14 @@ function NetworkRow({ c, expanded, onToggle, fitEnabled, scope, tagLabel }: {
             </a>
           )}
         </div>
-        <div className="min-w-0 truncate text-[11.5px] text-ink-3" title={c.current_company ?? undefined}>
-          {c.current_company || "—"}
+        <div className="min-w-0 text-[11.5px] text-ink-3" title={c.current_company ?? undefined}>
+          <span className="block truncate">{c.current_company || "—"}</span>
+          {c.live_company ? (
+            <span className="block truncate text-[10.5px] leading-tight text-amber-600"
+              title={`LinkedIn says "${c.live_company}"${c.enriched_at ? ` (checked ${new Date(c.enriched_at).toLocaleDateString()})` : ""} — not yet applied`}>
+              now: {c.live_company}
+            </span>
+          ) : null}
         </div>
         {scope === "pursuit" && (
           /* Why this contact is in the list at all. Curated tags only — a raw tag
