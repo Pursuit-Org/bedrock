@@ -1675,24 +1675,28 @@ export interface MyNetwork {
 
 /** Facets live on their own key because they depend only on whose network it is,
  *  not on the query — folded into useMyNetwork they re-ran on every keystroke. */
-export function useMyNetworkFacets() {
+export function useMyNetworkFacets(scope: NetworkScope = "mine", enabled = true) {
   return useQuery<MyNetworkFacets>({
-    queryKey: ["jobs", "my-network-facets"],
+    queryKey: ["jobs", "my-network-facets", scope],
     queryFn: async () => {
-      const { data } = await api.get<ApiResponse<MyNetworkFacets>>("/api/jobs/my-network/facets");
+      const { data } = await api.get<ApiResponse<MyNetworkFacets>>("/api/jobs/my-network/facets", {
+        params: scope !== "mine" ? { scope } : {},
+      });
       return data.data;
     },
+    enabled,
     staleTime: 10 * 60_000,
   });
 }
-export function useMyNetwork(q?: string, rules?: FilterRule[], prioritized = false) {
+export type NetworkScope = "mine" | "pursuit";
+export function useMyNetwork(q?: string, rules?: FilterRule[], prioritized = false, scope: NetworkScope = "mine") {
   // Filters go to the SERVER: seven staff have >2,000 connections, so sifting
   // only the loaded page would under-report without saying so. Ranking is
   // server-side for the same reason — a client-side sort could only order the
   // loaded window and would leave P1s off-screen.
   const serialized = rules?.length ? JSON.stringify(serializeRulesForServer(rules)) : "";
   return useQuery<MyNetwork>({
-    queryKey: ["jobs", "my-network", q ?? "", serialized, prioritized],
+    queryKey: ["jobs", "my-network", scope, q ?? "", serialized, prioritized],
     queryFn: async () => {
       // limit=2000 (server max) — the default 500 silently hid connections for
       // anyone with a bigger network ("total 647, loaded 500").
@@ -1702,6 +1706,7 @@ export function useMyNetwork(q?: string, rules?: FilterRule[], prioritized = fal
           ...(q ? { q } : {}),
           ...(serialized ? { filters: serialized } : {}),
           ...(prioritized ? { prioritized: true } : {}),
+          ...(scope !== "mine" ? { scope } : {}),
         },
       });
       return data.data;

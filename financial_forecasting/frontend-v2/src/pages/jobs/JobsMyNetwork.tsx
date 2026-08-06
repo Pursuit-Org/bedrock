@@ -20,9 +20,10 @@ import { SortableHeader } from "@/components/ui/SortableHeader";
 import { useSort, compare } from "@/lib/sort";
 import {
   useContactTagCatalog, useMyNetwork, useMyNetworkFacets, useSaveRelationshipContext,
-  useSetConnectionStatus, type MyNetworkFacets, type NetworkConnection,
+  useSetConnectionStatus, type MyNetworkFacets, type NetworkConnection, type NetworkScope,
 } from "@/services/jobs";
 import { useCurrentUser } from "@/services/auth";
+import { usePermissions } from "@/services/permissions";
 import {
   AddFilterButton, FilterChip, describeRule, ruleApplies,
   type FieldMeta, type FilterRule,
@@ -51,8 +52,11 @@ function Section({ title, count, action, children }: {
 // Last touch / connected / staff / signals were dropped from the table — all of it
 // is still one click away in the row expand, and the point of this view is now
 // rapid data entry, not browsing.
-const NET_GRID = "grid grid-cols-[34px_minmax(0,1.9fr)_minmax(0,1.2fr)_92px_92px_minmax(0,1.6fr)] items-center gap-2";
-type NetSortKey = "name" | "company" | "status" | "priority" | "fit" | "note";
+// The Pursuit scope adds a Tags column; everything else is identical.
+const NET_GRID_MINE = "grid grid-cols-[34px_minmax(0,1.9fr)_minmax(0,1.2fr)_92px_92px_minmax(0,1.6fr)] items-center gap-2";
+const NET_GRID_PURSUIT = "grid grid-cols-[34px_minmax(0,1.7fr)_minmax(0,1.1fr)_minmax(0,1.1fr)_92px_92px_minmax(0,1.4fr)] items-center gap-2";
+const netGrid = (scope: NetworkScope) => (scope === "pursuit" ? NET_GRID_PURSUIT : NET_GRID_MINE);
+type NetSortKey = "name" | "company" | "status" | "priority" | "fit" | "note" | "tags";
 // The stored vote vocabulary (bedrock.connection_status.status). Legacy spellings
 // are still recognised so a row written before the 2026-08-05 rename renders as a
 // real vote whether or not the data migration has run yet — the server normalises
@@ -80,6 +84,7 @@ const NET_SORT_VALUE: Record<NetSortKey, (c: NetworkConnection) => unknown> = {
   note: (c) => (c.relationship_context ? `0${c.relationship_context.toLowerCase()}` : "1"),
   // Unranked sorts after both bands rather than before "P1" alphabetically.
   priority: (c) => c.priority ?? "ZZ",
+  tags: (c) => (c.tags ?? []).slice().sort().join(","),
 };
 
 // ── Filters ──────────────────────────────────────────────────────────────────
@@ -90,7 +95,8 @@ const NET_SORT_VALUE: Record<NetSortKey, (c: NetworkConnection) => unknown> = {
 type Field =
   | "headcount" | "tristate" | "industry" | "seniority"
   | "company" | "title" | "tags"
-  | "is_jobs" | "has_open_opp" | "hired_before" | "warm" | "touched";
+  | "is_jobs" | "has_open_opp" | "hired_before" | "warm" | "touched"
+  | "expect_response" | "hiring_fit";
 const FILTERABLE: Record<Field, FieldMeta<NetworkConnection>> = {
   // firmographics
   headcount: { label: "Headcount", type: "select", getValue: (c) => c.headcount_band ?? "" },
@@ -107,6 +113,14 @@ const FILTERABLE: Record<Field, FieldMeta<NetworkConnection>> = {
   hired_before: { label: "Company hired before", type: "select", getValue: (c) => (c.company_hired_before ? "yes" : "no") },
   warm: { label: "You've been in touch", type: "select", getValue: (c) => (c.warm ? "yes" : "no") },
   touched: { label: "Pursuit has been in touch", type: "select", getValue: (c) => (c.touched ? "yes" : "no") },
+  // The caller's own two answers. "" is the unanswered state, so is_empty on these
+  // means "still to review" — the filter an exec working the list actually wants.
+  expect_response: {
+    label: "Expect a response", type: "select",
+    getValue: (c) => (c.status === VOTE_UP || c.status === LEGACY_UP ? "yes"
+      : c.status === VOTE_DOWN || c.status === LEGACY_DOWN ? "no" : ""),
+  },
+  hiring_fit: { label: "Hiring fit", type: "select", getValue: (c) => c.hiring_fit ?? "" },
 };
 const YESNO = [{ value: "yes", label: "Yes" }, { value: "no", label: "No" }];
 /** Stable empty default so the tag-catalog fallback doesn't remake the memo. */
@@ -149,6 +163,7 @@ function buildSelectOptions(
     tags: tagCatalog.map((t) => ({ value: t.slug, label: t.label })),
     // Company and title are free-text "contains" rules — no option list.
     is_jobs: YESNO, has_open_opp: YESNO, hired_before: YESNO, warm: YESNO, touched: YESNO,
+    expect_response: YESNO, hiring_fit: YESNO,
   };
 }
 /** Chip text: turn stored values into what the menu showed. Seniority deliberately
@@ -318,8 +333,9 @@ function NoteCell({ c }: { c: NetworkConnection }) {
   );
 }
 
-function NetworkRow({ c, expanded, onToggle, fitEnabled }: {
+function NetworkRow({ c, expanded, onToggle, fitEnabled, scope, tagLabel }: {
   c: NetworkConnection; expanded: boolean; onToggle: () => void; fitEnabled: boolean;
+  scope: NetworkScope; tagLabel: (slug: string) => string;
 }) {
   const save = useSetConnectionStatus();
   const expectValue = c.status === VOTE_UP || c.status === LEGACY_UP ? "yes"
@@ -328,7 +344,7 @@ function NetworkRow({ c, expanded, onToggle, fitEnabled }: {
     <>
       <div
         onClick={onToggle}
-        className={cn(NET_GRID, "cursor-pointer border-t border-border-strong px-3 py-1 text-[12.5px] hover:bg-surface-2/40", expanded && "bg-surface-2/40")}
+        className={cn(netGrid(scope), "cursor-pointer border-t border-border-strong px-3 py-1 text-[12.5px] hover:bg-surface-2/40", expanded && "bg-surface-2/40")}
       >
         <PriorityBadge c={c} />
         {/* Connection: name + title. The warmth dot and LinkedIn link stay — they
@@ -356,6 +372,21 @@ function NetworkRow({ c, expanded, onToggle, fitEnabled }: {
         <div className="min-w-0 truncate text-[11.5px] text-ink-3" title={c.current_company ?? undefined}>
           {c.current_company || "—"}
         </div>
+        {scope === "pursuit" && (
+          /* Why this contact is in the list at all. Curated tags only — a raw tag
+             array can also hold internal markers that mean nothing to a reader. */
+          <div className="flex min-w-0 flex-wrap items-center gap-1 overflow-hidden"
+            title={(c.tags ?? []).map(tagLabel).join(", ")}>
+            {(c.tags ?? []).slice(0, 2).map((t) => (
+              <span key={t} className="truncate rounded bg-surface-2 px-1 py-px text-[10px] text-ink-3">
+                {tagLabel(t)}
+              </span>
+            ))}
+            {(c.tags?.length ?? 0) > 2 && (
+              <span className="text-[10px] text-ink-4">+{(c.tags?.length ?? 0) - 2}</span>
+            )}
+          </div>
+        )}
         <ThumbsCell
           value={expectValue}
           yesLabel="Expect a response" noLabel="Don't expect a response"
@@ -382,7 +413,7 @@ function NetworkRow({ c, expanded, onToggle, fitEnabled }: {
   );
 }
 
-function MyNetworkZone() {
+function MyNetworkZone({ scope }: { scope: NetworkScope }) {
   const [q, setQ] = useState("");
   const [showAll, setShowAll] = useState(false);
   const [warmOnly, setWarmOnly] = useState(false);
@@ -393,11 +424,15 @@ function MyNetworkZone() {
   // rather than inlined so the sort interaction below still reads clearly.
   const prioritized = true;
   const { sort, toggle: toggleSort } = useSort<NetSortKey>();
-  const { data, isLoading } = useMyNetwork(q || undefined, rules, prioritized);
-  const { data: facets } = useMyNetworkFacets();
+  const { data, isLoading } = useMyNetwork(q || undefined, rules, prioritized, scope);
+  const { data: facets } = useMyNetworkFacets(scope);
   const { data: tagCatalog = EMPTY_TAGS } = useContactTagCatalog();
   const selectOptions = useMemo(() => buildSelectOptions(facets, tagCatalog), [facets, tagCatalog]);
   const renderFilterValue = useMemo(() => makeRenderFilterValue(tagCatalog), [tagCatalog]);
+  const tagLabel = useMemo(() => {
+    const m = new Map(tagCatalog.map((t) => [t.slug, t.label]));
+    return (slug: string) => m.get(slug) ?? slug;
+  }, [tagCatalog]);
   const fitEnabled = data?.hiring_fit_available ?? false;
   let conns = data?.connections ?? [];
   // The server already applied these rules in SQL; re-applying them here is a
@@ -459,7 +494,7 @@ function MyNetworkZone() {
   );
   return (
     <Section
-      title="Connections"
+      title={scope === "pursuit" ? "Tagged contacts" : "Connections"}
       // Show "matched of total" the moment a filter narrows anything, so the
       // count can never be mistaken for the whole network.
       count={filtering ? undefined : data?.total}
@@ -475,7 +510,7 @@ function MyNetworkZone() {
           <span className="font-semibold tabular-nums text-ink-2">{matched.toLocaleString()}</span>
           {" of "}
           <span className="tabular-nums">{(data?.total ?? 0).toLocaleString()}</span>
-          {" connections"}
+          {scope === "pursuit" ? " tagged contacts" : " connections"}
           {matched !== conns.length && (
             <span className="text-ink-4">{" · "}showing {conns.length.toLocaleString()}</span>
           )}
@@ -513,10 +548,13 @@ function MyNetworkZone() {
           <div className="px-3 py-8 text-center text-[12.5px] text-ink-3">{filtering ? "No connections match the filters." : "No connections."}</div>
         ) : (
           <>
-            <div className={cn(NET_GRID, "bg-surface-2/60 px-3 py-1.5")}>
+            <div className={cn(netGrid(scope), "bg-surface-2/60 px-3 py-1.5")}>
               <SortableHeader label="P" sortKey="priority" sort={sort} onToggle={toggleSort} />
               <SortableHeader label="Connection" sortKey="name" sort={sort} onToggle={toggleSort} />
               <SortableHeader label="Company" sortKey="company" sort={sort} onToggle={toggleSort} />
+              {scope === "pursuit" && (
+                <SortableHeader label="Tags" sortKey="tags" sort={sort} onToggle={toggleSort} />
+              )}
               <SortableHeader label="Expect a response" sortKey="status" sort={sort} onToggle={toggleSort} />
               <SortableHeader label="Hiring fit" sortKey="fit" sort={sort} onToggle={toggleSort} />
               <SortableHeader label="Note" sortKey="note" sort={sort} onToggle={toggleSort} />
@@ -526,9 +564,9 @@ function MyNetworkZone() {
                 <div className="flex items-baseline gap-2 border-t border-border-strong bg-surface-2/50 px-3 py-1 text-[11px] font-semibold text-ink-2">
                   {company} <span className="font-normal tabular-nums text-ink-4">{rows.length}</span>
                 </div>
-                {rows.map((c) => <NetworkRow key={c.contact_id} c={c} expanded={expandedId === c.contact_id} onToggle={() => toggle(c.contact_id)} fitEnabled={fitEnabled} />)}
+                {rows.map((c) => <NetworkRow key={c.contact_id} c={c} expanded={expandedId === c.contact_id} onToggle={() => toggle(c.contact_id)} fitEnabled={fitEnabled} scope={scope} tagLabel={tagLabel} />)}
               </div>
-            )) : shown.map((c) => <NetworkRow key={c.contact_id} c={c} expanded={expandedId === c.contact_id} onToggle={() => toggle(c.contact_id)} fitEnabled={fitEnabled} />)}
+            )) : shown.map((c) => <NetworkRow key={c.contact_id} c={c} expanded={expandedId === c.contact_id} onToggle={() => toggle(c.contact_id)} fitEnabled={fitEnabled} scope={scope} tagLabel={tagLabel} />)}
             {conns.length > shown.length && (
               <button type="button" onClick={() => setShowAll(true)}
                 className="border-t border-border-strong px-3 py-2 text-[12px] text-accent hover:bg-surface-2/50">Show all {conns.length} loaded</button>
@@ -540,14 +578,49 @@ function MyNetworkZone() {
   );
 }
 
+// Profiles that may see the Pursuit network. Mirrors _PURSUIT_SCOPE_PROFILES in
+// routes/jobs.py — the endpoint enforces it independently, so this only decides
+// whether the tab is worth showing.
+const PURSUIT_PROFILES = ["Executive", "Admin"];
+
 export function MyNetworkPage() {
+  const [scope, setScope] = useState<NetworkScope>("mine");
+  const { data: perms } = usePermissions();
+  const canSeePursuit = PURSUIT_PROFILES.includes(perms?.profile_name ?? "");
+  // If the tab is hidden mid-session (profile change, or perms arriving late),
+  // don't leave the page stuck on a scope the server will now refuse.
+  const active: NetworkScope = canSeePursuit ? scope : "mine";
+
   return (
     <div className="flex flex-col gap-0 px-7 py-4 pb-12">
       <PageHeader
-        title="My Network"
-        subtitle="Your LinkedIn connections, mapped to Bedrock contacts."
+        title={active === "pursuit" ? "Pursuit Network" : "My Network"}
+        subtitle={active === "pursuit"
+          ? "Every tagged contact at Pursuit — hiring partners, staff network, volunteers, BASH, board. Leadership only."
+          : "Your LinkedIn connections, mapped to Bedrock contacts."}
       />
-      <MyNetworkZone />
+      {canSeePursuit && (
+        <div role="tablist" className="mb-3 inline-flex overflow-hidden rounded-md border border-border-strong bg-surface">
+          {([["mine", "My network"], ["pursuit", "Pursuit network"]] as const).map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              role="tab"
+              aria-selected={active === value}
+              onClick={() => setScope(value)}
+              className={cn(
+                "border-l border-border-strong px-3 py-1 text-[12px] font-medium first:border-l-0",
+                active === value ? "bg-ink text-surface" : "text-ink-3 hover:bg-surface-2 hover:text-ink-2",
+              )}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+      {/* Keyed so switching scope resets filters, sort and the expanded row —
+          the two lists have different shapes and a stale filter would confuse. */}
+      <MyNetworkZone key={active} scope={active} />
     </div>
   );
 }

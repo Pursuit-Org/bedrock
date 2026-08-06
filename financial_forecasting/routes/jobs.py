@@ -6624,7 +6624,47 @@ async def update_contact(
     return {"success": True, "data": dict(row)}
 
 
-# ── My Network (staff LinkedIn connections) ───────────────────────────────────
+# ── My Network / Pursuit Network ──────────────────────────────────────────────
+# Two scopes on one endpoint, because everything except the row universe is shared
+# — the filters, the priority banding, the vote/fit/note cells:
+#
+#   scope=mine     the caller's own LinkedIn connections (staff_contact_relationships)
+#   scope=pursuit  every tagged contact at Pursuit, leadership only
+#
+# The Pursuit scope's universe is Jac's definition (2026-08-05): a contact carrying
+# at least one CURATED tag that is neither an alumni_* cohort nor 'influence'.
+#   - Curated means present in bedrock.contact_tag_catalog. That deliberately
+#     excludes 'email_review', which is not a catalog tag — it marks 2,624
+#     auto-created contacts from unidentified email addresses, a triage queue
+#     rather than a network.
+#   - 'influence' is excluded as too broad (it alone carried 2,646 rows).
+#   - An alumni tag does NOT disqualify a contact that also carries a qualifying
+#     tag: an alumnus who is now a hiring partner is precisely who this view is
+#     for. 148 contacts land that way.
+# Currently 4,658 contacts, 2,853 of them via volunteer_historical.
+_PURSUIT_TAG_EXCLUDED = ("influence",)
+_PURSUIT_UNIVERSE = f"""EXISTS (
+    SELECT 1 FROM unnest(c.tags) t
+    JOIN bedrock.contact_tag_catalog cat ON cat.slug = t
+    WHERE t NOT LIKE 'alumni%'
+      AND t NOT IN ({', '.join(f"'{x}'" for x in _PURSUIT_TAG_EXCLUDED)})
+)"""
+
+# Profiles allowed into the Pursuit scope. Enforced on the ENDPOINT, not only by
+# hiding the tab — a hidden tab is not access control.
+_PURSUIT_SCOPE_PROFILES = ("Executive", "Admin")
+
+
+async def _assert_pursuit_scope_allowed(email: str, conn) -> None:
+    from routes.permissions import get_user_permissions
+    profile = (await get_user_permissions(email, conn) or {}).get("profile_name")
+    if profile not in _PURSUIT_SCOPE_PROFILES:
+        raise HTTPException(
+            403, "The Pursuit network is limited to leadership "
+                 f"({' or '.join(_PURSUIT_SCOPE_PROFILES)} profile)")
+
+
+
 # The vote vocabulary behind the 👍/👎 column. Renamed 2026-08-05 to match what
 # the column actually asks ("Expect a response") rather than what it used to
 # ("Willing to reach out").
@@ -6690,6 +6730,7 @@ async def my_network(
     staff_email: Optional[str] = Query(None, description="Admin override; else the caller"),
     filter_rules: Optional[str] = Query(None, alias="filters", description="JSON array of {field,op,values} rules — applied in SQL so filters see the whole network, not the loaded page"),
     prioritized: bool = Query(True, description="Order P1 then P2 then the rest — ranked in SQL so the top band is drawn from the whole network, not just the page. Defaults ON (Jac, 2026-08-05): pass prioritized=false for the older warmth/recency order"),
+    scope: str = Query("mine", pattern="^(mine|pursuit)$", description="'mine' = the caller's LinkedIn connections; 'pursuit' = every curated-tagged contact (leadership only)"),
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
@@ -6705,18 +6746,42 @@ async def my_network(
     connections, so a filter that only sifted the loaded page would under-report
     without saying so."""
     email = (staff_email or (user.get("email") if isinstance(user, dict) else getattr(user, "email", None)) or "").lower()
+    if scope == "pursuit":
+        await _assert_pursuit_scope_allowed(email, conn)
     sid = await conn.fetchval("SELECT staff_user_id FROM bedrock.staff_user_id_map WHERE lower(email)=$1", email)
     if sid is None:
+        # The Pursuit scope doesn't depend on the caller having LinkedIn imports —
+        # it's every tagged contact — but the vote/fit/note cells are stored per
+        # staff_user_id, so without a mapping there is nowhere to write.
         return {"success": True, "data": {"mapped": False, "connections": [], "total": 0, "matched": 0,
                 "hiring_fit_available": False,
-                "message": "No LinkedIn connections mapped for this account yet."}}
+                "message": "No staff mapping for this account yet — ask an admin to add you to bedrock.staff_user_id_map."}}
 
-    # The companies join is unconditional on every query below: the shared `where`
-    # string may reference `co.`, so it must resolve identically in the count, the
-    # rows, and the facet queries. It is a PK join, so the cost is negligible.
-    NET_FROM = ("public.staff_contact_relationships r "
-                "JOIN public.contacts c ON c.contact_id = r.contact_id "
-                "LEFT JOIN public.companies co ON co.company_id = c.company_id")
+    # Scope decides the row universe; everything downstream is identical, which is
+    # why both FROMs expose the same r / c / co / cs aliases.
+    #
+    # `mine` inner-joins the relationship table. `pursuit` starts from contacts and
+    # LEFT joins the caller's own relationship, so warmth and connected-date still
+    # light up for the tagged contacts an exec happens to know, and are simply NULL
+    # for the rest.
+    #
+    # The companies AND connection_status joins are unconditional on every query
+    # below: the shared `where` string may reference `co.` or `cs.`, so both must
+    # resolve identically in the count, the rows, and the facet queries. Both are
+    # keyed joins, so the cost is negligible.
+    if scope == "pursuit":
+        NET_FROM = ("public.contacts c "
+                    "LEFT JOIN public.staff_contact_relationships r "
+                    "  ON r.contact_id = c.contact_id AND r.staff_user_id = $1 "
+                    "LEFT JOIN public.companies co ON co.company_id = c.company_id "
+                    "LEFT JOIN bedrock.connection_status cs "
+                    "  ON cs.contact_id = c.contact_id AND cs.staff_user_id = $1")
+    else:
+        NET_FROM = ("public.staff_contact_relationships r "
+                    "JOIN public.contacts c ON c.contact_id = r.contact_id "
+                    "LEFT JOIN public.companies co ON co.company_id = c.company_id "
+                    "LEFT JOIN bedrock.connection_status cs "
+                    "  ON cs.contact_id = c.contact_id AND cs.staff_user_id = $1")
 
     # bedrock.company_investor may not be created yet (its migration is applied by
     # hand). Checked per request rather than cached at import, so the portco half
@@ -6732,9 +6797,13 @@ async def my_network(
     hiring_fit_sel = "cs.hiring_fit" if has_hiring_fit else "NULL::text"
 
     params: list = [sid]
-    where = "r.staff_user_id = $1 AND coalesce(c.contact_stage,'') <> 'merged'"
+    # $1 is consumed by the joins in NET_FROM for both scopes, so it is always bound
+    # even where the WHERE clause doesn't mention it.
+    where = ("coalesce(c.contact_stage,'') <> 'merged' AND " + _PURSUIT_UNIVERSE) \
+        if scope == "pursuit" else \
+        "r.staff_user_id = $1 AND coalesce(c.contact_stage,'') <> 'merged'"
     # `base_where` excludes the search box and the filter rules — the facet lists
-    # describe the WHOLE network, so the filter menu offers a stable set of
+    # describe the WHOLE universe, so the filter menu offers a stable set of
     # options that doesn't shrink as you narrow.
     base_where = where
     if q:
@@ -6775,6 +6844,15 @@ async def my_network(
         "touched": ("boolean",
             f"EXISTS (SELECT 1 FROM bedrock.activity a2 WHERE a2.participant_public_contact_id = c.contact_id"
             f" AND a2.deleted_at IS NULL AND {_jobs_relevant('a2')})"),
+        # The caller's own two answers. Normalised to yes/no/'' so the filter reads
+        # the same as the thumbs regardless of which vocabulary the row was stored
+        # under, and so is_empty means "not answered yet".
+        "expect_response": ("select",
+            "CASE"
+            f" WHEN cs.status IN ('{CONNECTION_STATUSES[1]}', 'will_reach_out') THEN 'yes'"
+            f" WHEN cs.status IN ('{CONNECTION_STATUSES[2]}', 'declined') THEN 'no'"
+            " ELSE '' END"),
+        "hiring_fit": ("select", hiring_fit_sel),
     }
     if filter_rules:
         try:
@@ -6792,7 +6870,6 @@ async def my_network(
     matched = await conn.fetchval(f"SELECT count(*) FROM {NET_FROM} WHERE {where}", *params)
 
     params.append(f"%{email}%"); p_email = len(params)   # staff-specific activity match
-    params.append(sid);          p_sid = len(params)       # connection_status join
     params.append(RELATIONSHIP_CONTEXT_PREFIX); p_ctx_prefix = len(params)
     params.append(limit);        p_lim = len(params)
     # Ranking in SQL, not in the browser: with 5,000+ connections and a 2,000-row
@@ -6819,9 +6896,7 @@ async def my_network(
                ({priority_case}) AS priority,
                {'(' + _PORTCO_EXISTS + ')' if has_portco else 'false'} AS is_portco,
                coalesce(cmt.n, 0) AS comment_count
-        FROM public.staff_contact_relationships r
-        JOIN public.contacts c ON c.contact_id = r.contact_id
-        LEFT JOIN public.companies co ON co.company_id = c.company_id
+        FROM {NET_FROM}
         LEFT JOIN LATERAL (
             SELECT count(*) n, max(activity_date) last,
                    (array_agg(type ORDER BY activity_date DESC))[1] AS last_type
@@ -6864,7 +6939,6 @@ async def my_network(
             ORDER BY jc.created_at DESC, jc.id DESC
             LIMIT 1
         ) rc ON true
-        LEFT JOIN bedrock.connection_status cs ON cs.contact_id = c.contact_id AND cs.staff_user_id = ${p_sid}
         WHERE {where}
         ORDER BY {priority_order} (mine.n > 0) DESC, (act.n > 0) DESC, coalesce(mine.last, act.last) DESC NULLS LAST, c.full_name
         LIMIT ${p_lim}
@@ -6914,6 +6988,7 @@ async def my_network(
 @router.get("/my-network/facets")
 async def my_network_facets(
     staff_email: Optional[str] = Query(None, description="Admin override; else the caller"),
+    scope: str = Query("mine", pattern="^(mine|pursuit)$"),
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
@@ -6928,18 +7003,29 @@ async def my_network_facets(
     missing from the menu. Tri-state and seniority are the complete output
     domains of two total CASE expressions, so they need no scan at all."""
     email = (staff_email or (user.get("email") if isinstance(user, dict) else getattr(user, "email", None)) or "").lower()
+    if scope == "pursuit":
+        await _assert_pursuit_scope_allowed(email, conn)
     sid = await conn.fetchval("SELECT staff_user_id FROM bedrock.staff_user_id_map WHERE lower(email)=$1", email)
     if sid is None:
         return {"success": True, "data": {"headcount": [], "industry": [], "tristate": [], "seniority": []}}
+    if scope == "pursuit":
+        src = ("public.contacts c LEFT JOIN public.companies co ON co.company_id = c.company_id "
+               f"WHERE coalesce(c.contact_stage,'') <> 'merged' AND {_PURSUIT_UNIVERSE}")
+        args: tuple = ()
+    else:
+        src = ("public.staff_contact_relationships r "
+               "JOIN public.contacts c ON c.contact_id = r.contact_id "
+               "LEFT JOIN public.companies co ON co.company_id = c.company_id "
+               "WHERE r.staff_user_id = $1 AND coalesce(c.contact_stage,'') <> 'merged'")
+        args = (sid,)
     row = await conn.fetchrow(
-        """SELECT array_agg(DISTINCT co.size_bucket) FILTER (WHERE co.size_bucket IS NOT NULL) AS headcount,
-                  array_agg(DISTINCT co.industry)    FILTER (WHERE co.industry    IS NOT NULL) AS industry
-           FROM public.staff_contact_relationships r
-           JOIN public.contacts c ON c.contact_id = r.contact_id
-           LEFT JOIN public.companies co ON co.company_id = c.company_id
-           WHERE r.staff_user_id = $1 AND coalesce(c.contact_stage,'') <> 'merged'""", sid)
+        f"""SELECT array_agg(DISTINCT co.size_bucket) FILTER (WHERE co.size_bucket IS NOT NULL) AS headcount,
+                   array_agg(DISTINCT co.industry)    FILTER (WHERE co.industry    IS NOT NULL) AS industry
+            FROM {src}""", *args)
     return {"success": True, "data": {
-        # Ordering is the client's job — it holds the size/seniority ladders.
+        # Ordering is the client's job — it holds the size/seniority ladders. Tag
+        # options aren't here: the client already has the full curated catalog from
+        # useContactTagCatalog(), so discovering them per scope would be redundant.
         "headcount": sorted(row["headcount"] or []),
         "industry": sorted(row["industry"] or []),
         "tristate": _TRISTATE_VALUES,
