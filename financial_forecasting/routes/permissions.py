@@ -21,7 +21,7 @@ PERMISSION_KEYS = [
     "create_opportunities", "bulk_update_opportunities", "lock_own_opportunities",
     "reassign_opportunities",
     "view_tasks", "edit_own_tasks", "edit_all_tasks", "create_tasks",
-    "edit_accounts", "create_accounts",
+    "edit_accounts", "create_accounts", "edit_all_accounts", "reassign_accounts",
     "edit_contacts", "create_contacts",
     "edit_payments", "create_payments",
     "view_projects", "edit_projects",

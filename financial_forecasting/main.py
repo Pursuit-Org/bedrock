@@ -1946,7 +1946,15 @@ async def update_account(
     validate_salesforce_id(account_id, "account_id")
     try:
         salesforce = client.salesforce
-        await _enforce_record_ownership(salesforce, "Account", account_id, user)
+        # edit_all_accounts mirrors edit_all_opportunities: RMs steward the whole
+        # portfolio, so non-owner edits are a permission, not an admin exception.
+        await _enforce_record_ownership(
+            salesforce, "Account", account_id, user, edit_all_perm="edit_all_accounts")
+        # OwnerId reassignment gets its own key, mirroring reassign_opportunities.
+        if "OwnerId" in update_request.updates:
+            perms = user.get("_permissions", {})
+            if not perms.get("manage_users_roles", False) and not perms.get("reassign_accounts", False):
+                raise HTTPException(status_code=403, detail="You don't have permission to reassign accounts")
         success = await salesforce.update_record("Account", account_id, update_request.updates)
         if not success:
             raise HTTPException(400, "Salesforce rejected the update")

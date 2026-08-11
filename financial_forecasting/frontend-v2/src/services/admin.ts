@@ -196,6 +196,8 @@ export const PERMISSION_GROUPS: PermissionGroup[] = [
     label: "Accounts & Contacts",
     keys: [
       { key: "edit_accounts", label: "Edit accounts" },
+      { key: "edit_all_accounts", label: "Edit all accounts" },
+      { key: "reassign_accounts", label: "Reassign accounts" },
       { key: "create_accounts", label: "Create accounts" },
       { key: "edit_contacts", label: "Edit contacts" },
       { key: "create_contacts", label: "Create contacts" },
