@@ -49,7 +49,7 @@ jobs:
           cache-dependency-path: financial_forecasting/requirements.txt
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install -r requirements.txt pytest pytest-asyncio
 
       - name: Run tests
         run: python -m pytest

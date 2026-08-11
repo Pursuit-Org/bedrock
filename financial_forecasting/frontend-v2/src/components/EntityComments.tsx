@@ -33,7 +33,7 @@ interface EntityCommentsProps {
   /** Suppress the internal "COMMENTS (N)" label — use when the parent SectionCard already provides a header. */
   hideHeader?: boolean;
   /** Ref forwarded to the comment textarea — used by parent to focus/scroll to it. */
-  composerRef?: React.RefObject<HTMLTextAreaElement>;
+  composerRef?: React.RefObject<HTMLTextAreaElement | null>;
 }
 
 /** Comment thread + composer for a portfolio account / opportunity / contact.
@@ -83,7 +83,7 @@ interface CommentComposerProps {
   submitting?: boolean;
   placeholder?: string;
   compact?: boolean;
-  textareaRef?: React.RefObject<HTMLTextAreaElement>;
+  textareaRef?: React.RefObject<HTMLTextAreaElement | null>;
 }
 
 /** Textarea + send button. Cmd/Ctrl+Enter submits. */
