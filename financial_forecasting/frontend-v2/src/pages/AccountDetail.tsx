@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -8,6 +8,7 @@ import { ChevronDown, ChevronRight, ExternalLink, Mail, Pencil, Phone, Plus, Sea
 
 import { AccountAvatar } from "@/components/AccountAvatar";
 import { BackLink as SharedBackLink, LinkedProjectsCard } from "@/components/detail";
+import { EntityComments } from "@/components/EntityComments";
 import { AccountTasksSection } from "@/components/AccountTasksSection";
 import { ActivityTimeline } from "@/components/ActivityTimeline";
 import { InlineSelect, InlineText } from "@/components/ui/InlineEdit";
@@ -53,6 +54,12 @@ export function AccountDetailPage() {
   const [showAddContact, setShowAddContact] = useState(false);
   const [showAddOpp, setShowAddOpp] = useState(false);
   const navigate = useNavigate();
+  const commentInputRef = useRef<HTMLTextAreaElement>(null);
+
+  function scrollToComment() {
+    commentInputRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    setTimeout(() => commentInputRef.current?.focus(), 400);
+  }
 
   // ── All useMemo / useQuery hooks below MUST be declared before the
   //   `if (!account) return ...` block below them — React's Rules of
@@ -265,6 +272,23 @@ export function AccountDetailPage() {
 
       {/* Tasks — full width */}
       <AccountTasksSection accountId={account.Id} />
+
+      {/* Comments — full width, scrollable */}
+      <SectionCard
+        title="Comments"
+        action={
+          <button
+            onClick={scrollToComment}
+            className="inline-flex items-center gap-1 rounded border border-border-strong bg-surface px-2 py-0.5 text-[11px] font-medium text-ink-2 hover:bg-surface-2"
+          >
+            <Plus size={11} /> New
+          </button>
+        }
+      >
+        <div className="max-h-[400px] overflow-y-auto">
+          <EntityComments entityType="account" entityId={account.Id} hideHeader composerRef={commentInputRef} />
+        </div>
+      </SectionCard>
 
       {/* Opportunities — always visible; pill toggles Open / Won / Lost. */}
       <SectionCard

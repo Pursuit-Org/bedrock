@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Loader2, MoreHorizontal, Send } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 
@@ -30,19 +30,25 @@ function avatarColor(name: string): string {
 interface EntityCommentsProps {
   entityType: EntityCommentType;
   entityId: string;
+  /** Suppress the internal "COMMENTS (N)" label — use when the parent SectionCard already provides a header. */
+  hideHeader?: boolean;
+  /** Ref forwarded to the comment textarea — used by parent to focus/scroll to it. */
+  composerRef?: React.RefObject<HTMLTextAreaElement>;
 }
 
 /** Comment thread + composer for a portfolio account / opportunity / contact.
  *  Backed by /api/entity-comments. Edit/delete shown only for the author. */
-export function EntityComments({ entityType, entityId }: EntityCommentsProps) {
+export function EntityComments({ entityType, entityId, hideHeader, composerRef }: EntityCommentsProps) {
   const { data: comments = [], isLoading } = useEntityComments(entityType, entityId);
   const createComment = useCreateEntityComment(entityType, entityId);
 
   return (
     <div className="p-3">
-      <p className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-ink-4">
-        Comments {comments.length > 0 ? `(${comments.length})` : null}
-      </p>
+      {!hideHeader ? (
+        <p className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-ink-4">
+          Comments {comments.length > 0 ? `(${comments.length})` : null}
+        </p>
+      ) : null}
 
       {isLoading ? (
         <div className="flex items-center gap-2 py-3 text-[12px] text-ink-3">
@@ -60,6 +66,7 @@ export function EntityComments({ entityType, entityId }: EntityCommentsProps) {
       )}
 
       <CommentComposer
+        textareaRef={composerRef}
         onSubmit={async (content) => {
           await createComment.mutateAsync(content);
         }}
@@ -76,6 +83,7 @@ interface CommentComposerProps {
   submitting?: boolean;
   placeholder?: string;
   compact?: boolean;
+  textareaRef?: React.RefObject<HTMLTextAreaElement>;
 }
 
 /** Textarea + send button. Cmd/Ctrl+Enter submits. */
@@ -86,8 +94,11 @@ function CommentComposer({
   submitting,
   placeholder = "Add a comment…",
   compact,
+  textareaRef,
 }: CommentComposerProps) {
   const [value, setValue] = useState(initial);
+  const internalRef = useRef<HTMLTextAreaElement>(null);
+  const ref = textareaRef ?? internalRef;
 
   async function commit() {
     const trimmed = value.trim();
@@ -103,6 +114,7 @@ function CommentComposer({
   return (
     <div className="relative">
       <textarea
+        ref={ref}
         value={value}
         onChange={(e) => setValue(e.target.value)}
         onKeyDown={(e) => {
