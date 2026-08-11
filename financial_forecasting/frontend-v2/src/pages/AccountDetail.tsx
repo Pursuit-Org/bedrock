@@ -7,6 +7,7 @@ import { api } from "@/lib/api";
 import { ChevronDown, ChevronRight, ExternalLink, Mail, Pencil, Phone, Plus, Search, UserPlus, X } from "lucide-react";
 
 import { AccountAvatar } from "@/components/AccountAvatar";
+import { AccountFilesSection } from "@/components/AccountFilesSection";
 import { BackLink as SharedBackLink, LinkedProjectsCard } from "@/components/detail";
 import { AccountTasksSection } from "@/components/AccountTasksSection";
 import { ActivityTimeline } from "@/components/ActivityTimeline";
@@ -400,6 +401,11 @@ export function AccountDetailPage() {
             </tbody>
           </table>
         )}
+      </SectionCard>
+
+      {/* Files */}
+      <SectionCard title={`Files`}>
+        <AccountFilesSection accountId={id} />
       </SectionCard>
 
       <div className="h-3" />
