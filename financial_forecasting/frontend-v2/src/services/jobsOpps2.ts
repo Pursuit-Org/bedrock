@@ -357,6 +357,7 @@ export interface RolesBoardRole extends Role {
   account_name: string | null;
   opp_stage: string | null;
   applications: RolesBoardApplication[];
+  sort_position: number | null;
 }
 
 export function useRolesBoard() {
@@ -420,12 +421,16 @@ export function useCreateRoleApplication(roleId: string) {
   });
 }
 
-export interface MatchSuggestion {
+export interface UnmatchedApplication {
   job_application_id: number;
   builder: string;
   company_name: string | null;
   role_title: string | null;
   date_applied: string | null;
+  stage: string | null;
+}
+
+export interface MatchSuggestion extends UnmatchedApplication {
   suggested_match: {
     jobs_role_id: string;
     role_title: string | null;
@@ -434,13 +439,20 @@ export interface MatchSuggestion {
   };
 }
 
+export interface MatchSuggestionsResult {
+  matched: MatchSuggestion[];
+  unmatched: UnmatchedApplication[];
+}
+
 /** Backfill helper: suggested role matches for recently-applied, still-unlinked
- *  applications. Never auto-applied — each suggestion needs an explicit confirm. */
+ *  applications (`matched`, never auto-applied — each needs an explicit confirm),
+ *  plus the ones with no bedrock.jobs_opportunity to match against at all
+ *  (`unmatched`) — for deciding which need a new opportunity/role created. */
 export function useMatchSuggestions(days = 30) {
-  return useQuery<MatchSuggestion[]>({
+  return useQuery<MatchSuggestionsResult>({
     queryKey: ["jobs", "match-suggestions", days],
     queryFn: async () => {
-      const { data } = await api.get<ApiResponse<MatchSuggestion[]>>(
+      const { data } = await api.get<ApiResponse<MatchSuggestionsResult>>(
         `/api/jobs/job-applications/match-suggestions?days=${days}`,
       );
       return data.data;
@@ -466,5 +478,45 @@ export function useConfirmMatch() {
       toast.success("Match confirmed");
     },
     onError: () => toast.error("Failed to confirm match"),
+  });
+}
+
+/** Persist a manual drag-order for the Roles board (full visible order, top
+ *  to bottom) — mirrors useSetTagCampaignOrder's pattern. */
+export function useReorderRolesBoard() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (roleIds: string[]) => {
+      const { data } = await api.put<ApiResponse<{ updated: number }>>(
+        "/api/jobs/roles/board/order",
+        { role_ids: roleIds },
+      );
+      return data.data;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["jobs", "roles-board"] });
+      toast.success("Order saved");
+    },
+    onError: () => toast.error("Couldn't save order"),
+  });
+}
+
+/** Remove an application from whatever role/opportunity it's linked to —
+ *  doesn't delete the row (no DELETE grant on job_applications), just clears
+ *  the link. Use to clean up a duplicate application on a role. */
+export function useUnlinkApplication() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (appId: number) => {
+      const { data } = await api.post<ApiResponse<{ job_application_id: number; unlinked: boolean }>>(
+        `/api/jobs/job-applications/${appId}/unlink-role`,
+      );
+      return data.data;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["jobs", "roles-board"] });
+      toast.success("Removed from role");
+    },
+    onError: () => toast.error("Couldn't remove"),
   });
 }

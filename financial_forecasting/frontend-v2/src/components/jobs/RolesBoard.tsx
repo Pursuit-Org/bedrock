@@ -1,6 +1,9 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { format } from "date-fns";
-import { Plus, X, Check, ChevronDown, ChevronRight, Sparkles } from "lucide-react";
+import { Plus, X, Check, ChevronDown, ChevronRight, Sparkles, GripVertical } from "lucide-react";
+import { DndContext, closestCenter, PointerSensor, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
+import { SortableContext, verticalListSortingStrategy, useSortable, arrayMove } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import { cn } from "@/lib/utils";
 import { useBuilders, useCreateOpportunity, STAGES_ORDERED, STAGE_LABELS, type Builder, type JobStage } from "@/services/jobs";
 import { NewAccountDialog } from "@/components/jobs/NewAccountDialog";
@@ -11,9 +14,14 @@ import {
   useCreateRoleApplication,
   useMatchSuggestions,
   useConfirmMatch,
+  useReorderRolesBoard,
+  useUnlinkApplication,
   APP_STAGE_OPTIONS,
   type AppStage,
   type RolesBoardRole,
+  type Commitment,
+  type MatchSuggestion,
+  type UnmatchedApplication,
 } from "@/services/jobsOpps2";
 
 // ── Shared display helpers (small lookup tables kept local to this board,
@@ -44,6 +52,7 @@ const PLACEMENT_STATUS_STYLES: Record<string, string> = {
 };
 
 const APP_STAGE_LABELS: Record<string, string> = {
+  prospect: "Prospect",
   applied: "Applied",
   interview: "Interviewing",
   accepted: "Hired",
@@ -52,6 +61,7 @@ const APP_STAGE_LABELS: Record<string, string> = {
 };
 
 const APP_STAGE_STYLES: Record<string, string> = {
+  prospect: "bg-stone-100 text-stone-600",
   applied: "bg-blue-50 text-blue-700",
   interview: "bg-amber-50 text-amber-700",
   accepted: "bg-green-100 text-green-800",
@@ -84,13 +94,12 @@ function Spinner() {
 
 // ── Suggested matches banner (one-time backfill review — never auto-applied) ──
 
-function SuggestedMatchesBanner() {
-  const { data, isLoading } = useMatchSuggestions(30);
+function SuggestedMatchesBanner({ data }: { data: MatchSuggestion[] }) {
   const confirm = useConfirmMatch();
   const [dismissed, setDismissed] = useState<Set<number>>(new Set());
-  const suggestions = (data ?? []).filter((s) => !dismissed.has(s.job_application_id));
+  const suggestions = data.filter((s) => !dismissed.has(s.job_application_id));
 
-  if (isLoading || suggestions.length === 0) return null;
+  if (suggestions.length === 0) return null;
 
   return (
     <div className="flex flex-col gap-2 rounded-md border border-accent/30 bg-accent-soft/40 p-3">
@@ -106,7 +115,15 @@ function SuggestedMatchesBanner() {
           >
             <div className="flex min-w-0 flex-col gap-0.5">
               <span className="truncate text-[12px] text-ink">
-                <span className="font-medium">{s.builder}</span> applied to{" "}
+                <span
+                  className={cn(
+                    "mr-1.5 inline-flex items-center rounded-full px-1.5 py-0.5 text-[9.5px] font-medium leading-none",
+                    APP_STAGE_STYLES[s.stage ?? ""] ?? "bg-stone-100 text-stone-500",
+                  )}
+                >
+                  {APP_STAGE_LABELS[s.stage ?? ""] ?? s.stage ?? "—"}
+                </span>
+                <span className="font-medium">{s.builder}</span> ·{" "}
                 <span className="text-ink-3">{s.role_title}</span> @ {s.company_name}
               </span>
               <span className="truncate text-[11px] text-ink-4">
@@ -129,6 +146,66 @@ function SuggestedMatchesBanner() {
               <button
                 type="button"
                 onClick={() => setDismissed((d) => new Set(d).add(s.job_application_id))}
+                className="text-[11px] text-ink-3 hover:text-ink-2"
+              >
+                Dismiss
+              </button>
+            </div>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+// ── Unmatched applications banner (no opportunity exists yet to link to) ───────
+
+function UnmatchedApplicationsBanner({
+  data,
+  onCreateOpportunity,
+}: {
+  data: UnmatchedApplication[];
+  onCreateOpportunity: (app: UnmatchedApplication) => void;
+}) {
+  const [dismissed, setDismissed] = useState<Set<number>>(new Set());
+  const rows = data.filter((a) => !dismissed.has(a.job_application_id));
+
+  if (rows.length === 0) return null;
+
+  return (
+    <div className="flex flex-col gap-2 rounded-md border border-border-strong bg-surface-2/60 p-3">
+      <div className="flex items-center gap-1.5 text-[12px] font-semibold text-ink-2">
+        {rows.length} application{rows.length === 1 ? "" : "s"} with no matching Bedrock opportunity
+      </div>
+      <ul className="flex flex-col gap-1.5">
+        {rows.map((a) => (
+          <li
+            key={a.job_application_id}
+            className="flex items-center justify-between gap-3 rounded bg-surface px-2.5 py-1.5"
+          >
+            <span className="truncate text-[12px] text-ink">
+              <span
+                className={cn(
+                  "mr-1.5 inline-flex items-center rounded-full px-1.5 py-0.5 text-[9.5px] font-medium leading-none",
+                  APP_STAGE_STYLES[a.stage ?? ""] ?? "bg-stone-100 text-stone-500",
+                )}
+              >
+                {APP_STAGE_LABELS[a.stage ?? ""] ?? a.stage ?? "—"}
+              </span>
+              <span className="font-medium">{a.builder}</span> ·{" "}
+              <span className="text-ink-3">{a.role_title}</span> @ {a.company_name}
+            </span>
+            <div className="flex shrink-0 items-center gap-2">
+              <button
+                type="button"
+                onClick={() => onCreateOpportunity(a)}
+                className="flex items-center gap-1 rounded bg-accent px-2 py-1 text-[11px] font-medium text-white transition-opacity hover:opacity-90"
+              >
+                <Plus size={11} /> Create opportunity
+              </button>
+              <button
+                type="button"
+                onClick={() => setDismissed((d) => new Set(d).add(a.job_application_id))}
                 className="text-[11px] text-ink-3 hover:text-ink-2"
               >
                 Dismiss
@@ -265,25 +342,41 @@ function AddApplicationForm({ roleId, onClose }: { roleId: string; onClose: () =
 
 // ── Add-role modal (existing opportunity, or spin up a new one inline) ────────
 
-function AddRoleModal({ onClose }: { onClose: () => void }) {
-  const [mode, setMode] = useState<"existing" | "new">("existing");
+interface AddRolePrefill {
+  companyName: string;
+  roleTitle?: string;
+  /** When set, the newly-created role is auto-linked to this application on
+   *  success — closes the loop for an "unmatched" application that had no
+   *  opportunity to attach to until now, no separate confirm step needed. */
+  linkApplicationId?: number;
+}
+
+function AddRoleModal({ onClose, prefill }: { onClose: () => void; prefill?: AddRolePrefill }) {
+  const [mode, setMode] = useState<"existing" | "new">(prefill ? "new" : "existing");
 
   const [oppSearch, setOppSearch] = useState("");
-  const oppResultsQ = useSearchOpportunities(oppSearch);
+  const [oppSearchDebounced, setOppSearchDebounced] = useState("");
+  useEffect(() => {
+    const t = setTimeout(() => setOppSearchDebounced(oppSearch), 250);
+    return () => clearTimeout(t);
+  }, [oppSearch]);
+  const oppResultsQ = useSearchOpportunities(oppSearchDebounced);
   const [selectedOpp, setSelectedOpp] = useState<{ id: string; label: string } | null>(null);
 
-  const [showAccountDialog, setShowAccountDialog] = useState(false);
+  const [showAccountDialog, setShowAccountDialog] = useState(Boolean(prefill));
   const [account, setAccount] = useState<{ account_key: string; display: string } | null>(null);
-  const [newOppTitle, setNewOppTitle] = useState("");
+  const [newOppTitle, setNewOppTitle] = useState(prefill?.roleTitle ?? "");
   const [newOppStage, setNewOppStage] = useState<JobStage>("lead_submitted");
   const createOpportunity = useCreateOpportunity();
 
-  const [title, setTitle] = useState("");
+  const [title, setTitle] = useState(prefill?.roleTitle ?? "");
   const [salary, setSalary] = useState("");
   const [empType, setEmpType] = useState("");
   const [startDate, setStartDate] = useState("");
   const [notes, setNotes] = useState("");
+  const [commitment, setCommitment] = useState<Commitment>("committed");
   const createRole = useCreateRole();
+  const confirmMatch = useConfirmMatch();
 
   const oppId = selectedOpp?.id ?? null;
 
@@ -315,8 +408,16 @@ function AddRoleModal({ onClose }: { onClose: () => void }) {
         employment_type: empType.trim() || undefined,
         start_date: startDate || undefined,
         notes: notes.trim() || undefined,
+        commitment,
       },
-      { onSuccess: () => onClose() },
+      {
+        onSuccess: (createdRole) => {
+          if (prefill?.linkApplicationId && createdRole?.id) {
+            confirmMatch.mutate({ appId: prefill.linkApplicationId, jobsRoleId: createdRole.id });
+          }
+          onClose();
+        },
+      },
     );
   }
 
@@ -489,6 +590,33 @@ function AddRoleModal({ onClose }: { onClose: () => void }) {
                     className="w-full rounded-md border border-border-strong bg-surface px-3 py-2 text-[13px] text-ink placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
                   />
                 </div>
+                <div className="flex flex-col gap-1">
+                  <label className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">
+                    Commitment
+                  </label>
+                  <div className="flex items-center gap-1 self-start rounded-lg border border-border-strong bg-surface-2 p-1">
+                    <button
+                      type="button"
+                      onClick={() => setCommitment("committed")}
+                      className={cn(
+                        "rounded-md px-3 py-1 text-[12px] font-medium transition-colors",
+                        commitment === "committed" ? "bg-surface text-ink shadow-sm" : "text-ink-3 hover:text-ink-2",
+                      )}
+                    >
+                      Committed
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setCommitment("open_market")}
+                      className={cn(
+                        "rounded-md px-3 py-1 text-[12px] font-medium transition-colors",
+                        commitment === "open_market" ? "bg-surface text-ink shadow-sm" : "text-ink-3 hover:text-ink-2",
+                      )}
+                    >
+                      Open-market
+                    </button>
+                  </div>
+                </div>
                 <div className="grid grid-cols-3 gap-2">
                   <label className="flex flex-col gap-0.5">
                     <span className="text-[10px] font-medium text-ink-4">Salary</span>
@@ -552,6 +680,7 @@ function AddRoleModal({ onClose }: { onClose: () => void }) {
 
       {showAccountDialog && (
         <NewAccountDialog
+          initialName={prefill?.companyName ?? ""}
           onClose={() => setShowAccountDialog(false)}
           onPicked={(a) => { setAccount(a); setShowAccountDialog(false); }}
         />
@@ -565,43 +694,63 @@ function AddRoleModal({ onClose }: { onClose: () => void }) {
 function RoleBoardRow({ role }: { role: RolesBoardRole }) {
   const [expanded, setExpanded] = useState(false);
   const [addingApp, setAddingApp] = useState(false);
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: role.id });
+  const unlinkApplication = useUnlinkApplication();
 
   return (
-    <li className="flex flex-col px-3 py-2.5">
-      <button
-        type="button"
-        onClick={() => setExpanded((v) => !v)}
-        className="flex items-start justify-between gap-2 text-left"
-      >
-        <div className="flex min-w-0 flex-col gap-0.5">
-          <div className="flex items-center gap-1.5">
-            {expanded ? (
-              <ChevronDown size={13} className="shrink-0 text-ink-4" />
-            ) : (
-              <ChevronRight size={13} className="shrink-0 text-ink-4" />
-            )}
-            <span className="truncate text-[13px] font-medium text-ink">{role.title || "Untitled role"}</span>
-            {role.applications.length > 0 && (
-              <span className="shrink-0 rounded-full bg-surface-2 px-1.5 py-0.5 text-[10px] font-medium text-ink-3">
-                {role.applications.length}
-              </span>
-            )}
-          </div>
-          <span className="truncate pl-[19px] text-[11.5px] text-ink-3">
-            {[role.account_name, fmtSalary(role.approx_salary), empTypeLabel(role.employment_type)]
-              .filter((x) => x && x !== "—")
-              .join(" · ") || "—"}
-          </span>
-        </div>
-        <span
-          className={cn(
-            "inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-[10px] font-medium leading-none",
-            PLACEMENT_STATUS_STYLES[role.placement_status] ?? "bg-stone-100 text-stone-500",
-          )}
+    <li
+      ref={setNodeRef}
+      style={{ transform: CSS.Transform.toString(transform), transition }}
+      className={cn(
+        "flex flex-col px-3 py-2.5",
+        isDragging && "relative z-10 rounded bg-surface shadow-lg ring-1 ring-accent",
+      )}
+    >
+      <div className="flex items-start gap-2">
+        <button
+          type="button"
+          {...attributes}
+          {...listeners}
+          className="mt-0.5 shrink-0 cursor-grab touch-none text-ink-4 hover:text-ink-2 active:cursor-grabbing"
+          aria-label={`Reorder ${role.title}`}
         >
-          {role.placement_status_label}
-        </span>
-      </button>
+          <GripVertical size={13} />
+        </button>
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          className="flex min-w-0 flex-1 items-start justify-between gap-2 text-left"
+        >
+          <div className="flex min-w-0 flex-col gap-0.5">
+            <div className="flex items-center gap-1.5">
+              {expanded ? (
+                <ChevronDown size={13} className="shrink-0 text-ink-4" />
+              ) : (
+                <ChevronRight size={13} className="shrink-0 text-ink-4" />
+              )}
+              <span className="truncate text-[13px] font-medium text-ink">{role.title || "Untitled role"}</span>
+              {role.applications.length > 0 && (
+                <span className="shrink-0 rounded-full bg-surface-2 px-1.5 py-0.5 text-[10px] font-medium text-ink-3">
+                  {role.applications.length}
+                </span>
+              )}
+            </div>
+            <span className="truncate pl-[19px] text-[11.5px] text-ink-3">
+              {[role.account_name, fmtSalary(role.approx_salary), empTypeLabel(role.employment_type)]
+                .filter((x) => x && x !== "—")
+                .join(" · ") || "—"}
+            </span>
+          </div>
+          <span
+            className={cn(
+              "inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-[10px] font-medium leading-none",
+              PLACEMENT_STATUS_STYLES[role.placement_status] ?? "bg-stone-100 text-stone-500",
+            )}
+          >
+            {role.placement_status_label}
+          </span>
+        </button>
+      </div>
 
       {expanded && (
         <div className="mt-2 flex flex-col gap-2 pl-[19px]">
@@ -622,6 +771,19 @@ function RoleBoardRow({ role }: { role: RolesBoardRole }) {
                       {APP_STAGE_LABELS[a.stage ?? ""] ?? a.stage ?? "—"}
                     </span>
                     <span className="font-mono text-[10.5px] text-ink-4">{fmtDate(a.date_applied)}</span>
+                    <button
+                      type="button"
+                      title="Remove from this role (doesn't delete the application, just unlinks it)"
+                      onClick={() => {
+                        if (window.confirm(`Remove ${a.builder} from this role?`)) {
+                          unlinkApplication.mutate(a.job_application_id);
+                        }
+                      }}
+                      disabled={unlinkApplication.isPending}
+                      className="text-ink-4 hover:text-red-500 transition-colors disabled:opacity-50"
+                    >
+                      <X size={12} />
+                    </button>
                   </div>
                 </li>
               ))}
@@ -648,18 +810,72 @@ function RoleBoardRow({ role }: { role: RolesBoardRole }) {
 
 export function RolesBoard() {
   const rolesQ = useRolesBoard();
-  const roles = rolesQ.data ?? [];
+  const suggestionsQ = useMatchSuggestions(30);
   const [showAddRole, setShowAddRole] = useState(false);
+  const [addRolePrefill, setAddRolePrefill] = useState<AddRolePrefill | undefined>(undefined);
+  const [items, setItems] = useState<RolesBoardRole[]>([]);
+  const reorder = useReorderRolesBoard();
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }));
+
+  function openAddRole(prefill?: AddRolePrefill) {
+    setAddRolePrefill(prefill);
+    setShowAddRole(true);
+  }
+  function closeAddRole() {
+    setShowAddRole(false);
+    setAddRolePrefill(undefined);
+  }
+
+  // Same "don't clobber an in-progress drag" sync as TagCampaigns: adopt the
+  // server order on first load or when the set of roles changes (added,
+  // removed, or a filter like ft_placed drops one off the board); otherwise
+  // keep the current order and just refresh each row's own data.
+  useEffect(() => {
+    if (!rolesQ.data) return;
+    setItems((prev) => {
+      const prevIds = new Set(prev.map((r) => r.id));
+      const sameSet = prev.length === rolesQ.data!.length && rolesQ.data!.every((r) => prevIds.has(r.id));
+      if (prev.length && sameSet) {
+        const byId = Object.fromEntries(rolesQ.data!.map((r) => [r.id, r]));
+        return prev.map((r) => byId[r.id] ?? r);
+      }
+      return rolesQ.data!;
+    });
+  }, [rolesQ.data]);
+
+  function onDragEnd(e: DragEndEvent) {
+    const { active, over } = e;
+    if (!over || active.id === over.id) return;
+    const from = items.findIndex((r) => r.id === active.id);
+    const to = items.findIndex((r) => r.id === over.id);
+    if (from < 0 || to < 0) return;
+    const next = arrayMove(items, from, to);
+    setItems(next);
+    reorder.mutate(next.map((r) => r.id));
+  }
 
   return (
     <div className="flex flex-col gap-3">
-      <SuggestedMatchesBanner />
+      <SuggestedMatchesBanner data={suggestionsQ.data?.matched ?? []} />
+      <UnmatchedApplicationsBanner
+        data={suggestionsQ.data?.unmatched ?? []}
+        onCreateOpportunity={(a) =>
+          openAddRole({
+            companyName: a.company_name ?? "",
+            roleTitle: a.role_title ?? undefined,
+            linkApplicationId: a.job_application_id,
+          })
+        }
+      />
 
       <div className="flex items-center justify-between">
-        <span className="text-[10.5px] uppercase tracking-wider text-ink-4">All Roles</span>
+        <span className="text-[10.5px] uppercase tracking-wider text-ink-4">
+          All Roles
+          <span className="ml-2 font-normal normal-case text-ink-4">· drag the grip to reorder</span>
+        </span>
         <button
           type="button"
-          onClick={() => setShowAddRole(true)}
+          onClick={() => openAddRole()}
           className="flex items-center gap-1 text-[12px] text-accent hover:underline"
         >
           <Plus size={12} /> Add role
@@ -668,17 +884,21 @@ export function RolesBoard() {
 
       {rolesQ.isLoading ? (
         <span className="text-[12px] text-ink-4">Loading…</span>
-      ) : roles.length === 0 ? (
+      ) : items.length === 0 ? (
         <span className="text-[12px] text-ink-4">No roles yet.</span>
       ) : (
-        <ul className="flex flex-col divide-y divide-border-strong rounded-md border border-border-strong">
-          {roles.map((r) => (
-            <RoleBoardRow key={r.id} role={r} />
-          ))}
-        </ul>
+        <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
+          <SortableContext items={items.map((r) => r.id)} strategy={verticalListSortingStrategy}>
+            <ul className="flex flex-col divide-y divide-border-strong rounded-md border border-border-strong">
+              {items.map((r) => (
+                <RoleBoardRow key={r.id} role={r} />
+              ))}
+            </ul>
+          </SortableContext>
+        </DndContext>
       )}
 
-      {showAddRole && <AddRoleModal onClose={() => setShowAddRole(false)} />}
+      {showAddRole && <AddRoleModal onClose={closeAddRole} prefill={addRolePrefill} />}
     </div>
   );
 }

@@ -1349,21 +1349,33 @@ async def roles_board(
     directly readable under every DB role (e.g. avni_dev)."""
     roles = await conn.fetch(
         """
-        SELECT r.*, o.account_name, o.stage AS opp_stage
+        SELECT r.*, o.account_name, o.stage AS opp_stage, s.sort_position
         FROM bedrock.jobs_role r
         JOIN bedrock.jobs_opportunity o ON o.id = r.opportunity_id
+        LEFT JOIN jobs_analytics.role_sort_order s ON s.jobs_role_id = r.id
         WHERE o.deleted_at IS NULL
-        ORDER BY o.account_name, r.created_at DESC
+        ORDER BY (s.sort_position IS NULL), s.sort_position, r.updated_at DESC
         """
     )
     apps = await conn.fetch(
         """
-        SELECT job_application_id, jobs_role_id,
-               trim(split_part(notes, ':', 1)) AS builder,
-               stage, date_applied
-        FROM public.job_applications
-        WHERE jobs_role_id IS NOT NULL
-        ORDER BY date_applied DESC NULLS LAST
+        SELECT ja.job_application_id, ja.jobs_role_id,
+               COALESCE(
+                   NULLIF(trim(b.full_name), ''),
+                   -- Only trust the notes prefix as a name when it actually
+                   -- follows the app's "Name: ..." convention (has a colon) —
+                   -- some rows have free-text notes with no name at all
+                   -- (e.g. "Applied via Google form through Pursuit"), which
+                   -- would otherwise get displayed as if it were a builder.
+                   CASE WHEN ja.notes LIKE '%:%'
+                        THEN NULLIF(trim(split_part(ja.notes, ':', 1)), '') END,
+                   'Builder #' || ja.builder_id
+               ) AS builder,
+               ja.stage, ja.date_applied
+        FROM public.job_applications ja
+        LEFT JOIN LATERAL bedrock.builder_by_id(ja.builder_id) b ON true
+        WHERE ja.jobs_role_id IS NOT NULL
+        ORDER BY ja.date_applied DESC NULLS LAST
         """
     )
     apps_by_role: dict = {}
@@ -1378,9 +1390,46 @@ async def roles_board(
     out = []
     for r in roles:
         d = _role_dict(r)
+        if d["placement_status"] == "ft_placed":
+            continue  # already filled full-time — nothing left to track here
         d["applications"] = apps_by_role.get(d["id"], [])
         out.append(d)
     return {"success": True, "data": out}
+
+
+class RolesBoardOrder(BaseModel):
+    role_ids: list[str]   # full visible-board order, top to bottom
+
+
+@router.put("/roles/board/order")
+async def set_roles_board_order(
+    body: RolesBoardOrder,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Persist a manual drag-order for the Roles board. bedrock.jobs_role has
+    no sort column of its own (no DDL for this role) — this writes into the
+    jobs_analytics scratch schema instead, mirroring the existing tag-campaign
+    priority pattern (bedrock.contact_tag_catalog.sort_order) but without an
+    FK to jobs_role so a role hard-delete is never blocked by this table.
+    SET LOCAL ROLE auto-reverts at transaction end either way, so it can never
+    leak the jobs_team role onto a later request via a reused pooled connection."""
+    who = user.get("email") if isinstance(user, dict) else getattr(user, "email", None)
+    async with conn.transaction():
+        await conn.execute("SET LOCAL ROLE jobs_team")
+        for i, role_id in enumerate(body.role_ids):
+            await conn.execute(
+                """
+                INSERT INTO jobs_analytics.role_sort_order (jobs_role_id, sort_position, updated_by)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (jobs_role_id) DO UPDATE
+                  SET sort_position = EXCLUDED.sort_position,
+                      updated_at = now(),
+                      updated_by = EXCLUDED.updated_by
+                """,
+                UUID(role_id), i, who,
+            )
+    return {"success": True, "data": {"updated": len(body.role_ids)}}
 
 
 class PlacementSyncChoice(BaseModel):
@@ -1733,20 +1782,39 @@ async def job_application_match_suggestions(
     Never auto-applied — see confirm_job_application_match. Matching mirrors
     the only existing precedent in this codebase (services/sf_company_matcher.py
     and _acct_nkey above): exact normalized-name match first, then a looser
-    normalized-title check within the same account."""
+    normalized-title check within the same account.
+
+    Returns {matched, unmatched}: `matched` has a suggested_match to confirm;
+    `unmatched` is for applications whose company has no bedrock.jobs_opportunity
+    at all — surfaced so a human can decide which ones warrant creating a new
+    opportunity/role, rather than silently dropping them from view."""
     apps = await conn.fetch(
         """
-        SELECT job_application_id, company_name, role_title, date_applied,
-               trim(split_part(notes, ':', 1)) AS builder
-        FROM public.job_applications
-        WHERE jobs_role_id IS NULL
-          AND date_applied >= (CURRENT_DATE - $1::int * INTERVAL '1 day')
-        ORDER BY date_applied DESC
+        SELECT ja.job_application_id, ja.builder_id, ja.company_name, ja.role_title, ja.date_applied, ja.stage,
+               COALESCE(
+                   NULLIF(trim(b.full_name), ''),
+                   CASE WHEN ja.notes LIKE '%:%'
+                        THEN NULLIF(trim(split_part(ja.notes, ':', 1)), '') END,
+                   'Builder #' || ja.builder_id
+               ) AS builder
+        FROM public.job_applications ja
+        LEFT JOIN LATERAL bedrock.builder_by_id(ja.builder_id) b ON true
+        WHERE ja.jobs_role_id IS NULL
+          AND ja.date_applied >= (CURRENT_DATE - $1::int * INTERVAL '1 day')
+          -- Exclude known seed/test data: rows explicitly marked as seeded, an
+          -- old ad-hoc smoke-test row, and anything tied to the synthetic
+          -- +auto-testing builder account (regardless of how its notes are
+          -- worded — matching by the test account itself is more reliable
+          -- than pattern-matching note text).
+          AND ja.notes NOT ILIKE '%seeded for platform demo%'
+          AND ja.notes NOT ILIKE '%smoke test%'
+          AND (b.email IS NULL OR b.email NOT ILIKE '%+auto-testing%')
+        ORDER BY ja.date_applied DESC
         """,
         days,
     )
     if not apps:
-        return {"success": True, "data": []}
+        return {"success": True, "data": {"matched": [], "unmatched": []}}
 
     roles = await conn.fetch(
         """
@@ -1762,7 +1830,17 @@ async def job_application_match_suggestions(
         for r in roles
     ]
 
-    suggestions = []
+    # A builder already linked to a role via some OTHER application (e.g. one
+    # logged from the Opportunities page, another from the Roles board) is
+    # not a fresh match to suggest — confirming it would just recreate the
+    # same duplicate a human already resolved (see unlink_job_application_role).
+    already_linked = await conn.fetch(
+        "SELECT jobs_role_id, builder_id FROM public.job_applications WHERE jobs_role_id IS NOT NULL"
+    )
+    linked_pairs = {(str(r["jobs_role_id"]), r["builder_id"]) for r in already_linked}
+
+    matched = []
+    unmatched = []
     for a in apps:
         app_account_key = _acct_nkey(a["company_name"])
         app_title_key = _title_nkey(a["role_title"])
@@ -1778,16 +1856,23 @@ async def job_application_match_suggestions(
                 }
             if confidence == "exact":
                 break
-        if best:
-            suggestions.append({
-                "job_application_id": a["job_application_id"],
-                "builder": a["builder"],
-                "company_name": a["company_name"],
-                "role_title": a["role_title"],
-                "date_applied": a["date_applied"].isoformat() if a["date_applied"] else None,
-                "suggested_match": best,
-            })
-    return {"success": True, "data": suggestions}
+        row = {
+            "job_application_id": a["job_application_id"],
+            "builder": a["builder"],
+            "company_name": a["company_name"],
+            "role_title": a["role_title"],
+            "date_applied": a["date_applied"].isoformat() if a["date_applied"] else None,
+            "stage": a["stage"],
+        }
+        if best and (best["jobs_role_id"], a["builder_id"]) not in linked_pairs:
+            matched.append({**row, "suggested_match": best})
+        elif not best:
+            # No account in bedrock.jobs_opportunity matches this application's
+            # company at all — there's genuinely nothing to link to yet. Surfaced
+            # separately so a human can decide which of these warrant a new
+            # opportunity/role, rather than silently dropping them.
+            unmatched.append(row)
+    return {"success": True, "data": {"matched": matched, "unmatched": unmatched}}
 
 
 class MatchConfirm(BaseModel):
@@ -1819,6 +1904,31 @@ async def confirm_job_application_match(
     if result == "UPDATE 0":
         raise HTTPException(404, "Application not found")
     return {"success": True, "data": {"job_application_id": app_id, "jobs_role_id": str(role_id)}}
+
+
+@router.post("/job-applications/{app_id}/unlink-role")
+async def unlink_job_application_role(
+    app_id: int,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Remove an application from whatever role/opportunity it's linked to,
+    without deleting the row. avni_dev (and jobs_team) has no DELETE grant on
+    public.job_applications, so this is the reversible alternative for
+    cleaning up a duplicate — e.g. the same builder logged both via the
+    Opportunities page and via the Roles board, then a match-suggestion
+    confirm linked a third, pre-existing row to the same role."""
+    result = await conn.execute(
+        """
+        UPDATE public.job_applications
+        SET jobs_role_id=NULL, jobs_opportunity_id=NULL, updated_at=now()
+        WHERE job_application_id=$1
+        """,
+        app_id,
+    )
+    if result == "UPDATE 0":
+        raise HTTPException(404, "Application not found")
+    return {"success": True, "data": {"job_application_id": app_id, "unlinked": True}}
 
 
 # ── Job-ready (L3+) pool ───────────────────────────────────────────────────────
@@ -6077,7 +6187,7 @@ async def search_opportunities(
         FROM bedrock.jobs_opportunity
         WHERE deleted_at IS NULL
           AND (lower(trim(account_name)) LIKE $1 OR lower(trim(title)) LIKE $1)
-        ORDER BY account_name
+        ORDER BY updated_at DESC
         LIMIT 20
         """,
         like,
