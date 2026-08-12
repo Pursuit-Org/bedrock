@@ -1271,7 +1271,12 @@ const OpportunityRow = memo(function OpportunityRow({
             scroll position. Angie works the pipeline with SF alongside for the
             fields Bedrock doesn't surface (secondary owner, closed-lost
             reason); losing the filtered list on every hop was the actual
-            complaint. Appears on row hover so it doesn't add permanent chrome. */}
+            complaint.
+
+            Always visible, not revealed on hover. The first version faded in on
+            row hover to keep the chrome down, and the first person to use it
+            couldn't find it — which is the whole story of a hover-only
+            affordance. */}
         <a
           href={salesforceOpportunityUrl(o.Id)}
           target="_blank"
@@ -1279,7 +1284,7 @@ const OpportunityRow = memo(function OpportunityRow({
           onClick={(e) => e.stopPropagation()}
           title="Open this opportunity in Salesforce (new tab)"
           aria-label={`Open ${o.Name ?? "opportunity"} in Salesforce`}
-          className="flex-shrink-0 text-ink-4 opacity-0 transition-opacity hover:text-accent focus:opacity-100 group-hover/row:opacity-100"
+          className="flex-shrink-0 rounded p-0.5 text-ink-4 hover:bg-surface-2 hover:text-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
         >
           <ExternalLink size={12} />
         </a>

@@ -23,7 +23,7 @@
  */
 import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ChevronDown, ChevronRight, Search } from "lucide-react";
+import { ChevronDown, ChevronRight, ExternalLink, Search } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 
 import { AccountAvatar } from "@/components/AccountAvatar";
@@ -47,6 +47,7 @@ import { cn } from "@/lib/utils";
 import {
   usePipelineReviewFlags,
   ruleLabels,
+  salesforceOpportunityUrl,
   type PaymentFlags,
 } from "@/services/pipelineReview";
 import { useSessionState } from "@/lib/useSessionState";
@@ -949,6 +950,26 @@ const PaymentRow = memo(function PaymentRow({
           </button>
           <span className="truncate text-[11px] text-ink-3" title={accountName}>{accountName}</span>
         </div>
+        {/* Open in Salesforce. Always visible rather than revealed on hover:
+            this is the page the review is actually run from, the hop to SF is
+            constant (secondary owner, closed-lost reason — fields Bedrock
+            doesn't surface), and a control you have to discover by hovering is
+            a control nobody finds. New tab, so the filtered list and scroll
+            position survive the round trip — losing those was the original
+            complaint, more than the click itself. */}
+        {p.npe01__Opportunity__c && (
+          <a
+            href={salesforceOpportunityUrl(p.npe01__Opportunity__c)}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={(e) => e.stopPropagation()}
+            title="Open this opportunity in Salesforce (new tab)"
+            aria-label={`Open ${opp?.Name ?? "opportunity"} in Salesforce`}
+            className="flex-shrink-0 rounded p-0.5 text-ink-4 hover:bg-surface-2 hover:text-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+          >
+            <ExternalLink size={12} />
+          </a>
+        )}
       </div>
     ),
     oppOwner: <span className="truncate text-ink-2">{opp?.Owner?.Name ?? "—"}</span>,
