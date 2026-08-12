@@ -4,6 +4,8 @@ import {
   useJobsOpportunities,
   useJobsOpportunity,
   useUpdateOpportunity,
+  useContactTagCatalog,
+  useStageVocabulary,
   useDeleteOpportunity,
   useCreateOpportunity,
   useLogActivity,
@@ -78,9 +80,10 @@ const OWNERS: OwnerDef[] = [
 
 // ── Calculated status (read-only roll-up of the 9-stage field) ─────────────────
 
+// On Hold dropped 2026-08-05: the three on_hold_* stages folded into Closed
+// Lost, so nothing rolls up to it any more and the filter matched zero rows.
 const STATUS_OPTIONS: { value: string; label: string }[] = [
   { value: "active", label: "Active" },
-  { value: "on_hold", label: "On Hold" },
   { value: "closed", label: "Closed" },
 ];
 
@@ -603,11 +606,70 @@ const SEGMENT_OPTIONS: { value: string; label: string }[] = [
 const SEGMENT_LABELS: Record<string, string> = Object.fromEntries(SEGMENT_OPTIONS.map((s) => [s.value, s.label]));
 const CLOSED_LOST_LABELS: Record<string, string> = {
   budget: "No budget", timing: "Timing / not now", hired_elsewhere: "Hired elsewhere",
-  not_a_fit: "Not a fit", no_response: "Went cold", role_cancelled: "Role cancelled", other: "Other",
+  not_a_fit: "Not a fit", no_response: "Went cold", role_cancelled: "Role cancelled",
+  not_interested: "Not interested", not_selected: "Not selected",
+  not_responsive: "Not responsive", revisit: "Revisit later", other: "Other",
 };
 
 /** Compact editable context strip at the top of an expanded deal: priority,
  *  segment, warm-intro attribution, and the closed-lost reason when applicable. */
+/** Campaign tags on an opportunity, drawn from the SAME catalog contacts use
+ *  (bedrock.contact_tag_catalog) — so an opportunity tagged "Board" and a
+ *  contact tagged "Board" are the same campaign by construction, with no
+ *  reconciliation layer. */
+function DealTags({ deal }: { deal: JobsOpportunity }) {
+  const updateOpp = useUpdateOpportunity();
+  const { data: catalog = [] } = useContactTagCatalog();
+  const [open, setOpen] = useState(false);
+  const current = deal.tags ?? [];
+  const labelOf = (slug: string) =>
+    catalog.find((t) => t.slug === slug)?.label
+      ?? slug.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+
+  const toggle = (slug: string) => {
+    const next = current.includes(slug) ? current.filter((t) => t !== slug) : [...current, slug];
+    updateOpp.mutate({ id: deal.id, tags: next });
+  };
+
+  return (
+    <Field label="Campaigns">
+      <div className="relative flex flex-wrap items-center gap-1">
+        {current.length === 0 && <span className="text-[12px] text-ink-4">—</span>}
+        {current.map((slug) => (
+          <span key={slug}
+            className="inline-flex items-center gap-1 rounded bg-accent-soft px-1.5 py-0.5 text-[11px] font-medium text-accent">
+            {labelOf(slug)}
+            <button type="button" onClick={() => toggle(slug)} title={`Remove ${labelOf(slug)}`}
+              className="text-accent/70 hover:text-accent">×</button>
+          </span>
+        ))}
+        <button type="button" onClick={() => setOpen((v) => !v)}
+          className="text-[11.5px] font-medium text-accent hover:underline">
+          {current.length ? "Edit" : "Add"}
+        </button>
+        {open && (
+          <>
+            <div className="fixed inset-0 z-20" onClick={() => setOpen(false)} />
+            <div className="absolute left-0 top-full z-30 mt-1 max-h-[300px] w-[260px] overflow-y-auto rounded-lg border border-border-strong bg-surface p-1 shadow-lg">
+              {catalog.length === 0 && (
+                <div className="px-2 py-1.5 text-[12px] text-ink-4">No campaign tags defined.</div>
+              )}
+              {catalog.map((t) => (
+                <label key={t.slug}
+                  className="flex cursor-pointer items-center gap-2 rounded px-2 py-1 text-[12.5px] text-ink hover:bg-surface-2">
+                  <input type="checkbox" checked={current.includes(t.slug)}
+                    onChange={() => toggle(t.slug)} className="accent-[var(--accent)]" />
+                  <span className="min-w-0 flex-1 truncate">{t.label}</span>
+                </label>
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+    </Field>
+  );
+}
+
 function DealContextStrip({ deal }: { deal: JobsOpportunity }) {
   const updateOpp = useUpdateOpportunity();
   const deleteOpp = useDeleteOpportunity();
@@ -648,6 +710,7 @@ function DealContextStrip({ deal }: { deal: JobsOpportunity }) {
       <Field label="Warm intro by">
         <InlineText value={deal.intro_by} placeholder="—" onSave={(v) => patch({ intro_by: v || null })} />
       </Field>
+      <DealTags deal={deal} />
       {isClosedLost ? (
         <Field label="Closed-lost reason">
           <span className="text-[12px] text-ink-2">
@@ -1259,14 +1322,46 @@ export function stageOptionsFor(stage: JobStage): { value: JobStage; label: stri
     : OPP_STAGE_OPTIONS;
 }
 
+/** Opportunity stage options gated on what the database currently accepts.
+ *
+ *  Without this the picker offered Reviewing Builders — the one new value the
+ *  pre-migration CHECK constraint rejects — so choosing it failed the save. The
+ *  contact picker already worked this way; the opportunity one didn't, which is
+ *  exactly the kind of asymmetry that only shows up when someone clicks it. */
+export function useOppStageOptions(stage: JobStage) {
+  const { data: vocab } = useStageVocabulary();
+  return useMemo(() => {
+    const base = stageOptionsFor(stage);
+    if (!vocab) return base;
+    const byValue = new Map(vocab.opportunity_stages.map((o) => [o.value, o]));
+    return base.map((o) => {
+      const v = byValue.get(o.value);
+      // Unknown to the vocabulary (a legacy value pinned in for the current
+      // row) stays selectable — it's already stored, so it can be written back.
+      if (!v || v.available) return o;
+      return { ...o, disabled: true, title: v.unavailable_reason ?? undefined };
+    });
+  }, [vocab, stage]);
+}
+
 // Structured closed-lost reasons (drives the "why deals die" analysis).
+// The combined vocabulary (Kwame 2026-08-05): the seven already in use plus the
+// four from the stage simplification, rather than replacing one list with the
+// other. `revisit` is the interesting one — picking it asks for a date and files
+// a task, which is how "come back to this" survives being closed lost.
+// Offered reasons, trimmed 2026-08-05: "Went cold / no response" overlapped
+// Not responsive, and "Timing / not now" overlapped Revisit later — which is the
+// same thing with a date attached. "Hired elsewhere" dropped too. The retired
+// values stay in CLOSED_LOST_LABELS and in the database CHECK, because four live
+// rows still carry them; they render, they just can't be chosen again.
 const CLOSED_LOST_REASONS: { value: string; label: string }[] = [
   { value: "budget",          label: "No budget" },
-  { value: "timing",          label: "Timing / not now" },
-  { value: "hired_elsewhere", label: "Hired elsewhere" },
   { value: "not_a_fit",       label: "Not a fit" },
-  { value: "no_response",     label: "Went cold / no response" },
   { value: "role_cancelled",  label: "Role cancelled" },
+  { value: "not_interested",  label: "Not interested" },
+  { value: "not_selected",    label: "Not selected" },
+  { value: "not_responsive",  label: "Not responsive" },
+  { value: "revisit",         label: "Revisit later" },
   { value: "other",           label: "Other" },
 ];
 
@@ -1391,6 +1486,10 @@ function DealRow({
   }
 
   /** Stage change fires the committed-roles / placements / closed-lost modals. */
+  // Gated on what the database accepts: Reviewing Builders is rejected
+  // until the 2026-08-05 migration lands, so it shows disabled here
+  // rather than failing the save.
+  const oppStageOptions = useOppStageOptions(deal.stage);
   function saveStage(stage: JobStage) {
     if (stage === deal.stage) return Promise.resolve();
     return new Promise<void>((resolve, reject) => {
@@ -1445,7 +1544,7 @@ function DealRow({
     stage: (
       <InlineSelect<JobStage>
         value={deal.stage}
-        options={stageOptionsFor(deal.stage)}
+        options={oppStageOptions}
         onSave={saveStage}
         renderValue={(v) => (
           <span className="flex items-center gap-1 text-[12.5px] text-ink-2">
@@ -2079,11 +2178,26 @@ export function ClosedLostModal({
 }) {
   const [reason, setReason] = useState("");
   const [note, setNote] = useState("");
+  // Revisit is the one reason that isn't an ending — it needs a date, or it's
+  // just Closed Lost with extra steps. Defaults a month out so the common case
+  // is one click.
+  const [revisitDate, setRevisitDate] = useState(() => {
+    const d = new Date(); d.setMonth(d.getMonth() + 1);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  });
+  const isRevisit = reason === "revisit";
   const updateOpp = useUpdateOpportunity();
 
   function save() {
     updateOpp.mutate(
-      { id: deal.id, closed_lost_reason: reason || null, closed_lost_note: note.trim() || null },
+      {
+        id: deal.id,
+        closed_lost_reason: reason || null,
+        closed_lost_note: note.trim() || null,
+        // Reuses follow_up_date — the column that already exists for exactly
+        // this. The backend turns it into a jobs_task for the deal's owner.
+        ...(isRevisit ? { follow_up_date: revisitDate } : {}),
+      },
       { onSuccess: () => onClose() },
     );
   }
@@ -2115,13 +2229,33 @@ export function ClosedLostModal({
               ))}
             </select>
           </div>
+          {isRevisit && (
+            <div className="flex flex-col gap-1 rounded-lg border border-accent/40 bg-accent-soft px-3 py-2">
+              <label className="text-[11px] font-semibold uppercase tracking-wider text-accent">
+                Come back to this on
+              </label>
+              <input
+                type="date"
+                value={revisitDate}
+                onChange={(e) => { if (e.target.value) setRevisitDate(e.target.value); }}
+                className="w-full rounded-md border border-border-strong bg-surface px-3 py-2 text-[13px] text-ink focus:outline-none focus:ring-1 focus:ring-accent/40"
+              />
+              <span className="text-[11px] text-accent">
+                Files a task for the deal's owner on that date.
+              </span>
+            </div>
+          )}
           <div className="flex flex-col gap-1">
-            <label className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">Note (optional)</label>
+            <label className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">
+              Note <span className="text-red">*</span>
+            </label>
             <textarea
               rows={3}
               value={note}
               onChange={(e) => setNote(e.target.value)}
-              placeholder="Context — what happened, who said what…"
+              placeholder={isRevisit
+                ? "Who to check back with, and why — e.g. \"check with Jane Doe once budget resets in Q1\""
+                : "Context — what happened, who said what…"}
               className="w-full resize-none rounded-md border border-border-strong bg-surface px-3 py-2 text-[13px] text-ink placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
             />
           </div>
@@ -2133,7 +2267,10 @@ export function ClosedLostModal({
           <button
             type="button"
             onClick={save}
-            disabled={updateOpp.isPending}
+            // Reason AND note are both required now: a bare reason code loses the
+            // one thing worth keeping, which is what actually happened.
+            disabled={updateOpp.isPending || !reason || !note.trim()}
+            title={!reason ? "Pick a reason" : !note.trim() ? "Add a note — it's required" : undefined}
             className="rounded-lg bg-accent px-4 py-2 text-[13px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
           >
             {updateOpp.isPending ? "Saving…" : "Save reason"}

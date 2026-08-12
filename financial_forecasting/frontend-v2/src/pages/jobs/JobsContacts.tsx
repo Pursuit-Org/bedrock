@@ -16,6 +16,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { ContactDetail, initials } from "@/components/jobs/ProspectAccountExpandPanel";
 import { ContactExpandTabs, jobsContactPath } from "@/components/jobs/jobsEntity";
 import { CompanyPicker } from "@/components/jobs/CompanyPicker";
+import { ExportButton } from "@/components/jobs/ExportButton";
 import { withReferrer } from "@/components/detail";
 import { ColumnChooser } from "@/components/ui/ColumnChooser";
 import { InlineSelect } from "@/components/ui/InlineEdit";
@@ -24,6 +25,7 @@ import { SortableHeader } from "@/components/ui/SortableHeader";
 import { Toolbar } from "@/components/ui/Toolbar";
 import { RECENCY_OPTIONS, recencyLabel } from "@/lib/recencyFilter";
 import { useColumnVisibility } from "@/lib/columnVisibility";
+import { useContactStageChange } from "@/lib/useContactStageChange";
 import { useColumnWidths } from "@/lib/columnWidths";
 import { ResizableTh, ColGroup } from "@/components/ui/ResizableTable";
 import { useSessionState } from "@/lib/useSessionState";
@@ -39,6 +41,7 @@ import {
   useFlagContactsForJobs, useUnflagJobsContact, useUpdateJobsMembership, MEMBERSHIP_STAGE_LABELS, MEMBERSHIP_STAGES,
   useContactTagCatalog, useStaff, useUpdateContact, useBulkContactOwner, useBulkProspect,
   type JobStage, type JobContactWithDeal, type ContactSearchResult, type ContactCreateBody, type MembershipStage,
+  exportJobsRows,
 } from "@/services/jobs";
 
 // Humanize a tag slug so chips never flash the raw slug (e.g. "prior_commit_partner")
@@ -223,6 +226,7 @@ function TagsCell({ contact }: { contact: JobContactWithDeal }) {
 // ── row ──────────────────────────────────────────────────────────────────────
 function ContactRow({ contact, expanded, onOpen, visibleCols, selected, onToggleSelect }: { contact: JobContactWithDeal; expanded: boolean; onOpen: () => void; visibleCols: ColKey[]; selected: boolean; onToggleSelect: () => void }) {
   const updateMembership = useUpdateJobsMembership();
+  const stageChange = useContactStageChange();
   const flagOne = useFlagContactsForJobs();
   const addToJobs = useAddContactToJobs();
   const updateContact = useUpdateContact();
@@ -271,10 +275,17 @@ function ContactRow({ contact, expanded, onOpen, visibleCols, selected, onToggle
     // a muted "—" (in pipeline via the prospect checkbox); the picker sets a
     // real stage, creating the membership.
     flag: contact.membership_stage
-      ? <InlineSelect<string> value={contact.membership_stage} options={MEMBERSHIP_STAGE_OPTIONS}
+      ? <InlineSelect<string> value={contact.membership_stage} options={stageChange.options}
           renderValue={(v) => <span className="rounded-full bg-accent-soft px-1.5 py-0.5 text-[10.5px] font-medium text-accent-ink">{MEMBERSHIP_STAGE_LABELS[(v ?? contact.membership_stage) as MembershipStage] ?? v}</span>}
-          onSave={(v) => new Promise<void>((res, rej) => updateMembership.mutate({ contact_id: contact.contact_id, stage: v || undefined }, { onSuccess: () => res(), onError: rej }))} />
-      : <InlineSelect<string> value="" options={MEMBERSHIP_STAGE_OPTIONS} emptyLabel="—"
+          onSave={(v) => {
+            if (!v) return Promise.resolve();
+            // Revisit asks for a date first (shared handler); anything else
+            // writes straight through.
+            if (v === "revisit") return stageChange.change(contact.contact_id, contact.full_name ?? "contact", v);
+            return new Promise<void>((res, rej) => updateMembership.mutate(
+              { contact_id: contact.contact_id, stage: v }, { onSuccess: () => res(), onError: rej }));
+          }} />
+      : <InlineSelect<string> value="" options={stageChange.options} emptyLabel="—"
           renderValue={(v) => v ? <span className="rounded-full bg-accent-soft px-1.5 py-0.5 text-[10.5px] font-medium text-accent-ink">{MEMBERSHIP_STAGE_LABELS[v as MembershipStage] ?? v}</span> : <span className="text-[11px] text-ink-4">—</span>}
           onSave={(v) => new Promise<void>((res, rej) => { if (!v) return res(); flagOne.mutate({ contact_ids: [contact.contact_id], stage: v }, { onSuccess: () => res(), onError: rej }); })} />,
     industry: <span className="truncate text-[12px] text-ink-3">{contact.company_industry || "—"}</span>,
@@ -313,6 +324,9 @@ function ContactRow({ contact, expanded, onOpen, visibleCols, selected, onToggle
         ))}
       </tr>
       {expanded && <tr className="bg-surface-2/20"><td colSpan={visibleCols.length} className="p-0"><ContactExpandTabs contactId={contact.contact_id} /></td></tr>}
+      {/* Rendered outside the cells: a modal can't live inside a <td> in a
+          ternary, and only the row you clicked has a pending revisit. */}
+      {stageChange.dialog}
     </Fragment>
   );
 }
@@ -330,6 +344,7 @@ export function JobsContacts({ initialQuery, initialContactId, initialConnectedO
   const [showNewContact, setShowNewContact] = useState(false);
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [exporting, setExporting] = useState(false);
   const [bulkBusy, setBulkBusy] = useState(false);
   const [pendingStage, setPendingStage] = useState("");   // "" = leave unchanged
   const [pendingOwner, setPendingOwner] = useState("");   // "" = leave, "__clear__" = clear owner
@@ -553,6 +568,28 @@ export function JobsContacts({ initialQuery, initialContactId, initialConnectedO
           <span className="mx-1 h-4 w-px bg-accent/30" />
           <button type="button" disabled={bulkBusy || bulkProspect.isPending} onClick={() => bulkProspect.mutate({ contact_ids: [...selected], value: true }, { onSuccess: () => setSelected(new Set()) })} className="inline-flex h-7 items-center gap-1 rounded border border-accent bg-surface px-3 font-medium text-accent hover:bg-accent-soft disabled:opacity-50" title="Mark as jobs prospects (no pipeline stage)"><Plus size={12} /> Add as prospect</button>
           <button type="button" disabled={bulkBusy} onClick={async () => { const ids = [...selected]; if (!window.confirm(`Clear the jobs stage from ${ids.length} contact${ids.length === 1 ? "" : "s"}?`)) return; setBulkBusy(true); const r = await Promise.allSettled(ids.map((id) => unflag.mutateAsync(id))); setBulkBusy(false); const failed = r.filter((x) => x.status === "rejected").length; if (failed) toast.error(`${failed} of ${ids.length} could not be cleared`); setSelected(new Set()); }} className="h-7 rounded border border-border-strong bg-surface px-3 text-ink-2 hover:text-ink disabled:opacity-50" title="Remove the jobs stage (membership) from the selected contacts">Clear stage</button>
+          {/* Export the selection as .xlsx. Read-only, so it sits after the
+              mutating actions and never clears the selection — you may well want
+              to act on the same rows next. */}
+          <ExportButton
+            count={selected.size}
+            busy={exporting}
+            onExport={async (columns) => {
+              setExporting(true);
+              try {
+                await exportJobsRows("contacts", [...selected], columns);
+                toast.success(`Exported ${selected.size} contact${selected.size === 1 ? "" : "s"}`);
+              } catch (e: unknown) {
+                // The server explains refusals in plain language (nothing
+                // selected, too many rows); "Export failed" sent people hunting
+                // for a bug instead of reading the reason.
+                const detail = (e as { response?: { data?: { detail?: string } } })
+                  ?.response?.data?.detail;
+                toast.error(detail || "Export failed");
+              } finally {
+                setExporting(false);
+              }
+            }} />
           <button type="button" onClick={() => setSelected(new Set())} className="ml-1 text-[11.5px] font-medium text-ink-3 underline-offset-4 hover:text-ink-2 hover:underline">Clear selection</button>
         </div>
       )}

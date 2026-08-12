@@ -156,7 +156,7 @@ export function JobsStatBubble({
   progressPct?: number;
   /** centered label inside the ring (e.g. "80%") */
   progressLabel?: string;
-  /** soft glow + sparkle when a win is present */
+  /** soft glow when a win is present (the ✨ badge was dropped 2026-08-04) */
   celebrate?: boolean;
   isLoading?: boolean;
   /** larger hero variant — bigger number, label, padding */
@@ -195,15 +195,6 @@ export function JobsStatBubble({
           : "0 1px 2px rgba(20,18,14,0.04), 0 6px 18px -12px rgba(20,18,14,0.25)",
       }}
     >
-      {celebrate ? (
-        <span
-          className="pointer-events-none absolute right-3 top-3 select-none text-[15px] leading-none opacity-90 transition-transform duration-300 group-hover:scale-110"
-          aria-hidden
-        >
-          ✨
-        </span>
-      ) : null}
-
       <div className="flex items-center gap-2">
         <span
           className={cn("flex flex-shrink-0 items-center justify-center rounded-lg", big ? "h-8 w-8" : "h-6 w-6")}

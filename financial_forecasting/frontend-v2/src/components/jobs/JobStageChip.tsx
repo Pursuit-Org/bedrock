@@ -4,12 +4,15 @@ import { DEAL_TYPE_LABELS, STAGE_LABELS } from "@/services/jobs";
 
 const STAGE_STYLES: Record<JobStage, string> = {
   lead_submitted:               "bg-stone-100 text-stone-600",
-  initial_outreach:             "bg-blue-50 text-blue-700",
   active_in_discussions:        "bg-amber-50 text-amber-700",
   active_opportunity_confirmed: "bg-emerald-50 text-emerald-700",
-  active_builder_interview:     "bg-emerald-100 text-emerald-800 font-semibold",
+  reviewing_builders:           "bg-emerald-100 text-emerald-800 font-semibold",
   closed_won:                   "bg-green-100 text-green-800 font-semibold",
   closed_lost:                  "bg-red-50 text-red-600",
+  // Legacy — kept so an un-migrated row still gets its colour rather than
+  // falling through to the neutral default.
+  initial_outreach:             "bg-blue-50 text-blue-700",
+  active_builder_interview:     "bg-emerald-100 text-emerald-800 font-semibold",
   on_hold_not_selected:         "bg-stone-100 text-stone-500",
   on_hold_not_interested:       "bg-stone-100 text-stone-500",
   on_hold_not_responsive:       "bg-stone-100 text-stone-500",
