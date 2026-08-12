@@ -22,7 +22,7 @@ import {
   type OutreachScopeKind,
   type OutreachDateRange,
   type ScorecardRow,
-  type TouchDepth,
+  useTouchDepth,
   type TouchDepthBucket,
   type JobContactWithDeal,
   type MembershipStage,
@@ -313,33 +313,30 @@ function TouchDepthDrill({ bucket, nameOf }: {
 // contacts that entered initial outreach this period; the bars are how many
 // logged touches each has. Server-computed off the same activity filters as the
 // drills, so it can't disagree with the rest of the tab.
-function TouchDepthPanel({ depth, nameOf }: {
-  depth?: TouchDepth;
+function TouchDepthPanel({ scope, owner, nameOf }: {
+  scope: OutreachScopeKind;
+  owner?: string;
   nameOf: (email: string) => string;
 }) {
   const [open, setOpen] = useState<string | null>(null);
+  const { data: depth, isLoading } = useTouchDepth(scope, owner);
   const buckets = depth?.buckets ?? [];
   const max = Math.max(1, ...buckets.map((b) => b.count));
   return (
     <Panel
       title="Touch Depth"
       // Spells out both halves of the measure, because "3 touches" is
-      // meaningless without knowing over what window and for whom.
+      // meaningless without knowing over what window and for whom. "Right now"
+      // is load-bearing: this panel does not follow the period bar.
       desc={depth
-        ? `The ${depth.total} contacts in initial outreach this period, by touches received in the ${depth.weeks} weeks to ${fmtDate(depth.touch_to)}`
+        ? `All ${depth.total} contacts sitting in initial outreach right now, by touches received in the last ${depth.weeks} weeks`
         : "Loading…"}
-      action={depth && depth.undated > 0 ? (
-        <span className="text-right text-[11px] leading-tight text-ink-4"
-          title="No stage timestamp, so no period can claim them. The stage-history grant fills most of these in.">
-          {depth.undated} without a stage date
-        </span>
-      ) : undefined}
     >
-      {!depth ? (
+      {isLoading || !depth ? (
         <div className="h-28 animate-pulse rounded bg-surface-2" />
       ) : depth.total === 0 ? (
         <div className="rounded-lg border border-dashed border-border-strong px-4 py-6 text-center text-[12.5px] text-ink-4">
-          No contacts entered initial outreach in this period.
+          Nobody is sitting in initial outreach.
         </div>
       ) : (
         <div className="flex flex-col">
@@ -1391,8 +1388,10 @@ export function JobsOutreach() {
 
   return (
     <div className="flex flex-col gap-6 pt-3">
-      {/* ── Page period, scope and sender: one row driving every section,
-             including the activity chart at the bottom ── */}
+      {/* ── ZONE 1 · the selected period ──────────────────────────────────
+             This bar governs everything down to the Current state boundary,
+             and nothing below it. It used to float above the whole page, which
+             is what made it look like it filtered Requiring Attention too. ── */}
       <PeriodBar
         from={from} to={to}
         onChange={(f, t) => { setFrom(f); setTo(t); }}
@@ -1407,6 +1406,18 @@ export function JobsOutreach() {
             .map((st) => <option key={st.email} value={st.email}>{st.name || st.email}</option>)}
         </select>
       </PeriodBar>
+
+      {/* The resolved dates in plain text, plus what the trend deltas compare
+          against. Every "+3.2pp" on this page is measured against the previous
+          period, and an unnamed baseline makes those numbers unreadable. */}
+      {sc && (
+        <p className="-mt-3 text-[11.5px] text-ink-4">
+          Showing <span className="font-medium text-ink-3">{rangeLabel}</span>
+          {" · trends compare with "}
+          <span className="font-medium text-ink-3">{fmtRange(sc.period.last_start, sc.period.last_end)}</span>
+          {" · applies down to Current state"}
+        </p>
+      )}
 
       {/* ── Daily digest (the morning Slack) ── */}
       <DailyDigestBlock periodEnd={to} />
@@ -1425,16 +1436,6 @@ export function JobsOutreach() {
           const canonical = staff.find((st) => st.email.toLowerCase() === email)?.email ?? email;
           setOwner(owner.toLowerCase() === email ? "" : canonical);
         }} />
-
-      {/* Follow-up depth sits under Outreach Detail: same cohort, next
-          question — of the contacts that entered, how many did we work more
-          than once. */}
-      <TouchDepthPanel depth={sc?.touch_depth} nameOf={nameOf} />
-
-      <div className="flex flex-col gap-3">
-        <SectionHead title="Campaigns · coverage" />
-        <TagCampaigns />
-      </div>
 
       {isError && <div className="rounded-lg border border-red-soft bg-red-soft px-4 py-3 text-[13px] text-red">Couldn't load the scorecard. Try again in a moment.</div>}
       {isLoading && !sc && (
@@ -1462,10 +1463,49 @@ export function JobsOutreach() {
         </div>
       </div>
 
+      {/* ── ZONE 2 · current state ────────────────────────────────────────
+             Everything below this line ignores the period bar, and that is
+             correct: these are live queues and rollups, not history. Making the
+             boundary explicit was the fix for the period control appearing to
+             govern the whole page when it governs only the half above it.
+             The divider is deliberately heavier than the "Segments & activity"
+             rule above, which separates two period-scoped panels — this one
+             separates two different notions of time. ── */}
+      <ZoneBoundary senderLabel={owner ? nameOf(owner) : undefined} />
+
+      <TouchDepthPanel scope={scope} owner={owner || undefined} nameOf={nameOf} />
+
       {/* Requiring attention closes the page (moved below the trend band
           2026-08-04): it's the action list you leave the review with, so it
           reads better as the last thing than wedged mid-scroll. */}
       <RequiringAttention owner={owner || undefined} nameOf={nameOf} staffEmails={staffEmails} />
+
+      <div className="flex flex-col gap-3">
+        <SectionHead title="Campaigns · coverage" />
+        <TagCampaigns />
+      </div>
+    </div>
+  );
+}
+
+/** The line between "the period you picked" and "right now".
+ *
+ *  Reads as a statement rather than a label because the whole point is to
+ *  correct an expectation the period bar sets. Note the precision: scope and
+ *  sender DO still apply below this line — only the period stops. Saying "the
+ *  filters above don't apply" would trade one wrong belief for another. */
+function ZoneBoundary({ senderLabel }: { senderLabel?: string }) {
+  return (
+    <div className="mt-8 flex flex-col gap-1.5">
+      <div className="flex items-center gap-3">
+        <div className="h-px flex-1 bg-ink-4/40" />
+        <span className="text-[11px] font-bold uppercase tracking-[.12em] text-ink-2">Current state</span>
+        <div className="h-px flex-1 bg-ink-4/40" />
+      </div>
+      <p className="text-center text-[11.5px] text-ink-4">
+        Live as of today — the period above doesn't apply here
+        {senderLabel ? <>, but {senderLabel} does</> : <>, though scope and sender still do</>}.
+      </p>
     </div>
   );
 }

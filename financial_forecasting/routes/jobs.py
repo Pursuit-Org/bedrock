@@ -3541,8 +3541,6 @@ async def outreach_scorecard(
         {"metric": m, "tier": _ACTIVITY_TIER.get(m), **_row("activity", m, label, activity_pipeline_target(m, granularity))}
         for m, label in _OUTREACH_ACTIVITY_META
     ]
-    touch_depth = await _touch_depth(conn, this_start, this_end, scope, owner)
-
     return {"success": True, "data": {
         "granularity": granularity,
         "scope": scope,
@@ -3553,16 +3551,12 @@ async def outreach_scorecard(
         "user_pipeline": user_pipeline,
         "activity_pipeline": activity_pipeline,
         "by_sender": by_sender,
-        "touch_depth": touch_depth,
     }}
 
 
-# Zero is back, and it means something different now. When touches were counted
-# over a contact's lifetime, everyone in this cohort had at least one by
-# definition and the row was noise. Counting a fixed 3-week window instead, zero
-# means "reached at some point, but nothing inside the window" — a real and
-# common state on production, and precisely the follow-up gap the panel exists to
-# show. It leads the list and is coloured as a problem.
+# Zero leads the list and is coloured as a problem: it means "sitting in initial
+# outreach and not touched at all in the last four weeks", which is exactly the
+# follow-up gap this panel exists to surface.
 _TOUCH_BUCKETS = [
     ("0", "0 Touches", 0, 0),
     ("1", "1 Touch", 1, 1),
@@ -3573,82 +3567,73 @@ _TOUCH_BUCKETS = [
 _TOUCH_DEPTH_CAP = 40   # contacts listed per bucket for the inline drill
 
 
-# The touch-counting window (Kwame 2026-08-05, revised to 4 weeks). Anchored to
-# the END OF THE SELECTED PERIOD rather than to today — otherwise looking back at
-# July would count touches from August, and the same period would report
-# different numbers depending on when you opened it. The UI reads the number from
-# the response, so changing it here changes the label too.
+# The touch-counting window, anchored to TODAY (Jac 2026-08-12).
+#
+# It was previously anchored to the end of the selected period, which made the
+# panel answer a reporting question ("how well did we work the cohort we opened
+# in July") while sitting on an operational tab. Two things went wrong in
+# practice: a contact touched five times last week read as zero when you looked
+# at a July period, and on a quiet week the panel was simply empty even though
+# 800+ contacts were sitting in initial outreach needing follow-up.
+#
+# Touch Depth is a WORK QUEUE, not a period metric. Cohort and window are both
+# "right now", which is why this no longer takes a period at all. The bounded
+# window still does the job it was added for — a lifetime count would make an old
+# contact look well-worked purely for being old. The UI reads the number from the
+# response, so changing it here changes the label too.
 _TOUCH_DEPTH_WEEKS = 4
 
 
-async def _touch_depth(conn, start, end, scope: str, owner: Optional[str]) -> dict:
-    """Touch depth: for every contact sitting in initial outreach that entered in
-    the selected period, how many jobs touches they received in the 4 weeks
-    ending with that period.
+async def _touch_depth(conn, scope: str, owner: Optional[str]) -> dict:
+    """Touch depth: for every contact sitting in initial outreach RIGHT NOW, how
+    many jobs touches they received in the trailing `_TOUCH_DEPTH_WEEKS`.
 
-    Both halves are bounded on purpose. The cohort is period-scoped so it matches
-    the rest of the tab, and the touch count is a fixed 3-week window so the
-    buckets mean the same thing from one period to the next — a lifetime count
-    would make an old contact look well-worked purely for being old.
+    Deliberately takes no period — see the note on _TOUCH_DEPTH_WEEKS. The cohort
+    is the live queue, so the panel is never empty just because it was a quiet
+    week, and the window ends today, so a contact worked last week never reads as
+    untouched.
 
-    Uses the same _jobs_relevant / _not_autoreply filters and the same
-    stage-entry expression as the funnel and the drill-downs, so this can't
-    disagree with the rest of the tab. `undated` reports the contacts whose stage
-    entry has no timestamp at all — without the stage-history grant no period can
-    claim them, and dropping them silently is what makes a panel look wrong."""
-    if await has_membership_history(conn):
-        entered = ("COALESCE((SELECT max(h.changed_at) FROM bedrock.jobs_membership_stage_history h"
-                   " WHERE h.contact_id = m.contact_id AND h.to_stage = 'initial_outreach'),"
-                   " m.first_outreach_at)")
-    else:
-        entered = "m.first_outreach_at"
-
+    Uses the same _jobs_relevant / _not_autoreply filters as the funnel and the
+    drill-downs. The count and `last_touch_at` share those filters, so the two
+    can't contradict each other — the previous version left _not_autoreply off
+    `last_touch_at`, which could date a contact by an out-of-office reply."""
     owner_pred = "TRUE"
     if owner and _SAFE_EMAIL.match(owner):
         owner_pred = f"lower(m.owner_email) = lower('{owner}')"
     elif scope in ("team", "staff"):
         owner_pred = _scope_email_pred("m.owner_email", scope)
 
+    # One aggregate pass over the window, not two correlated subqueries per
+    # contact. At 800+ contacts in the cohort the old shape issued ~1600 index
+    # scans and took long enough that the panel looked broken.
     sql = f"""
         WITH cohort AS (
-            SELECT m.contact_id, m.owner_email, {entered} AS entered_at
+            SELECT m.contact_id, m.owner_email
             FROM bedrock.jobs_contact_membership m
             WHERE m.stage = 'initial_outreach' AND {owner_pred}
         ),
-        scoped AS (
-            SELECT * FROM cohort WHERE entered_at >= $1 AND entered_at < $2
-        ),
-        counted AS (
-            SELECT s.contact_id, s.owner_email,
-                   (SELECT count(*) FROM bedrock.activity a
-                     WHERE a.participant_public_contact_id = s.contact_id
-                       AND a.deleted_at IS NULL
-                       AND a.activity_date >= $3 AND a.activity_date < $2
-                       AND {_jobs_relevant('a')} AND {_not_autoreply('a')}) AS touches
-            FROM scoped s
+        touched AS (
+            SELECT a.participant_public_contact_id AS contact_id,
+                   count(*)              AS touches,
+                   max(a.activity_date)  AS last_touch_at
+            FROM bedrock.activity a
+            JOIN cohort c ON c.contact_id = a.participant_public_contact_id
+            WHERE a.deleted_at IS NULL
+              AND a.activity_date >= $1
+              AND {_jobs_relevant('a')} AND {_not_autoreply('a')}
+            GROUP BY 1
         )
-        SELECT c.contact_id, c.owner_email, c.touches,
-               p.full_name, p.current_company,
-               (SELECT max(a2.activity_date) FROM bedrock.activity a2
-                 WHERE a2.participant_public_contact_id = c.contact_id
-                   AND a2.deleted_at IS NULL
-                   AND a2.activity_date >= $3 AND a2.activity_date < $2
-                   AND {_jobs_relevant('a2')}) AS last_touch_at
-        FROM counted c
+        SELECT c.contact_id, c.owner_email,
+               COALESCE(t.touches, 0) AS touches,
+               t.last_touch_at,
+               p.full_name, p.current_company
+        FROM cohort c
+        LEFT JOIN touched t ON t.contact_id = c.contact_id
         LEFT JOIN public.contacts p ON p.contact_id = c.contact_id
-        ORDER BY c.touches, p.current_company NULLS LAST
+        ORDER BY COALESCE(t.touches, 0), p.current_company NULLS LAST
     """
-    touch_from = end - timedelta(weeks=_TOUCH_DEPTH_WEEKS)
-    try:
-        rows = await conn.fetch(sql, start, end, touch_from)
-    except asyncpg.exceptions.InsufficientPrivilegeError:
-        logger.warning("touch depth: stage-history read refused — falling back to stamps only")
-        rows = []
-
-    undated = await conn.fetchval(f"""
-        SELECT count(*) FROM bedrock.jobs_contact_membership m
-        WHERE m.stage = 'initial_outreach' AND {owner_pred} AND {entered} IS NULL
-    """) or 0
+    touch_from = datetime.now(timezone.utc) - timedelta(weeks=_TOUCH_DEPTH_WEEKS)
+    rows = await conn.fetch(sql, touch_from)
 
     # Everyone in the cohort is counted: with a bounded window, zero is a real
     # answer rather than a data gap, so excluding it would understate the problem.
@@ -3668,11 +3653,31 @@ async def _touch_depth(conn, start, end, scope: str, owner: Optional[str]) -> di
             } for r in members[:_TOUCH_DEPTH_CAP]],
             "truncated": max(0, len(members) - _TOUCH_DEPTH_CAP),
         })
-    return {"total": total, "undated": undated,
+    # `undated` is gone: it counted contacts whose stage entry had no timestamp,
+    # which mattered only while the cohort was date-filtered. Nobody is excluded
+    # for a missing stamp now, so reporting it would imply a gap that isn't there.
+    return {"total": total,
             "weeks": _TOUCH_DEPTH_WEEKS,
             "touch_from": touch_from.date().isoformat(),
-            "touch_to": end.date().isoformat(),
+            "touch_to": datetime.now(timezone.utc).date().isoformat(),
             "buckets": buckets}
+
+
+@router.get("/outreach/touch-depth")
+async def outreach_touch_depth(
+    scope: str = Query("team", pattern="^(pursuit|team|staff)$"),
+    owner: Optional[str] = Query(None, description="Scope to one staff owner (overrides scope)"),
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Who in initial outreach is under-touched right now.
+
+    Split off the scorecard deliberately. The scorecard is period-scoped, so the
+    Outreach tab fetches it once per period to build its trend columns — which
+    meant this recomputed several times on every page load while answering a
+    question that doesn't depend on the period at all. On its own endpoint it is
+    fetched once and cached independently, and the scorecard gets lighter."""
+    return {"success": True, "data": await _touch_depth(conn, scope, owner)}
 
 
 def _touch_direction(type_: str, email_from: Optional[str]) -> str:
@@ -8425,23 +8430,55 @@ class ExportRequest(BaseModel):
 _EXPORT_SPECS: dict[str, dict] = {
     "contacts": {
         "label": "Contacts",
+        # Mirrors what the Contacts table can show, so "export what I'm looking
+        # at" means the same fields on screen and in the file. `default` is the
+        # subset sent when the caller doesn't pick; `columns` is everything
+        # selectable. Post-migration columns (call_booked_at, revisit_date) are
+        # deliberately absent — this file has to run before that migration too.
         "sql": """
             SELECT c.contact_id::text AS id, c.full_name, c.email, c.current_title,
-                   c.current_company, c.linkedin_url, m.stage AS jobs_stage,
-                   m.owner_email AS jobs_owner, m.assigned_at, m.first_outreach_at,
+                   c.current_company, c.linkedin_url, c.location, c.source,
+                   c.contact_stage, c.owner_email AS contact_owner, c.notes,
+                   c.created_at,
+                   m.stage AS jobs_stage, m.owner_email AS jobs_owner,
+                   m.assigned_at, m.first_outreach_at, m.first_outreach_by,
+                   m.converted_at, m.not_a_fit_reason,
+                   co.industry, co.size_bucket, co.hq_location,
                    (SELECT string_agg(t, ', ') FROM unnest(coalesce(c.tags,'{}')) t
-                     WHERE t IN (SELECT slug FROM bedrock.contact_tag_catalog)) AS campaign_tags
+                     WHERE t IN (SELECT slug FROM bedrock.contact_tag_catalog)) AS campaign_tags,
+                   (SELECT max(a.activity_date) FROM bedrock.activity a
+                     WHERE a.participant_public_contact_id = c.contact_id
+                       AND a.deleted_at IS NULL) AS last_activity_at
             FROM public.contacts c
             LEFT JOIN bedrock.jobs_contact_membership m ON m.contact_id = c.contact_id
+            LEFT JOIN LATERAL (
+                SELECT industry, size_bucket, hq_location
+                FROM public.companies
+                WHERE lower(trim(name)) = lower(trim(c.current_company)) LIMIT 1
+            ) co ON true
         """,
-        "columns": ["full_name", "email", "current_title", "current_company",
+        "default": ["full_name", "email", "current_title", "current_company",
                     "linkedin_url", "jobs_stage", "jobs_owner", "campaign_tags",
                     "assigned_at", "first_outreach_at"],
+        "columns": ["full_name", "email", "current_title", "current_company",
+                    "linkedin_url", "location", "industry", "size_bucket",
+                    "hq_location", "jobs_stage", "jobs_owner", "campaign_tags",
+                    "contact_stage", "contact_owner", "source",
+                    "assigned_at", "first_outreach_at", "first_outreach_by",
+                    "converted_at", "not_a_fit_reason", "last_activity_at",
+                    "created_at", "notes"],
         "headers": {"full_name": "Name", "email": "Email", "current_title": "Title",
                     "current_company": "Company", "linkedin_url": "LinkedIn",
+                    "location": "Location", "industry": "Industry",
+                    "size_bucket": "Size", "hq_location": "HQ",
                     "jobs_stage": "Jobs stage", "jobs_owner": "Jobs owner",
-                    "campaign_tags": "Campaigns", "assigned_at": "Assigned",
-                    "first_outreach_at": "First outreach"},
+                    "campaign_tags": "Campaigns", "contact_stage": "Contact stage",
+                    "contact_owner": "Contact owner", "source": "Source",
+                    "assigned_at": "Assigned", "first_outreach_at": "First outreach",
+                    "first_outreach_by": "First outreach by",
+                    "converted_at": "Converted", "not_a_fit_reason": "Not-a-fit reason",
+                    "last_activity_at": "Last activity", "created_at": "Created",
+                    "notes": "Notes"},
     },
     "opportunities": {
         "label": "Opportunities",
@@ -8503,6 +8540,27 @@ _EXPORT_SPECS: dict[str, dict] = {
 _EXPORT_CAP = 5000
 
 
+@router.get("/export/{entity}/columns")
+async def jobs_export_columns(entity: str, user=Depends(require_auth)):
+    """The columns this entity can export, and which are on by default.
+
+    The picker builds from this rather than from a list hard-coded in the
+    frontend: the allowlist that filters the export request lives here, so a
+    second copy in TypeScript would be a drift bug waiting to happen."""
+    spec = _EXPORT_SPECS.get(entity)
+    if spec is None:
+        raise HTTPException(404, f"Nothing to export for '{entity}'")
+    default = set(spec.get("default") or spec["columns"])
+    return {"success": True, "data": {
+        "columns": [
+            {"key": c,
+             "label": spec["headers"].get(c, c.replace("_", " ").title()),
+             "default": c in default}
+            for c in spec["columns"]
+        ],
+    }}
+
+
 @router.post("/export/{entity}")
 async def jobs_export(
     entity: str,
@@ -8518,9 +8576,13 @@ async def jobs_export(
     if spec is None:
         raise HTTPException(404, f"Nothing to export for '{entity}'")
 
-    cols = [c for c in (body.columns or spec["columns"]) if c in spec["columns"]]
+    # Unknown keys are dropped rather than 400'd — a stale picker in an open tab
+    # should still produce a file. An all-unknown list falls back to the default
+    # set, so the sheet is never empty of columns.
+    allowed = spec["columns"]
+    cols = [c for c in (body.columns or spec.get("default") or allowed) if c in allowed]
     if not cols:
-        cols = spec["columns"]
+        cols = spec.get("default") or allowed
 
     # Filter OUTSIDE the spec's SQL, never by appending to it. Appending needed a
     # "does this already have a WHERE" guess, and substring-matching WHERE is

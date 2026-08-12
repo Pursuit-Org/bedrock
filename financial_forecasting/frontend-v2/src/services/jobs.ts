@@ -1288,16 +1288,15 @@ export interface TouchDepthBucket {
   /** Members beyond the response cap, so the panel can say what it's hiding. */
   truncated: number;
 }
-/** Follow-up depth for the contacts that entered initial outreach this period.
- *  `undated` = contacts whose stage entry has no timestamp, so no period can
- *  claim them (the stage-history grant fills most of these in). */
+/** Follow-up depth for everyone sitting in initial outreach right now.
+ *  Not period-scoped — it answers "who is under-touched today", so the window
+ *  ends today and the cohort is the live queue. */
 export interface TouchDepth {
   /** Every contact in the cohort — the denominator for `pct`. */
   total: number;
-  undated: number;
   /** Length of the touch-counting window, in weeks. */
   weeks: number;
-  /** The window itself (YYYY-MM-DD), ending with the selected period. */
+  /** The window itself (YYYY-MM-DD), ending today. */
   touch_from: string;
   touch_to: string;
   buckets: TouchDepthBucket[];
@@ -1310,7 +1309,6 @@ export interface OutreachScorecard {
   user_pipeline: ScorecardRow[];
   activity_pipeline: ScorecardRow[];
   by_sender: BySenderRow[];
-  touch_depth?: TouchDepth;
 }
 
 function outreachParams(granularity: OutreachGranularity, scope: OutreachScopeKind, owner?: string, range?: OutreachDateRange) {
@@ -1328,6 +1326,25 @@ export function useOutreachScorecard(granularity: OutreachGranularity, scope: Ou
       const { data } = await api.get<ApiResponse<OutreachScorecard>>(
         `/api/jobs/outreach/scorecard?${outreachParams(granularity, scope, owner, range)}`,
       );
+      return data.data;
+    },
+    staleTime: 60_000,
+  });
+}
+
+/** Touch depth — who in initial outreach is under-touched right now.
+ *
+ *  Takes no period on purpose. It used to ride on the scorecard, which the
+ *  Outreach tab fetches once per period to build its trend columns, so it was
+ *  recomputed several times per page load to answer a question that never
+ *  depended on the period. Its own key means one fetch and its own cache. */
+export function useTouchDepth(scope: OutreachScopeKind, owner?: string) {
+  return useQuery<TouchDepth>({
+    queryKey: ["jobs", "outreach-touch-depth", scope, owner ?? ""],
+    queryFn: async () => {
+      const p = new URLSearchParams({ scope });
+      if (owner) p.set("owner", owner);
+      const { data } = await api.get<ApiResponse<TouchDepth>>(`/api/jobs/outreach/touch-depth?${p}`);
       return data.data;
     },
     staleTime: 60_000,
@@ -2477,12 +2494,30 @@ export type ExportEntity = "contacts" | "accounts" | "opportunities";
  *  Uses a blob + object URL rather than navigating: the endpoint is a POST (the
  *  id list can be thousands long, well past a URL), and axios already carries
  *  the auth cookie. */
+export interface ExportColumn { key: string; label: string; default: boolean }
+
+/** What this entity can export. Server-owned so the picker and the allowlist
+ *  that filters the request can't drift apart. */
+export function useExportColumns(entity: ExportEntity, enabled = true) {
+  return useQuery<ExportColumn[]>({
+    queryKey: ["jobs", "export-columns", entity],
+    queryFn: async () => {
+      const { data } = await api.get<ApiResponse<{ columns: ExportColumn[] }>>(
+        `/api/jobs/export/${entity}/columns`);
+      return data.data.columns;
+    },
+    enabled,
+    staleTime: 30 * 60_000,   // a static allowlist; no reason to refetch
+  });
+}
+
 export async function exportJobsRows(
   entity: ExportEntity,
   ids?: (string | number)[],
+  columns?: string[],
 ): Promise<void> {
   const res = await api.post(`/api/jobs/export/${entity}`,
-    { ids: ids?.map(String) },
+    { ids: ids?.map(String), columns },
     { responseType: "blob" });
   const stamp = new Date().toISOString().slice(0, 10);
   const url = URL.createObjectURL(res.data as Blob);

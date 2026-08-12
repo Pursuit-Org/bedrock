@@ -9,13 +9,14 @@
  */
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { Briefcase, CheckSquare, Download, ExternalLink, Linkedin, Plus, Search, X, Zap } from "lucide-react";
+import { Briefcase, CheckSquare, ExternalLink, Linkedin, Plus, Search, X, Zap } from "lucide-react";
 import { toast } from "sonner";
 
 import { PageHeader } from "@/components/PageHeader";
 import { ContactDetail, initials } from "@/components/jobs/ProspectAccountExpandPanel";
 import { ContactExpandTabs, jobsContactPath } from "@/components/jobs/jobsEntity";
 import { CompanyPicker } from "@/components/jobs/CompanyPicker";
+import { ExportButton } from "@/components/jobs/ExportButton";
 import { withReferrer } from "@/components/detail";
 import { ColumnChooser } from "@/components/ui/ColumnChooser";
 import { InlineSelect } from "@/components/ui/InlineEdit";
@@ -570,22 +571,20 @@ export function JobsContacts({ initialQuery, initialContactId, initialConnectedO
           {/* Export the selection as .xlsx. Read-only, so it sits after the
               mutating actions and never clears the selection — you may well want
               to act on the same rows next. */}
-          <button type="button" disabled={exporting}
-            onClick={async () => {
+          <ExportButton
+            count={selected.size}
+            busy={exporting}
+            onExport={async (columns) => {
               setExporting(true);
               try {
-                await exportJobsRows("contacts", [...selected]);
+                await exportJobsRows("contacts", [...selected], columns);
                 toast.success(`Exported ${selected.size} contact${selected.size === 1 ? "" : "s"}`);
               } catch {
                 toast.error("Export failed");
               } finally {
                 setExporting(false);
               }
-            }}
-            className="inline-flex h-7 items-center gap-1 rounded border border-border-strong bg-surface px-3 font-medium text-ink-2 hover:text-ink disabled:opacity-50"
-            title={`Download the ${selected.size} selected contact${selected.size === 1 ? "" : "s"} as an Excel file`}>
-            <Download size={12} /> {exporting ? "Exporting…" : "Export"}
-          </button>
+            }} />
           <button type="button" onClick={() => setSelected(new Set())} className="ml-1 text-[11.5px] font-medium text-ink-3 underline-offset-4 hover:text-ink-2 hover:underline">Clear selection</button>
         </div>
       )}
