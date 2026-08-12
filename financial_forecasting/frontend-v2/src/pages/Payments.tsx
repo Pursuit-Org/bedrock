@@ -43,6 +43,12 @@ import { totalWidth, useColumnWidths } from "@/lib/columnWidths";
 import { fmtDate, fmtMoney, fmtMoneyFull } from "@/lib/format";
 import { sortBy, useSort } from "@/lib/sort";
 import { SF_STAGE_OPTIONS, stageStatus } from "@/lib/stages";
+import { cn } from "@/lib/utils";
+import {
+  usePipelineReviewFlags,
+  ruleLabels,
+  type PaymentFlags,
+} from "@/services/pipelineReview";
 import { useSessionState } from "@/lib/useSessionState";
 import { useProbabilityScheduleGate } from "@/lib/useProbabilityScheduleGate";
 import { useStageChangeGate } from "@/lib/useStageChangeGate";
@@ -396,6 +402,11 @@ function isoDate(v?: string | null): string {
 export function PaymentsPage() {
   const navigate = useNavigate();
   const { data, isLoading, isError, error } = usePayments();
+  // Advisory hygiene flags — the primary surface for them. Deliberately not
+  // awaited alongside the rows: payments render immediately and the tint
+  // arrives when it arrives. A failed flags call must never hold up the grid.
+  const { data: reviewFlags } = usePipelineReviewFlags();
+  const reviewRuleLabels = useMemo(() => ruleLabels(reviewFlags), [reviewFlags]);
   const updatePayment = useUpdateAnyPayment();
   // Stage + Manager Probability live on the parent Opportunity, not the
   // Payment row, so they go through opportunity-side mutations.
@@ -785,6 +796,8 @@ export function PaymentsPage() {
                         onOpenOpp={(id) =>
                           navigate(`/opportunities/${id}`, { state: PAYMENTS_REFERRER })
                         }
+                        flags={reviewFlags?.payments[p.Id]}
+                        ruleLabel={reviewRuleLabels}
                       />
                       {isExpanded && oppId ? (
                         <tr>
@@ -854,6 +867,10 @@ interface RowProps {
   onSaveOppStage: (p: SfPayment, nextStage: string) => Promise<void>;
   onSaveOppMgrProb: (p: SfPayment, raw: string) => Promise<void>;
   onOpenOpp: (oppId: string) => void;
+  /** Advisory hygiene flags for this payment, absent when it's clean. */
+  flags?: PaymentFlags;
+  /** Rule key → sentence, for the hover text. */
+  ruleLabel: Record<string, string>;
 }
 
 const METHOD_OPTIONS = [
@@ -897,6 +914,7 @@ function stageOptionsFor(currentStage: string | null | undefined) {
 const PaymentRow = memo(function PaymentRow({
   p, visibleCols, canEdit, isExpanded, onToggleExpand,
   onSave, onSaveOppStage, onSaveOppMgrProb, onOpenOpp,
+  flags, ruleLabel,
 }: RowProps) {
   const opp = p.npe01__Opportunity__r;
   const oppId = p.npe01__Opportunity__c ?? null;
@@ -1127,10 +1145,28 @@ const PaymentRow = memo(function PaymentRow({
     ),
   };
 
+  // Advisory tint. `bg-amber-soft` at full strength on purpose: the palette is
+  // declared as bare `var(--x)` in tailwind.config.ts, so Tailwind can't
+  // compose an alpha channel and any `/opacity` modifier is silently dropped.
+  // --amber-soft is already a pale wash, which is the weight we want.
+  //
+  // This is the page the rules were written for: every one of them names a
+  // column that exists here, so a flag lands on the exact cell to change
+  // rather than on a roll-up.
+  const flagWhy = (key: ColKey): string | undefined => {
+    const rules = flags?.cells[key];
+    if (!rules?.length) return undefined;
+    return rules.map((r) => `• ${ruleLabel[r] ?? r}`).join("\n");
+  };
+
   return (
     <tr className="border-b border-border-strong hover:bg-surface-2/50" style={{ height: ROW_HEIGHT }}>
       {visibleCols.map((key) => (
-        <td key={key} className="overflow-hidden px-2 py-1.5">
+        <td
+          key={key}
+          className={cn("overflow-hidden px-2 py-1.5", flags?.cells[key] && "bg-amber-soft")}
+          title={flagWhy(key)}
+        >
           {cells[key]}
         </td>
       ))}

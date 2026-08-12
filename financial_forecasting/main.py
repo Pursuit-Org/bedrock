@@ -1176,12 +1176,26 @@ PAYMENT_SOQL_FIELDS = """
 async def get_payments(
     opportunity_id: Optional[str] = None,
     limit: int = Query(500, le=2000),
+    include_open_opps: bool = Query(
+        False,
+        description="Also return every payment on a still-open opportunity, "
+                    "regardless of the limit window.",
+    ),
     client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user = Depends(require_auth),
 ):
-    """Get Salesforce payments, optionally filtered by opportunity."""
+    """Get Salesforce payments, optionally filtered by opportunity.
+
+    `include_open_opps` exists because the default window is the `limit` most
+    recently SCHEDULED payments, and the org holds 18,697 of them. The payments
+    a reviewer needs to act on are overdue by definition — old scheduled dates
+    on opportunities that are still open — so they sort to the bottom and fall
+    outside the window. Measured 2026-08-12: of 103 payments the hygiene rules
+    flag, only 36 were inside the default 2,000. Opt-in so the other callers of
+    this endpoint keep their existing payload.
+    """
     try:
-        cache_key = f"payments:{opportunity_id}:{limit}"
+        cache_key = f"payments:{opportunity_id}:{limit}:{include_open_opps}"
         cached = cache.get(cache_key)
         if cached is not None:
             return cached
@@ -1197,6 +1211,27 @@ async def get_payments(
 
         result = await salesforce.query(query)
         records = result.get("records", [])
+
+        if include_open_opps and not opportunity_id:
+            # Second pass, merged on Id. Kept as its own query rather than an OR
+            # in the first: the LIMIT applies to the whole statement, so an OR
+            # would just re-slice the same 2,000 rows and change nothing.
+            open_result = await salesforce.query_all(f"""
+                SELECT {PAYMENT_SOQL_FIELDS}
+                FROM npe01__OppPayment__c
+                WHERE {ISA_EXCLUDE_VIA_OPP}
+                  AND npe01__Opportunity__r.IsClosed = false
+                  AND npe01__Opportunity__r.StageName != 'In Collection'
+                ORDER BY npe01__Scheduled_Date__c DESC NULLS LAST
+            """)
+            seen = {r.get("Id") for r in records}
+            added = [r for r in open_result.get("records", []) if r.get("Id") not in seen]
+            records = records + added
+            logger.info(
+                "payments: %d in the limit window + %d more on open opportunities",
+                len(seen), len(added),
+            )
+
         cache.set(cache_key, records, CACHE_TTL_OPPORTUNITIES)
         return records
 
@@ -1263,8 +1298,10 @@ async def get_pipeline_review_flags(
 
         flags = pipeline_review.build_flags(opportunities, payments)
         logger.info(
-            "pipeline-review-flags: %d opportunities, %d payments, %d flagged",
-            len(opportunities), len(payments), len(flags["flagged"]),
+            "pipeline-review-flags: scanned %d opportunities / %d payments; "
+            "flagged %d opportunities, %d payment rows",
+            len(opportunities), len(payments),
+            len(flags["opportunities"]), len(flags["payments"]),
         )
         cache.set("pipeline-review-flags", flags, CACHE_TTL_OPPORTUNITIES)
         return flags

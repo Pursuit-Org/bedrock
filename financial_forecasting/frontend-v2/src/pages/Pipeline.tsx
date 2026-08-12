@@ -776,7 +776,7 @@ export function PipelinePage() {
                         onToggleExpand={() => setExpandedId(isExpanded ? null : o.Id)}
                         canEdit={canEdit}
                         visibleCols={visibleCols}
-                        flags={reviewFlags?.flagged[o.Id]}
+                        flags={reviewFlags?.opportunities[o.Id]}
                         ruleLabel={reviewRuleLabels}
                       />
                       {isExpanded ? (

@@ -25,24 +25,40 @@ export interface OpportunityFlags {
   payments: FlaggedPayment[];
 }
 
+export interface PaymentFlags {
+  /** Column key → the rules that tinted it. Keys match ColKey in Payments.tsx. */
+  cells: Record<string, string[]>;
+  opportunity_id: string;
+}
+
 export interface ReviewRule {
   key: string;
   label: string;
 }
 
+/**
+ * One server-side evaluation, projected for both grids.
+ *
+ * Payments is the primary surface — payment rows, so every rule lands on its
+ * own cell. Pipeline gets the same flags at opportunity grain, where
+ * payment-level hits collapse onto the single payment column.
+ */
 export interface PipelineReviewFlags {
   generated_at: string | null;
   severity: "advisory";
   rules: ReviewRule[];
-  /** Only opportunities that tripped at least one rule appear here. */
-  flagged: Record<string, OpportunityFlags>;
+  /** Keyed by opportunity id — Pipeline. Only flagged records appear. */
+  opportunities: Record<string, OpportunityFlags>;
+  /** Keyed by payment id — Payments. Only flagged records appear. */
+  payments: Record<string, PaymentFlags>;
 }
 
 const EMPTY: PipelineReviewFlags = {
   generated_at: null,
   severity: "advisory",
   rules: [],
-  flagged: {},
+  opportunities: {},
+  payments: {},
 };
 
 export function usePipelineReviewFlags() {

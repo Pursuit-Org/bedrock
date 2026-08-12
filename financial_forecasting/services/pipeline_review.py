@@ -4,19 +4,29 @@ Requested by Angie and specified by Zhong (Slack, 2026-08-12) for the
 fundraising pipeline review. Every rule is ADVISORY: it tints a cell, it never
 blocks a save. Nothing here writes to Salesforce.
 
-Grain
------
+Grain, and the two pages
+------------------------
 Four of the five rules test fields on the PAYMENT object
 (npe01__OppPayment__c), not the opportunity — an opportunity carries up to 38
-payments, and "the scheduled date" is a property of one of them. The Pipeline
-grid is opportunity rows, so payment-level problems are reported against the
-opportunity's payment cell with the offending payments listed alongside, and
-the UI names the payment on hover.
+payments, and "the scheduled date" is a property of one of them.
 
-Rules are evaluated here rather than in the browser for three reasons: the grid
-never loads payments (they'd be ~6.6k extra records on the wire), the same
-flags will be wanted on Portfolio and Payments, and thresholds someone will
-want to tune belong in one file.
+**Payments is the primary surface** (Jac, 2026-08-12). It is payment rows, and
+it already carries every column the rules touch — Scheduled, Payment Date,
+Mgr Prob., Close, Stage — so a flag lands on the exact cell that needs
+changing, which is what Zhong asked for.
+
+Pipeline gets the same flags at opportunity grain, where they still read
+sensibly: an opportunity row can say "your close date is after the payment
+you've scheduled" even though it can't say which of 38 payments.
+
+So a rule does not name a column. It names SEMANTIC FIELDS, and each page maps
+those onto its own column keys (PAYMENTS_CELLS / PIPELINE_CELLS below). One
+evaluation, two projections — a rule can never say different things on the two
+pages.
+
+Rules are evaluated here rather than in the browser for three reasons: neither
+grid loads everything the rules need, both pages want the identical answer, and
+thresholds someone will want to tune belong in one file.
 
 What is NOT here
 ----------------
@@ -53,11 +63,32 @@ WINDOW_2_WEEKS = timedelta(days=14)
 PROBABILITY_AT_1_MONTH = 50
 PROBABILITY_AT_2_WEEKS = 90
 
-# Grid column keys, matching ColKey in frontend-v2/src/pages/Pipeline.tsx.
-CELL_PROBABILITY = "probability"
-CELL_CLOSE = "close"
-CELL_STAGE = "stage"
-CELL_PAYMENT = "paymentDate"
+# ── Semantic fields a rule can implicate ─────────────────────────────────────
+# Deliberately not column names: the two pages call these different things, and
+# Payments splits into two date columns where Pipeline has one.
+F_PROBABILITY = "probability"
+F_CLOSE_DATE = "close_date"
+F_STAGE = "stage"
+F_SCHEDULED_DATE = "scheduled_date"
+
+# Payments page — ColKey in frontend-v2/src/pages/Payments.tsx. Every field maps
+# to its own real column, which is why this page is the better home.
+PAYMENTS_CELLS = {
+    F_PROBABILITY: "mgrProb",
+    F_CLOSE_DATE: "closeDate",
+    F_STAGE: "stage",
+    F_SCHEDULED_DATE: "scheduledDate",
+}
+
+# Pipeline page — ColKey in frontend-v2/src/pages/Pipeline.tsx. Opportunity
+# rows, so anything about a payment collapses onto the single "1st Payment"
+# column and the UI names the offending payment on hover.
+PIPELINE_CELLS = {
+    F_PROBABILITY: "probability",
+    F_CLOSE_DATE: "close",
+    F_STAGE: "stage",
+    F_SCHEDULED_DATE: "paymentDate",
+}
 
 RULES: List[Dict[str, str]] = [
     {"key": "prob_low_payment_within_1mo",
@@ -130,20 +161,22 @@ def evaluate_payment(payment: Dict[str, Any], opp: Dict[str, Any],
 
     if upcoming and scheduled <= today + WINDOW_2_WEEKS and probability <= PROBABILITY_AT_2_WEEKS:
         hits.append({"rule": "prob_low_payment_within_2wk",
-                     "cells": [CELL_PROBABILITY, CELL_PAYMENT]})
+                     "fields": [F_PROBABILITY, F_SCHEDULED_DATE]})
     elif upcoming and scheduled <= today + WINDOW_1_MONTH and probability <= PROBABILITY_AT_1_MONTH:
         # `elif`: a payment inside the 2-week window is already reported by the
         # tighter rule. Both firing would double-count one problem.
         hits.append({"rule": "prob_low_payment_within_1mo",
-                     "cells": [CELL_PROBABILITY, CELL_PAYMENT]})
+                     "fields": [F_PROBABILITY, F_SCHEDULED_DATE]})
 
     if close is not None and close > scheduled:
         hits.append({"rule": "close_after_scheduled",
-                     "cells": [CELL_CLOSE, CELL_PAYMENT]})
+                     "fields": [F_CLOSE_DATE, F_SCHEDULED_DATE]})
 
     if scheduled < today and stage != STAGE_COMPLETE:
+        # Zhong: "highlight scheduled date" — the stage is the context, not the
+        # thing to change, so it deliberately isn't tinted here.
         hits.append({"rule": "scheduled_past_stage_open",
-                     "cells": [CELL_PAYMENT]})
+                     "fields": [F_SCHEDULED_DATE]})
 
     return hits
 
@@ -157,17 +190,36 @@ def evaluate_opportunity(opp: Dict[str, Any], today: date) -> List[Dict[str, Any
 
     if close is not None and close < today and stage not in (STAGE_COMPLETE, STAGE_COLLECTING):
         hits.append({"rule": "close_past_stage_open",
-                     "cells": [CELL_CLOSE, CELL_STAGE]})
+                     "fields": [F_CLOSE_DATE, F_STAGE]})
 
     return hits
+
+
+def _project(hits: Iterable[Dict[str, Any]], mapping: Dict[str, str]) -> Dict[str, List[str]]:
+    """Semantic fields → one page's column keys → the rules that tinted them."""
+    cells: Dict[str, List[str]] = {}
+    for hit in hits:
+        for field in hit["fields"]:
+            column = mapping.get(field)
+            if column is None:
+                continue
+            bucket = cells.setdefault(column, [])
+            if hit["rule"] not in bucket:
+                bucket.append(hit["rule"])
+    return cells
 
 
 def build_flags(opportunities: Iterable[Dict[str, Any]],
                 payments: Iterable[Dict[str, Any]],
                 today: Optional[date] = None) -> Dict[str, Any]:
-    """Evaluate every rule and return flags keyed by opportunity id.
+    """Evaluate every rule once and project it for both pages.
 
-    Only flagged opportunities are returned — the grid renders thousands of
+    `payments` is keyed by payment id for the Payments grid — the primary
+    surface, where every rule lands on its own cell. `opportunities` is keyed by
+    opportunity id for Pipeline, where payment-level hits collapse onto the
+    payment column and carry the offending payments so the UI can name them.
+
+    Only flagged records appear in either map; both grids render thousands of
     rows and the clean ones need no payload.
     """
     today = today or date.today()
@@ -178,45 +230,51 @@ def build_flags(opportunities: Iterable[Dict[str, Any]],
         if oid:
             by_opp.setdefault(oid, []).append(p)
 
-    flagged: Dict[str, Any] = {}
+    opp_flags: Dict[str, Any] = {}
+    payment_flags: Dict[str, Any] = {}
 
     for opp in opportunities:
         oid = opp.get("Id")
         if not oid:
             continue
 
-        cells: Dict[str, List[str]] = {}
+        # Opportunity-level hits apply to the opportunity row AND to every one
+        # of its payment rows, because Payments shows Close and Stage as columns
+        # off the parent — the same problem, visible from both grains.
+        opp_hits = evaluate_opportunity(opp, today)
+        all_hits = list(opp_hits)
         payment_detail: List[Dict[str, Any]] = []
 
-        def add(hit: Dict[str, Any]) -> None:
-            for cell in hit["cells"]:
-                bucket = cells.setdefault(cell, [])
-                if hit["rule"] not in bucket:
-                    bucket.append(hit["rule"])
-
-        for hit in evaluate_opportunity(opp, today):
-            add(hit)
-
         for payment in by_opp.get(oid, []):
+            pid = payment.get("Id")
             hits = evaluate_payment(payment, opp, today)
+
+            row_hits = list(opp_hits) + hits
+            if pid and row_hits:
+                payment_flags[pid] = {
+                    "cells": _project(row_hits, PAYMENTS_CELLS),
+                    "opportunity_id": oid,
+                }
+
             if not hits:
                 continue
-            for hit in hits:
-                add(hit)
+            all_hits.extend(hits)
             payment_detail.append({
-                "id": payment.get("Id"),
+                "id": pid,
                 "name": payment.get("Name"),
                 "scheduled_date": payment.get("npe01__Scheduled_Date__c"),
                 "amount": payment.get("npe01__Payment_Amount__c"),
                 "rules": [h["rule"] for h in hits],
             })
 
+        cells = _project(all_hits, PIPELINE_CELLS)
         if cells:
-            flagged[oid] = {"cells": cells, "payments": payment_detail}
+            opp_flags[oid] = {"cells": cells, "payments": payment_detail}
 
     return {
         "generated_at": today.isoformat(),
         "severity": "advisory",
         "rules": RULES,
-        "flagged": flagged,
+        "opportunities": opp_flags,
+        "payments": payment_flags,
     }

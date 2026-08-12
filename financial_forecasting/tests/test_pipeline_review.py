@@ -135,12 +135,22 @@ def test_build_flags_reports_cells_and_the_payment_behind_them():
     p = pay(npe01__Scheduled_Date__c=iso(-3))
     out = pr.build_flags([o], [p], today=TODAY)
 
-    flags = out["flagged"]["006A"]
-    assert flags["cells"][pr.CELL_CLOSE] == ["close_past_stage_open"]
-    assert flags["cells"][pr.CELL_STAGE] == ["close_past_stage_open"]
-    assert "scheduled_past_stage_open" in flags["cells"][pr.CELL_PAYMENT]
+    # Pipeline projection: opportunity grain.
+    opp_flags = out["opportunities"]["006A"]
+    assert opp_flags["cells"]["close"] == ["close_past_stage_open"]
+    assert opp_flags["cells"]["stage"] == ["close_past_stage_open"]
+    assert "scheduled_past_stage_open" in opp_flags["cells"]["paymentDate"]
     # The payment is named so the cell's hover can say which one to fix.
-    assert flags["payments"][0]["name"] == "PMT-1"
+    assert opp_flags["payments"][0]["name"] == "PMT-1"
+
+    # Payments projection: the primary surface, one cell per rule.
+    pay_flags = out["payments"]["npeA"]
+    assert "scheduled_past_stage_open" in pay_flags["cells"]["scheduledDate"]
+    # The opportunity-level rule reaches the payment row too, because Payments
+    # shows Close and Stage as columns off the parent.
+    assert pay_flags["cells"]["closeDate"] == ["close_past_stage_open"]
+    assert pay_flags["cells"]["stage"] == ["close_past_stage_open"]
+    assert pay_flags["opportunity_id"] == "006A"
     assert out["severity"] == "advisory"
 
 
@@ -148,12 +158,13 @@ def test_clean_opportunities_are_omitted():
     """The grid renders thousands of rows; the clean ones need no payload."""
     out = pr.build_flags([opp(CloseDate=iso(30))], [pay(npe01__Scheduled_Date__c=iso(60))],
                          today=TODAY)
-    assert out["flagged"] == {}
+    assert out["opportunities"] == {}
+    assert out["payments"] == {}
 
 
 def test_opportunity_rules_run_without_any_payments():
     out = pr.build_flags([opp(CloseDate=iso(-1))], [], today=TODAY)
-    assert "close_past_stage_open" in out["flagged"]["006A"]["cells"][pr.CELL_CLOSE]
+    assert "close_past_stage_open" in out["opportunities"]["006A"]["cells"]["close"]
 
 
 def test_acknowledgment_rule_is_not_shipped():
@@ -161,3 +172,35 @@ def test_acknowledgment_rule_is_not_shipped():
     org-wide (0 of 12,046), so it would flag every paid payment. See the module
     docstring — this pins the omission so it isn't quietly 'fixed' later."""
     assert not any("acknowledg" in r["key"] for r in pr.RULES)
+
+
+def test_the_two_projections_never_disagree():
+    """One evaluation, two column mappings. If a rule fires for a payment it
+    must appear on both grids — the whole point of projecting rather than
+    writing the rules twice."""
+    o = opp(StageName="Ask in Progress", CloseDate=iso(20), Probability=10)
+    p = pay(npe01__Scheduled_Date__c=iso(5))
+    out = pr.build_flags([o], [p], today=TODAY)
+
+    on_pipeline = {r for rules in out["opportunities"]["006A"]["cells"].values() for r in rules}
+    on_payments = {r for rules in out["payments"]["npeA"]["cells"].values() for r in rules}
+    assert on_pipeline == on_payments == {"prob_low_payment_within_2wk", "close_after_scheduled"}
+
+
+def test_probability_lands_on_each_page_s_own_column():
+    o = opp(Probability=10)
+    p = pay(npe01__Scheduled_Date__c=iso(5))
+    out = pr.build_flags([o], [p], today=TODAY)
+    assert "prob_low_payment_within_2wk" in out["opportunities"]["006A"]["cells"]["probability"]
+    assert "prob_low_payment_within_2wk" in out["payments"]["npeA"]["cells"]["mgrProb"]
+
+
+def test_clean_payment_on_a_flagged_opportunity_still_shows_the_opp_problem():
+    """A settled payment is not itself late, but its row still displays the
+    parent's Close and Stage, so the stale-close problem has to reach it."""
+    o = opp(StageName="Ask in Progress", CloseDate=iso(-3))
+    p = pay(npe01__Scheduled_Date__c=iso(-10), npe01__Paid__c=True)
+    out = pr.build_flags([o], [p], today=TODAY)
+    cells = out["payments"]["npeA"]["cells"]
+    assert cells["closeDate"] == ["close_past_stage_open"]
+    assert "scheduledDate" not in cells      # settled: not a scheduling problem
