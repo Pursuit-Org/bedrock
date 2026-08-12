@@ -20,7 +20,7 @@ import {
 import { useColumnVisibility } from "@/lib/columnVisibility";
 import { totalWidth, useColumnWidths } from "@/lib/columnWidths";
 import { fmtMoney } from "@/lib/format";
-import { sortBy, useSort } from "@/lib/sort";
+import { sortBy, type SortState } from "@/lib/sort";
 import { cn } from "@/lib/utils";
 import { useSessionState } from "@/lib/useSessionState";
 import { AccountAvatar } from "@/components/AccountAvatar";
@@ -266,10 +266,19 @@ export function AccountsPage() {
   const { visible: visibleCols, toggle: toggleCol, replaceAll: replaceVisibleCols } =
     useColumnVisibility("bedrock-v2:vis:accounts", COLUMN_ORDER, DEFAULT_VISIBLE);
 
-  const { sort, toggle } = useSort<ColKey>({
+  const [sort, setSort] = useSessionState<SortState<ColKey>>("accounts:sort", {
     key: "openPipeline",
     direction: "desc",
   });
+  const toggle = useCallback(
+    (key: ColKey) =>
+      setSort((prev) => {
+        if (prev.key !== key) return { key, direction: "asc" };
+        if (prev.direction === "asc") return { key, direction: "desc" };
+        return { key: null, direction: "asc" };
+      }),
+    [setSort],
+  );
   const { widths, startResize, replaceAll: replaceWidths } = useColumnWidths<ColKey>(
     "bedrock-v2:cols:accounts",
     DEFAULT_WIDTHS,
