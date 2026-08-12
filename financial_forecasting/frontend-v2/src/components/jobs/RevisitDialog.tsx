@@ -18,11 +18,22 @@ const iso = (d: Date) =>
 const addDays = (n: number) => { const d = new Date(); d.setDate(d.getDate() + n); return iso(d); };
 const addMonths = (n: number) => { const d = new Date(); d.setMonth(d.getMonth() + n); return iso(d); };
 
+/** First day of the quarter after the one we're in. */
+const nextQuarter = () => {
+  const d = new Date();
+  const q = Math.floor(d.getMonth() / 3) + 1;       // 1-4; 4 rolls into next year
+  return iso(new Date(d.getFullYear(), q * 3, 1));
+};
+
+// "Next quarter" used to be addMonths(3) — the same date as "In 3 months", so
+// the two buttons produced identical values and, because the active state is a
+// value comparison, clicking either lit up both. It now means the calendar
+// quarter, which is what anyone picking it expects.
 const PRESETS: { label: string; get: () => string }[] = [
   { label: "In 2 weeks", get: () => addDays(14) },
   { label: "In 1 month", get: () => addMonths(1) },
   { label: "In 3 months", get: () => addMonths(3) },
-  { label: "Next quarter", get: () => addMonths(3) },
+  { label: "Next quarter", get: nextQuarter },
 ];
 
 export function RevisitDialog({ contactName, onCancel, onSave }: {

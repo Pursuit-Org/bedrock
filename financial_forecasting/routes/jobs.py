@@ -8416,8 +8416,11 @@ async def update_builder_profile(user_id: int, body: BuilderProfileUpdate,
 # openpyxl is already in requirements.txt (3.1+), so this adds no dependency.
 
 class ExportRequest(BaseModel):
-    """Rows to export. `ids` are the selected records; omit to export the whole
-    (already filtered) set the caller is looking at, capped server-side."""
+    """Rows to export.
+
+    `ids` are the selected records and are required — see the endpoint for why
+    "export everything I'm looking at" isn't a thing the server can honestly do.
+    """
     ids: Optional[list[str]] = None
     # Column keys to include, in order. Omitted → the entity's default set, so a
     # caller that doesn't care doesn't have to enumerate them.
@@ -8591,14 +8594,27 @@ async def jobs_export(
     # accounts SQL has one inside a LATERAL (so the filter attached to a LEFT JOIN
     # ON clause and silently exported every account instead of the selection).
     # Every spec aliases its key as `id`, so one wrapper covers all three.
-    params: list = []
-    if body.ids:
-        # Cap the id list too: a pathological request shouldn't build a 100k-term
-        # array. 5000 selected rows is already far past a usable spreadsheet.
-        params.append([str(i) for i in body.ids][:_EXPORT_CAP])
-        sql = f"SELECT * FROM ({spec['sql']}) src WHERE src.id::text = ANY($1::text[])"
-    else:
-        sql = f"SELECT * FROM ({spec['sql']}) src LIMIT {_EXPORT_CAP}"
+    # `ids` is REQUIRED. The old fallback ("no ids = export the whole set") could
+    # not keep that promise: nothing here knows the caller's filters, so it ran
+    # an unordered `LIMIT 5000` over the raw table — an arbitrary 9% of the
+    # 54,919 contacts, merged duplicates included, in a file that looks
+    # complete. Silently handing someone the wrong 5,000 rows is worse than
+    # refusing, and every caller today sends a selection.
+    if not body.ids:
+        raise HTTPException(
+            400,
+            "Select the rows to export. Exporting a whole filtered view isn't "
+            "supported yet — the server can't see the filters you applied, so it "
+            "would return an arbitrary slice rather than what's on your screen.",
+        )
+    if len(body.ids) > _EXPORT_CAP:
+        raise HTTPException(
+            400,
+            f"That's {len(body.ids):,} rows; the export caps at {_EXPORT_CAP:,}. "
+            "Narrow the selection and try again.",
+        )
+    params: list = [[str(i) for i in body.ids]]
+    sql = f"SELECT * FROM ({spec['sql']}) src WHERE src.id::text = ANY($1::text[])"
 
     try:
         rows = await conn.fetch(sql, *params)

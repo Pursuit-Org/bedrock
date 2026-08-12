@@ -13,7 +13,7 @@
  *     rather than the On Hold it replaces — it files a task so the contact comes
  *     back. Setting the stage without one recreates the problem.
  */
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { toast } from "sonner";
 
 import {
@@ -29,6 +29,22 @@ export function useContactStageChange() {
   const update = useUpdateJobsMembership();
   const { data: vocab } = useStageVocabulary();
   const [pending, setPending] = useState<{ id: number; name: string } | null>(null);
+  // The caller's promise, parked while the Revisit dialog is open. InlineSelect
+  // paints its optimistic value as soon as it calls us and only rolls it back
+  // if the promise REJECTS, so resolving early made "Revisit → Cancel" leave
+  // the cell reading Revisit — with a saved checkmark — over a row the database
+  // never changed. It stayed wrong until the row unmounted, because
+  // InlineSelect only clears the optimistic value once the server value catches
+  // up, which after a cancel it never does.
+  const resolverRef = useRef<{ resolve: () => void; reject: (e: Error) => void } | null>(null);
+
+  const settle = (fn: "resolve" | "reject") => {
+    const r = resolverRef.current;
+    resolverRef.current = null;
+    if (!r) return;
+    if (fn === "resolve") r.resolve();
+    else r.reject(new Error("cancelled"));
+  };
 
   /** The target vocabulary, with anything the database can't accept yet marked
    *  disabled rather than dropped — so Call Booked and Revisit are visibly on
@@ -42,16 +58,22 @@ export function useContactStageChange() {
     })) ?? FALLBACK;
 
   /**
-   * Move a contact to `stage`. Returns a promise that settles when the write is
-   * done — or immediately, for Revisit, once the dialog is open (the write then
-   * happens on save). Callers using InlineSelect need the promise to settle so
-   * the control leaves its saving state.
+   * Move a contact to `stage`. The returned promise settles only when the write
+   * is actually done.
+   *
+   * For Revisit that means it stays pending for as long as the dialog is open,
+   * and rejects if the user cancels — which is what rolls an InlineSelect's
+   * optimistic value back. Resolving when the dialog merely OPENED was the bug.
    */
   const change = (contactId: number, name: string, stage: string) =>
     new Promise<void>((resolve, reject) => {
       if (stage === "revisit") {
+        // Only one dialog can be open; if another row somehow got here first,
+        // release its caller rather than stranding a promise that never settles.
+        settle("reject");
+        resolverRef.current = { resolve, reject };
         setPending({ id: contactId, name });
-        return resolve();
+        return;
       }
       update.mutate({ contact_id: contactId, stage }, {
         onSuccess: () => {
@@ -66,12 +88,21 @@ export function useContactStageChange() {
   const dialog = pending ? (
     <RevisitDialog
       contactName={pending.name}
-      onCancel={() => setPending(null)}
+      onCancel={() => {
+        setPending(null);
+        settle("reject");
+      }}
       onSave={(date) => {
         const { id, name } = pending;
         setPending(null);
         update.mutate({ contact_id: id, stage: "revisit", revisit_date: date }, {
-          onSuccess: () => toast.success(`${name} set to revisit on ${date} — task filed for the owner`),
+          onSuccess: () => {
+            toast.success(`${name} set to revisit on ${date} — task filed for the owner`);
+            settle("resolve");
+          },
+          // The mutation's own onError already toasts the reason; rejecting
+          // here is what rolls the cell back off "Revisit".
+          onError: () => settle("reject"),
         });
       }}
     />

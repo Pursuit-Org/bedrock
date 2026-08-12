@@ -579,8 +579,13 @@ export function JobsContacts({ initialQuery, initialContactId, initialConnectedO
               try {
                 await exportJobsRows("contacts", [...selected], columns);
                 toast.success(`Exported ${selected.size} contact${selected.size === 1 ? "" : "s"}`);
-              } catch {
-                toast.error("Export failed");
+              } catch (e: unknown) {
+                // The server explains refusals in plain language (nothing
+                // selected, too many rows); "Export failed" sent people hunting
+                // for a bug instead of reading the reason.
+                const detail = (e as { response?: { data?: { detail?: string } } })
+                  ?.response?.data?.detail;
+                toast.error(detail || "Export failed");
               } finally {
                 setExporting(false);
               }

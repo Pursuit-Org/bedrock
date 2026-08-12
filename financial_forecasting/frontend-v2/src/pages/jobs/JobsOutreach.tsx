@@ -1008,7 +1008,13 @@ function RespondedPanel({ owner, nameOf }: { owner?: string; nameOf: (e: string)
   const move = (c: { contact_id: number; full_name: string | null }, stage: MembershipStage) => {
     // Revisit goes through the shared handler so it asks for a date and files
     // the follow-up task; the other decisions are one-click.
-    if (stage === "revisit") { void stageChange.change(c.contact_id, c.full_name ?? "Contact", stage); return; }
+    if (stage === "revisit") {
+      // change() now rejects when the dialog is cancelled, and this path
+      // has no InlineSelect to roll back — swallow it rather than emit an
+      // unhandled rejection every time someone changes their mind.
+      stageChange.change(c.contact_id, c.full_name ?? "Contact", stage).catch(() => {});
+      return;
+    }
     update.mutate({ contact_id: c.contact_id, stage }, {
       onSuccess: () => toast.success(`${c.full_name ?? "Contact"} → ${MEMBERSHIP_STAGE_LABELS[stage]}`),
     });
