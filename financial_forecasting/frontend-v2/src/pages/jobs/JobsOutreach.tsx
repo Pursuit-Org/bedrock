@@ -720,7 +720,7 @@ function ThisWeekBlock({ nameOf, activityPipeline, granularity, scope, owner, ra
 
   // Keep the contact objects, not just tallies — the drill lists them, and
   // deriving both from one pass means the number and the list always agree.
-  const { rows, undated } = useMemo(() => {
+  const { rows, undated, hidden } = useMemo(() => {
     // Contacted is a period event, so it follows the page's Period picker (it
     // used to hardcode the current Sun-week and ignore the selector entirely).
     const pStart = range?.from ? new Date(`${range.from}T00:00:00`) : startOfWeekSunday();
@@ -748,23 +748,42 @@ function ThisWeekBlock({ nameOf, activityPipeline, granularity, scope, owner, ra
     for (const c of contactedData?.data ?? []) {
       if (inWindow(c)) bucket(c.owner_email).contacted.push(c);
     }
-    const visible = [...by.entries()]
-      .filter(([email, r]) => r.assigned.length + r.contacted.length > 0
-        // Honour the page's sender scope: "(unowned)" is nobody's, so it only
-        // shows under Everyone.
-        && (email === "(unowned)" ? scope === "pursuit" : inScope(email, scope)))
+    const withEntries = [...by.entries()]
+      .filter(([, r]) => r.assigned.length + r.contacted.length > 0);
+    const visible = withEntries
+      // Honour the page's sender scope: "(unowned)" is nobody's, so it only
+      // shows under Everyone.
+      .filter(([email]) => (email === "(unowned)" ? scope === "pursuit" : inScope(email, scope)))
       .sort((a, b) => (b[1].assigned.length + b[1].contacted.length) - (a[1].assigned.length + a[1].contacted.length));
-    // Reported, not swallowed: 301 of 827 initial-outreach contacts carry no
-    // stage stamp in production, so a period view genuinely cannot place them.
-    // Silently dropping them is what makes a table look like it's lying.
-    return { rows: visible, undated };
+
+    // How many entries the SCOPE hid, as opposed to none existing. Without this
+    // the empty state said "no contacts entered this period" while contacts had
+    // in fact entered — they were just unowned, or owned by someone outside the
+    // selected scope. Reported on 2026-08-12 against Jul 29–Aug 4, where one
+    // contact entered `assigned` and carried no owner.
+    const hidden = withEntries
+      .filter(([email]) => !(email === "(unowned)" ? scope === "pursuit" : inScope(email, scope)))
+      .reduce((n, [, r]) => n + r.assigned.length + r.contacted.length, 0);
+
+    // `undated` is contacts whose stage entry has no timestamp, so no period can
+    // place them. Production currently has zero of these across every stage, but
+    // the count stays because nothing guarantees that stays true — a membership
+    // written without a stamp would otherwise vanish from the totals silently.
+    return { rows: visible, undated, hidden };
   }, [assignedData, contactedData, range, scope]);
   if (rows.length === 0) {
     return (
       <div className="flex flex-col gap-3">
         <SectionHead title="Outreach Detail" />
         <div className="rounded-lg border border-dashed border-border-strong px-4 py-6 text-center text-[12.5px] text-ink-4">
-          No contacts entered the assigned or contacted stage in this period.
+          {hidden > 0 ? (
+            <>
+              {hidden} contact{hidden === 1 ? "" : "s"} entered a stage in this period, but
+              {" "}none are in the current scope. Switch to Everyone to see {hidden === 1 ? "it" : "them"}.
+            </>
+          ) : (
+            <>No contacts entered the assigned or contacted stage in this period.</>
+          )}
         </div>
       </div>
     );
