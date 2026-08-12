@@ -287,7 +287,25 @@ function ContactRow({ contact, expanded, onOpen, visibleCols, selected, onToggle
           }} />
       : <InlineSelect<string> value="" options={stageChange.options} emptyLabel="—"
           renderValue={(v) => v ? <span className="rounded-full bg-accent-soft px-1.5 py-0.5 text-[10.5px] font-medium text-accent-ink">{MEMBERSHIP_STAGE_LABELS[v as MembershipStage] ?? v}</span> : <span className="text-[11px] text-ink-4">—</span>}
-          onSave={(v) => new Promise<void>((res, rej) => { if (!v) return res(); flagOne.mutate({ contact_ids: [contact.contact_id], stage: v }, { onSuccess: () => res(), onError: rej }); })} />,
+          onSave={(v) => {
+            if (!v) return Promise.resolve();
+            // Same rule as the picker above: Revisit asks for a date first.
+            // This branch was writing the stage straight through, so a contact
+            // with no stage yet could be parked in Revisit with no date and no
+            // task — the exact problem Revisit replaced On Hold to fix.
+            // `flagOne` creates the membership because PATCH /jobs-membership
+            // is UPDATE-only and 404s without one.
+            if (v === "revisit") {
+              return stageChange.change(
+                contact.contact_id, contact.full_name ?? "contact", v,
+                () => flagOne.mutateAsync({ contact_ids: [contact.contact_id], stage: v }),
+              );
+            }
+            return new Promise<void>((res, rej) => {
+              flagOne.mutate({ contact_ids: [contact.contact_id], stage: v },
+                { onSuccess: () => res(), onError: rej });
+            });
+          }} />,
     industry: <span className="truncate text-[12px] text-ink-3">{contact.company_industry || "—"}</span>,
     listings: (() => {
       const src = contact.open_roles ?? 0, app = contact.builder_apps ?? 0, tot = src + app;
@@ -542,7 +560,13 @@ export function JobsContacts({ initialQuery, initialContactId, initialConnectedO
           {/* Set values, then apply once with Bulk update — no auto-fire. */}
           <select value={pendingStage} disabled={bulkBusy} onChange={(e) => setPendingStage(e.target.value)} className="h-7 rounded border border-border-strong bg-surface px-2 text-[12px] text-ink-2 outline-none focus:border-accent disabled:opacity-50">
             <option value="">Stage: no change</option>
-            {MEMBERSHIP_STAGE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+            {/* Revisit is deliberately absent. It is only meaningful with a
+                date — that date is the whole reason it replaced On Hold — and
+                this bar has nowhere to ask for one, so offering it here would
+                write a batch of dateless revisits that never come back to
+                anyone. Set it per row, where the dialog asks. */}
+            {MEMBERSHIP_STAGE_OPTIONS.filter((o) => o.value !== "revisit")
+              .map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
           </select>
           <select value={pendingOwner} disabled={bulkBusy} onChange={(e) => setPendingOwner(e.target.value)} className="h-7 max-w-[220px] rounded border border-border-strong bg-surface px-2 text-[12px] text-ink-2 outline-none focus:border-accent disabled:opacity-50">
             <option value="">Owner: no change</option>

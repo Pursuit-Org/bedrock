@@ -28,7 +28,8 @@ const FALLBACK = MEMBERSHIP_STAGES.map((s) => ({ value: s, label: MEMBERSHIP_STA
 export function useContactStageChange() {
   const update = useUpdateJobsMembership();
   const { data: vocab } = useStageVocabulary();
-  const [pending, setPending] = useState<{ id: number; name: string } | null>(null);
+  const [pending, setPending] =
+    useState<{ id: number; name: string; ensure?: () => Promise<unknown> } | null>(null);
   // The caller's promise, parked while the Revisit dialog is open. InlineSelect
   // paints its optimistic value as soon as it calls us and only rolls it back
   // if the promise REJECTS, so resolving early made "Revisit → Cancel" leave
@@ -65,14 +66,22 @@ export function useContactStageChange() {
    * and rejects if the user cancels — which is what rolls an InlineSelect's
    * optimistic value back. Resolving when the dialog merely OPENED was the bug.
    */
-  const change = (contactId: number, name: string, stage: string) =>
+  /**
+   * @param ensure  For a contact with NO membership row yet. PATCH
+   *   /jobs-membership is UPDATE-only and 404s on a missing row, so those
+   *   pickers have to create the membership first — pass the call that does it
+   *   and the dialog will run it before writing the date. Omit when the contact
+   *   already has a stage.
+   */
+  const change = (contactId: number, name: string, stage: string,
+                  ensure?: () => Promise<unknown>) =>
     new Promise<void>((resolve, reject) => {
       if (stage === "revisit") {
         // Only one dialog can be open; if another row somehow got here first,
         // release its caller rather than stranding a promise that never settles.
         settle("reject");
         resolverRef.current = { resolve, reject };
-        setPending({ id: contactId, name });
+        setPending({ id: contactId, name, ensure });
         return;
       }
       update.mutate({ contact_id: contactId, stage }, {
@@ -92,18 +101,21 @@ export function useContactStageChange() {
         setPending(null);
         settle("reject");
       }}
-      onSave={(date) => {
-        const { id, name } = pending;
+      onSave={async (date) => {
+        const { id, name, ensure } = pending;
         setPending(null);
-        update.mutate({ contact_id: id, stage: "revisit", revisit_date: date }, {
-          onSuccess: () => {
-            toast.success(`${name} set to revisit on ${date} — task filed for the owner`);
-            settle("resolve");
-          },
-          // The mutation's own onError already toasts the reason; rejecting
-          // here is what rolls the cell back off "Revisit".
-          onError: () => settle("reject"),
-        });
+        try {
+          // Create the membership first when there isn't one — otherwise the
+          // PATCH below 404s and the contact silently keeps no stage.
+          if (ensure) await ensure();
+          await update.mutateAsync({ contact_id: id, stage: "revisit", revisit_date: date });
+          toast.success(`${name} set to revisit on ${date} — task filed for the owner`);
+          settle("resolve");
+        } catch {
+          // Both mutations toast their own reason; rejecting here is what rolls
+          // the cell back off "Revisit".
+          settle("reject");
+        }
       }}
     />
   ) : null;
