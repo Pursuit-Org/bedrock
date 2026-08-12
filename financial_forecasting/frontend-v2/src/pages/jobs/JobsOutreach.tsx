@@ -1392,32 +1392,45 @@ export function JobsOutreach() {
              This bar governs everything down to the Current state boundary,
              and nothing below it. It used to float above the whole page, which
              is what made it look like it filtered Requiring Attention too. ── */}
-      <PeriodBar
-        from={from} to={to}
-        onChange={(f, t) => { setFrom(f); setTo(t); }}
-        granularity={granularity} onGranularityChange={setGranularity}
+      <section
+        aria-label="In period"
+        // No /opacity modifiers here on purpose: the palette tokens are bare
+        // `var(--x)` in tailwind.config.ts, so Tailwind can't compose an alpha
+        // channel and drops the class entirely — `bg-accent-soft/[0.22]`
+        // emitted no CSS at all. --accent-soft is already a pale tint, so it
+        // works at full strength. See the note in the review notes.
+        className="flex flex-col gap-6 rounded-2xl border border-border-strong bg-accent-soft p-3 sm:p-4"
       >
-        <ScopeButtons value={scope} onChange={(v) => { setScope(v); setOwner(""); }} />
-        <select value={owner} onChange={(e) => setOwner(e.target.value)}
-          className="h-7 rounded-md border border-border-strong bg-surface px-2 text-[12.5px] text-ink-2 outline-none focus:border-accent"
-          title="Filter every section to one person">
-          <option value="">All senders</option>
-          {[...staff].sort((a, b) => (a.name || a.email).localeCompare(b.name || b.email))
-            .map((st) => <option key={st.email} value={st.email}>{st.name || st.email}</option>)}
-        </select>
-      </PeriodBar>
+        {/* The zone's own header. A caption under a full-width control was too
+            weak to read as a boundary — the content has to be visibly INSIDE
+            something the period bar heads, or the bar still looks page-level. */}
+        <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+          <span className="text-[11px] font-bold uppercase tracking-[.12em] text-accent">
+            In period
+          </span>
+          {sc && (
+            <span className="text-[11.5px] text-ink-3">
+              <span className="font-medium text-ink-2">{rangeLabel}</span>
+              {" · trends compare with "}
+              <span className="font-medium text-ink-2">{fmtRange(sc.period.last_start, sc.period.last_end)}</span>
+            </span>
+          )}
+        </div>
 
-      {/* The resolved dates in plain text, plus what the trend deltas compare
-          against. Every "+3.2pp" on this page is measured against the previous
-          period, and an unnamed baseline makes those numbers unreadable. */}
-      {sc && (
-        <p className="-mt-3 text-[11.5px] text-ink-4">
-          Showing <span className="font-medium text-ink-3">{rangeLabel}</span>
-          {" · trends compare with "}
-          <span className="font-medium text-ink-3">{fmtRange(sc.period.last_start, sc.period.last_end)}</span>
-          {" · applies down to Current state"}
-        </p>
-      )}
+        <PeriodBar
+          from={from} to={to}
+          onChange={(f, t) => { setFrom(f); setTo(t); }}
+          granularity={granularity} onGranularityChange={setGranularity}
+        >
+          <ScopeButtons value={scope} onChange={(v) => { setScope(v); setOwner(""); }} />
+          <select value={owner} onChange={(e) => setOwner(e.target.value)}
+            className="h-7 rounded-md border border-border-strong bg-surface px-2 text-[12.5px] text-ink-2 outline-none focus:border-accent"
+            title="Filter every section to one person">
+            <option value="">All senders</option>
+            {[...staff].sort((a, b) => (a.name || a.email).localeCompare(b.name || b.email))
+              .map((st) => <option key={st.email} value={st.email}>{st.name || st.email}</option>)}
+          </select>
+        </PeriodBar>
 
       {/* ── Daily digest (the morning Slack) ── */}
       <DailyDigestBlock periodEnd={to} />
@@ -1462,6 +1475,7 @@ export function JobsOutreach() {
           <ActivityTrends scope={scope} owner={owner || undefined} range={range} />
         </div>
       </div>
+      </section>
 
       {/* ── ZONE 2 · current state ────────────────────────────────────────
              Everything below this line ignores the period bar, and that is
