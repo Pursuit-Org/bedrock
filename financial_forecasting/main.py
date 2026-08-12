@@ -80,6 +80,7 @@ from routes.entity_comments import router as entity_comments_router
 from auth import get_current_user_dep, require_auth, IS_PRODUCTION, JWT_SECRET_KEY
 from security import validate_salesforce_id, escape_soql_string
 from sf_errors import sf_http_error
+from services import pipeline_review
 from services.crm_parser import refresh_opp_cache as _refresh_opp_cache
 from services.cache import cache, CACHE_TTL_OPPORTUNITIES, CACHE_TTL_ACCOUNTS, CACHE_TTL_USERS, CACHE_TTL_CASHFLOW
 
@@ -1203,6 +1204,75 @@ async def get_payments(
         raise
     except Exception as e:
         logger.error(f"Error fetching payments: {e}")
+        raise sf_http_error(e, "records")
+
+
+@app.get("/api/salesforce/pipeline-review-flags")
+async def get_pipeline_review_flags(
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
+    user = Depends(require_auth),
+):
+    """Advisory data-hygiene flags for the pipeline review (Zhong, 2026-08-12).
+
+    Read-only. Returns only the opportunities that tripped a rule, each with
+    the grid columns to tint and the payments behind any payment-level hit.
+    See services/pipeline_review.py for the rules and for the one rule that is
+    deliberately not implemented yet.
+
+    Two bulk queries rather than per-opportunity payment fetches: the grid
+    shows ~2,100 open fundraising opportunities, so the obvious shape would be
+    2,100 round-trips to Salesforce.
+    """
+    try:
+        if "salesforce" not in (client.connected_services or []):
+            return {"generated_at": None, "severity": "advisory",
+                    "rules": pipeline_review.RULES, "flagged": {}}
+
+        cached = cache.get("pipeline-review-flags")
+        if cached is not None:
+            return cached
+
+        salesforce = client.salesforce
+
+        # Open opportunities only. A closed opportunity's dates are history, and
+        # flagging them would put a permanent wall of colour on the review.
+        opp_query = f"""
+            SELECT Id, StageName, CloseDate, Probability,
+                   Manager_Probability_Override__c
+            FROM Opportunity
+            WHERE {ISA_EXCLUDE_WHERE}
+              AND IsClosed = false
+              AND StageName != 'In Collection'
+        """
+        opp_result = await salesforce.query_all(opp_query)
+        opportunities = opp_result.get("records", [])
+
+        # Payments for those same opportunities, filtered through the parent so
+        # this stays one query. The predicates mirror the opportunity query.
+        pay_query = f"""
+            SELECT Id, Name, npe01__Opportunity__c, npe01__Scheduled_Date__c,
+                   npe01__Payment_Date__c, npe01__Payment_Amount__c,
+                   npe01__Paid__c, npe01__Written_Off__c
+            FROM npe01__OppPayment__c
+            WHERE {ISA_EXCLUDE_VIA_OPP}
+              AND npe01__Opportunity__r.IsClosed = false
+              AND npe01__Opportunity__r.StageName != 'In Collection'
+        """
+        pay_result = await salesforce.query_all(pay_query)
+        payments = pay_result.get("records", [])
+
+        flags = pipeline_review.build_flags(opportunities, payments)
+        logger.info(
+            "pipeline-review-flags: %d opportunities, %d payments, %d flagged",
+            len(opportunities), len(payments), len(flags["flagged"]),
+        )
+        cache.set("pipeline-review-flags", flags, CACHE_TTL_OPPORTUNITIES)
+        return flags
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error building pipeline review flags: {e}")
         raise sf_http_error(e, "records")
 
 
