@@ -66,6 +66,7 @@ from routes.admin_company_match import router as admin_company_match_router
 from routes.activities import router as activities_router
 from routes.platform_intake import router as platform_intake_router
 from routes.awards import router as awards_router
+from routes.commitments import router as commitments_router
 from routes.saved_views import router as saved_views_router
 from routes.affiliations import router as affiliations_router
 from routes.airtable_jobs import router as airtable_jobs_router
@@ -163,6 +164,7 @@ app.include_router(account_enrichment_router)
 app.include_router(activities_router)
 app.include_router(platform_intake_router)
 app.include_router(awards_router)
+app.include_router(commitments_router)
 app.include_router(saved_views_router)
 app.include_router(affiliations_router)
 app.include_router(airtable_jobs_router)

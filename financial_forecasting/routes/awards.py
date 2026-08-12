@@ -35,6 +35,7 @@ _SELECT = """
     SELECT
         a.id, a.opportunity_id, a.award_status, a.award_date,
         a.period_end_date, a.notes, a.reporting_frequency, a.next_report_due,
+        a.contract_file_link,
         a.created_at, a.updated_at,
         COALESCE(rs.report_total, 0)    AS report_total,
         COALESCE(rs.report_done, 0)     AS report_done,
@@ -82,6 +83,7 @@ class AwardOut(BaseModel):
     notes: str
     reporting_frequency: Optional[str] = None
     next_report_due: Optional[str] = None
+    contract_file_link: Optional[str] = None
     created_at: str
     updated_at: str
 
@@ -93,6 +95,11 @@ class AwardUpdate(BaseModel):
     notes: Optional[str] = None
     reporting_frequency: Optional[str] = None
     next_report_due: Optional[str] = None
+    # Link to the signed source document backing this award — introduced
+    # for the Commitments feature (contract_language on each commitment
+    # quotes this same document; the link lives on the award since one
+    # document covers a whole award's set of commitments).
+    contract_file_link: Optional[str] = None
 
 
 def _serialize(row: Dict[str, Any]) -> Dict[str, Any]:
@@ -288,6 +295,7 @@ async def update_award(
         ("notes", "notes"),
         ("reporting_frequency", "reporting_frequency"),
         ("next_report_due", "next_report_due"),
+        ("contract_file_link", "contract_file_link"),
     ]:
         v = getattr(payload, field)
         if v is not None:
