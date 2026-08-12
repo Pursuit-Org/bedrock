@@ -47,9 +47,10 @@ import { toast } from "sonner";
 
 const TYPE_FILTERS = ["All", "Foundation", "Corporate", "Government", "Individual"] as const;
 // Stable empty-array reference for the default of the
-// collapsedGroups useSessionState. See note on useSessionState
+// collapsedGroups / rules useSessionState. See note on useSessionState
 // dep-stability where this is used.
 const EMPTY_COLLAPSED: string[] = [];
+const EMPTY_RULES: FilterRule<AccountField>[] = [];
 type TypeFilter = (typeof TYPE_FILTERS)[number];
 
 function matchesType(account: SfAccount, filter: TypeFilter): boolean {
@@ -237,9 +238,9 @@ export function AccountsPage() {
   const updateAccount = useUpdateAccount();
   const canEdit = usePerm("edit_accounts");
 
-  const [filter, setFilter] = useState<TypeFilter>("All");
-  const [q, setQ] = useState("");
-  const [rules, setRules] = useState<FilterRule<AccountField>[]>([]);
+  const [filter, setFilter] = useSessionState<TypeFilter>("accounts:filter", "All");
+  const [q, setQ] = useSessionState<string>("accounts:q", "");
+  const [rules, setRules] = useSessionState<FilterRule<AccountField>[]>("accounts:rules", EMPTY_RULES);
   const [showCreate, setShowCreate] = useState(false);
   const [expandedId, setExpandedId] = useSessionState<string | null>("accounts:expandedId", null);
   // Optional group-by — when non-empty, the visible rows are bucketed
