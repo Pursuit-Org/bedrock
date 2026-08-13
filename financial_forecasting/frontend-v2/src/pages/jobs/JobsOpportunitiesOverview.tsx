@@ -1,21 +1,30 @@
 /**
  * Jobs · Opportunities — Weekly Overview.
  *
- * The Thursday-meeting agenda, top to bottom: summary cards (incl. the
- * won-with-open-tasks stage-gate check), recent activity (the week's
- * narrative), the per-owner walkthrough (P1s with next task, stalled with
- * why — rows manage inline and expand to the full DealExpandPanel), then
- * time-in-stage aging and the switchable set distribution.
+ * The pipeline-meeting agenda, top to bottom: summary cards (incl. the
+ * won-with-open-tasks stage-gate check, which sits left of the closed
+ * won/lost outcome boxes), the period-scoped opportunities funnel,
+ * time-in-stage aging + the switchable set distribution, the concentration
+ * heatmap (one chart; the dropdown swaps its Y axis between stage and
+ * priority), recent activity (the week's narrative), then the
+ * per-owner walkthrough (P1s with next task, stalled with why — rows manage
+ * inline and expand to the full DealExpandPanel).
  *
  * "Time in pipeline" = time in the CURRENT stage (from jobs_stage_history).
  * Backed by /api/jobs/opportunities/overview (+ /opportunities for the
- * managed rows). Heatmaps + standalone needs-attention were removed in the
- * 2026-07-30 exec review — restore from git if ever needed.
+ * managed rows). The standalone needs-attention panel was removed in the
+ * 2026-07-30 exec review; the heatmaps were removed then too and restored
+ * 2026-08-03 — the priority axis degrades to an empty-state card rather than
+ * rendering a blank grid, which was the original objection to it.
+ *
+ * Every number representing a slice of the active set (aging bar, distribution
+ * bar, heatmap cell) drills into the SAME `active_set` array from the
+ * endpoint, so a drill list can never disagree with the count above it.
  */
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { addDays, format } from "date-fns";
-import { AlertTriangle, ArrowRight, ChevronLeft, ChevronRight, Clock, Minus, Plus, TrendingDown, TrendingUp, Trophy, XCircle } from "lucide-react";
+import { format } from "date-fns";
+import { AlertTriangle, ArrowRight, ChevronRight, Clock, Minus, Plus, TrendingDown, TrendingUp, Trophy, X, XCircle } from "lucide-react";
 
 import {
   useOpportunitiesOverview,
@@ -31,14 +40,18 @@ import {
   type OppDrillRow,
   type OppNeedsRow,
   type OppActivityEvent,
+  type OppHeatmap,
+  type OppActiveSetMember,
+  type OutreachGranularity,
 } from "@/services/jobs";
 import { useAllJobsTasks } from "@/services/jobsTasks";
 import { useSessionState } from "@/lib/useSessionState";
 import { InlineSelect } from "@/components/ui/InlineEdit";
 import { Drawer } from "@/components/ui/Drawer";
 import { JobsFunnels } from "@/components/jobs/JobsFunnels";
+import { PeriodBar, defaultPeriod } from "@/components/jobs/PeriodBar";
 import { CommittedRolesModal } from "@/components/jobs/CommittedRolesModal";
-import { DealExpandPanel, PlacementsModal, ClosedLostModal, stageOptionsFor, displayPriority } from "./JobsTeam";
+import { DealExpandPanel, PlacementsModal, ClosedLostModal, useOppStageOptions, displayPriority } from "./JobsTeam";
 import { relDay } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
@@ -68,30 +81,6 @@ const dayOnly = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()
 const parseDateInput = (v: string) => dayOnly(new Date(`${v}T00:00:00`));
 /** Whole days from a to b (both floored to midnight). */
 const dayDiff = (a: Date, b: Date) => Math.round((dayOnly(b).getTime() - dayOnly(a).getTime()) / 86400000);
-/** The most recent `dow` (0=Sun) on or before `d`. */
-function mostRecentDow(d: Date, dow: number): Date {
-  const x = dayOnly(d);
-  x.setDate(x.getDate() - ((x.getDay() - dow + 7) % 7));
-  return x;
-}
-const THURSDAY = 4;
-/** The pipeline meeting runs Thursdays, so the default window is the Thursday-
- *  aligned week: on meeting day that's the completed cycle just reviewed
- *  (last Thu → Wed), any other day it's the in-progress cycle (Thu → today).
- *  Both bounds are inclusive, so the cycle is a clean 7 days with no overlap
- *  between consecutive weeks. Any range is selectable via the two date inputs. */
-function thursdayCycle(today: Date): { start: Date; end: Date } {
-  const t = dayOnly(today);
-  return t.getDay() === THURSDAY
-    ? { start: addDays(t, -7), end: addDays(t, -1) }
-    : { start: mostRecentDow(t, THURSDAY), end: t };
-}
-/** Sun–Sat week containing `d`, clamped to today (the previous default). */
-function calendarWeek(today: Date): { start: Date; end: Date } {
-  const t = dayOnly(today);
-  const sun = mostRecentDow(t, 0);
-  return { start: sun, end: t };
-}
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
@@ -99,34 +88,22 @@ export function JobsOpportunitiesOverview() {
   const [owner, setOwner] = useState<string>("all");
   const [dealType, setDealType] = useState<string>("all");
   const [dim, setDim] = useState<OppBreakdownDim>("status");
+  // Y axis of the single concentration heatmap. Stage is the default because
+  // it is always populated; priority can legitimately be empty.
+  const [heatAxis, setHeatAxis] = useState<HeatAxis>("stage");
+  // Bucket size travels with the period preset, same as Outreach.
+  const [granularity, setGranularity] = useState<OutreachGranularity>("week");
   // Free-form window: both bounds inclusive, no snapping. Defaults to the
-  // Thursday-aligned meeting cycle; presets and the two date inputs set it.
-  const today = useMemo(() => dayOnly(new Date()), []);
-  const [range, setRange] = useState<{ start: Date; end: Date }>(() => thursdayCycle(new Date()));
+  // calendar week (what the Weekly preset selects, matching Outreach); the
+  // presets and the two date inputs set it.
+  // Completed week, matching Outreach — see defaultPeriod.
+  const [range, setRange] = useState<{ start: Date; end: Date }>(() => {
+    const [f, t] = defaultPeriod();
+    return { start: parseDateInput(f), end: parseDateInput(t) };
+  });
   const weekStart = range.start;
   const weekEnd = range.end;
   const spanDays = Math.max(1, dayDiff(weekStart, weekEnd) + 1);
-  const canGoNext = dayDiff(weekEnd, today) >= 1;
-  /** Step the whole window by its own length, so a Thursday-aligned week stays
-   *  Thursday-aligned. Forward steps clamp at today rather than overshooting. */
-  const shiftRange = (dir: -1 | 1) => setRange(({ start, end }) => {
-    const s = addDays(start, dir * spanDays);
-    const e = addDays(end, dir * spanDays);
-    if (dir === 1 && dayDiff(e, today) < 0) return { start: addDays(today, -(spanDays - 1)), end: today };
-    return { start: s, end: e };
-  });
-  // Both setters clamp at today (a future window is always empty) and keep
-  // start <= end by dragging the other bound along.
-  const setStart = (v: string) => setRange(({ end }) => {
-    const p = parseDateInput(v);
-    const s = dayDiff(p, today) < 0 ? today : p;
-    return { start: s, end: dayDiff(s, end) < 0 ? s : end };
-  });
-  const setEnd = (v: string) => setRange(({ start }) => {
-    const p = parseDateInput(v);
-    const e = dayDiff(p, today) < 0 ? today : p;
-    return { start: dayDiff(start, e) < 0 ? e : start, end: e };
-  });
   const rangeLabel = weekStart.getFullYear() === weekEnd.getFullYear()
     ? `${format(weekStart, "MMM d")} – ${format(weekEnd, "MMM d")}`
     : `${format(weekStart, "MMM d, yyyy")} – ${format(weekEnd, "MMM d, yyyy")}`;
@@ -134,8 +111,11 @@ export function JobsOpportunitiesOverview() {
   const staffQ = useJobsStaff();
   const nameOf = useMemo(() => {
     const m = new Map<string, string>();
-    (staffQ.data ?? []).forEach((st) => m.set(st.email, st.name));
-    return (email: string | null) => (email ? m.get(email) ?? titleCaseEmail(email) : "—");
+    (staffQ.data ?? []).forEach((st) => { if (st.name) m.set(st.email.toLowerCase(), st.name); });
+    // Keyed lowercase: the API returns owner emails lowercased while one staff
+    // record is "joanna@Pursuit.org", so an exact-case map missed and fell
+    // through to the email's local part — "avni" instead of "Avni Nahar".
+    return (email: string | null) => (email ? m.get(email.toLowerCase()) ?? titleCaseEmail(email) : "—");
   }, [staffQ.data]);
   const { data, isLoading } = useOpportunitiesOverview(
     owner, dealType, fmtDateInput(weekEnd), fmtDateInput(weekStart));
@@ -196,84 +176,18 @@ export function JobsOpportunitiesOverview() {
 
   return (
     <div className="flex flex-col gap-6 pt-1">
-      {/* ── Header row ─────────────────────────────────────────────────── */}
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h2 className="text-[18px] font-semibold tracking-tight text-ink">Opportunities Overview</h2>
-        </div>
-        <div className="flex flex-wrap items-center gap-1 rounded-lg border border-border-strong bg-surface px-1.5 py-1 text-[12.5px]">
-          <button
-            type="button"
-            onClick={() => shiftRange(-1)}
-            className="rounded p-1 text-ink-4 hover:bg-surface-2 hover:text-ink"
-            title={`Back ${spanDays} days`}
-          >
-            <ChevronLeft size={15} />
-          </button>
-          <span className="whitespace-nowrap px-1 font-semibold text-ink">{rangeLabel}</span>
-          <span className="whitespace-nowrap text-[11px] text-ink-4">{spanDays}d</span>
-          <button
-            type="button"
-            onClick={() => shiftRange(1)}
-            disabled={!canGoNext}
-            className="rounded p-1 text-ink-4 hover:bg-surface-2 hover:text-ink disabled:opacity-30 disabled:hover:bg-transparent"
-            title={`Forward ${spanDays} days`}
-          >
-            <ChevronRight size={15} />
-          </button>
-          <span className="ml-1 flex items-center gap-1">
-            <input
-              type="date"
-              value={fmtDateInput(weekStart)}
-              max={fmtDateInput(weekEnd)}
-              onChange={(e) => { if (e.target.value) setStart(e.target.value); }}
-              className="rounded border border-border-strong bg-surface px-1.5 py-0.5 text-[12px] text-ink outline-none focus:border-accent"
-              title="First day of the window (inclusive)"
-            />
-            <span className="text-ink-4">→</span>
-            <input
-              type="date"
-              value={fmtDateInput(weekEnd)}
-              max={fmtDateInput(today)}
-              onChange={(e) => { if (e.target.value) setEnd(e.target.value); }}
-              className="rounded border border-border-strong bg-surface px-1.5 py-0.5 text-[12px] text-ink outline-none focus:border-accent"
-              title="Last day of the window (inclusive)"
-            />
-          </span>
-          <span className="ml-1 flex items-center gap-1 border-l border-border pl-1.5">
-            {([
-              { label: "Thu week", title: "The Thursday-to-Thursday meeting cycle", get: () => thursdayCycle(new Date()) },
-              { label: "Week", title: "This calendar week so far (Sun–today)", get: () => calendarWeek(new Date()) },
-              { label: "30d", title: "The last 30 days", get: () => ({ start: addDays(today, -29), end: today }) },
-            ] as const).map((p) => {
-              const r = p.get();
-              const active = fmtDateInput(r.start) === fmtDateInput(weekStart) && fmtDateInput(r.end) === fmtDateInput(weekEnd);
-              return (
-                <button
-                  key={p.label}
-                  type="button"
-                  title={p.title}
-                  onClick={() => setRange(p.get())}
-                  className={`rounded px-1.5 py-0.5 text-[11.5px] font-medium ${
-                    active ? "bg-accent-soft text-accent" : "text-ink-4 hover:bg-surface-2 hover:text-ink"}`}
-                >
-                  {p.label}
-                </button>
-              );
-            })}
-          </span>
-        </div>
-      </div>
+      <h2 className="text-[18px] font-semibold tracking-tight text-ink">Opportunities Overview</h2>
 
-      {/* ── Controls ──────────────────────────────────────────────────── */}
-      <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
+      <PeriodBar
+        from={fmtDateInput(weekStart)} to={fmtDateInput(weekEnd)}
+        onChange={(f, t) => setRange({ start: parseDateInput(f), end: parseDateInput(t) })}
+        granularity={granularity} onGranularityChange={setGranularity}
+        clampToToday
+      >
         <div className="flex items-center gap-2">
           <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">Owner</span>
-          <select
-            value={owner}
-            onChange={(e) => setOwner(e.target.value)}
-            className="h-7 rounded-md border border-border-strong bg-surface px-2 text-[12.5px] text-ink outline-none focus:border-accent"
-          >
+          <select value={owner} onChange={(e) => setOwner(e.target.value)}
+            className="h-7 rounded-md border border-border-strong bg-surface px-2 text-[12.5px] text-ink outline-none focus:border-accent">
             <option value="all">All owners</option>
             {(staffQ.data ?? []).map((st) => (
               <option key={st.email} value={st.email}>{st.name || ownerShort(st.email)}</option>
@@ -282,17 +196,14 @@ export function JobsOpportunitiesOverview() {
         </div>
         <div className="flex items-center gap-2">
           <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">Deal type</span>
-          <select
-            value={dealType}
-            onChange={(e) => setDealType(e.target.value)}
-            className="h-7 rounded-md border border-border-strong bg-surface px-2 text-[12.5px] text-ink outline-none focus:border-accent"
-          >
+          <select value={dealType} onChange={(e) => setDealType(e.target.value)}
+            className="h-7 rounded-md border border-border-strong bg-surface px-2 text-[12.5px] text-ink outline-none focus:border-accent">
             {DEAL_TYPE_FILTERS.map((d) => (
               <option key={d.value} value={d.value}>{d.label}</option>
             ))}
           </select>
         </div>
-      </div>
+      </PeriodBar>
 
       {/* ── Summary cards ─────────────────────────────────────────────── */}
       <div className="grid grid-cols-2 items-stretch gap-4 lg:grid-cols-5">
@@ -305,39 +216,38 @@ export function JobsOpportunitiesOverview() {
         <SummaryCard tone="amber" label="Stalled" value={s?.stalled_6wk} isLoading={isLoading}
           sub="Open opportunity 6+ weeks"
           onClick={() => setDrill({ title: "Stalled 6+ weeks", note: "Open, created more than 6 weeks ago", rows: data?.drills.stalled ?? [] })} />
-        {/* Stacked outcome boxes for the week — Closed won (the goal,
-            subtly highlighted) over Closed lost (context to understand, not a red flag). */}
-        <div className="flex flex-col gap-4">
-          <OutcomeBox tone="green" highlight label="Closed won" value={s?.moved_committed} sub={rangeLabel} isLoading={isLoading}
-            onClick={() => setDrill({ title: "Closed won", note: rangeLabel, rows: data?.drills.won ?? [] })} />
-          <OutcomeBox tone="ink" label="Closed lost" value={s?.closed_lost} sub={rangeLabel} isLoading={isLoading}
-            onClick={() => setDrill({ title: "Closed lost", note: rangeLabel, rows: data?.drills.lost ?? [] })} />
-        </div>
         {/* Stage-gate check: won on the board but the follow-through (e.g. the
-            signed contract task) is still open — "signed contract = closed". */}
+            signed contract task) is still open — "signed contract = closed".
+            Sits left of the outcome boxes: it's an action, they're a result. */}
         <SummaryCard tone="red" label="Won, open tasks" value={wonOpenTasks.length} isLoading={isLoading}
           sub={wonOpenTasks.slice(0, 2).map((o) => o.account_name).join(" · ") || "all buttoned up"}
           onClick={() => setDrill({ title: "Won with open tasks", note: "Closed won but follow-through still open", rows: asDrillRows(wonOpenTasks) })} />
+        {/* Stacked outcome boxes for the week — Closed won (the goal,
+            subtly highlighted) over Closed lost (context to understand, not a red flag). */}
+        <div className="flex flex-col gap-4">
+          <OutcomeBox tone="green" highlight label="Closed won" value={s?.moved_committed} isLoading={isLoading}
+            onClick={() => setDrill({ title: "Closed won", note: rangeLabel, rows: data?.drills.won ?? [] })} />
+          <OutcomeBox tone="ink" label="Closed lost" value={s?.closed_lost} isLoading={isLoading}
+            onClick={() => setDrill({ title: "Closed lost", note: rangeLabel, rows: data?.drills.lost ?? [] })} />
+        </div>
       </div>
 
-      {/* ── Pipeline funnel (same visual as Exec view) ────────────────── */}
-      <JobsFunnels only="opportunities" />
-
-      {/* ── Recent activity — the week's narrative, promoted ──────────── */}
-      <Panel
-        title="Recent activity"
-        desc={`Added, moved, won or lost between ${rangeLabel} — newest first`}
-      >
-        <RecentActivity events={orderedActivity} isLoading={isLoading} nameOf={nameOf} />
-      </Panel>
+      {/* ── Pipeline funnel — period-scoped, same visual as Outreach ───── */}
+      <JobsFunnels
+        only="opportunities"
+        period={{ from: fmtDateInput(weekStart), to: fmtDateInput(weekEnd) }}
+        periodLabel={rangeLabel}
+        dealType={dealType}
+      />
 
       {/* ── Aging + Breakdown ─────────────────────────────────────────── */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <Panel title="Time in Pipeline">
-          <AgingBars buckets={data?.aging.buckets ?? []} isLoading={isLoading} />
+          <AgingBars buckets={data?.aging.buckets ?? []} isLoading={isLoading}
+            activeSet={data?.active_set} nameOf={nameOf} />
         </Panel>
         <Panel
-          title="Active set distribution"
+          title="Active Set Distribution"
           action={
             <select
               value={dim}
@@ -348,15 +258,55 @@ export function JobsOpportunitiesOverview() {
             </select>
           }
         >
-          <BreakdownBars items={data?.breakdowns[dim] ?? []} dim={dim} isLoading={isLoading} />
+          <BreakdownBars items={data?.breakdowns[dim] ?? []} dim={dim} isLoading={isLoading}
+            activeSet={data?.active_set} nameOf={nameOf} />
         </Panel>
       </div>
 
-      {/* ── Pipeline details (grouped by priority; owner view = the walkthrough) ── */}
+      {/* ── Concentration heatmap ─────────────────────────────────────────
+          Where the active set sits, cross-tabbed against how long it's been
+          sitting. Dark cells on the right = piling up; dark on the left =
+          healthy flow. Columns are always the age buckets; the dropdown swaps
+          the Y axis between Stage and Priority (one chart, was two). */}
       <Panel
-        title="Pipeline details"
-        desc="Grouped by priority (switch to owner for the walkthrough) — rows manage inline and expand to the full panel"
+        title={`${heatAxis === "stage" ? "Stage" : "Priority"} × Time in Pipeline`}
+        action={
+          <select
+            value={heatAxis}
+            onChange={(e) => setHeatAxis(e.target.value as HeatAxis)}
+            title="What the rows break down by"
+            className="h-7 rounded-md border border-border-strong bg-surface px-2 text-[12px] text-ink outline-none focus:border-accent"
+          >
+            <option value="stage">By stage</option>
+            <option value="priority">By priority</option>
+          </select>
+        }
       >
+        {heatAxis === "priority" && data && !data.heatmaps.priority.populated ? (
+          <EmptyPriorityCard unset={data.heatmaps.priority.unset ?? 0} />
+        ) : (
+          <Heatmap
+            heatmap={heatAxis === "stage" ? data?.heatmaps.stage : data?.heatmaps.priority}
+            buckets={data?.heatmaps.buckets ?? []}
+            rowHeader={heatAxis === "stage" ? "Stage" : "Priority"}
+            isLoading={isLoading}
+            axis={heatAxis}
+            activeSet={data?.active_set}
+            nameOf={nameOf}
+          />
+        )}
+      </Panel>
+
+      {/* ── Recent activity — the week's narrative ────────────────────── */}
+      <Panel
+        title="Recent Activity"
+        desc={`Added, moved, won or lost between ${rangeLabel} — newest first`}
+      >
+        <RecentActivity events={orderedActivity} isLoading={isLoading} nameOf={nameOf} />
+      </Panel>
+
+      {/* ── Opportunities Set (grouped by priority; owner view = the walkthrough) ── */}
+      <Panel title="Opportunities Set">
         <div className="max-h-[520px] overflow-y-auto">
           <OwnerWalkthrough openOpps={openOpps} needsById={needsById} nextTaskByOpp={nextTaskByOpp}
             nameOf={nameOf} {...rowHandlers} />
@@ -365,11 +315,6 @@ export function JobsOpportunitiesOverview() {
 
       {/* Needs-attention panel removed 2026-07-30 — the walkthrough's stalled
           groups carry the same rows, grouped by owner and manageable. */}
-
-      {/* Heatmaps removed 2026-07-30 (exec review): Priority×Time rendered
-          empty until priorities are tagged, and Stage×Time's column totals are
-          the aging bars above. Restore from git if concentration analysis is
-          ever needed again. */}
 
       {drill && <OppDrill title={drill.title} note={drill.note} rows={drill.rows} nameOf={nameOf} onClose={() => setDrill(null)} />}
       {placementModalDeal && <PlacementsModal deal={placementModalDeal} onClose={() => setPlacementModalDeal(null)} />}
@@ -451,6 +396,10 @@ function ManagedOppRow({ o, sub, detail, right, nextTask, expandedId, setExpande
 } & RowHandlers) {
   const updateOpp = useUpdateOpportunity();
   const expanded = expandedId === o.id;
+  // Gated on what the database accepts: Reviewing Builders is rejected
+  // until the 2026-08-05 migration lands, so it shows disabled here
+  // rather than failing the save.
+  const oppStageOptions = useOppStageOptions(o.stage);
   // Keep in sync with DealRow.saveStage (JobsTeam.tsx) — same modal gating.
   function saveStage(stage: JobStage) {
     if (stage === o.stage) return Promise.resolve();
@@ -487,7 +436,7 @@ function ManagedOppRow({ o, sub, detail, right, nextTask, expandedId, setExpande
         <span onClick={(e) => e.stopPropagation()}>
           <InlineSelect<JobStage>
             value={o.stage}
-            options={stageOptionsFor(o.stage)}
+            options={oppStageOptions}
             onSave={saveStage}
             renderValue={(v) => (
               <span className="rounded-full bg-surface-2 px-2 py-0.5 text-[11px] font-medium text-ink-2">{v ? STAGE_LABELS[v] : "—"}</span>
@@ -513,6 +462,152 @@ function ManagedOppRow({ o, sub, detail, right, nextTask, expandedId, setExpande
   );
 }
 
+// ── Opportunities Set filters ───────────────────────────────────────────────
+// One declarative spec drives the whole control: each field maps an
+// opportunity to the bucket label it belongs in, so categorical fields (deal
+// type, stage) and continuous ones (salary, last activity) filter through the
+// same path and the value list is always derived from what's actually in the
+// set — no dropdown option that matches zero rows. Adding a field here is the
+// only edit needed to make it filterable; the columns stay as they are.
+
+type OppFilterField = {
+  key: string;
+  label: string;
+  /** The bucket this opportunity falls in, or null to exclude it from the field. */
+  bucket: (o: JobsOpportunity) => string | null;
+  /** Fixed display order; anything unlisted sorts alphabetically after these. */
+  order?: string[];
+};
+
+const DAYS_SINCE = (iso: string | null | undefined) =>
+  iso ? Math.floor((Date.now() - new Date(iso).getTime()) / 86_400_000) : null;
+
+const ACTIVITY_ORDER_LABELS = ["Last 7 days", "8–30 days", "31–90 days", "Over 90 days", "No activity"];
+const SALARY_ORDER_LABELS = ["Under $80k", "$80k–100k", "$100k–120k", "$120k+", "Not set"];
+
+const OPP_FILTER_FIELDS: OppFilterField[] = [
+  { key: "deal_type", label: "Deal type",
+    bucket: (o) => (o.deal_type ? DEAL_TYPE_LABELS[o.deal_type] ?? o.deal_type : "Not set") },
+  { key: "stage", label: "Stage",
+    bucket: (o) => STAGE_LABELS[o.stage] ?? o.stage },
+  { key: "segment", label: "Segment",
+    bucket: (o) => o.segment || "Not set" },
+  { key: "priority", label: "Priority", order: ["P1", "P2", "P3+", "Not set"],
+    bucket: (o) => {
+      const p = displayPriority(o.priority);
+      return p == null ? "Not set" : p === 1 ? "P1" : p === 2 ? "P2" : "P3+";
+    } },
+  { key: "owner", label: "Owner",
+    // Lowercased to match the rest of the page — one staff record is
+    // "joanna@Pursuit.org", which would otherwise bucket separately.
+    bucket: (o) => (o.owner_email || "(unassigned)").toLowerCase() },
+  { key: "activity", label: "Last activity", order: ACTIVITY_ORDER_LABELS,
+    bucket: (o) => {
+      const d = DAYS_SINCE(o.last_activity_at);
+      if (d == null) return "No activity";
+      return d <= 7 ? "Last 7 days" : d <= 30 ? "8–30 days" : d <= 90 ? "31–90 days" : "Over 90 days";
+    } },
+  { key: "salary", label: "Salary", order: SALARY_ORDER_LABELS,
+    bucket: (o) => {
+      const v = o.salary_expected;
+      if (v == null) return "Not set";
+      return v < 80_000 ? "Under $80k" : v < 100_000 ? "$80k–100k" : v < 120_000 ? "$100k–120k" : "$120k+";
+    } },
+  { key: "likelihood", label: "Likelihood", order: ["High", "Medium", "Low", "Not set"],
+    bucket: (o) => (o.likelihood ? o.likelihood[0].toUpperCase() + o.likelihood.slice(1) : "Not set") },
+  { key: "open_tasks", label: "Open tasks", order: ["Has open tasks", "None open"],
+    bucket: (o) => ((o.open_tasks ?? 0) > 0 ? "Has open tasks" : "None open") },
+  { key: "roles", label: "Roles", order: ["Has roles", "No roles"],
+    bucket: (o) => ((o.num_roles ?? 0) > 0 ? "Has roles" : "No roles") },
+  { key: "source", label: "Source",
+    bucket: (o) => o.source || "Not set" },
+];
+
+const FILTER_BY_KEY = new Map(OPP_FILTER_FIELDS.map((f) => [f.key, f]));
+
+/** Distinct buckets present in `opps`, counted, in the field's declared order. */
+function filterOptions(field: OppFilterField, opps: JobsOpportunity[]) {
+  const counts = new Map<string, number>();
+  for (const o of opps) {
+    const b = field.bucket(o);
+    if (b != null) counts.set(b, (counts.get(b) ?? 0) + 1);
+  }
+  const rank = (v: string) => {
+    const i = field.order?.indexOf(v) ?? -1;
+    return i === -1 ? field.order?.length ?? 0 : i;
+  };
+  return [...counts.entries()]
+    .sort((a, b) => rank(a[0]) - rank(b[0]) || a[0].localeCompare(b[0]))
+    .map(([value, count]) => ({ value, count }));
+}
+
+function OppSetFilters({ filters, setFilters, opps, nameOf }: {
+  filters: Record<string, string>;
+  setFilters: (f: Record<string, string>) => void;
+  /** Pre-filter set, so each value list shows what's available to select. */
+  opps: JobsOpportunity[];
+  nameOf: (e: string | null) => string;
+}) {
+  const active = Object.keys(filters).filter((k) => FILTER_BY_KEY.has(k));
+  const unused = OPP_FILTER_FIELDS.filter((f) => !(f.key in filters));
+  const show = (fieldKey: string, v: string) =>
+    fieldKey === "owner" && v !== "(unassigned)" ? nameOf(v) : v;
+
+  return (
+    <>
+      {active.map((key) => {
+        const field = FILTER_BY_KEY.get(key)!;
+        // Options come from the set with THIS field's own filter lifted, so
+        // narrowing one field never empties its own dropdown.
+        const others = Object.entries(filters).filter(([k]) => k !== key);
+        const pool = opps.filter((o) => others.every(([k, v]) => FILTER_BY_KEY.get(k)?.bucket(o) === v));
+        return (
+          <span key={key}
+            className="inline-flex h-7 items-center gap-1 rounded-md border border-accent/40 bg-accent-soft pl-2 pr-1 text-[11.5px]">
+            <span className="font-semibold text-accent">{field.label}</span>
+            <select value={filters[key]}
+              onChange={(e) => setFilters({ ...filters, [key]: e.target.value })}
+              className="h-6 max-w-[136px] rounded border-none bg-transparent text-[11.5px] text-accent outline-none">
+              {filterOptions(field, pool).map((o) => (
+                <option key={o.value} value={o.value}>{show(key, o.value)} ({o.count})</option>
+              ))}
+            </select>
+            <button type="button" title={`Remove the ${field.label} filter`}
+              onClick={() => { const next = { ...filters }; delete next[key]; setFilters(next); }}
+              className="grid h-4 w-4 place-items-center rounded text-accent/70 hover:bg-accent/10 hover:text-accent">
+              <X size={11} />
+            </button>
+          </span>
+        );
+      })}
+
+      {unused.length > 0 && (
+        <select value="" title="Filter the set by any field"
+          onChange={(e) => {
+            const field = FILTER_BY_KEY.get(e.target.value);
+            if (!field) return;
+            // Seed with the field's first bucket. Every option is derived from
+            // the set, so whichever one lands is guaranteed non-empty — picking
+            // a filter should never blank the table.
+            const first = filterOptions(field, opps)[0];
+            if (first) setFilters({ ...filters, [field.key]: first.value });
+          }}
+          className="h-7 rounded-md border border-border-strong bg-surface px-2 text-[12px] text-ink-2 outline-none focus:border-accent">
+          <option value="">{active.length ? "+ Filter" : "Filter by…"}</option>
+          {unused.map((f) => <option key={f.key} value={f.key}>{f.label}</option>)}
+        </select>
+      )}
+
+      {active.length > 1 && (
+        <button type="button" onClick={() => setFilters({})}
+          className="h-7 rounded-md px-1.5 text-[11.5px] font-medium text-ink-3 hover:text-ink">
+          Clear all
+        </button>
+      )}
+    </>
+  );
+}
+
 function OwnerWalkthrough({ openOpps, needsById, nextTaskByOpp, nameOf, ...handlers }: {
   openOpps: JobsOpportunity[];
   needsById: Map<string, OppNeedsRow>;
@@ -523,12 +618,19 @@ function OwnerWalkthrough({ openOpps, needsById, nextTaskByOpp, nameOf, ...handl
   const [groupBy, setGroupBy] = useSessionState<"owner" | "priority" | "">("jobsPipeline.details.groupBy", "priority");
   const [ownerFilter, setOwnerFilter] = useSessionState<string>("jobsPipeline.walkthrough.owner", "");
   const [flaggedOnly, setFlaggedOnly] = useSessionState<boolean>("jobsPipeline.walkthrough.flagged", false);
+  // Field → selected bucket. Every field in OPP_FILTER_FIELDS is filterable
+  // without being a column: the ask was to slice the set, not widen the table.
+  const [filters, setFilters] = useSessionState<Record<string, string>>("jobsPipeline.details.filters", {});
 
   const owners = useMemo(() => [...new Set(openOpps.map((o) => (o.owner_email ?? "").toLowerCase()))]
     .filter(Boolean).sort(), [openOpps]);
+  const filterEntries = useMemo(
+    () => Object.entries(filters).filter(([k]) => FILTER_BY_KEY.has(k)), [filters]);
   const visible = useMemo(() => openOpps.filter((o) =>
     (!ownerFilter || (o.owner_email ?? "").toLowerCase() === ownerFilter) &&
-    (!flaggedOnly || needsById.has(o.id))), [openOpps, ownerFilter, flaggedOnly, needsById]);
+    (!flaggedOnly || needsById.has(o.id)) &&
+    filterEntries.every(([k, v]) => FILTER_BY_KEY.get(k)!.bucket(o) === v)),
+    [openOpps, ownerFilter, flaggedOnly, needsById, filterEntries]);
 
   const controls = (
     <div className="mb-2 flex flex-wrap items-center gap-2">
@@ -543,13 +645,16 @@ function OwnerWalkthrough({ openOpps, needsById, nextTaskByOpp, nameOf, ...handl
         <option value="priority">Group by priority</option>
         <option value="">No grouping</option>
       </select>
+      <OppSetFilters filters={filters} setFilters={setFilters} opps={openOpps} nameOf={nameOf} />
       <button type="button" onClick={() => setFlaggedOnly(!flaggedOnly)}
         className={cn("h-7 rounded-md border px-2 text-[11.5px] font-medium",
           flaggedOnly ? "border-[var(--amber)]/40 bg-[var(--amber-soft)] text-[var(--amber)]"
                       : "border-border-strong bg-surface text-ink-3 hover:text-ink-2")}>
         Needs attention only
       </button>
-      <span className="text-[11.5px] text-ink-4">{visible.length} shown</span>
+      <span className="text-[11.5px] text-ink-4">
+        {visible.length} shown{visible.length !== openOpps.length ? ` of ${openOpps.length}` : ""}
+      </span>
     </div>
   );
 
@@ -760,7 +865,9 @@ function OutcomeBox({
           {highlight ? <Trophy size={11} className="text-[var(--green)]" /> : null}
           {label}
         </div>
-        <div className="text-[10.5px] text-ink-4">{sub ?? "this week"}</div>
+        {/* No "this week" fallback: it was a lie under any preset but Weekly,
+            and the period row above already states the window. */}
+        {sub ? <div className="text-[10.5px] text-ink-4">{sub}</div> : null}
       </div>
       {isLoading ? (
         <div className="h-6 w-8 animate-pulse rounded bg-surface-2" />
@@ -776,14 +883,20 @@ function OutcomeBox({
 // ── Panel wrapper ─────────────────────────────────────────────────────────────
 
 export function Panel({
-  title, desc, action, badge, children,
+  title, desc, action, badge, className, children,
 }: {
-  title: string; desc?: string; action?: React.ReactNode; badge?: string; children: React.ReactNode;
+  title: string; desc?: string; action?: React.ReactNode; badge?: string;
+  /** For a panel that has to fill its grid row — pass "h-full". */
+  className?: string;
+  children: React.ReactNode;
 }) {
   return (
-    <section className="rounded-2xl border border-border-strong bg-surface px-5 py-4">
+    <section className={cn("rounded-2xl border border-border-strong bg-surface px-5 py-4", className)}>
       <div className="mb-3 flex items-start justify-between gap-3">
-        <div>
+        {/* shrink-0: in a half-width panel the title lost the fight with the
+            controls and wrapped to two lines. Controls wrap gracefully; a
+            two-line title next to a one-line sibling does not. */}
+        <div className="shrink-0">
           <div className="flex items-center gap-2">
             <h3 className="text-[14px] font-semibold text-ink">{title}</h3>
             {badge ? (
@@ -799,28 +912,114 @@ export function Panel({
   );
 }
 
+// ── Shared inline drill ──────────────────────────────────────────────────────
+// Every number on this page that represents a slice of the active set opens the
+// same list, filtered from `active_set` — so the drill and the count are always
+// the same rows. Capped at 5 with a show-all, since these sit inline under a
+// chart rather than in a drawer.
+
+const MINI_DRILL_CAP = 5;
+
+function OppMiniDrill({ label, members, nameOf }: {
+  label: string;
+  members: OppActiveSetMember[];
+  nameOf: (e: string | null) => string;
+}) {
+  const [showAll, setShowAll] = useState(false);
+  const shown = showAll ? members : members.slice(0, MINI_DRILL_CAP);
+  const extra = members.length - shown.length;
+
+  return (
+    <div className="mt-2 overflow-hidden rounded-lg border border-border-strong bg-surface-2/40">
+      <div className="flex items-center justify-between border-b border-border-strong px-3 py-1.5">
+        <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">{label}</span>
+        <span className="text-[11px] tabular-nums text-ink-4">{members.length}</span>
+      </div>
+      {members.length === 0 ? (
+        <div className="px-3 py-3 text-[12px] text-ink-4">No opportunities here.</div>
+      ) : (
+        <>
+          <ul className="divide-y divide-border-strong">
+            {shown.map((m) => (
+              <li key={m.opportunity_id} className="flex items-center gap-2 px-3 py-1.5">
+                <Link to={`/jobs/opportunities/${m.opportunity_id}`}
+                  className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-ink hover:text-accent hover:underline">
+                  {m.account ?? "—"}
+                </Link>
+                <span className="w-[132px] flex-shrink-0 truncate text-[11.5px] text-ink-3">{m.stage_label}</span>
+                <span className="w-[96px] flex-shrink-0 truncate text-[11.5px] text-ink-3">{nameOf(m.owner)}</span>
+                <span className="w-[64px] flex-shrink-0 text-right text-[11.5px] tabular-nums text-ink-4">
+                  {m.days_in_stage}d
+                </span>
+              </li>
+            ))}
+          </ul>
+          {extra > 0 ? (
+            <button type="button" onClick={() => setShowAll(true)}
+              className="w-full border-t border-border-strong px-3 py-1.5 text-[11.5px] font-medium text-accent hover:bg-surface-2">
+              Show all {members.length}
+            </button>
+          ) : null}
+        </>
+      )}
+    </div>
+  );
+}
+
+/** The active-set field each distribution dimension groups by. Must mirror the
+ *  keys the backend counts with, or a drill would disagree with its bar. */
+const BD_FIELD: Record<OppBreakdownDim, keyof OppActiveSetMember> = {
+  status: "status",
+  deal_type: "deal_type",
+  segment: "segment",
+  stage: "stage",
+  owner: "owner_key",
+};
+
 // ── Aging bars ────────────────────────────────────────────────────────────────
 
 const AGE_COLOR = ["var(--green)", "#6FBE93", "var(--amber)", "#D97A3E", "var(--red)"];
 
-function AgingBars({ buckets, isLoading }: { buckets: { key: string; label: string; count: number; pct: number }[]; isLoading: boolean }) {
+function AgingBars({ buckets, isLoading, activeSet, nameOf }: {
+  buckets: { key: string; label: string; count: number; pct: number }[];
+  isLoading: boolean;
+  activeSet?: OppActiveSetMember[];
+  nameOf?: (e: string | null) => string;
+}) {
+  const [open, setOpen] = useState<number | null>(null);
   if (isLoading) {
     return <div className="flex flex-col gap-3 py-1">{Array.from({ length: 5 }).map((_, i) => (
       <div key={i} className="h-3 animate-pulse rounded bg-surface-2" />
     ))}</div>;
   }
   const max = Math.max(1, ...buckets.map((b) => b.count));
+  const canDrill = !!activeSet && !!nameOf;
   return (
     <div className="flex flex-col">
       {buckets.map((b, i) => (
-        <div key={b.key} className="grid grid-cols-[92px_1fr_36px_36px] items-center gap-3 py-[7px]">
-          <div className="text-[12.5px] font-semibold text-ink">{b.label}</div>
-          <div className="h-2.5 overflow-hidden rounded-full bg-surface-2">
-            <div className="h-full rounded-full transition-[width] duration-500"
-              style={{ width: `${Math.round((100 * b.count) / max)}%`, background: AGE_COLOR[i] ?? "var(--accent)" }} />
+        <div key={b.key}>
+          <div className="grid grid-cols-[92px_1fr_36px_36px] items-center gap-3 py-[7px]">
+            <div className="text-[12.5px] font-semibold text-ink">{b.label}</div>
+            <div className="h-2.5 overflow-hidden rounded-full bg-surface-2">
+              <div className="h-full rounded-full transition-[width] duration-500"
+                style={{ width: `${Math.round((100 * b.count) / max)}%`, background: AGE_COLOR[i] ?? "var(--accent)" }} />
+            </div>
+            {canDrill && b.count > 0 ? (
+              <button type="button" onClick={() => setOpen(open === i ? null : i)}
+                title={`Show the ${b.count} opportunities in ${b.label}`}
+                className={cn("rounded text-right text-[12.5px] font-semibold tabular-nums hover:underline",
+                  open === i ? "text-accent" : "text-ink hover:text-accent")}>
+                {b.count}
+              </button>
+            ) : (
+              <div className="text-right text-[12.5px] font-semibold tabular-nums text-ink">{b.count}</div>
+            )}
+            <div className="text-right text-[11.5px] tabular-nums text-ink-4">{b.pct}%</div>
           </div>
-          <div className="text-right text-[12.5px] font-semibold tabular-nums text-ink">{b.count}</div>
-          <div className="text-right text-[11.5px] tabular-nums text-ink-4">{b.pct}%</div>
+          {canDrill && open === i ? (
+            <OppMiniDrill label={`${b.label} in stage`} nameOf={nameOf}
+              members={activeSet.filter((m) => m.age_bucket === i)} />
+          ) : null}
         </div>
       ))}
       <div className="mt-3 flex flex-wrap gap-4 border-t border-border-strong pt-3 text-[11.5px] text-ink-3">
@@ -834,13 +1033,33 @@ function AgingBars({ buckets, isLoading }: { buckets: { key: string; label: stri
 
 // ── Breakdown bars ──────────────────────────────────────────────────────────
 
-function breakdownLabel(dim: OppBreakdownDim, key: string, label: string): string {
+/** Owner bars read as a person, not a mailbox: "Avni Nahar", not "avni".
+ *  Abbreviated to "Damon K." past 16 characters, which is where the full name
+ *  starts truncating in the 128px label column. */
+function ownerLabel(key: string, nameOf?: (e: string | null) => string): string {
+  const full = nameOf ? nameOf(key) : titleCaseEmail(key);
+  if (full.length <= 16) return full;
+  const parts = full.split(/\s+/);
+  return parts.length > 1 ? `${parts[0]} ${parts[parts.length - 1][0]}.` : full;
+}
+
+function breakdownLabel(dim: OppBreakdownDim, key: string, label: string,
+                        nameOf?: (e: string | null) => string): string {
   if (dim === "deal_type") return DEAL_TYPE_LABELS[key as DealType] ?? label;
-  if (dim === "owner") return ownerShort(key);
+  if (dim === "owner") return ownerLabel(key, nameOf);
   return label;
 }
 
-export function BreakdownBars({ items, dim, isLoading }: { items: { key: string; label: string; count: number }[]; dim: OppBreakdownDim; isLoading: boolean }) {
+export function BreakdownBars({ items, dim, isLoading, activeSet, nameOf }: {
+  items: { key: string; label: string; count: number }[];
+  dim: OppBreakdownDim;
+  isLoading: boolean;
+  /** Pass the active set to make each count drillable. Omitted on the Outreach
+   *  targeting panel, which charts a different population entirely. */
+  activeSet?: OppActiveSetMember[];
+  nameOf?: (e: string | null) => string;
+}) {
+  const [open, setOpen] = useState<string | null>(null);
   if (isLoading) {
     return <div className="flex flex-col gap-3 py-1">{Array.from({ length: 4 }).map((_, i) => (
       <div key={i} className="h-3 animate-pulse rounded bg-surface-2" />
@@ -849,21 +1068,37 @@ export function BreakdownBars({ items, dim, isLoading }: { items: { key: string;
   if (items.length === 0) return <div className="py-6 text-center text-[12px] text-ink-4">No data.</div>;
   const total = items.reduce((a, b) => a + b.count, 0) || 1;
   const max = Math.max(1, ...items.map((i) => i.count));
+  const canDrill = !!activeSet && !!nameOf;
+  const field = BD_FIELD[dim];
   return (
     <div className="flex flex-col">
       {items.map((it) => (
-        <div key={it.key} className="grid grid-cols-[128px_1fr_58px] items-center gap-3 py-[7px]">
-          <div className="truncate text-[12.5px] font-medium text-ink" title={breakdownLabel(dim, it.key, it.label)}>
-            {breakdownLabel(dim, it.key, it.label)}
+        <div key={it.key}>
+          <div className="grid grid-cols-[128px_1fr_58px] items-center gap-3 py-[7px]">
+            <div className="truncate text-[12.5px] font-medium text-ink" title={breakdownLabel(dim, it.key, it.label, nameOf)}>
+              {breakdownLabel(dim, it.key, it.label, nameOf)}
+            </div>
+            <div className="h-2.5 overflow-hidden rounded-full bg-surface-2">
+              <div className="h-full rounded-full transition-[width] duration-500"
+                style={{ width: `${Math.round((100 * it.count) / max)}%`, background: "linear-gradient(90deg,#6d5efc,#8b7dff)" }} />
+            </div>
+            <div className="text-right text-[12px] tabular-nums text-ink-2">
+              {canDrill && it.count > 0 ? (
+                <button type="button" onClick={() => setOpen(open === it.key ? null : it.key)}
+                  title={`Show the ${it.count} opportunities in ${breakdownLabel(dim, it.key, it.label, nameOf)}`}
+                  className={cn("font-semibold hover:underline", open === it.key ? "text-accent" : "text-ink hover:text-accent")}>
+                  {it.count}
+                </button>
+              ) : (
+                <span className="font-semibold text-ink">{it.count}</span>
+              )}
+              <span className="text-ink-4"> · {Math.round((100 * it.count) / total)}%</span>
+            </div>
           </div>
-          <div className="h-2.5 overflow-hidden rounded-full bg-surface-2">
-            <div className="h-full rounded-full transition-[width] duration-500"
-              style={{ width: `${Math.round((100 * it.count) / max)}%`, background: "linear-gradient(90deg,#6d5efc,#8b7dff)" }} />
-          </div>
-          <div className="text-right text-[12px] tabular-nums text-ink-2">
-            <span className="font-semibold text-ink">{it.count}</span>
-            <span className="text-ink-4"> · {Math.round((100 * it.count) / total)}%</span>
-          </div>
+          {canDrill && open === it.key ? (
+            <OppMiniDrill label={breakdownLabel(dim, it.key, it.label, nameOf)} nameOf={nameOf}
+              members={activeSet.filter((m) => m[field] === it.key)} />
+          ) : null}
         </div>
       ))}
     </div>
@@ -880,6 +1115,138 @@ const ACTIVITY_META: Record<OppActivityEvent["type"], { label: string; color: st
   stalled: { label: "Stalled", color: "var(--amber)",  icon: <Clock size={11} /> },
 };
 
+// ── Concentration heatmaps ───────────────────────────────────────────────────
+// Colour encodes VOLUME only — a blue that deepens with the count. No red
+// "concern" shading: the gradient is the single signal, so a dark cell in an
+// older column is the whole story without a second visual language on top.
+
+function heatBlue(n: number, max: number): { background: string; color: string } {
+  if (n <= 0) return { background: "var(--surface-2)", color: "var(--ink-4)" };
+  const t = max > 0 ? n / max : 0;
+  const alpha = 0.16 + 0.84 * t;
+  return {
+    background: `rgba(47, 127, 224, ${alpha.toFixed(2)})`,  // --sky base #2F7FE0
+    color: alpha > 0.5 ? "#ffffff" : "var(--ink)",
+  };
+}
+
+function EmptyPriorityCard({ unset }: { unset: number }) {
+  return (
+    <div className="rounded-lg border border-dashed border-border-strong px-4 py-6 text-center">
+      <p className="text-[12.5px] font-semibold text-ink">
+        No priority set on any of the {unset} active opps yet.
+      </p>
+      <p className="mt-1 text-[11.5px] text-ink-3">
+        This heatmap lights up automatically as the team sets priority on opportunities.
+      </p>
+    </div>
+  );
+}
+
+type HeatAxis = "stage" | "priority";
+
+function Heatmap({ heatmap, buckets, rowHeader, isLoading, axis, activeSet, nameOf }: {
+  heatmap: OppHeatmap | undefined;
+  buckets: { key: string; label: string }[];
+  rowHeader: string;
+  isLoading: boolean;
+  axis: HeatAxis;
+  activeSet?: OppActiveSetMember[];
+  nameOf?: (e: string | null) => string;
+}) {
+  // `${rowKey}:${bucketIndex}` of the open cell.
+  const [open, setOpen] = useState<string | null>(null);
+
+  if (isLoading) return <div className="h-40 animate-pulse rounded-lg bg-surface-2" />;
+  if (!heatmap || heatmap.rows.length === 0)
+    return <div className="py-6 text-center text-[12px] text-ink-4">No opportunities to chart.</div>;
+
+  const max = Math.max(1, ...heatmap.rows.flatMap((r) => r.cells));
+  const canDrill = !!activeSet && !!nameOf;
+  // Priority rows are keyed "P3" on the wire but the member carries 3.
+  const rowMatches = (m: OppActiveSetMember, rowKey: string) =>
+    axis === "stage" ? m.stage === rowKey : `P${m.priority ?? ""}` === rowKey;
+
+  const openRow = open ? heatmap.rows.find((r) => `${r.key}:${open.split(":")[1]}` === open) : null;
+  const openBucket = open ? Number(open.split(":")[1]) : null;
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full min-w-[560px] border-collapse">
+        <thead>
+          <tr>
+            <th className="px-2 pb-2.5 text-left text-[10.5px] font-semibold uppercase tracking-wider text-ink-4">{rowHeader}</th>
+            {buckets.map((b) => (
+              <th key={b.key} className="px-1.5 pb-2.5 text-center text-[10.5px] font-semibold uppercase tracking-wider text-ink-4">{b.label}</th>
+            ))}
+            <th className="px-2 pb-2.5 text-right text-[10.5px] font-semibold uppercase tracking-wider text-ink-4">Total</th>
+          </tr>
+        </thead>
+        <tbody>
+          {heatmap.rows.map((row) => (
+            <tr key={row.key}>
+              <td className="whitespace-nowrap py-1 pr-2 text-[12.5px] font-semibold text-ink">{row.label}</td>
+              {row.cells.map((n, i) => {
+                const st = heatBlue(n, max);
+                const cellKey = `${row.key}:${i}`;
+                const isOpen = open === cellKey;
+                const clickable = canDrill && n > 0;
+                return (
+                  <td key={i} className="p-1">
+                    <div
+                      role={clickable ? "button" : undefined}
+                      tabIndex={clickable ? 0 : undefined}
+                      onClick={clickable ? () => setOpen(isOpen ? null : cellKey) : undefined}
+                      onKeyDown={clickable ? (e) => {
+                        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setOpen(isOpen ? null : cellKey); }
+                      } : undefined}
+                      title={clickable ? `${n} opportunities · ${row.label} · ${buckets[i]?.label ?? ""} — click to list them` : undefined}
+                      className={cn(
+                        "flex h-11 items-center justify-center rounded-lg text-[14px] font-bold",
+                        clickable && "cursor-pointer transition-shadow hover:ring-2 hover:ring-accent/50",
+                        isOpen && "ring-2 ring-accent",
+                      )}
+                      style={{ background: st.background, color: st.color }}
+                    >
+                      {n}
+                    </div>
+                  </td>
+                );
+              })}
+              <td className="py-1 pl-2 text-right text-[12px] font-semibold tabular-nums text-ink-3">{row.total}</td>
+            </tr>
+          ))}
+          <tr>
+            <td className="border-t border-border-strong pt-2.5 text-[11.5px] font-semibold text-ink-4">Column total</td>
+            {heatmap.col_totals.map((n, i) => (
+              <td key={i} className="border-t border-border-strong pt-2.5 text-center text-[11.5px] font-semibold tabular-nums text-ink-4">{n}</td>
+            ))}
+            <td className="border-t border-border-strong" />
+          </tr>
+        </tbody>
+      </table>
+
+      {canDrill && openRow && openBucket != null ? (
+        <OppMiniDrill
+          label={`${openRow.label} · ${buckets[openBucket]?.label ?? ""}`}
+          nameOf={nameOf}
+          members={activeSet.filter((m) => m.age_bucket === openBucket && rowMatches(m, openRow.key))}
+        />
+      ) : null}
+
+      <div className="mt-2.5 flex items-center gap-1.5 text-[11px] text-ink-4">
+        <span className="h-2.5 w-8 rounded-sm"
+          style={{ background: "linear-gradient(90deg, rgba(47,127,224,0.16), rgba(47,127,224,1))" }} />
+        fewer → more opportunities
+      </div>
+    </div>
+  );
+}
+
+/** The week's narrative opens at five rows — enough to read the shape of the
+ *  week without the panel dominating the scroll. */
+const RECENT_ACTIVITY_PAGE = 5;
+
 function RecentActivity({ events, isLoading, nameOf }: { events: OppActivityEvent[]; isLoading: boolean; nameOf: (e: string | null) => string }) {
   const [showAll, setShowAll] = useState(false);
   if (isLoading) return <div className="h-32 animate-pulse rounded-lg bg-surface-2" />;
@@ -890,7 +1257,7 @@ function RecentActivity({ events, isLoading, nameOf }: { events: OppActivityEven
       </div>
     );
   }
-  const shown = showAll ? events : events.slice(0, 10);
+  const shown = showAll ? events : events.slice(0, RECENT_ACTIVITY_PAGE);
   return (
     <div className="flex flex-col">
       {shown.map((e, i) => {
@@ -916,10 +1283,10 @@ function RecentActivity({ events, isLoading, nameOf }: { events: OppActivityEven
           </div>
         );
       })}
-      {events.length > 10 ? (
+      {events.length > RECENT_ACTIVITY_PAGE ? (
         <button type="button" onClick={() => setShowAll((v) => !v)}
           className="mt-2 self-start text-[12px] font-medium text-accent hover:underline">
-          {showAll ? "Show less" : `Show ${events.length - 10} more`}
+          {showAll ? "Show less" : `Show ${events.length - RECENT_ACTIVITY_PAGE} more`}
         </button>
       ) : null}
     </div>

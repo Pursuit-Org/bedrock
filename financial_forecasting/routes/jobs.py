@@ -10,6 +10,7 @@
 
 import asyncio
 import asyncpg
+import io
 import json
 import logging
 import re
@@ -18,6 +19,7 @@ from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from auth import require_auth
@@ -31,12 +33,44 @@ from services.jobs_activity_link import has_membership_history
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 
+# Every stage the app UNDERSTANDS, old and new. The 2026-08-05 simplification
+# drops initial_outreach and the three on_hold_* values and renames
+# active_builder_interview -> reviewing_builders, but the legacy values stay
+# listed here so the app can still read and label rows written before the
+# migration (and so it keeps working if the migration hasn't been applied yet).
+# What can actually be WRITTEN is decided by the database CHECK constraint —
+# see _writable_stages(), which is what the UI's pickers are built from.
 VALID_STAGES = {
-    "lead_submitted", "initial_outreach",
-    "active_in_discussions", "active_opportunity_confirmed", "active_builder_interview",
+    "lead_submitted",
+    "active_in_discussions", "active_opportunity_confirmed", "reviewing_builders",
     "closed_won", "closed_lost",
+    # legacy, pre-2026-08-05
+    "initial_outreach", "active_builder_interview",
     "on_hold_not_selected", "on_hold_not_interested", "on_hold_not_responsive",
 }
+
+# Post-migration stage lists, in funnel order. These drive the UI once the
+# database accepts them.
+OPPORTUNITY_STAGES_NEW = [
+    "lead_submitted", "active_in_discussions", "active_opportunity_confirmed",
+    "reviewing_builders", "closed_won", "closed_lost",
+]
+MEMBERSHIP_STAGES_NEW = [
+    "assigned", "initial_outreach", "call_booked",
+    "converted_to_opportunity", "revisit", "not_a_fit",
+]
+MEMBERSHIP_STAGES_LEGACY = [
+    "assigned", "initial_outreach", "converted_to_opportunity", "on_hold", "not_a_fit",
+]
+
+CLOSED_LOST_REASONS = [
+    ("budget", "No budget"), ("timing", "Timing / not now"),
+    ("hired_elsewhere", "Hired elsewhere"), ("not_a_fit", "Not a fit"),
+    ("no_response", "Went cold"), ("role_cancelled", "Role cancelled"),
+    ("not_interested", "Not interested"), ("not_selected", "Not selected"),
+    ("not_responsive", "Not responsive"), ("revisit", "Revisit later"),
+    ("other", "Other"),
+]
 
 VALID_DEAL_TYPES = {"ft", "pt_contract", "capstone", "volunteer", "workshop", "pilot"}
 
@@ -126,9 +160,22 @@ STAGE_LABELS = {
     "active_builder_interview":     "Builder Interview",
     "closed_won":                   "Closed — Won",
     "closed_lost":                  "Closed — Lost",
+    "reviewing_builders":           "Reviewing Builders",
+    # Legacy values — kept so history and un-migrated rows still render a name
+    # rather than a raw slug.
     "on_hold_not_selected":         "On Hold: Not Selected",
     "on_hold_not_interested":       "On Hold: Not Interested",
     "on_hold_not_responsive":       "On Hold: Not Responsive",
+}
+
+MEMBERSHIP_STAGE_LABELS = {
+    "assigned":                 "Assigned",
+    "initial_outreach":         "Initial Outreach",
+    "call_booked":              "Call Booked",
+    "converted_to_opportunity": "Converted to Opportunity",
+    "revisit":                  "Revisit",
+    "not_a_fit":                "Not a Fit",
+    "on_hold":                  "On Hold",   # legacy, pre-2026-08-05
 }
 
 
@@ -178,6 +225,10 @@ class OpportunityUpdate(BaseModel):
     priority: Optional[int] = None
     segment: Optional[str] = None
     intro_by: Optional[str] = None
+    # Campaign tags, same vocabulary as contacts (bedrock.contact_tag_catalog).
+    # Column arrives with the 2026-08-05 migration; writes are skipped until then
+    # rather than 42703-ing the whole update.
+    tags: Optional[list[str]] = None
 
 
 @router.get("/metrics/{key}")
@@ -474,7 +525,7 @@ async def metric_drilldown(
         "active_orgs":          ("Active Orgs",              lambda: deals("stage LIKE 'active_%'")),
         "active_companies":     ("Active Companies",         lambda: deals("stage LIKE 'active_%'")),
         "in_discussion":        ("In Discussion",            lambda: deals("stage='active_in_discussions'")),
-        "builder_interviews":   ("Builder Interview",        lambda: deals("stage='active_builder_interview'")),
+        "builder_interviews":   ("Reviewing Builders",        lambda: deals("stage IN ('reviewing_builders','active_builder_interview')")),
         "placements":           ("FT Roles Secured", lambda: placements("true")),
         "ft_salaries":          ("FT Salaries", lambda: salaries("true")),
         "candidates_submitted": ("Companies w/ Candidates Submitted", lambda: companies("stage IN ('applied','interview','accepted')")),
@@ -1651,36 +1702,75 @@ async def builder_segments(user=Depends(require_auth), conn=Depends(get_db)):
     }}
 
 
+# Stages that must not advertise a conversion rate into whatever follows them in
+# `stage_order`: the next row isn't a forward step. On Hold is a parking state and
+# Converted is the end of the contact funnel.
+_NO_CONVERSION_FROM = {"converted_to_opportunity", "revisit", "not_a_fit", "on_hold",
+                       "closed_won", "closed_lost"}
+
+
 @router.get("/funnel/{ftype}")
 async def get_funnel(
     ftype: str,
     deal_type: Optional[str] = Query(None),
     segment: Optional[str] = Query(None),
+    period_from: Optional[str] = Query(None, description="YYYY-MM-DD, inclusive"),
+    period_to: Optional[str] = Query(None, description="YYYY-MM-DD, inclusive"),
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
     """Unified funnel for the three pipelines: opportunities | prospects | builders.
 
-    Returns ordered stages with counts, conversion-to-next, and the records in
-    each stage (for inline expand). Opportunities also include recent
-    progression (advanced/regressed) from bedrock.jobs_stage_history.
+    Two modes:
+
+    * **Snapshot** (no period) — stages carry how many records SIT in them right
+      now, and conversion is the all-time cohort rate. This is what the Exec view
+      uses; it has no period control.
+    * **Period flow** (`period_from` + `period_to`) — stages carry how many
+      records ENTERED them inside the window, and conversion is
+      `next stage entries / this stage entries`. Used by Outreach and Pipeline,
+      which both have a period picker.
+
+    Period flow can legitimately exceed 100%: more contacts can enter Initial
+    Outreach in a week than were assigned that same week, because they were
+    assigned earlier. That's backlog being cleared, so the rate is reported as
+    measured rather than clamped.
 
     `deal_type` (ft | pt_contract | ...) scopes every funnel to that lens:
     opportunities by their own deal_type; prospects to contacts at companies
     that have a deal of that type; builders to applications on such opps.
     """
     dt = deal_type if deal_type and deal_type != "all" else None
+
+    # Period mode is opt-in and only meaningful where we stamp stage entry.
+    period: Optional[tuple] = None
+    if period_from and period_to and ftype in ("opportunities", "prospects"):
+        try:
+            p_from = datetime.strptime(period_from, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            # Inclusive end date → exclusive upper bound at the next midnight, so
+            # a record stamped 17:04 on the last day still counts.
+            p_to = (datetime.strptime(period_to, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                    + timedelta(days=1))
+        except ValueError:
+            raise HTTPException(400, "period_from / period_to must be YYYY-MM-DD")
+        if p_to <= p_from:
+            raise HTTPException(400, "period_to must not precede period_from")
+        period = (p_from, p_to)
     movement_by_stage: dict = {}  # stage_key -> list of recent transitions touching it
 
     if ftype == "opportunities":
-        # Opportunities can enter the pipeline at Initial Outreach (e.g. bulk
-        # imports / early-stage deals), so the funnel starts there.
+        # Initial Outreach is retired (2026-08-05), so the funnel starts at In
+        # Discussions. Closed Lost is a row of its own rather than an omission:
+        # a funnel that only shows the wins overstates the pipeline, and lost is
+        # where the on_hold_* deals now land, so leaving it out would have hidden
+        # them entirely. It sits after Closed Won as a second terminal row —
+        # neither converts into anything, so no rate is drawn between them.
         stage_order = [
-            ("initial_outreach", "Initial Outreach"),
             ("active_in_discussions", "In Discussions"),
             ("active_opportunity_confirmed", "Opportunity Confirmed"),
-            ("active_builder_interview", "Builder Interview"),
+            ("reviewing_builders", "Reviewing Builders"),
             ("closed_won", "Closed — Won"),
+            ("closed_lost", "Closed — Lost"),
         ]
         record_columns = [
             {"key": "name", "label": "Company"},
@@ -1708,7 +1798,9 @@ async def get_funnel(
         """, dt)
         by_stage: dict = {}
         for r in rows:
-            by_stage.setdefault(r["stage"], []).append(
+            # Canonical stage, so a deal still stored as active_builder_interview
+            # lands in the Reviewing Builders row instead of no row at all.
+            by_stage.setdefault(canon_stage(r["stage"]), []).append(
                 {"name": r["name"], "deal_type": r["deal_type"], "owner": r["owner"],
                  "roles": r["roles"] or "—"}
             )
@@ -1730,18 +1822,19 @@ async def get_funnel(
             LIMIT 100
         """, dt)
         for h in hist:
-            fi, ti = idx.get(h["from_stage"]), idx.get(h["to_stage"])
+            h_from, h_to = canon_stage(h["from_stage"]), canon_stage(h["to_stage"])
+            fi, ti = idx.get(h_from), idx.get(h_to)
             direction = "advanced" if (fi is not None and ti is not None and ti > fi) else "regressed"
             item = {
                 "name": h["account_name"],
-                "from_label": label_of.get(h["from_stage"], h["from_stage"]),
-                "to_label": label_of.get(h["to_stage"], h["to_stage"]),
+                "from_label": label_of.get(h_from, h_from),
+                "to_label": label_of.get(h_to, h_to),
                 "direction": direction,
                 "when": h["changed_at"].isoformat() if h["changed_at"] else None,
             }
             # attach to the destination stage (moved into) and origin stage (moved out of)
-            movement_by_stage.setdefault(h["to_stage"], []).append({**item, "flow": "in"})
-            movement_by_stage.setdefault(h["from_stage"], []).append({**item, "flow": "out"})
+            movement_by_stage.setdefault(h_to, []).append({**item, "flow": "in"})
+            movement_by_stage.setdefault(h_from, []).append({**item, "flow": "out"})
 
     elif ftype == "prospects":
         # The Contacts funnel runs on the jobs-pipeline membership stage
@@ -1749,11 +1842,17 @@ async def get_funnel(
         # manages on the Contacts page — not the legacy contacts.contact_stage.
         # on_hold shows as a terminal parking stage; not_a_fit is a dead
         # disposition and stays out of the funnel.
+        # Both off-ramps are rows, not omissions: Revisit is work you've parked
+        # and Not a Fit is work you've ruled out, and a funnel that shows neither
+        # implies every contact is still live. Terminal rows draw no conversion
+        # into whatever follows them (see _NO_CONVERSION_FROM).
         stage_order = [
             ("assigned", "Assigned"),
             ("initial_outreach", "Initial Outreach"),
+            ("call_booked", "Call Booked"),
             ("converted_to_opportunity", "Converted to Opportunity"),
-            ("on_hold", "On Hold"),
+            ("revisit", "Revisit"),
+            ("not_a_fit", "Not a Fit"),
         ]
         record_columns = [
             {"key": "name", "label": "Contact"},
@@ -1771,7 +1870,7 @@ async def get_funnel(
         """, dt)
         by_stage = {}
         for r in rows:
-            by_stage.setdefault(r["stage"], []).append({"name": r["name"], "company": r["company"]})
+            by_stage.setdefault(canon_membership_stage(r["stage"]), []).append({"name": r["name"], "company": r["company"]})
         # Ever-reached counts (stage-entry stamps), so conversion is a real
         # cohort rate: of everyone who entered a stage, how many got to the next.
         reach = await conn.fetchrow("""
@@ -1821,50 +1920,332 @@ async def get_funnel(
     else:
         raise HTTPException(404, f"Unknown funnel: {ftype}")
 
+    # ── Period flow ────────────────────────────────────────────────────────
+    # Swap "how many sit in this stage" for "how many ENTERED it in the window".
+    # Stage entry is stamped, so this is read off timestamps rather than inferred.
+    period_entries: Optional[dict] = None
+    prev_counts: Optional[list] = None
+
+    async def _entries(p_from, p_to) -> dict:
+        """Records that entered each stage inside [p_from, p_to).
+
+        Run twice in period mode — once for the selected window and once for the
+        window of equal length immediately before it, which is what the volume
+        and conversion trends compare against.
+        """
+        nonlocal record_columns
+        period_entries = {k: [] for k, _ in stage_order}
+
+        if ftype == "prospects":
+            company_lens = """
+                AND ($3::text IS NULL OR lower(c.current_company) IN (
+                      SELECT lower(account_name) FROM bedrock.jobs_opportunity
+                      WHERE deleted_at IS NULL AND deal_type = $3 AND account_name IS NOT NULL))
+            """
+            # The three managed stages each have their own entry stamp on the
+            # membership row, which is more reliable than the history table
+            # (history only goes back to when we started recording it).
+            # Two sources, because neither alone is complete: the membership row
+            # stamps entry for the three managed stages, and the history table
+            # records every transition but only since we started writing it.
+            # Keyed by (contact, stage) so a contact with both isn't counted twice;
+            # the stamp wins because it's the purpose-built field.
+            seen: dict = {}
+
+            prows = await conn.fetch(f"""
+                SELECT c.contact_id, c.full_name AS name, c.current_company AS company,
+                       m.owner_email AS owner, m.assigned_by,
+                       m.assigned_at, m.first_outreach_at, m.converted_at
+                FROM bedrock.jobs_contact_membership m
+                JOIN public.contacts c ON c.contact_id = m.contact_id
+                WHERE m.stage <> 'not_a_fit' AND $1::timestamptz IS NOT NULL
+                  AND $2::timestamptz IS NOT NULL
+                  {company_lens}
+            """, p_from, p_to, dt)
+            stamp_for = {
+                "assigned": "assigned_at",
+                "initial_outreach": "first_outreach_at",
+                "converted_to_opportunity": "converted_at",
+            }
+            for r in prows:
+                for stage_key, col in stamp_for.items():
+                    ts = r[col]
+                    if ts is not None and p_from <= ts < p_to:
+                        seen[(r["contact_id"], stage_key)] = {
+                            "name": r["name"], "company": r["company"],
+                            "owner": r["owner"], "assigned_by": r["assigned_by"],
+                            "entered_at": ts.isoformat(),
+                        }
+
+            try:
+                hrows = await conn.fetch(f"""
+                    SELECT DISTINCT ON (h.contact_id, h.to_stage)
+                           h.contact_id, h.to_stage, h.changed_at, h.changed_by,
+                           c.full_name AS name, c.current_company AS company,
+                           m.owner_email AS owner
+                    FROM bedrock.jobs_membership_stage_history h
+                    JOIN public.contacts c ON c.contact_id = h.contact_id
+                    LEFT JOIN bedrock.jobs_contact_membership m ON m.contact_id = h.contact_id
+                    WHERE h.changed_at >= $1 AND h.changed_at < $2
+                      {company_lens}
+                    ORDER BY h.contact_id, h.to_stage, h.changed_at
+                """, p_from, p_to, dt)
+            except asyncpg.exceptions.InsufficientPrivilegeError:
+                # Read-only enhancement: without it the stamps still carry
+                # assigned / initial-outreach / converted, so the funnel is
+                # complete for those three and only loses on_hold entries and
+                # pre-stamp history. Far better than a dead panel.
+                logger.warning(
+                    "funnel: no SELECT on bedrock.jobs_membership_stage_history for this "
+                    "role — falling back to membership stamps only. Apply the "
+                    "2026-08-03 membership-stage-history-grant migration.")
+                hrows = []
+            for r in hrows:
+                to_stage = canon_membership_stage(r["to_stage"])
+                key = (r["contact_id"], to_stage)
+                if to_stage not in period_entries or key in seen:
+                    continue
+                seen[key] = {
+                    "name": r["name"], "company": r["company"], "owner": r["owner"],
+                    "assigned_by": r["changed_by"],
+                    "entered_at": r["changed_at"].isoformat() if r["changed_at"] else None,
+                }
+
+            for (_cid, stage_key), rec in seen.items():
+                period_entries[stage_key].append(rec)
+            record_columns = [
+                {"key": "name", "label": "Contact"},
+                {"key": "company", "label": "Company"},
+                {"key": "owner", "label": "Owner"},
+                {"key": "assigned_by", "label": "Assigned by"},
+                {"key": "entered_at", "label": "Entered"},
+            ]
+
+        else:  # opportunities
+            orows = await conn.fetch("""
+                WITH hist AS (
+                    SELECT DISTINCT ON (h.opportunity_id, h.to_stage)
+                           h.opportunity_id AS oid, h.to_stage AS stage,
+                           h.changed_at AS entered_at, h.changed_by
+                    FROM bedrock.jobs_stage_history h
+                    JOIN bedrock.jobs_opportunity o ON o.id = h.opportunity_id
+                    WHERE o.deleted_at IS NULL
+                      AND h.changed_at >= $1 AND h.changed_at < $2
+                      AND ($3::text IS NULL OR o.deal_type = $3)
+                    ORDER BY h.opportunity_id, h.to_stage, h.changed_at
+                ),
+                created AS (
+                    -- An opp created straight into a stage never gets a history
+                    -- row, so without this it would vanish from the funnel.
+                    SELECT o.id AS oid, o.stage, o.created_at AS entered_at,
+                           NULL::text AS changed_by
+                    FROM bedrock.jobs_opportunity o
+                    WHERE o.deleted_at IS NULL
+                      AND o.created_at >= $1 AND o.created_at < $2
+                      AND ($3::text IS NULL OR o.deal_type = $3)
+                      AND NOT EXISTS (SELECT 1 FROM bedrock.jobs_stage_history h2
+                                      WHERE h2.opportunity_id = o.id)
+                )
+                SELECT e.stage, e.entered_at, e.changed_by, o.account_name AS name,
+                       o.deal_type, o.owner_email AS owner
+                FROM (SELECT * FROM hist UNION ALL SELECT * FROM created) e
+                JOIN bedrock.jobs_opportunity o ON o.id = e.oid
+                ORDER BY e.entered_at DESC
+            """, p_from, p_to, dt)
+            for r in orows:
+                if r["stage"] in period_entries:
+                    period_entries[r["stage"]].append({
+                        "name": r["name"], "deal_type": r["deal_type"],
+                        "owner": r["owner"], "assigned_by": r["changed_by"],
+                        "entered_at": r["entered_at"].isoformat() if r["entered_at"] else None,
+                    })
+            record_columns = [
+                {"key": "name", "label": "Company"},
+                {"key": "deal_type", "label": "Type"},
+                {"key": "owner", "label": "Owner"},
+                {"key": "assigned_by", "label": "Moved by"},
+                {"key": "entered_at", "label": "Entered"},
+            ]
+
+        for k in period_entries:
+            period_entries[k].sort(key=lambda rec: rec["entered_at"] or "", reverse=True)
+        return period_entries
+
+    last_movement_at = None
+    if period is not None:
+        p_from, p_to = period
+        period_entries = await _entries(p_from, p_to)
+        # Prior window = same length, immediately before. Only its counts matter.
+        span = p_to - p_from
+        prev = await _entries(p_from - span, p_from)
+        prev_counts = [len(prev.get(k, [])) for k, _ in stage_order]
+
+        # When the window is empty, "nothing happened" is indistinguishable from
+        # "you're looking at the wrong week". Report the most recent movement of
+        # ANY kind so the empty state can point at where the data actually is.
+        if not any(len(v) for v in period_entries.values()):
+            if ftype == "prospects":
+                try:
+                    last_movement_at = await conn.fetchval("""
+                        SELECT max(t) FROM (
+                            SELECT max(assigned_at) AS t FROM bedrock.jobs_contact_membership
+                            UNION ALL SELECT max(first_outreach_at) FROM bedrock.jobs_contact_membership
+                            UNION ALL SELECT max(converted_at) FROM bedrock.jobs_contact_membership
+                            UNION ALL SELECT max(changed_at) FROM bedrock.jobs_membership_stage_history
+                        ) x
+                    """)
+                except asyncpg.exceptions.InsufficientPrivilegeError:
+                    last_movement_at = await conn.fetchval("""
+                        SELECT max(t) FROM (
+                            SELECT max(assigned_at) AS t FROM bedrock.jobs_contact_membership
+                            UNION ALL SELECT max(first_outreach_at) FROM bedrock.jobs_contact_membership
+                            UNION ALL SELECT max(converted_at) FROM bedrock.jobs_contact_membership
+                        ) x
+                    """)
+            else:
+                last_movement_at = await conn.fetchval("""
+                    SELECT max(t) FROM (
+                        SELECT max(h.changed_at) AS t
+                        FROM bedrock.jobs_stage_history h
+                        JOIN bedrock.jobs_opportunity o ON o.id = h.opportunity_id
+                        WHERE o.deleted_at IS NULL AND ($1::text IS NULL OR o.deal_type = $1)
+                        UNION ALL
+                        SELECT max(o.created_at) FROM bedrock.jobs_opportunity o
+                        WHERE o.deleted_at IS NULL AND ($1::text IS NULL OR o.deal_type = $1)
+                    ) x
+                """, dt)
+
     stages = []
     cohort_conv = locals().get("cohort_conv") or {}
+    if period_entries is not None:
+        # Period mode supersedes the snapshot entirely: counts, records and
+        # conversion all come from entries, so the cohort rate must not leak in.
+        by_stage = period_entries
+        cohort_conv = {}
     counts = [len(by_stage.get(k, [])) for k, _ in stage_order]
     max_count = max(counts) if counts else 1
+
+    def _conv_to_next(cs: list, i: int, key: str) -> Optional[int]:
+        """Share of stage i's arrivals that went on to stage i+1."""
+        cnt = cs[i]
+        nxt = cs[i + 1] if i + 1 < len(cs) else None
+        if nxt is None or cnt <= 0:
+            return None
+        # On Hold is a parking state, not the step after Converted, so neither it
+        # nor Converted advertises a rate into it.
+        if key in _NO_CONVERSION_FROM:
+            return None
+        return round(100 * nxt / cnt)
+
+    # Conversion is reported on the DESTINATION row — "% of the prior stage that
+    # reached this one" — which is how the team reads it. That's the same number
+    # as the source row's to-next rate, just displayed one row down.
+    def _stage_conv(i: int, key: str) -> Optional[int]:
+        raw = _conv_to_next(counts, i, key)
+        if period_entries is not None:
+            # Period flow reports the rate as measured, including >100% (a
+            # backlog clearing) — clamping it is what made the old number
+            # untrustworthy.
+            return raw
+        if key in cohort_conv:
+            return cohort_conv[key]          # contacts snapshot: cohort rate
+        return None if (raw is not None and raw > 100) else raw
+
+    conv_to_next = [_stage_conv(i, k) for i, (k, _) in enumerate(stage_order)]
+    prev_conv_to_next = (
+        [_conv_to_next(prev_counts, i, k) for i, (k, _) in enumerate(stage_order)]
+        if prev_counts is not None else None
+    )
+
     for i, (k, label) in enumerate(stage_order):
         recs = by_stage.get(k, [])
         cnt = len(recs)
-        nxt = counts[i + 1] if i + 1 < len(counts) else None
-        conv = round(100 * nxt / cnt) if (nxt is not None and cnt > 0) else None
-        # Contacts funnel: use the cohort rate, and never show a >100% ratio.
-        if k in cohort_conv:
-            conv = cohort_conv[k]
-        elif conv is not None and conv > 100:
-            conv = None
         mv = movement_by_stage.get(k, [])
         stages.append({
             "key": k, "label": label, "count": cnt,
             "pct_of_max": round(100 * cnt / max_count) if max_count else 0,
-            "conversion_to_next": conv,
+            "conversion_to_next": conv_to_next[i],
+            # Same rate, addressed to the row it describes.
+            "conversion_in": conv_to_next[i - 1] if i > 0 else None,
+            # Prior window of equal length, for the two trend columns.
+            "count_prev": prev_counts[i] if prev_counts is not None else None,
+            "conversion_in_prev": (
+                prev_conv_to_next[i - 1] if (prev_conv_to_next is not None and i > 0) else None
+            ),
             "records": recs,
             "movement": mv,
             "advanced_in": sum(1 for m in mv if m["flow"] == "in" and m["direction"] == "advanced"),
             "regressed_in": sum(1 for m in mv if m["flow"] == "in" and m["direction"] == "regressed"),
         })
 
-    return {"success": True, "data": {"type": ftype, "stages": stages, "record_columns": record_columns}}
+    return {"success": True, "data": {
+        "type": ftype,
+        "mode": "period" if period_entries is not None else "snapshot",
+        "period": ({"from": period_from, "to": period_to} if period_entries is not None else None),
+        # Only set when the window came back empty — the empty state uses it to
+        # say where the movement actually is.
+        "last_movement_at": last_movement_at.isoformat() if last_movement_at else None,
+        "stages": stages,
+        "record_columns": record_columns,
+    }}
 
 
 # ── Opportunities weekly overview (Thursday pipeline meeting) ──────────────────
 # High-level, read-only view of the employer-deal pipeline. "Time in pipeline" is
 # time in the CURRENT stage (from jobs_stage_history), not age since sourced.
 # The active "set" = working-stage opps (initial_outreach + active_*).
-_OPP_INSET = "(o.stage = 'initial_outreach' OR o.stage LIKE 'active_%')"
-# Stage×Time heatmap rows. Initial Outreach is intentionally omitted from the
-# heatmap — the team is retiring that stage; it stays in the data (and in_set),
-# just isn't surfaced as a row here.
+# 'active_%' covers the two remaining active stages; reviewing_builders is named
+# explicitly since the rename dropped its 'active_' prefix. initial_outreach is
+# retained only so un-migrated rows still count as in-set.
+_OPP_INSET = "(o.stage IN ('initial_outreach','reviewing_builders') OR o.stage LIKE 'active_%')"
+# Stage×Time heatmap rows. Initial Outreach is gone as of the 2026-08-05
+# simplification (its rows were remapped to In Discussions), so the heatmap's
+# column totals now agree with the aging bars instead of sitting below them by
+# the count of initial_outreach deals.
 _OPP_STAGE_ORDER = [
-    "active_in_discussions", "active_opportunity_confirmed", "active_builder_interview",
+    "active_in_discussions", "active_opportunity_confirmed", "reviewing_builders",
 ]
 _OPP_AGE_BUCKETS = [
     ("lt2w", "< 2 weeks"), ("2_4w", "2–4 weeks"), ("4_6w", "4–6 weeks"),
     ("6_8w", "6–8 weeks"), ("8w", "8+ weeks"),
 ]
 _OPP_STATUS_LABELS = {"new": "New (<1w)", "active": "Active", "stalled": "Stalled"}
+
+
+# Read-time stage normalisation to the post-2026-08-05 vocabulary.
+#
+# The migration that rewrites these values is applied by Jac, so until it lands
+# the database still holds the retired names. Canonicalising on READ means the UI
+# shows the new vocabulary immediately — 'active_builder_interview' deals appear
+# under Reviewing Builders rather than falling into no row at all and quietly
+# vanishing from the heatmap and funnel. After the migration this is a no-op.
+_STAGE_CANON = {
+    "active_builder_interview": "reviewing_builders",
+    "initial_outreach": "active_in_discussions",
+    "on_hold_not_interested": "closed_lost",
+    "on_hold_not_responsive": "closed_lost",
+    "on_hold_not_selected": "closed_lost",
+}
+_MEMBERSHIP_CANON = {"on_hold": "revisit"}
+
+
+def canon_stage(stage: Optional[str]) -> Optional[str]:
+    return _STAGE_CANON.get(stage, stage) if stage else stage
+
+
+def canon_membership_stage(stage: Optional[str]) -> Optional[str]:
+    return _MEMBERSHIP_CANON.get(stage, stage) if stage else stage
+
+
+def canon_stage_sql(col: str = "o.stage") -> str:
+    """The same mapping as an SQL expression, for GROUP BY / filters."""
+    whens = " ".join(f"WHEN '{k}' THEN '{v}'" for k, v in _STAGE_CANON.items())
+    return f"(CASE {col} {whens} ELSE {col} END)"
+
+
+def canon_membership_sql(col: str = "m.stage") -> str:
+    whens = " ".join(f"WHEN '{k}' THEN '{v}'" for k, v in _MEMBERSHIP_CANON.items())
+    return f"(CASE {col} {whens} ELSE {col} END)"
 
 
 def _opp_age_bucket(days: int) -> int:
@@ -2012,14 +2393,19 @@ async def opportunities_overview(
         return {
             "opportunity_id": str(r["id"]),
             "account": r["account_name"],
-            "stage": r["stage"],
-            "stage_label": STAGE_LABELS.get(r["stage"], r["stage"]),
+            "stage": canon_stage(r["stage"]),
+            "stage_label": STAGE_LABELS.get(canon_stage(r["stage"]), r["stage"]),
             "owner": r["owner_email"],
             "at": at.isoformat() if at else None,
         }
 
     in_set = len(rows)
     stalled_6wk = 0  # active opps that have been an opportunity for >6 weeks (since created)
+    # Every active-set member, flat, carrying the keys each panel groups by
+    # (age bucket, status, deal type, segment, stage, owner, priority). The
+    # frontend filters THIS array for every drill-down, so a drill can never
+    # disagree with the count above it — one array, one source of truth.
+    active_set: list = []
     age_counts = [0, 0, 0, 0, 0]
     bd: dict = {"status": {}, "deal_type": {}, "segment": {}, "stage": {}, "owner": {}}
     stage_heat: dict = {}
@@ -2047,13 +2433,33 @@ async def opportunities_overview(
         else:
             status = "active"
 
-        _inc("status", status)
-        _inc("deal_type", r["deal_type"] or "(unset)")
-        _inc("segment", r["segment"] or "(unset)")
-        _inc("stage", r["stage"])
-        _inc("owner", r["owner_email"] or "(unassigned)")
+        # Normalise once, so the drill filters and the counts use identical keys.
+        dt_key = r["deal_type"] or "(unset)"
+        seg_key = r["segment"] or "(unset)"
+        owner_key = r["owner_email"] or "(unassigned)"
 
-        stage_heat.setdefault(r["stage"], [0, 0, 0, 0, 0])[bi] += 1
+        _inc("status", status)
+        _inc("deal_type", dt_key)
+        _inc("segment", seg_key)
+        _inc("stage", r["stage"])
+        _inc("owner", owner_key)
+
+        active_set.append({
+            "opportunity_id": str(r["id"]),
+            "account": r["account_name"],
+            "owner": r["owner_email"],
+            "stage": canon_stage(r["stage"]),
+            "stage_label": STAGE_LABELS.get(canon_stage(r["stage"]), r["stage"]),
+            "priority": r["priority"] if r["priority"] in (1, 2, 3, 4, 5) else None,
+            "age_bucket": bi,
+            "days_in_stage": stage_days,
+            "status": status,
+            "deal_type": dt_key,
+            "segment": seg_key,
+            "owner_key": owner_key,
+        })
+
+        stage_heat.setdefault(canon_stage(r["stage"]), [0, 0, 0, 0, 0])[bi] += 1
         if r["priority"] in (1, 2, 3, 4, 5):
             prio_heat.setdefault(r["priority"], [0, 0, 0, 0, 0])[bi] += 1
         else:
@@ -2070,7 +2476,7 @@ async def opportunities_overview(
             needs.append({
                 "opportunity_id": str(r["id"]),
                 "account": r["account_name"], "owner": r["owner_email"],
-                "stage": r["stage"], "stage_label": STAGE_LABELS.get(r["stage"], r["stage"]),
+                "stage": r["stage"], "stage_label": STAGE_LABELS.get(canon_stage(r["stage"]), r["stage"]),
                 "days_in_stage": stage_days, "days_since_activity": act_days,
                 "stage_from_created": bool(r["stage_from_created"]),
                 "why": " · ".join(why_bits),
@@ -2132,17 +2538,18 @@ async def opportunities_overview(
     for r in added_rows:
         recent_activity.append({
             "type": "added", "opportunity_id": str(r["id"]), "account": r["account_name"],
-            "deal_type": r["deal_type"], "stage_label": STAGE_LABELS.get(r["stage"], r["stage"]),
+            "deal_type": r["deal_type"], "stage_label": STAGE_LABELS.get(canon_stage(r["stage"]), r["stage"]),
             "detail": "Added to the set", "at": r["at"].isoformat() if r["at"] else None,
             "actor": r["actor"],
         })
     for r in moved_rows:
-        to = r["to_stage"]
+        to = canon_stage(r["to_stage"])
+        frm = canon_stage(r["from_stage"])
         recent_activity.append({
             "type": "won" if to == "closed_won" else "lost" if to == "closed_lost" else "moved",
             "opportunity_id": str(r["id"]), "account": r["account_name"], "deal_type": r["deal_type"],
             "stage_label": STAGE_LABELS.get(to, to),
-            "detail": f"{STAGE_LABELS.get(r['from_stage'], r['from_stage'])} → {STAGE_LABELS.get(to, to)}",
+            "detail": f"{STAGE_LABELS.get(frm, frm)} → {STAGE_LABELS.get(to, to)}",
             "at": r["at"].isoformat() if r["at"] else None, "actor": r["actor"],
         })
     # 'Stalled' events deliberately NOT in this feed (2026-07-30 review): the
@@ -2176,6 +2583,10 @@ async def opportunities_overview(
             "stage": {"rows": stage_rows, "col_totals": _col_totals(stage_rows)},
         },
         "needs_attention": needs[:30],
+        # Every active-set member with its grouping keys. Backs the drill-downs
+        # on the aging bars, the set distribution and the heatmap cells — all
+        # three filter this one array, so no drill can contradict its count.
+        "active_set": active_set,
         "recent_activity": recent_activity,
         # Rows behind each summary card — the card count and its drill list are
         # the same query, so they can never disagree (closed-won showed 10 but a
@@ -2274,7 +2685,7 @@ async def get_roles(user=Depends(require_auth), conn=Depends(get_db)):
             "role_title": r["role_title"] or "—",
             "company_name": r["company_name"] or "—",
             "salary": r["salary"],
-            "stage": r["stage"],
+            "stage": canon_stage(r["stage"]),
             "segment": seg_map.get(r["stage"], "other"),
         })
 
@@ -2748,11 +3159,16 @@ def _staff_actor(alias: str = "a") -> str:
 def _actor_sql(alias: str, owner: Optional[str], scope: str = "team") -> str:
     """Actor filter for the outreach trends/detail. With `owner` (a single,
     validated staff email) it scopes to that person; else `scope` picks the core
-    jobs team ('team', default) or the wider staff ('staff'). `owner` is
-    regex-validated so it's safe to interpolate into the ILIKE."""
+    jobs team ('team', default), the wider staff ('staff'), or everyone at
+    Pursuit ('pursuit'). `owner` is regex-validated so it's safe to interpolate
+    into the ILIKE."""
     if owner and _SAFE_EMAIL.match(owner):
         return f"({alias}.email_from ILIKE '%{owner}%' OR {alias}.logged_by ILIKE '%{owner}%')"
-    return _staff_actor(alias) if scope == "staff" else _team_actor(alias)
+    if scope == "staff":
+        return _staff_actor(alias)
+    if scope == "pursuit":
+        return f"({_team_actor(alias)} OR {_staff_actor(alias)})"
+    return _team_actor(alias)
 
 
 @router.get("/activity-trends")
@@ -2760,7 +3176,7 @@ async def activity_trends(
     granularity: str = Query("week", pattern="^(day|week|month)$"),
     channel: str = Query("all", pattern="^(all|email|meeting)$"),
     owner: Optional[str] = Query(None, description="Scope to one staff email (else the scope)"),
-    scope: str = Query("team", pattern="^(team|staff)$", description="team = Avni/Damon/Devika; scope = everyone else's jobs outreach"),
+    scope: str = Query("team", pattern="^(pursuit|team|staff)$", description="team = Avni/Damon/Devika; staff = everyone else; pursuit = both"),
     date_from: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$", description="Custom range start (ISO date); overrides trailing window when both from+to are set"),
     date_to: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$", description="Custom range end (ISO date)"),
     user=Depends(require_auth),
@@ -2905,7 +3321,7 @@ async def activity_trends_detail(
     granularity: str = Query("week", pattern="^(day|week|month)$"),
     channel: str = Query("all", pattern="^(all|email|meeting)$"),
     owner: Optional[str] = Query(None),
-    scope: str = Query("team", pattern="^(team|staff)$"),
+    scope: str = Query("team", pattern="^(pursuit|team|staff)$"),
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
@@ -2996,6 +3412,7 @@ _ACTIVITY_TIER = {
 }
 _STAGE_ENTERED_COL = {
     "assigned": "assigned_at", "initial_outreach": "first_outreach_at",
+    "call_booked": "call_booked_at",
     "converted_to_opportunity": "converted_at",
 }
 
@@ -3397,6 +3814,132 @@ async def outreach_scorecard(
     }}
 
 
+# Zero leads the list and is coloured as a problem: it means "sitting in initial
+# outreach and not touched at all in the last four weeks", which is exactly the
+# follow-up gap this panel exists to surface.
+_TOUCH_BUCKETS = [
+    ("0", "0 Touches", 0, 0),
+    ("1", "1 Touch", 1, 1),
+    ("2", "2 Touches", 2, 2),
+    ("3", "3 Touches", 3, 3),
+    ("4plus", "4+ Touches", 4, None),
+]
+_TOUCH_DEPTH_CAP = 40   # contacts listed per bucket for the inline drill
+
+
+# The touch-counting window, anchored to TODAY (Jac 2026-08-12).
+#
+# It was previously anchored to the end of the selected period, which made the
+# panel answer a reporting question ("how well did we work the cohort we opened
+# in July") while sitting on an operational tab. Two things went wrong in
+# practice: a contact touched five times last week read as zero when you looked
+# at a July period, and on a quiet week the panel was simply empty even though
+# 800+ contacts were sitting in initial outreach needing follow-up.
+#
+# Touch Depth is a WORK QUEUE, not a period metric. Cohort and window are both
+# "right now", which is why this no longer takes a period at all. The bounded
+# window still does the job it was added for — a lifetime count would make an old
+# contact look well-worked purely for being old. The UI reads the number from the
+# response, so changing it here changes the label too.
+_TOUCH_DEPTH_WEEKS = 4
+
+
+async def _touch_depth(conn, scope: str, owner: Optional[str]) -> dict:
+    """Touch depth: for every contact sitting in initial outreach RIGHT NOW, how
+    many jobs touches they received in the trailing `_TOUCH_DEPTH_WEEKS`.
+
+    Deliberately takes no period — see the note on _TOUCH_DEPTH_WEEKS. The cohort
+    is the live queue, so the panel is never empty just because it was a quiet
+    week, and the window ends today, so a contact worked last week never reads as
+    untouched.
+
+    Uses the same _jobs_relevant / _not_autoreply filters as the funnel and the
+    drill-downs. The count and `last_touch_at` share those filters, so the two
+    can't contradict each other — the previous version left _not_autoreply off
+    `last_touch_at`, which could date a contact by an out-of-office reply."""
+    owner_pred = "TRUE"
+    if owner and _SAFE_EMAIL.match(owner):
+        owner_pred = f"lower(m.owner_email) = lower('{owner}')"
+    elif scope in ("team", "staff"):
+        owner_pred = _scope_email_pred("m.owner_email", scope)
+
+    # One aggregate pass over the window, not two correlated subqueries per
+    # contact. At 800+ contacts in the cohort the old shape issued ~1600 index
+    # scans and took long enough that the panel looked broken.
+    sql = f"""
+        WITH cohort AS (
+            SELECT m.contact_id, m.owner_email
+            FROM bedrock.jobs_contact_membership m
+            WHERE m.stage = 'initial_outreach' AND {owner_pred}
+        ),
+        touched AS (
+            SELECT a.participant_public_contact_id AS contact_id,
+                   count(*)              AS touches,
+                   max(a.activity_date)  AS last_touch_at
+            FROM bedrock.activity a
+            JOIN cohort c ON c.contact_id = a.participant_public_contact_id
+            WHERE a.deleted_at IS NULL
+              AND a.activity_date >= $1
+              AND {_jobs_relevant('a')} AND {_not_autoreply('a')}
+            GROUP BY 1
+        )
+        SELECT c.contact_id, c.owner_email,
+               COALESCE(t.touches, 0) AS touches,
+               t.last_touch_at,
+               p.full_name, p.current_company
+        FROM cohort c
+        LEFT JOIN touched t ON t.contact_id = c.contact_id
+        LEFT JOIN public.contacts p ON p.contact_id = c.contact_id
+        ORDER BY COALESCE(t.touches, 0), p.current_company NULLS LAST
+    """
+    touch_from = datetime.now(timezone.utc) - timedelta(weeks=_TOUCH_DEPTH_WEEKS)
+    rows = await conn.fetch(sql, touch_from)
+
+    # Everyone in the cohort is counted: with a bounded window, zero is a real
+    # answer rather than a data gap, so excluding it would understate the problem.
+    measured = rows
+    total = len(measured)
+    buckets = []
+    for key, label, lo, hi in _TOUCH_BUCKETS:
+        members = [r for r in measured if r["touches"] >= lo and (hi is None or r["touches"] <= hi)]
+        buckets.append({
+            "key": key, "label": label, "count": len(members),
+            "pct": round(100 * len(members) / total) if total else 0,
+            "contacts": [{
+                "contact_id": r["contact_id"], "name": r["full_name"],
+                "company": r["current_company"], "owner": r["owner_email"],
+                "touches": r["touches"],
+                "last_touch_at": r["last_touch_at"].isoformat() if r["last_touch_at"] else None,
+            } for r in members[:_TOUCH_DEPTH_CAP]],
+            "truncated": max(0, len(members) - _TOUCH_DEPTH_CAP),
+        })
+    # `undated` is gone: it counted contacts whose stage entry had no timestamp,
+    # which mattered only while the cohort was date-filtered. Nobody is excluded
+    # for a missing stamp now, so reporting it would imply a gap that isn't there.
+    return {"total": total,
+            "weeks": _TOUCH_DEPTH_WEEKS,
+            "touch_from": touch_from.date().isoformat(),
+            "touch_to": datetime.now(timezone.utc).date().isoformat(),
+            "buckets": buckets}
+
+
+@router.get("/outreach/touch-depth")
+async def outreach_touch_depth(
+    scope: str = Query("team", pattern="^(pursuit|team|staff)$"),
+    owner: Optional[str] = Query(None, description="Scope to one staff owner (overrides scope)"),
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Who in initial outreach is under-touched right now.
+
+    Split off the scorecard deliberately. The scorecard is period-scoped, so the
+    Outreach tab fetches it once per period to build its trend columns — which
+    meant this recomputed several times on every page load while answering a
+    question that doesn't depend on the period at all. On its own endpoint it is
+    fetched once and cached independently, and the scorecard gets lighter."""
+    return {"success": True, "data": await _touch_depth(conn, scope, owner)}
+
+
 def _touch_direction(type_: str, email_from: Optional[str]) -> str:
     """Label a touch as sent / received / meeting for the drill-down."""
     if type_ == "email":
@@ -3404,6 +3947,31 @@ def _touch_direction(type_: str, email_from: Optional[str]) -> str:
     if type_ == "meeting":
         return "meeting"
     return "sent"
+
+
+def _touch_actor(alias: str = "a") -> str:
+    """The Pursuit person behind a touch, for the drill's Owner column.
+
+    Which side of the row that is depends on direction: when we sent it the
+    actor is the sender, when the contact replied it's the Pursuit address the
+    reply landed on, and for a manually logged call/LinkedIn note it's whoever
+    logged it. Returned as a bare lowercase email so the frontend resolves it to
+    a staff name through the same map every other owner label uses.
+
+    logged_by is only trusted when it looks like an email. Checked against
+    production 2026-08-04: 2,958 of 18,627 activity rows since January carry a
+    raw Salesforce user id there instead ('0051U0000017rDxQAI'), and only 1 of
+    the 16 distinct ids resolves through bedrock.app_user. Printing the rest
+    would put a Salesforce id in a column headed "Owner", so they come back NULL
+    and the drill shows an explicit dash."""
+    frm = _email_addr(alias)
+    return f"""coalesce(
+        CASE WHEN {frm} LIKE '%@pursuit.org' THEN {frm} END,
+        (SELECT lower(e)
+           FROM unnest(coalesce({alias}.email_to,'{{}}') || coalesce({alias}.email_cc,'{{}}')) e
+          WHERE lower(e) LIKE '%@pursuit.org' LIMIT 1),
+        CASE WHEN {alias}.logged_by LIKE '%@%'
+             THEN lower(nullif(trim({alias}.logged_by),'')) END)"""
 
 
 @router.get("/outreach/scorecard/detail")
@@ -3437,7 +4005,8 @@ async def outreach_scorecard_detail(
             rows = await conn.fetch(f"""
                 SELECT ir.contact_id, c.full_name, c.current_company,
                        coalesce(ir.responded_at, ir.created_at) AS activity_date,
-                       ir.specific_ask AS subject, ir.context AS snippet
+                       ir.specific_ask AS subject, ir.context AS snippet,
+                       lower(ir.requested_by_email) AS actor
                 FROM bedrock.intro_request ir
                 JOIN public.contacts c ON c.contact_id = ir.contact_id
                 WHERE ir.status IN ('accepted','completed')
@@ -3451,11 +4020,14 @@ async def outreach_scorecard_detail(
                 g["touches"].append({
                     "date": r["activity_date"].isoformat() if r["activity_date"] else None,
                     "type": "intro", "subject": r["subject"], "snippet": r["snippet"],
-                    "direction": "sent"})
+                    "direction": "sent", "actor": r["actor"]})
         elif key == "direct_email_response":
             rows = await conn.fetch(f"""
                 WITH sent_out AS (
-                    SELECT lower(e) AS addr, min(aem.sent_at) AS first_out
+                    -- `sender` = who sent the outreach this is a reply TO, so the
+                    -- drill can credit the reply to the person who earned it.
+                    SELECT lower(e) AS addr, min(aem.sent_at) AS first_out,
+                           (array_agg(aem.from_email ORDER BY aem.sent_at))[1] AS sender
                     FROM bedrock.activity a
                     JOIN bedrock.activity_email_message aem ON aem.activity_id = a.id
                     CROSS JOIN unnest(coalesce(a.email_to,'{{}}') || coalesce(a.email_cc,'{{}}')) e
@@ -3473,8 +4045,11 @@ async def outreach_scorecard_detail(
                       AND aem.from_email NOT LIKE '%@pursuit.org%'
                     GROUP BY 1
                 )
-                SELECT fr.addr, fr.reply_date, fr.contact_id, c.full_name, c.current_company
-                FROM first_reply fr LEFT JOIN public.contacts c ON c.contact_id = fr.contact_id
+                SELECT fr.addr, fr.reply_date, fr.contact_id, c.full_name, c.current_company,
+                       lower(so.sender) AS actor
+                FROM first_reply fr
+                JOIN sent_out so ON so.addr = fr.addr
+                LEFT JOIN public.contacts c ON c.contact_id = fr.contact_id
                 WHERE fr.reply_date >= $1 AND fr.reply_date < $2
                 ORDER BY fr.reply_date DESC LIMIT 500
             """, start, end)
@@ -3484,7 +4059,7 @@ async def outreach_scorecard_detail(
                 g["touches"].append({
                     "date": r["reply_date"].isoformat() if r["reply_date"] else None,
                     "type": "email", "subject": "First reply to outreach", "snippet": r["addr"],
-                    "direction": "received"})
+                    "direction": "received", "actor": r["actor"]})
             rows = []  # already consumed
         else:
             where = {
@@ -3507,9 +4082,20 @@ async def outreach_scorecard_detail(
                          else "a.activity_date >= $1 AND a.activity_date < $2")
             rows = await conn.fetch(f"""
                 SELECT a.participant_public_contact_id AS contact_id, c.full_name, c.current_company,
-                       a.activity_date, a.type, a.subject, a.email_snippet, a.email_from
+                       a.activity_date, a.type, a.subject, a.email_snippet, a.email_from,
+                       -- Prefer the per-message sender: a thread row carries only the
+                       -- FIRST message's author, so a follow-up sent this week by
+                       -- someone else would otherwise be credited to the wrong person.
+                       coalesce(lower(msg.from_email), {_touch_actor('a')}) AS actor
                 FROM bedrock.activity a
                 JOIN public.contacts c ON c.contact_id = a.participant_public_contact_id
+                LEFT JOIN LATERAL (
+                    SELECT aem.from_email
+                    FROM bedrock.activity_email_message aem
+                    WHERE aem.activity_id = a.id AND {_message_actor(scope, owner)}
+                      AND aem.sent_at >= $1 AND aem.sent_at < $2
+                    ORDER BY aem.sent_at LIMIT 1
+                ) msg ON true
                 WHERE a.deleted_at IS NULL AND {date_pred} AND {where}
                 ORDER BY c.current_company NULLS LAST, a.activity_date DESC LIMIT 500
             """, start, end)
@@ -3518,7 +4104,8 @@ async def outreach_scorecard_detail(
                 g["touches"].append({
                     "date": r["activity_date"].isoformat() if r["activity_date"] else None,
                     "type": r["type"], "subject": r["subject"], "snippet": r["email_snippet"],
-                    "direction": _touch_direction(r["type"], r["email_from"])})
+                    "direction": _touch_direction(r["type"], r["email_from"]),
+                    "actor": r["actor"]})
             if key == "engagement":
                 # Engagements also include direct email responses — append them.
                 reps = await conn.fetch(f"""
@@ -3539,8 +4126,11 @@ async def outreach_scorecard_detail(
                         WHERE a.deleted_at IS NULL AND a.type='email' AND {_not_autoreply('a')} AND aem.from_email NOT LIKE '%@pursuit.org%'
                         GROUP BY 1
                     )
-                    SELECT fr.addr, fr.reply_date, fr.contact_id, c.full_name, c.current_company
-                    FROM first_reply fr LEFT JOIN public.contacts c ON c.contact_id = fr.contact_id
+                    SELECT fr.addr, fr.reply_date, fr.contact_id, c.full_name, c.current_company,
+                           lower(so.sender) AS actor
+                    FROM first_reply fr
+                    JOIN sent_out so ON so.addr = fr.addr
+                    LEFT JOIN public.contacts c ON c.contact_id = fr.contact_id
                     WHERE fr.reply_date >= $1 AND fr.reply_date < $2 ORDER BY fr.reply_date DESC LIMIT 500
                 """, start, end)
                 for idx, r in enumerate(reps):
@@ -3548,7 +4138,8 @@ async def outreach_scorecard_detail(
                     g = _contact(cid, r["full_name"] or r["addr"], r["current_company"])
                     g["touches"].append({
                         "date": r["reply_date"].isoformat() if r["reply_date"] else None,
-                        "type": "email", "subject": "Email reply", "snippet": r["addr"], "direction": "received"})
+                        "type": "email", "subject": "Email reply", "snippet": r["addr"],
+                        "direction": "received", "actor": r["actor"]})
     else:  # kind == "user"
         if key == "initial_outreach":
             # Activity-driven: distinct contacts emailed by the scope this period.
@@ -3585,7 +4176,8 @@ async def outreach_scorecard_detail(
         if contacts:
             touch_rows = await conn.fetch(f"""
                 SELECT a.participant_public_contact_id AS contact_id, a.activity_date,
-                       a.type, a.subject, a.email_snippet, a.email_from
+                       a.type, a.subject, a.email_snippet, a.email_from,
+                       {_touch_actor('a')} AS actor
                 FROM bedrock.activity a
                 WHERE a.deleted_at IS NULL AND a.participant_public_contact_id = ANY($1::int[])
                   AND a.activity_date >= $2 AND a.activity_date < $3 AND {_jobs_relevant('a')}
@@ -3597,9 +4189,14 @@ async def outreach_scorecard_detail(
                     g["touches"].append({
                         "date": r["activity_date"].isoformat() if r["activity_date"] else None,
                         "type": r["type"], "subject": r["subject"], "snippet": r["email_snippet"],
-                        "direction": _touch_direction(r["type"], r["email_from"])})
+                        "direction": _touch_direction(r["type"], r["email_from"]),
+                        "actor": r["actor"]})
 
     items = sorted(contacts.values(), key=lambda g: (-(len(g["touches"])), g["company"] or ""))
+    # Distinct actors per contact, so the collapsed row can name who worked it
+    # without expanding to read the per-touch column.
+    for g in items:
+        g["actors"] = sorted({t["actor"] for t in g["touches"] if t.get("actor")})
     return {"success": True, "data": {"kind": kind, "key": key, "period": period,
             "count": len(items), "contacts": items}}
 
@@ -4337,6 +4934,114 @@ async def jobs_account_names(
     return {"success": True, "data": [{"account_key": r["key"], "account": r["name"]} for r in rows]}
 
 
+# ── Schema probes ─────────────────────────────────────────────────────────────
+# Migrations are applied by Jac, not by the app, so a feature can ship before its
+# column exists. Probing lets the same build work on both sides of a migration
+# and light up on apply — referencing a missing column would 42703 the request.
+# Cached: columns are only ever ADDED, so a True is permanent; a False is
+# re-checked, which is what makes the feature appear without a restart.
+_COLUMN_CACHE: dict[tuple[str, str, str], bool] = {}
+
+
+async def _has_column(schema: str, table: str, column: str) -> bool:
+    key = (schema, table, column)
+    if _COLUMN_CACHE.get(key):
+        return True
+    pool = get_pool()
+    found = bool(await pool.fetchval(
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_schema = $1 AND table_name = $2 AND column_name = $3",
+        schema, table, column))
+    _COLUMN_CACHE[key] = found
+    return found
+
+
+# ── Stage vocabulary probe ────────────────────────────────────────────────────
+# The 2026-08-05 stage migration is applied by Jac, not by the app, so at any
+# moment the database may be on the old vocabulary or the new one. Rather than
+# guess, read the CHECK constraint and report what it actually accepts. The UI
+# builds its stage pickers from this, so it can never offer a value the database
+# will reject — which is the failure mode that would break saves for the whole
+# team during the window between migration and deploy.
+_STAGE_VOCAB_CACHE: dict[str, list[str]] = {}
+
+
+async def _writable_stages(table: str, constraint: str, fallback: list[str],
+                           settles_when: Optional[str] = None) -> list[str]:
+    """Stage values this table's CHECK constraint currently allows, in the order
+    given by `fallback` (constraint order is not meaningful). Falls back to the
+    full list if there's no constraint to read.
+
+    Only caches the POST-migration answer. Caching the pre-migration list would
+    pin it for the life of the process: Jac applies the migration, the constraint
+    changes underneath us, and every request keeps serving the stale vocabulary
+    until someone restarts the API — which defeats the entire point of probing.
+    `settles_when` names a value that only the new constraint contains; until it
+    shows up we re-read each time (one indexed catalog lookup)."""
+    cached = _STAGE_VOCAB_CACHE.get(table)
+    if cached is not None:
+        return cached
+    pool = get_pool()
+    try:
+        definition = await pool.fetchval(
+            "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = $1",
+            constraint)
+    except Exception:            # nosec - probe only; never block a request on it
+        definition = None
+    if not definition:
+        return fallback
+    allowed = [v for v in fallback if f"'{v}'" in definition]
+    if not allowed:              # unrecognised shape — don't lock the UI out
+        return fallback
+    if settles_when is None or settles_when in allowed:
+        _STAGE_VOCAB_CACHE[table] = allowed
+    return allowed
+
+
+@router.get("/stage-vocabulary")
+async def stage_vocabulary(user=Depends(require_auth)):
+    """What the database will accept for each stage column right now, plus the
+    labels. Lets the UI stay correct across the stage migration without a
+    coordinated deploy: pre-migration it offers the old values, post-migration
+    the new ones, with no code change in between."""
+    opp = await _writable_stages(
+        "jobs_opportunity", "jobs_opportunity_stage_check",
+        OPPORTUNITY_STAGES_NEW + ["initial_outreach", "active_builder_interview",
+                                  "on_hold_not_selected", "on_hold_not_interested",
+                                  "on_hold_not_responsive"],
+        settles_when="reviewing_builders")
+    mem = await _writable_stages(
+        "jobs_contact_membership", "jobs_contact_membership_stage_vals",
+        MEMBERSHIP_STAGES_NEW + ["on_hold"],
+        settles_when="call_booked")
+    # Report the TARGET vocabulary with an `available` flag, not just what's
+    # writable. Filtering the unavailable ones out entirely made Call Booked and
+    # Revisit simply missing from the dropdown, which reads as "not built" rather
+    # than "waiting on the migration". Showing them disabled, with a reason on
+    # hover, tells the truth and still can't produce a failing save.
+    def _opt(v: str, label: str, allowed: list[str]):
+        ok = v in allowed
+        return {"value": v, "label": label, "available": ok,
+                "unavailable_reason": None if ok else
+                "Available once the 2026-08-05 stage migration is applied"}
+
+    # on_hold is deliberately NOT appended when the database still accepts it:
+    # Revisit replaces it outright (Kwame 2026-08-05), so offering both would let
+    # someone park a contact in the stage we're retiring. Until the migration
+    # lands Revisit shows disabled, which means parking is briefly unavailable —
+    # the alternative is writing more rows into a stage about to be renamed.
+    membership_target = MEMBERSHIP_STAGES_NEW
+    opp_target = OPPORTUNITY_STAGES_NEW
+
+    return {"success": True, "data": {
+        "opportunity_stages": [_opt(v, STAGE_LABELS.get(v, v), opp) for v in opp_target],
+        "membership_stages": [_opt(v, MEMBERSHIP_STAGE_LABELS.get(v, v), mem) for v in membership_target],
+        "closed_lost_reasons": [{"value": v, "label": l, "available": True} for v, l in CLOSED_LOST_REASONS],
+        # True once the stage migration has landed.
+        "migrated": "call_booked" in mem,
+    }}
+
+
 @router.get("/accounts")
 async def jobs_accounts(
     deal_type: Optional[str] = Query(None),
@@ -4354,6 +5059,15 @@ async def jobs_accounts(
     rows; scope=all includes cold linkedin imports.
     """
     eng = "" if scope == "all" else f"AND {_engaged_clause('c')}"
+
+    # investor_account_key arrives with the 2026-08-05 migration. Selected only
+    # once it exists — naming a missing column would 42703 the whole accounts
+    # list, and this endpoint is the Accounts page. Named columns rather than
+    # SELECT *: `notes` is free text across every account and has no business
+    # riding along in a list payload.
+    investor_select = (
+        ", investor_account_key"
+        if await _has_column("bedrock", "jobs_account", "investor_account_key") else "")
 
     # Every input below is an independent read. Run sequentially on one
     # connection they cost ~2.6s; gather them across the pool so wall-time ≈ the
@@ -4395,7 +5109,8 @@ async def jobs_accounts(
             GROUP BY 1
             """),
         # Persistent account record (owner, manual status override, SF link).
-        pool.fetch("SELECT account_key, display_name, owner_email, status_override, sf_account_id FROM bedrock.jobs_account"),
+        pool.fetch("SELECT account_key, display_name, owner_email, status_override, sf_account_id"
+                   f"{investor_select} FROM bedrock.jobs_account"),
         # Open account-level tasks per account_key.
         pool.fetch(
             "SELECT parent_id, count(*) AS n FROM bedrock.jobs_account_task "
@@ -4498,13 +5213,22 @@ async def jobs_accounts(
               WHERE coalesce(trim(company_name),'') <> '' AND coalesce(trim(role_title),'') <> '' GROUP BY 1
             ) s GROUP BY k
             """),
-        # Company industry by normalized name (enriched via claude_ai / the
-        # SERP-verified PE-VC pass) — powers the accounts Industry filter.
+        # Company firmographics by normalized name (enriched via claude_ai / the
+        # SERP-verified PE-VC pass) — powers the accounts Industry filter and the
+        # Size / HQ / Industry columns. The WHERE deliberately admits a row that
+        # has ANY of the four: gating on industry alone hid the size band for
+        # every company whose industry was never enriched.
         pool.fetch(
             """
-            SELECT lower(trim(name)) AS key, max(industry) AS industry
+            SELECT lower(trim(name)) AS key,
+                   max(industry)     AS industry,
+                   max(size_bucket)  AS size_bucket,
+                   max(hq_location)  AS hq_location,
+                   max(stage)        AS company_stage
             FROM public.companies
-            WHERE coalesce(trim(name),'') <> '' AND coalesce(industry,'') <> ''
+            WHERE coalesce(trim(name),'') <> ''
+              AND (coalesce(industry,'') <> '' OR coalesce(size_bucket,'') <> ''
+                   OR coalesce(hq_location,'') <> '' OR coalesce(stage,'') <> '')
             GROUP BY 1
             """),
         # ALL contacts per company (not just flagged prospects). Lookup only —
@@ -4589,7 +5313,16 @@ async def jobs_accounts(
         prospect_counts[key] = r["n"]
 
     ja = {r["account_key"]: r for r in ja_rows}
-    industry_by_key = {r["key"]: r["industry"] for r in industry_rows}
+    # Pretty name for an investor key, and the reverse count (how many companies
+    # name this account as their investor). Derived from the rows already
+    # fetched — no extra query, and no-op before the migration adds the column.
+    display_by_key = {r["account_key"]: (r["display_name"] or r["account_key"]) for r in ja_rows}
+    portfolio_counts: dict[str, int] = {}
+    for r in ja_rows:
+        inv = dict(r).get("investor_account_key")
+        if inv:
+            portfolio_counts[inv] = portfolio_counts.get(inv, 0) + 1
+    company_by_key = {r["key"]: dict(r) for r in industry_rows}
     contact_totals = {r["key"]: r["n"] for r in contact_total_rows}
     # domain → the name variant that actually holds flagged prospects
     _by_domain: dict = {}
@@ -4703,7 +5436,21 @@ async def jobs_accounts(
         # "no people at all" are different problems with different fixes.
         g["contact_count"] = contact_totals.get(key, 0)
         g["prospect_sibling"] = sibling_hint.get(key)
-        g["industry"] = industry_by_key.get(key)
+        # Read-only firmographics from public.companies — Bedrock displays them,
+        # other systems own them, so nothing here is editable.
+        co = company_by_key.get(key) or {}
+        g["industry"] = co.get("industry")
+        g["size_bucket"] = co.get("size_bucket")
+        g["hq_location"] = co.get("hq_location")
+        g["company_stage"] = co.get("company_stage")
+        # Investor link both ways: who owns this company, and (for an investor
+        # account) which companies it owns. Present only after the 2026-08-05
+        # migration; `ja` rows simply won't carry the key before then.
+        _ja = ja.get(key)
+        inv_key = dict(_ja).get("investor_account_key") if _ja else None
+        g["investor_account_key"] = inv_key
+        g["investor_name"] = display_by_key.get(inv_key) if inv_key else None
+        g["portfolio_count"] = portfolio_counts.get(key, 0)
         _src, _app = listings_by_key.get(key, (0, 0))
         g["roles_sourced"] = _src
         g["roles_applied"] = _app
@@ -4747,6 +5494,10 @@ class JobsAccountUpdate(BaseModel):
     owner_email: Optional[str] = None
     status_override: Optional[str] = None     # "" clears the override (back to derived)
     notes: Optional[str] = None
+    # account_key of the investor that owns this company. "" clears it. The
+    # investor is itself a jobs_account, so the link is navigable both ways.
+    # Column arrives with the 2026-08-05 migration.
+    investor_account_key: Optional[str] = None
 
 
 @router.patch("/accounts")
@@ -4777,17 +5528,32 @@ async def update_jobs_account(
     if body.notes is not None:
         sets.append("notes = EXCLUDED.notes")
 
+    # The investor column ships with the 2026-08-05 migration. Before it lands,
+    # accept the request and skip the write rather than 42703-ing an otherwise
+    # valid owner/status/notes save that happened to travel with it.
+    has_investor = await _has_column("bedrock", "jobs_account", "investor_account_key")
+    cols, vals = "", ""
+    if body.investor_account_key is not None and has_investor:
+        # Self-reference guard: an account that is its own investor renders as an
+        # infinite portfolio loop in the UI.
+        inv = body.investor_account_key.strip().lower() or None
+        if inv == key:
+            raise HTTPException(400, "an account cannot be its own investor")
+        cols, vals = ", investor_account_key", ", $6"
+        sets.append("investor_account_key = EXCLUDED.investor_account_key")
+
+    params = [key, body.account.strip(), body.owner_email or None,
+              body.status_override or None, body.notes or None]
+    if cols:
+        params.append(inv)
+
     await conn.execute(
         f"""
-        INSERT INTO bedrock.jobs_account (account_key, display_name, owner_email, status_override, notes)
-        VALUES ($1, $2, $3, $4, $5)
+        INSERT INTO bedrock.jobs_account (account_key, display_name, owner_email, status_override, notes{cols})
+        VALUES ($1, $2, $3, $4, $5{vals})
         ON CONFLICT (account_key) DO UPDATE SET {', '.join(sets)}
         """,
-        key,
-        body.account.strip(),
-        body.owner_email or None,
-        body.status_override or None,
-        body.notes or None,
+        *params,
     )
     return {"success": True}
 
@@ -4918,7 +5684,12 @@ async def account_prospects(
 
 
 # ── Jobs contact activation (flag + funnel membership) ────────────────────────
-_MEMBERSHIP_STAGES = ('assigned', 'initial_outreach', 'converted_to_opportunity', 'on_hold', 'not_a_fit')
+# Accepts both vocabularies: 'on_hold' until the 2026-08-05 migration lands,
+# 'call_booked'/'revisit' after. The database CHECK is the real gate — this only
+# catches typos, so being permissive here costs nothing and avoids rejecting a
+# valid stage in whichever direction the schema currently sits.
+_MEMBERSHIP_STAGES = ('assigned', 'initial_outreach', 'call_booked',
+                      'converted_to_opportunity', 'revisit', 'on_hold', 'not_a_fit')
 
 
 # TKT-161: placements whose linked opportunity was soft-deleted (data-entry
@@ -4953,6 +5724,15 @@ async def _flag_contacts(conn, contact_ids: list[int], owner_email: Optional[str
         conflict_stamp = (
             "converted_at = CASE WHEN EXCLUDED.stage = 'converted_to_opportunity' AND jobs_contact_membership.stage "
             "IS DISTINCT FROM 'converted_to_opportunity' THEN now() ELSE jobs_contact_membership.converted_at END,")
+        # call_booked_at arrives with the 2026-08-05 migration. Referencing a
+        # column that doesn't exist yet would 42703 every flag/advance call, so
+        # it's added only once the column is there.
+        if await _has_column("bedrock", "jobs_contact_membership", "call_booked_at"):
+            stamp_cols += ", call_booked_at"
+            stamp_vals += ", CASE WHEN $6 = 'call_booked' THEN now() END"
+            conflict_stamp += (
+                "call_booked_at = CASE WHEN EXCLUDED.stage = 'call_booked' AND jobs_contact_membership.stage "
+                "IS DISTINCT FROM 'call_booked' THEN now() ELSE jobs_contact_membership.call_booked_at END,")
     else:
         conflict_stage = stamp_cols = stamp_vals = conflict_stamp = ""
     async with conn.transaction():
@@ -5019,6 +5799,10 @@ class MembershipPatch(BaseModel):
     first_outreach_by: Optional[str] = None
     opportunity_id: Optional[str] = None
     not_a_fit_reason: Optional[str] = None
+    # Set with stage='revisit': when to pick this contact back up. Stored on the
+    # membership AND turned into a jobs_task so it surfaces in the owner's Jobs
+    # Home widget on the day, which is the whole point of Revisit over On Hold.
+    revisit_date: Optional[str] = None
 
 
 @router.patch("/contacts/{contact_id}/jobs-membership")
@@ -5047,6 +5831,17 @@ async def update_jobs_membership(contact_id: int, body: MembershipPatch,
         if body.stage == "converted_to_opportunity":
             sets.append("converted_at = CASE WHEN jobs_contact_membership.stage "
                         "IS DISTINCT FROM 'converted_to_opportunity' THEN now() ELSE jobs_contact_membership.converted_at END")
+        if body.stage == "call_booked" and await _has_column(
+                "bedrock", "jobs_contact_membership", "call_booked_at"):
+            sets.append("call_booked_at = CASE WHEN jobs_contact_membership.stage "
+                        "IS DISTINCT FROM 'call_booked' THEN now() ELSE jobs_contact_membership.call_booked_at END")
+    if body.revisit_date is not None and await _has_column(
+            "bedrock", "jobs_contact_membership", "revisit_date"):
+        try:
+            _rd = date.fromisoformat(body.revisit_date)
+        except ValueError:
+            raise HTTPException(400, "invalid revisit_date; use YYYY-MM-DD")
+        sets.append(f"revisit_date = ${i}"); params.append(_rd); i += 1
     if body.owner_email is not None:
         sets.append(f"owner_email = ${i}"); params.append(body.owner_email); i += 1
     if body.opportunity_id is not None:
@@ -5057,8 +5852,16 @@ async def update_jobs_membership(contact_id: int, body: MembershipPatch,
         return {"success": True}
     sets.append("updated_at = now()")
     async with conn.transaction():
-        res = await conn.execute(
-            f"UPDATE bedrock.jobs_contact_membership SET {', '.join(sets)} WHERE contact_id = $1", *params)
+        try:
+            res = await conn.execute(
+                f"UPDATE bedrock.jobs_contact_membership SET {', '.join(sets)} WHERE contact_id = $1", *params)
+        except asyncpg.exceptions.CheckViolationError:
+            # call_booked / revisit until the 2026-08-05 migration enables them.
+            # The pickers already grey these out, so this is the belt to that
+            # braces — but a raw 500 here told the user nothing.
+            raise HTTPException(
+                409, f"'{MEMBERSHIP_STAGE_LABELS.get(body.stage, body.stage)}' isn't accepted by "
+                     "the database yet — it needs the 2026-08-05 pipeline-stage migration.")
         # Row can vanish between the pre-fetch and the UPDATE (unflag race) —
         # bail before recording a phantom transition.
         if res == "UPDATE 0":
@@ -5068,7 +5871,47 @@ async def update_jobs_membership(contact_id: int, body: MembershipPatch,
                 "INSERT INTO bedrock.jobs_membership_stage_history "
                 "(contact_id, from_stage, to_stage, changed_by) VALUES ($1, $2, $3, $4)",
                 contact_id, old_stage, body.stage, _user_email(user))
+        if body.revisit_date:
+            await _ensure_revisit_task(conn, contact_id, body.revisit_date, _user_email(user))
     return {"success": True}
+
+
+async def _ensure_revisit_task(conn, contact_id: int, when: str, actor: Optional[str]) -> None:
+    """Put the revisit on the owner's task list for that date.
+
+    Reuses bedrock.jobs_task, which already drives the Jobs Home Overdue/Today/
+    Upcoming widget — so Revisit needs no new surface, it just files a row the
+    existing widget already renders. Idempotent per contact: re-setting the date
+    moves the open task rather than stacking a second one, otherwise changing your
+    mind three times leaves three reminders."""
+    row = await conn.fetchrow(
+        "SELECT m.owner_email, c.full_name, c.current_company "
+        "FROM bedrock.jobs_contact_membership m "
+        "JOIN public.contacts c ON c.contact_id = m.contact_id "
+        "WHERE m.contact_id = $1", contact_id)
+    if row is None:
+        return
+    who = row["full_name"] or f"contact {contact_id}"
+    where = f", {row['current_company']}" if row["current_company"] else ""
+    title = f"Revisit: {who}{where}"
+    owner = row["owner_email"] or actor
+    existing = await conn.fetchval(
+        "SELECT id FROM bedrock.jobs_task "
+        "WHERE parent_type = 'prospect' AND parent_id = $1 AND deleted_at IS NULL "
+        "  AND status <> 'Completed' AND title LIKE 'Revisit:%' LIMIT 1",
+        str(contact_id))
+    if existing:
+        await conn.execute(
+            "UPDATE bedrock.jobs_task SET deadline = $2::date, title = $3, updated_at = now() "
+            "WHERE id = $1", existing, when, title)
+        return
+    # status must be one of jobs_task_status_check's values ('todo' is rejected),
+    # and owner is NOT NULL DEFAULT '' — an unowned contact would otherwise
+    # violate the column rather than simply having no assignee.
+    await conn.execute(
+        "INSERT INTO bedrock.jobs_task (parent_type, parent_id, title, status, owner, deadline) "
+        "VALUES ('prospect', $1, $2, 'Not Started', $3, $4::date)",
+        str(contact_id), title, owner or "", when)
 
 
 @router.delete("/contacts/{contact_id}/jobs-membership")
@@ -5262,7 +6105,7 @@ async def account_builders(key: str = Query(...), user=Depends(require_auth), co
             summary[r["stage"]] += 1
         out.append({
             "job_application_id": r["job_application_id"], "builder": r["builder"],
-            "company_name": r["company_name"], "role_title": r["role_title"], "stage": r["stage"],
+            "company_name": r["company_name"], "role_title": r["role_title"], "stage": canon_stage(r["stage"]),
             "jobs_role_id": str(r["jobs_role_id"]) if r["jobs_role_id"] else None,
             "date_applied": r["date_applied"].isoformat() if r["date_applied"] else None,
             "opportunity_id": str(r["jobs_opportunity_id"]) if r["jobs_opportunity_id"] else None,
@@ -5338,8 +6181,12 @@ async def list_contacts(
         filters.append(("EXISTS" if flagged else "NOT EXISTS")
                        + " (SELECT 1 FROM bedrock.jobs_contact_membership m WHERE m.contact_id = c.contact_id)")
     if membership_stage:
-        filters.append(f"EXISTS (SELECT 1 FROM bedrock.jobs_contact_membership m WHERE m.contact_id = c.contact_id AND m.stage = ${i})")
-        params.append(membership_stage); i += 1
+        # Compare canonically so ?membership_stage=revisit still finds the rows
+        # stored as on_hold before the migration rewrites them.
+        filters.append(
+            f"EXISTS (SELECT 1 FROM bedrock.jobs_contact_membership m "
+            f"WHERE m.contact_id = c.contact_id AND {canon_membership_sql('m.stage')} = ${i})")
+        params.append(canon_membership_stage(membership_stage)); i += 1
     if industry:
         filters.append(f"EXISTS (SELECT 1 FROM public.companies co WHERE co.company_id = c.company_id AND co.industry ILIKE ${i})")
         params.append(f"%{industry}%"); i += 1
@@ -5512,7 +6359,7 @@ async def list_contacts(
     _stamp_fallback = ("CASE m.stage"
                        " WHEN 'initial_outreach' THEN m.first_outreach_at"
                        " WHEN 'converted_to_opportunity' THEN m.converted_at"
-                       " END")
+                       " END")   # call_booked_at joins this once the column exists
     entered_expr = (
         f"COALESCE((SELECT max(h.changed_at) FROM bedrock.jobs_membership_stage_history h"
         f" WHERE h.contact_id = c.contact_id AND h.to_stage = m.stage), {_stamp_fallback}, m.assigned_at)"
@@ -5546,7 +6393,9 @@ async def list_contacts(
             jo2.account_name AS deal_account_by_company,
             jo2.stage        AS deal_stage_by_company,
             -- jobs activation membership (the flag + funnel)
-            m.stage          AS membership_stage,
+            -- Canonical: 'on_hold' rows read as 'revisit' until the migration
+            -- rewrites them, so the UI never shows a stage it no longer offers.
+            {canon_membership_sql('m.stage')} AS membership_stage,
             m.owner_email    AS membership_owner,
             m.first_outreach_by AS first_outreach_by,
             {entered_expr}   AS membership_stage_entered_at,
@@ -5727,7 +6576,7 @@ async def contact_opportunities(
                 "id": str(r["id"]),
                 "account_name": r["account_name"],
                 "title": r["title"],
-                "stage": r["stage"],
+                "stage": canon_stage(r["stage"]),
                 "deal_type": r["deal_type"],
                 "owner_email": r["owner_email"],
                 "num_roles": r["num_roles"],
@@ -5913,7 +6762,7 @@ async def get_contact(
             "connected_staff": connected_staff,
             "open_roles_list": open_roles,
             "builder_applications": builder_apps,
-            "membership_stage": mem["stage"] if mem else None,
+            "membership_stage": canon_membership_stage(mem["stage"]) if mem else None,
             "membership_owner": mem["owner_email"] if mem else None,
             "first_outreach_by": mem["first_outreach_by"] if mem else None,
         },
@@ -6026,9 +6875,17 @@ async def get_pipeline_summary(user=Depends(require_auth), conn=Depends(get_db))
 
 def _norm_opp(d: dict) -> dict:
     """Guarantee array fields are never None (the columns allow NULL, which
-    would crash the frontend pickers that call .map/.length on them)."""
+    would crash the frontend pickers that call .map/.length on them), and hand
+    the frontend a CANONICAL stage.
+
+    Every opportunity the API returns passes through here, so canonicalising in
+    one place is what keeps a row's stage chip, its board column and its status
+    roll-up agreeing with each other before the migration lands."""
     d["builder_ids"] = d.get("builder_ids") or []
     d["sf_contact_ids"] = d.get("sf_contact_ids") or []
+    d["tags"] = d.get("tags") or []
+    if d.get("stage"):
+        d["stage"] = canon_stage(d["stage"])
     return d
 
 
@@ -6251,9 +7108,12 @@ async def update_opportunity(
                   "num_roles", "likelihood",
                   "source", "owner_email", "relationship_owner", "sf_contact_ids", "builder_ids",
                   "follow_up_date", "target_close_date", "touch_count", "sf_opportunity_id",
-                  "closed_lost_reason", "closed_lost_note", "priority", "segment", "intro_by"):
+                  "closed_lost_reason", "closed_lost_note", "priority", "segment", "intro_by",
+                  "tags"):
         if field not in fields_set:
             continue
+        if field == "tags" and not await _has_column("bedrock", "jobs_opportunity", "tags"):
+            continue   # pre-migration: silently no-op rather than fail the save
         val = getattr(body, field, None)
         if val is None and field == "stage":
             continue
@@ -6270,10 +7130,20 @@ async def update_opportunity(
 
     params.append(opp_id)
     async with conn.transaction():
-        await conn.execute(
-            f"UPDATE bedrock.jobs_opportunity SET {', '.join(sets)} WHERE id=${i}",
-            *params,
-        )
+        try:
+            await conn.execute(
+                f"UPDATE bedrock.jobs_opportunity SET {', '.join(sets)} WHERE id=${i}",
+                *params,
+            )
+        except asyncpg.exceptions.CheckViolationError as e:
+            # Almost always a stage the 2026-08-05 migration hasn't enabled yet
+            # (reviewing_builders is the only new value). Raw, this surfaced as a
+            # 500 with no hint of what to do about it.
+            if "stage" in str(e):
+                raise HTTPException(
+                    409, f"'{STAGE_LABELS.get(body.stage, body.stage)}' isn't accepted by the "
+                         "database yet — it needs the 2026-08-05 pipeline-stage migration.")
+            raise HTTPException(400, f"That value isn't allowed: {e}")
         if stage_changed:
             await conn.execute(
                 """
@@ -6285,9 +7155,45 @@ async def update_opportunity(
             )
         if body.sf_contact_ids is not None:
             await _flag_jobs_contacts(conn, list(body.sf_contact_ids or []))
+        # closed_lost + reason=revisit is "come back to this", not an ending, so
+        # it has to leave something behind that resurfaces. The date rides on the
+        # existing follow_up_date column; this turns it into a task for the
+        # deal's owner, which the Jobs Home widget already renders.
+        if body.closed_lost_reason == "revisit" and body.follow_up_date:
+            await _ensure_opp_revisit_task(
+                conn, str(opp_id), existing["account_name"],
+                body.owner_email or existing["owner_email"] or user_email,
+                body.follow_up_date)
 
     row = await conn.fetchrow("SELECT * FROM bedrock.jobs_opportunity WHERE id=$1", opp_id)
     return {"success": True, "data": dict(row)}
+
+
+async def _ensure_opp_revisit_task(conn, opp_id: str, account: Optional[str],
+                                   owner: Optional[str], when) -> None:
+    """File (or move) the revisit reminder for a closed-lost-but-come-back deal.
+
+    Mirrors _ensure_revisit_task on the contact side: idempotent per opportunity,
+    so changing the date moves the open task rather than stacking reminders.
+    status/owner match jobs_task's constraints — 'Not Started' is a valid status
+    where 'todo' is not, and owner is NOT NULL."""
+    title = f"Revisit: {account or 'opportunity'}"
+    # follow_up_date is a timestamp on the model but jobs_task.deadline is a date.
+    day = when.date() if hasattr(when, "date") else when
+    existing = await conn.fetchval(
+        "SELECT id FROM bedrock.jobs_task "
+        "WHERE parent_type = 'opportunity' AND parent_id = $1 AND deleted_at IS NULL "
+        "  AND status <> 'Completed' AND title LIKE 'Revisit:%' LIMIT 1",
+        opp_id)
+    if existing:
+        await conn.execute(
+            "UPDATE bedrock.jobs_task SET deadline = $2::date, title = $3, updated_at = now() "
+            "WHERE id = $1", existing, day, title)
+        return
+    await conn.execute(
+        "INSERT INTO bedrock.jobs_task (parent_type, parent_id, title, status, owner, deadline) "
+        "VALUES ('opportunity', $1, $2, 'Not Started', $3, $4::date)",
+        opp_id, title, owner or "", day)
 
 
 @router.delete("/opportunities/{opp_id}")
@@ -6485,6 +7391,79 @@ async def tag_campaigns(user=Depends(require_auth), conn=Depends(get_db)):
                     }})
     out.sort(key=lambda x: (x["sort_order"], x["label"]))
     return {"success": True, "data": out}
+
+
+@router.get("/tag-campaigns/{key}/records")
+async def tag_campaign_records(
+    key: str,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """The contacts and accounts behind a campaign's counts.
+
+    Deliberately re-derives the slug set from the catalog via `_campaign_key` and
+    applies the same `is_jobs_contact` gate as /tag-campaigns, so a drill list can
+    never disagree with the number that opened it.
+    """
+    cat = await conn.fetch(
+        "SELECT slug FROM bedrock.contact_tag_catalog WHERE active")
+    slugs = [r["slug"] for r in cat if _campaign_key(r["slug"]) == key]
+    if not slugs:
+        raise HTTPException(404, f"Unknown campaign: {key}")
+
+    rows = await conn.fetch("""
+        WITH tagged AS (
+          SELECT DISTINCT c.contact_id
+          FROM public.contacts c
+          CROSS JOIN LATERAL unnest(c.tags) AS t
+          WHERE t = ANY($1::text[])
+        ),
+        act AS (
+          SELECT a.participant_public_contact_id AS cid,
+                 count(*) AS touches,
+                 max(a.activity_date) AS last_touch
+          FROM bedrock.activity a
+          WHERE a.deleted_at IS NULL
+            AND a.participant_public_contact_id IN (SELECT contact_id FROM tagged)
+          GROUP BY 1
+        )
+        SELECT c.contact_id, c.full_name, c.current_company AS company,
+               c.is_jobs_contact, m.stage, m.owner_email,
+               -- Latest stage stamp the contact reached, so "when" lines up with
+               -- the stage shown next to it. The label lives in the frontend's
+               -- MEMBERSHIP_STAGE_LABELS, which is the single source for it.
+               COALESCE(m.converted_at, m.first_outreach_at, m.assigned_at) AS stage_entered_at,
+               COALESCE(act.touches, 0) AS touches, act.last_touch
+        FROM tagged tg
+        JOIN public.contacts c ON c.contact_id = tg.contact_id
+        LEFT JOIN bedrock.jobs_contact_membership m ON m.contact_id = c.contact_id
+        LEFT JOIN act ON act.cid = c.contact_id
+        ORDER BY c.full_name
+    """, slugs)
+
+    # in_pipeline / accounts count only jobs prospects, so the drills must too.
+    in_pipe = [r for r in rows if r["is_jobs_contact"]]
+    contacts = [{
+        "contact_id": r["contact_id"],
+        "full_name": r["full_name"],
+        "company": r["company"],
+        "stage": canon_stage(r["stage"]),
+        "stage_entered_at": r["stage_entered_at"].isoformat() if r["stage_entered_at"] else None,
+        "owner": r["owner_email"],
+        "touches": int(r["touches"] or 0),
+        "last_touch": r["last_touch"].isoformat() if r["last_touch"] else None,
+    } for r in in_pipe]
+
+    by_company: dict = {}
+    for r in in_pipe:
+        name = r["company"] or "(no company)"
+        a = by_company.setdefault(name, {"company": name, "contacts": 0, "contacted": 0})
+        a["contacts"] += 1
+        if r["stage"] in ("initial_outreach", "converted_to_opportunity"):
+            a["contacted"] += 1
+    accounts = sorted(by_company.values(), key=lambda a: (-a["contacts"], a["company"]))
+
+    return {"success": True, "data": {"contacts": contacts, "accounts": accounts}}
 
 
 class CampaignOrder(BaseModel):
@@ -8159,3 +9138,264 @@ async def update_builder_profile(user_id: int, body: BuilderProfileUpdate,
     d = dict(row)
     d["intake"] = _jsonb(d.get("intake"))
     return {"success": True, "data": d}
+
+
+# ── Export ────────────────────────────────────────────────────────────────────
+# Phase 1 per the build plan: server-generated .xlsx returned as a download. No
+# Drive write — that needs a new OAuth scope or a delegated service account, which
+# is an access conversation with Jac rather than a coding task.
+#
+# openpyxl is already in requirements.txt (3.1+), so this adds no dependency.
+
+class ExportRequest(BaseModel):
+    """Rows to export.
+
+    `ids` are the selected records and are required — see the endpoint for why
+    "export everything I'm looking at" isn't a thing the server can honestly do.
+    """
+    ids: Optional[list[str]] = None
+    # Column keys to include, in order. Omitted → the entity's default set, so a
+    # caller that doesn't care doesn't have to enumerate them.
+    columns: Optional[list[str]] = None
+
+
+# entity → (label, id column, source SQL, default column list).
+# Each SELECT is read-only and already-scoped to non-deleted rows. The id column
+# is cast to text so contacts (int) and opportunities (uuid) share one code path.
+_EXPORT_SPECS: dict[str, dict] = {
+    "contacts": {
+        "label": "Contacts",
+        # Mirrors what the Contacts table can show, so "export what I'm looking
+        # at" means the same fields on screen and in the file. `default` is the
+        # subset sent when the caller doesn't pick; `columns` is everything
+        # selectable. Post-migration columns (call_booked_at, revisit_date) are
+        # deliberately absent — this file has to run before that migration too.
+        "sql": """
+            SELECT c.contact_id::text AS id, c.full_name, c.email, c.current_title,
+                   c.current_company, c.linkedin_url, c.location, c.source,
+                   c.contact_stage, c.owner_email AS contact_owner, c.notes,
+                   c.created_at,
+                   m.stage AS jobs_stage, m.owner_email AS jobs_owner,
+                   m.assigned_at, m.first_outreach_at, m.first_outreach_by,
+                   m.converted_at, m.not_a_fit_reason,
+                   co.industry, co.size_bucket, co.hq_location,
+                   (SELECT string_agg(t, ', ') FROM unnest(coalesce(c.tags,'{}')) t
+                     WHERE t IN (SELECT slug FROM bedrock.contact_tag_catalog)) AS campaign_tags,
+                   (SELECT max(a.activity_date) FROM bedrock.activity a
+                     WHERE a.participant_public_contact_id = c.contact_id
+                       AND a.deleted_at IS NULL) AS last_activity_at
+            FROM public.contacts c
+            LEFT JOIN bedrock.jobs_contact_membership m ON m.contact_id = c.contact_id
+            LEFT JOIN LATERAL (
+                SELECT industry, size_bucket, hq_location
+                FROM public.companies
+                WHERE lower(trim(name)) = lower(trim(c.current_company)) LIMIT 1
+            ) co ON true
+        """,
+        "default": ["full_name", "email", "current_title", "current_company",
+                    "linkedin_url", "jobs_stage", "jobs_owner", "campaign_tags",
+                    "assigned_at", "first_outreach_at"],
+        "columns": ["full_name", "email", "current_title", "current_company",
+                    "linkedin_url", "location", "industry", "size_bucket",
+                    "hq_location", "jobs_stage", "jobs_owner", "campaign_tags",
+                    "contact_stage", "contact_owner", "source",
+                    "assigned_at", "first_outreach_at", "first_outreach_by",
+                    "converted_at", "not_a_fit_reason", "last_activity_at",
+                    "created_at", "notes"],
+        "headers": {"full_name": "Name", "email": "Email", "current_title": "Title",
+                    "current_company": "Company", "linkedin_url": "LinkedIn",
+                    "location": "Location", "industry": "Industry",
+                    "size_bucket": "Size", "hq_location": "HQ",
+                    "jobs_stage": "Jobs stage", "jobs_owner": "Jobs owner",
+                    "campaign_tags": "Campaigns", "contact_stage": "Contact stage",
+                    "contact_owner": "Contact owner", "source": "Source",
+                    "assigned_at": "Assigned", "first_outreach_at": "First outreach",
+                    "first_outreach_by": "First outreach by",
+                    "converted_at": "Converted", "not_a_fit_reason": "Not-a-fit reason",
+                    "last_activity_at": "Last activity", "created_at": "Created",
+                    "notes": "Notes"},
+    },
+    "opportunities": {
+        "label": "Opportunities",
+        "sql": """
+            SELECT o.id::text AS id, o.account_name, o.title, o.stage, o.deal_type,
+                   o.owner_email, o.salary_expected, o.num_roles, o.likelihood,
+                   o.priority, o.segment, o.touch_count, o.follow_up_date,
+                   o.target_close_date, o.created_at, o.closed_at,
+                   o.closed_lost_reason, o.closed_lost_note
+            FROM bedrock.jobs_opportunity o
+            WHERE o.deleted_at IS NULL
+        """,
+        "columns": ["account_name", "title", "stage", "deal_type", "owner_email",
+                    "salary_expected", "num_roles", "likelihood", "priority",
+                    "segment", "touch_count", "follow_up_date", "target_close_date",
+                    "created_at", "closed_at", "closed_lost_reason", "closed_lost_note"],
+        "headers": {"account_name": "Account", "title": "Title", "stage": "Stage",
+                    "deal_type": "Deal type", "owner_email": "Owner",
+                    "salary_expected": "Salary", "num_roles": "Roles",
+                    "likelihood": "Likelihood", "priority": "Priority",
+                    "segment": "Segment", "touch_count": "Touches",
+                    "follow_up_date": "Follow up", "target_close_date": "Target close",
+                    "created_at": "Created", "closed_at": "Closed",
+                    "closed_lost_reason": "Lost reason", "closed_lost_note": "Lost note"},
+    },
+    "accounts": {
+        "label": "Accounts",
+        # Accounts are keyed by normalized company name, and the account list is
+        # assembled in Python from several sources. Export the durable core here
+        # (the jobs_account row plus firmographics) rather than trying to
+        # reproduce the whole derived hub payload in one query.
+        "sql": """
+            SELECT ja.account_key AS id, ja.display_name, ja.owner_email,
+                   ja.status_override, ja.notes,
+                   co.industry, co.size_bucket, co.hq_location, co.stage AS company_stage,
+                   (SELECT count(*) FROM bedrock.jobs_opportunity o
+                     WHERE o.deleted_at IS NULL
+                       AND lower(trim(o.account_name)) = ja.account_key) AS opportunities
+            FROM bedrock.jobs_account ja
+            LEFT JOIN LATERAL (
+                SELECT industry, size_bucket, hq_location, stage
+                FROM public.companies
+                WHERE lower(trim(name)) = ja.account_key LIMIT 1
+            ) co ON true
+        """,
+        "columns": ["display_name", "owner_email", "status_override", "industry",
+                    "size_bucket", "hq_location", "company_stage", "opportunities", "notes"],
+        "headers": {"display_name": "Account", "owner_email": "Jobs owner",
+                    "status_override": "Status", "industry": "Industry",
+                    "size_bucket": "Size", "hq_location": "HQ",
+                    "company_stage": "Company stage", "opportunities": "Opps",
+                    "notes": "Notes"},
+    },
+}
+
+# Ceiling on an unselected ("export everything I'm looking at") request. Excel
+# handles far more, but a 40k-row build holds a pool connection and a few hundred
+# MB of memory; past this the answer is to filter first.
+_EXPORT_CAP = 5000
+
+
+@router.get("/export/{entity}/columns")
+async def jobs_export_columns(entity: str, user=Depends(require_auth)):
+    """The columns this entity can export, and which are on by default.
+
+    The picker builds from this rather than from a list hard-coded in the
+    frontend: the allowlist that filters the export request lives here, so a
+    second copy in TypeScript would be a drift bug waiting to happen."""
+    spec = _EXPORT_SPECS.get(entity)
+    if spec is None:
+        raise HTTPException(404, f"Nothing to export for '{entity}'")
+    default = set(spec.get("default") or spec["columns"])
+    return {"success": True, "data": {
+        "columns": [
+            {"key": c,
+             "label": spec["headers"].get(c, c.replace("_", " ").title()),
+             "default": c in default}
+            for c in spec["columns"]
+        ],
+    }}
+
+
+@router.post("/export/{entity}")
+async def jobs_export(
+    entity: str,
+    body: ExportRequest,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Export contacts / accounts / opportunities as .xlsx.
+
+    Pass `ids` for the selected rows; omit it to export the whole set (capped).
+    Read-only: this touches nothing, it just reads and formats."""
+    spec = _EXPORT_SPECS.get(entity)
+    if spec is None:
+        raise HTTPException(404, f"Nothing to export for '{entity}'")
+
+    # Unknown keys are dropped rather than 400'd — a stale picker in an open tab
+    # should still produce a file. An all-unknown list falls back to the default
+    # set, so the sheet is never empty of columns.
+    allowed = spec["columns"]
+    cols = [c for c in (body.columns or spec.get("default") or allowed) if c in allowed]
+    if not cols:
+        cols = spec.get("default") or allowed
+
+    # Filter OUTSIDE the spec's SQL, never by appending to it. Appending needed a
+    # "does this already have a WHERE" guess, and substring-matching WHERE is
+    # wrong twice over: the contacts SQL has a WHERE inside a subquery (so the
+    # guess produced `LEFT JOIN ... AND id = ANY(...)`, a syntax error), and the
+    # accounts SQL has one inside a LATERAL (so the filter attached to a LEFT JOIN
+    # ON clause and silently exported every account instead of the selection).
+    # Every spec aliases its key as `id`, so one wrapper covers all three.
+    # `ids` is REQUIRED. The old fallback ("no ids = export the whole set") could
+    # not keep that promise: nothing here knows the caller's filters, so it ran
+    # an unordered `LIMIT 5000` over the raw table — an arbitrary 9% of the
+    # 54,919 contacts, merged duplicates included, in a file that looks
+    # complete. Silently handing someone the wrong 5,000 rows is worse than
+    # refusing, and every caller today sends a selection.
+    if not body.ids:
+        raise HTTPException(
+            400,
+            "Select the rows to export. Exporting a whole filtered view isn't "
+            "supported yet — the server can't see the filters you applied, so it "
+            "would return an arbitrary slice rather than what's on your screen.",
+        )
+    if len(body.ids) > _EXPORT_CAP:
+        raise HTTPException(
+            400,
+            f"That's {len(body.ids):,} rows; the export caps at {_EXPORT_CAP:,}. "
+            "Narrow the selection and try again.",
+        )
+    params: list = [[str(i) for i in body.ids]]
+    sql = f"SELECT * FROM ({spec['sql']}) src WHERE src.id::text = ANY($1::text[])"
+
+    try:
+        rows = await conn.fetch(sql, *params)
+    except asyncpg.exceptions.InsufficientPrivilegeError as e:
+        raise HTTPException(503, f"Export needs a read this role doesn't have: {e}")
+
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+    from openpyxl.utils import get_column_letter
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = spec["label"][:31]     # Excel caps sheet names at 31 chars
+
+    headers = [spec["headers"].get(c, c.replace("_", " ").title()) for c in cols]
+    ws.append(headers)
+    for cell in ws[1]:
+        cell.font = Font(bold=True)
+    ws.freeze_panes = "A2"
+
+    for r in rows:
+        out = []
+        for c in cols:
+            v = r.get(c)
+            if isinstance(v, (list, tuple)):
+                v = ", ".join(str(x) for x in v)
+            elif hasattr(v, "tzinfo") and v is not None:
+                # Excel has no timezone concept; a tz-aware datetime raises on
+                # write, so normalise to naive UTC rather than losing the row.
+                v = v.replace(tzinfo=None)
+            elif isinstance(v, (dict,)):
+                v = json.dumps(v)
+            out.append(v)
+        ws.append(out)
+
+    # Width from the widest cell in each column, clamped: unbounded widths make a
+    # notes column 600px and push everything else off screen.
+    for i, header in enumerate(headers, start=1):
+        longest = max([len(str(header))] + [len(str(r.get(cols[i - 1]) or "")) for r in rows[:200]])
+        ws.column_dimensions[get_column_letter(i)].width = min(48, max(10, longest + 2))
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    filename = f"bedrock-{entity}-{stamp}.xlsx"
+    logger.info("export: %s rows=%d by=%s", entity, len(rows), user.get("email"))
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
