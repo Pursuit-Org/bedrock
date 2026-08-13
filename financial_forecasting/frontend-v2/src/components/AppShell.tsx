@@ -155,7 +155,14 @@ export function AppShell() {
 
   return (
     <div
-      className="grid h-screen overflow-hidden transition-[grid-template-columns] duration-200"
+      // `grid-rows-[minmax(0,1fr)]` is not decoration. Without an explicit row
+      // the grid gets one `auto` row, sized max(available, content) — so a
+      // sidebar taller than the viewport grows the row past 100vh and the
+      // container's overflow-hidden clips the bottom off both columns. It
+      // happens to hold today because the aside also sets overflow-hidden
+      // (which zeroes a grid item's automatic minimum size), but that is a
+      // side effect propping the layout up, not a decision. Pin the row.
+      className="grid h-screen grid-rows-[minmax(0,1fr)] overflow-hidden transition-[grid-template-columns] duration-200"
       style={{
         gridTemplateColumns: `${collapsed ? NAV_COLLAPSED_W : NAV_EXPANDED_W}px 1fr`,
       }}
