@@ -223,11 +223,28 @@ function Sidebar({
 }) {
   const { data: user } = useCurrentUser();
   const sf = useSalesforceStatus();
+  const navRef = useRef<HTMLElement>(null);
+  const { pathname } = useLocation();
+
+  // Keep the current page's nav item visible. Now that the nav scrolls, a deep
+  // link or a jump between groups can land with the active item out of view,
+  // which reads as "this page isn't in the nav". `nearest` scrolls the minimum
+  // needed, so an already-visible item doesn't jump.
+  useEffect(() => {
+    const active = navRef.current?.querySelector<HTMLElement>("[aria-current='page']");
+    if (!active) return;
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    active.scrollIntoView({ block: "nearest", behavior: reduced ? "auto" : "smooth" });
+  }, [pathname, collapsed]);
 
   return (
+    // Three bands: a fixed brand row, a scrolling nav, and a pinned footer.
+    // `min-h-0` is load-bearing — a flex child defaults to min-height:auto and
+    // refuses to shrink below its content, so without it the nav below can
+    // never scroll no matter what overflow it declares.
     <aside
       className={cn(
-        "relative flex flex-col gap-1 overflow-hidden border-r border-border bg-surface-2 transition-all duration-200",
+        "relative flex min-h-0 flex-col gap-1 overflow-hidden border-r border-border bg-surface-2 transition-all duration-200",
         collapsed ? "p-2" : "p-3",
       )}
     >
@@ -236,7 +253,7 @@ function Sidebar({
           collapsed (so it can't overlap the user avatar at bottom). */}
       <div
         className={cn(
-          "flex items-center gap-2 px-1 py-3",
+          "flex flex-shrink-0 items-center gap-2 px-1 py-3",
           collapsed && "flex-col gap-2 px-0",
         )}
       >
@@ -264,7 +281,17 @@ function Sidebar({
 
       {/* Search trigger moved to the top bar (2026-05-20). */}
 
-      <nav className="flex flex-col">
+      {/* The only scrolling band. Everything that must always be reachable —
+          Feedback, Settings, the signed-in user — lives BELOW it, pinned, so
+          no amount of nav growth can push them off screen. That was the bug:
+          19 items plus group headers overflowed a laptop viewport and the
+          footer got clipped by the aside's overflow-hidden, leaving no route
+          to Settings at all (and so no way to reconnect Salesforce). */}
+      <nav
+        ref={navRef}
+        aria-label="Main"
+        className="nav-scroll -mr-1 flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain pr-1"
+      >
         {NAV_GROUPS.map((group) => (
           <div key={group.label}>
             {!collapsed && (
@@ -299,7 +326,12 @@ function Sidebar({
         ))}
       </nav>
 
-      <div className="mt-auto flex flex-col gap-px pt-4">
+      {/* Pinned. `flex-shrink-0` keeps it at its natural height while the nav
+          above absorbs the pressure; the hairline reads as the edge of the
+          scrolling region so a half-visible nav item doesn't look like the end
+          of the list. `mt-auto` is gone — the nav's flex-1 does that job now,
+          and leaving both in fights over the free space. */}
+      <div className="mt-2 flex flex-shrink-0 flex-col gap-px border-t border-border pt-2">
         <NavLink
           to="/feedback"
           title={collapsed ? "Bug reports & feature requests" : undefined}
