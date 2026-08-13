@@ -1,0 +1,1258 @@
+<title>Account Ledger Review</title>
+<style>
+  :root {
+    --ground: #F6F7F9;
+    --card: #FFFFFF;
+    --sunken: #EDEFF3;
+    --ink: #171B22;
+    --ink-2: #4C5666;
+    --ink-3: #7B8698;
+    --rule: #DCE1E8;
+    --rule-strong: #C3CBD6;
+    --accent: #23457B;
+    --accent-soft: #E6EBF4;
+    --live: #1B6E52;
+    --live-soft: #E0F0E9;
+    --warn: #94620F;
+    --warn-soft: #F6EDD8;
+    --crit: #94352E;
+    --crit-soft: #F7E4E2;
+    --dormant: #6B7382;
+    --dormant-soft: #E7E9ED;
+    --shadow: 0 1px 2px rgba(23,27,34,.06), 0 6px 16px -8px rgba(23,27,34,.14);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #0F1319;
+      --card: #171C24;
+      --sunken: #1F2530;
+      --ink: #E7EBF1;
+      --ink-2: #A6B0BF;
+      --ink-3: #798394;
+      --rule: #2A313C;
+      --rule-strong: #3A424F;
+      --accent: #8FB0E4;
+      --accent-soft: #1D2939;
+      --live: #6FC7A2;
+      --live-soft: #163026;
+      --warn: #D9AE58;
+      --warn-soft: #322818;
+      --crit: #E48B82;
+      --crit-soft: #351F1D;
+      --dormant: #8A94A3;
+      --dormant-soft: #232935;
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 6px 16px -8px rgba(0,0,0,.6);
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground: #0F1319;
+    --card: #171C24;
+    --sunken: #1F2530;
+    --ink: #E7EBF1;
+    --ink-2: #A6B0BF;
+    --ink-3: #798394;
+    --rule: #2A313C;
+    --rule-strong: #3A424F;
+    --accent: #8FB0E4;
+    --accent-soft: #1D2939;
+    --live: #6FC7A2;
+    --live-soft: #163026;
+    --warn: #D9AE58;
+    --warn-soft: #322818;
+    --crit: #E48B82;
+    --crit-soft: #351F1D;
+    --dormant: #8A94A3;
+    --dormant-soft: #232935;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 6px 16px -8px rgba(0,0,0,.6);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    font-size: 16px;
+    line-height: 1.6;
+    margin: 0;
+    padding: 0 20px 96px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { max-width: 1000px; margin: 0 auto; }
+
+  .serif {
+    font-family: ui-serif, "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
+  }
+  .mono {
+    font-family: ui-monospace, "SF Mono", SFMono-Regular, "Cascadia Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ---------- masthead ---------- */
+  header.masthead {
+    padding: 72px 0 32px;
+    border-bottom: 2px solid var(--ink);
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+  }
+  .eyebrow {
+    font-size: 11px;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  h1 {
+    font-family: ui-serif, "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
+    font-size: clamp(34px, 5.5vw, 52px);
+    line-height: 1.08;
+    letter-spacing: -.015em;
+    font-weight: 600;
+    margin: 0;
+    text-wrap: balance;
+  }
+  .standfirst {
+    font-size: 18px;
+    color: var(--ink-2);
+    max-width: 66ch;
+    margin: 0;
+  }
+  .meta-strip {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 28px;
+    font-size: 12.5px;
+    color: var(--ink-3);
+    padding-top: 4px;
+  }
+  .meta-strip b { color: var(--ink-2); font-weight: 600; }
+
+  /* ---------- sections ---------- */
+  section { padding-top: 56px; }
+  h2 {
+    font-family: ui-serif, "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
+    font-size: 27px;
+    font-weight: 600;
+    letter-spacing: -.01em;
+    margin: 0 0 6px;
+    text-wrap: balance;
+  }
+  h2 .num {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 13px;
+    color: var(--accent);
+    letter-spacing: .06em;
+    margin-right: 12px;
+    vertical-align: 3px;
+  }
+  .section-note {
+    color: var(--ink-2);
+    max-width: 68ch;
+    margin: 0 0 26px;
+    font-size: 15.5px;
+  }
+  h3.tier {
+    font-size: 12px;
+    letter-spacing: .13em;
+    text-transform: uppercase;
+    color: var(--ink-2);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    margin: 40px 0 14px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--rule-strong);
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 16px;
+  }
+  h3.tier span { color: var(--ink-3); letter-spacing: .04em; text-transform: none; font-size: 12px; }
+
+  /* ---------- findings ---------- */
+  .findings { display: flex; flex-direction: column; gap: 2px; }
+  .finding {
+    display: grid;
+    grid-template-columns: 26px 1fr;
+    gap: 16px;
+    padding: 16px 18px 16px 14px;
+    background: var(--card);
+    border: 1px solid var(--rule);
+    border-left: 3px solid var(--rule-strong);
+    box-shadow: var(--shadow);
+  }
+  .finding + .finding { margin-top: 10px; }
+  .finding.crit { border-left-color: var(--crit); }
+  .finding.warn { border-left-color: var(--warn); }
+  .finding.info { border-left-color: var(--accent); }
+  .finding .idx {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12px;
+    color: var(--ink-3);
+    padding-top: 3px;
+  }
+  .finding h4 { margin: 0 0 4px; font-size: 16px; font-weight: 650; letter-spacing: -.005em; }
+  .finding p { margin: 0; color: var(--ink-2); font-size: 15px; }
+
+  /* ---------- scan table ---------- */
+  .table-scroll {
+    overflow-x: auto;
+    border: 1px solid var(--rule);
+    background: var(--card);
+    box-shadow: var(--shadow);
+  }
+  table { border-collapse: collapse; width: 100%; min-width: 780px; font-size: 14px; }
+  thead th {
+    text-align: left;
+    font-size: 10.5px;
+    letter-spacing: .11em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-weight: 600;
+    padding: 12px 14px;
+    background: var(--sunken);
+    border-bottom: 1px solid var(--rule-strong);
+    white-space: nowrap;
+  }
+  tbody td { padding: 11px 14px; border-bottom: 1px solid var(--rule); vertical-align: top; color: var(--ink-2); }
+  tbody tr:last-child td { border-bottom: 0; }
+  tbody td.name { color: var(--ink); font-weight: 600; white-space: nowrap; }
+  td.num, th.num { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+  .pill {
+    display: inline-block;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 10.5px;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    padding: 3px 8px;
+    border-radius: 2px;
+    white-space: nowrap;
+    font-weight: 600;
+  }
+  .p-live { background: var(--live-soft); color: var(--live); }
+  .p-crit { background: var(--crit-soft); color: var(--crit); }
+  .p-warn { background: var(--warn-soft); color: var(--warn); }
+  .p-dorm { background: var(--dormant-soft); color: var(--dormant); }
+  .p-new  { background: var(--accent-soft); color: var(--accent); }
+
+  /* ---------- account cards ---------- */
+  .acct {
+    background: var(--card);
+    border: 1px solid var(--rule);
+    border-top: 3px solid var(--rule-strong);
+    box-shadow: var(--shadow);
+    padding: 22px 24px 24px;
+    margin-bottom: 14px;
+  }
+  .acct.live { border-top-color: var(--live); }
+  .acct.crit { border-top-color: var(--crit); }
+  .acct.warn { border-top-color: var(--warn); }
+  .acct.dorm { border-top-color: var(--dormant); }
+  .acct.new  { border-top-color: var(--accent); }
+
+  .acct-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 10px 18px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--rule);
+  }
+  .acct-head h4 {
+    font-family: ui-serif, "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
+    font-size: 23px;
+    font-weight: 600;
+    margin: 0;
+    letter-spacing: -.01em;
+  }
+  .owner {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11.5px;
+    color: var(--ink-3);
+  }
+
+  .facts {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+    gap: 14px 20px;
+    padding: 16px 0;
+    border-bottom: 1px solid var(--rule);
+  }
+  .fact .k {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 10px;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    display: block;
+    margin-bottom: 3px;
+  }
+  .fact .v {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 13.5px;
+    font-variant-numeric: tabular-nums;
+    color: var(--ink);
+  }
+  .fact .v.thin { color: var(--ink-3); }
+
+  .cols {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
+    gap: 28px;
+    padding-top: 18px;
+  }
+  @media (max-width: 720px) { .cols { grid-template-columns: 1fr; gap: 22px; } }
+
+  .block-label {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 10px;
+    letter-spacing: .11em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    margin: 0 0 10px;
+  }
+  ul.people { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 9px; }
+  ul.people li { font-size: 14.5px; line-height: 1.45; }
+  ul.people .who { color: var(--ink); font-weight: 640; }
+  ul.people .title { color: var(--ink-2); }
+  ul.people .tagmark {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 10px;
+    letter-spacing: .05em;
+    text-transform: uppercase;
+    color: var(--accent);
+    background: var(--accent-soft);
+    padding: 1px 5px;
+    border-radius: 2px;
+    margin-left: 5px;
+    white-space: nowrap;
+  }
+  ul.people .stale { color: var(--warn); font-size: 12.5px; }
+
+  .history p { margin: 0 0 10px; font-size: 15px; color: var(--ink-2); }
+  .history p:last-child { margin-bottom: 0; }
+  .history strong { color: var(--ink); font-weight: 640; }
+  .history .mono { font-size: 13.5px; }
+
+  .callout {
+    background: var(--sunken);
+    border-left: 2px solid var(--accent);
+    padding: 11px 14px;
+    margin: 12px 0 0;
+    font-size: 14px;
+    color: var(--ink-2);
+  }
+  .callout .cl-label {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 10px;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    display: block;
+    margin-bottom: 4px;
+  }
+
+  .gap {
+    background: var(--crit-soft);
+    border-left: 2px solid var(--crit);
+    padding: 11px 14px;
+    margin: 12px 0 0;
+    font-size: 14px;
+    color: var(--ink-2);
+  }
+  .gap .cl-label { color: var(--crit); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 10px; letter-spacing: .1em; text-transform: uppercase; display: block; margin-bottom: 4px; }
+
+  footer {
+    margin-top: 72px;
+    padding-top: 24px;
+    border-top: 1px solid var(--rule-strong);
+    font-size: 13px;
+    color: var(--ink-3);
+  }
+  footer p { margin: 0 0 8px; max-width: 74ch; }
+  code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: .9em;
+    background: var(--sunken);
+    padding: 1px 5px;
+    border-radius: 2px;
+    color: var(--ink-2);
+  }
+  a { color: var(--accent); }
+  a:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+</style>
+
+<div class="wrap">
+
+<header class="masthead">
+  <div class="eyebrow">Account data review &middot; 13 August 2026</div>
+  <h1>Twenty-five accounts, three systems, one ledger</h1>
+  <p class="standfirst">Senior contacts and full relationship history for every account on both lists — pulled from Salesforce, the Bedrock Postgres warehouse, and the Jobs pipeline. Two accounts turn out not to exist in Salesforce at all, and four hiring partners are simultaneously in arrears.</p>
+  <div class="meta-strip">
+    <span><b>Sources</b> Salesforce (NPSP) &middot; bedrock.* &middot; public.contacts / companies</span>
+    <span><b>Coverage</b> 25 accounts</span>
+    <span><b>Activity records read</b> 4,200+</span>
+  </div>
+</header>
+
+<section>
+  <h2><span class="num">01</span>What to act on first</h2>
+  <p class="section-note">Seven findings that cut across the whole list. Everything below this section is per-account detail.</p>
+
+  <div class="findings">
+
+    <div class="finding crit">
+      <div class="idx">01</div>
+      <div>
+        <h4>Northwell and Stew Leonard&rsquo;s do not exist in Salesforce</h4>
+        <p>Neither has an Account, Contact, or Lead record — a SOSL search across all fields returns nothing for Northwell. Cava, ITV and TPG have no Salesforce Account either. For Northwell, the only connective tissue anywhere is the US&nbsp;DOL/ETA <em>NY Apprenticeship &amp; H-1B Partnership Pilot</em> cohort, where Pursuit and Northwell are co-recipients on the same listserv threads.</p>
+      </div>
+    </div>
+
+    <div class="finding crit">
+      <div class="idx">02</div>
+      <div>
+        <h4>Four Commit / hiring partners are in collections at once</h4>
+        <p>Between 8 July and 10 August 2026, Kirstie Chen sent overdue notices to <strong>Uber</strong> (payment plan default), <strong>Peloton</strong> (payment plan default), <strong>Citi</strong> (overdue balance, three emails on 27 July) and <strong>Red Canary</strong> (overdue notice, action required). Red Canary alone carries roughly $246k across three opportunities still marked <em>Collecting / In Effect</em>.</p>
+      </div>
+    </div>
+
+    <div class="finding warn">
+      <div class="idx">03</div>
+      <div>
+        <h4>The February 2026 AIJI campaign has barely moved</h4>
+        <p>On 11 Feb 2026 Devika created a $1M-scale AIJI ask on nearly every account. Six months on: Citi $1M, American Express $250k, Mastercard $500k, Red Canary $100k, Spotify $100k and OpenRouter $1M are all still at <em>New Lead</em>. Adobe $1.5M, Blackstone $1M and Uber $5M were withdrawn. Only Wells Fargo ($300k), Macquarie ($300k) and Con Edison ($750k over three years) reached Proposal Submitted or Ask in Progress.</p>
+      </div>
+    </div>
+
+    <div class="finding warn">
+      <div class="idx">04</div>
+      <div>
+        <h4>Duplicate and orphaned Salesforce accounts</h4>
+        <p><strong>Mastercard</strong> exists twice — Devika&rsquo;s record and Steve Citrin&rsquo;s — and <em>both</em> carry 2026 activity, so the Sarah Walker thread is split across two accounts. <strong>Citi</strong> exists three times (Citi, Citigroup, Citibank&nbsp;(FinTech)), splitting Mark Mason from Brandee McHale and Erika Brown. Ownership is orphaned on Tripadvisor and BrightWheel (Systems Admin), Major League Soccer (owned by <em>Yurgosky</em>, an outside vendor) and the NFL. In the Jobs pipeline, &ldquo;Gutter Capital&rdquo; and &ldquo;Gutter Captial&rdquo; are separate accounts.</p>
+      </div>
+    </div>
+
+    <div class="finding info">
+      <div class="idx">05</div>
+      <div>
+        <h4>The PBD owner never syncs into Bedrock</h4>
+        <p>All 13 matched rows in <code>bedrock.jobs_account</code> have <code>sf_account_id</code> = NULL and <code>pbd_owner_name</code> = NULL. The &ldquo;tagged to Devika&rdquo; fact you rely on is only visible via <code>Account.OwnerId</code> in Salesforce; the Jobs module has no idea. The TPG jobs opportunity is worse — its <code>account_id</code> is the literal string <code>UNKNOWN</code>.</p>
+      </div>
+    </div>
+
+    <div class="finding warn">
+      <div class="idx">06</div>
+      <div>
+        <h4>A bulk 1 Nov 2024 end-date corrupted affiliation status</h4>
+        <p>Dozens of affiliations across Con Edison, Goldman Sachs, Macquarie, Uber and Gutter Capital share the identical end date <code>2024-11-01</code> and status <em>Former</em>. This is a data operation, not a wave of departures — <strong>Jen Hensley</strong> is marked Former at Con Edison yet is a sitting Pursuit board member who received the Q3 board invite on 28 July 2026 and made two personal Benevity gifts in 2025–26. Treat any <code>2024-11-01</code> end date as unverified.</p>
+      </div>
+    </div>
+
+    <div class="finding info">
+      <div class="idx">07</div>
+      <div>
+        <h4>Batch two is a target list, not a book of business</h4>
+        <p>Five of the seven newer accounts — Cava, ITV, Stew Leonard&rsquo;s, and the primary contacts at Brightwheel, MLS and the NFL — were created in Bedrock <em>today</em> (13 Aug 2026) under the tag <code>operation_35_lt_nick</code>, owner Devika. They carry no email history at all. TPG is the only one with a live thread.</p>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<section>
+  <h2><span class="num">02</span>The scan</h2>
+  <p class="section-note">Every account at a glance. &ldquo;Last touch&rdquo; is the most recent record in <code>bedrock.activity</code>; live position is the highest-value opportunity not closed or withdrawn.</p>
+
+  <div class="table-scroll">
+    <table>
+      <thead>
+        <tr>
+          <th>Account</th>
+          <th>SF owner</th>
+          <th>Status</th>
+          <th class="num">Last touch</th>
+          <th class="num">Activity</th>
+          <th>Live position</th>
+          <th>Most senior contact</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td class="name">Con Edison</td><td>Devika</td><td><span class="pill p-live">Live</span></td><td class="num">2026-08-11</td><td class="num">540</td><td>$750k AIJI over 3 yrs, Ask in Progress</td><td>Jen Hensley — SVP Corporate Affairs</td></tr>
+        <tr><td class="name">Adobe</td><td>Devika</td><td><span class="pill p-live">Live</span></td><td class="num">2026-08-13</td><td class="num">48</td><td>$300k/yr Collecting; $20k proposal</td><td>Rachel Itwaru — Global Lead, Nonprofit Skilling</td></tr>
+        <tr><td class="name">Wells Fargo</td><td>Devika</td><td><span class="pill p-live">Live</span></td><td class="num">2026-08-13</td><td class="num">128</td><td>$300k AIJI, Proposal Submitted</td><td>Krissy Moore — SVP, Community Relations NE</td></tr>
+        <tr><td class="name">Goldman Sachs</td><td>Devika</td><td><span class="pill p-live">Live</span></td><td class="num">2026-08-05</td><td class="num">368</td><td>$200k, Proposal Submitted</td><td>Jared Cohen — President, Global Affairs</td></tr>
+        <tr><td class="name">Macquarie</td><td>Devika</td><td><span class="pill p-live">Live</span></td><td class="num">2026-08-12</td><td class="num">498</td><td>$300k AIJI, Proposal Submitted</td><td>John Stowe — COO</td></tr>
+        <tr><td class="name">Blackstone</td><td>Devika</td><td><span class="pill p-live">Live</span></td><td class="num">2026-08-13</td><td class="num">698</td><td>$135k Cyber PBC, New Lead</td><td>John Stecher — CTO</td></tr>
+        <tr><td class="name">Mastercard</td><td>Devika</td><td><span class="pill p-live">Live</span></td><td class="num">2026-06-02</td><td class="num">37</td><td>FY26 Master Employment, Qualifying</td><td>Lucrecia Borgonovo — Chief Talent Officer</td></tr>
+        <tr><td class="name">Citi</td><td>Devika</td><td><span class="pill p-crit">Arrears</span></td><td class="num">2026-08-10</td><td class="num">572</td><td>$1M AIJI stalled at New Lead</td><td>Mark Mason — CFO, Citi</td></tr>
+        <tr><td class="name">Uber</td><td>Devika</td><td><span class="pill p-crit">Arrears</span></td><td class="num">2026-07-13</td><td class="num">821</td><td>$315k LevelUp, New Lead</td><td>Dara Khosrowshahi — CEO</td></tr>
+        <tr><td class="name">Peloton</td><td>Devika</td><td><span class="pill p-crit">Arrears</span></td><td class="num">2026-07-13</td><td class="num">164</td><td>None open</td><td>Barry McCarthy — President &amp; CEO <em>(stale)</em></td></tr>
+        <tr><td class="name">Red Canary</td><td>Devika</td><td><span class="pill p-crit">Arrears</span></td><td class="num">2026-07-13</td><td class="num">76</td><td>~$246k Collecting / In Effect</td><td>Bryan Beyer — Co-Founder &amp; CEO</td></tr>
+        <tr><td class="name">Maycomb Capital</td><td>Devika</td><td><span class="pill p-warn">Lender</span></td><td class="num">2026-07-29</td><td class="num">197</td><td>$1.75M PBC investment, servicing</td><td>Andrea Phillips — Founder / Managing Partner</td></tr>
+        <tr><td class="name">Gutter Capital</td><td>Devika</td><td><span class="pill p-warn">Board</span></td><td class="num">2025-07-18</td><td class="num">1</td><td>None open</td><td>Dan Teran — Co-Founder &amp; Managing Partner</td></tr>
+        <tr><td class="name">American Express</td><td>Devika</td><td><span class="pill p-dorm">Dormant</span></td><td class="num">2026-08-13</td><td class="num">27</td><td>$250k AIJI, New Lead</td><td>Hilary Packer — EVP &amp; CTO</td></tr>
+        <tr><td class="name">Spotify</td><td>JP Bowditch</td><td><span class="pill p-dorm">Dormant</span></td><td class="num">2026-06-30</td><td class="num">69</td><td>$100k AIJI, New Lead</td><td>Nora Wessel — Head of Strategy &amp; BD</td></tr>
+        <tr><td class="name">Tripadvisor</td><td>Systems Admin</td><td><span class="pill p-dorm">Dormant</span></td><td class="num">2026-08-13</td><td class="num">1</td><td>None since 2019</td><td>Aaron Rudenstine — Senior Director, Product</td></tr>
+        <tr><td class="name">OpenRouter</td><td>Devika</td><td><span class="pill p-new">Unworked</span></td><td class="num">2026-07-12</td><td class="num">28</td><td>$1M AIJI, New Lead</td><td>Alex Atallah — Co-Founder <em>(no title stored)</em></td></tr>
+        <tr><td class="name">TPG</td><td class="thin">— none —</td><td><span class="pill p-new">New</span></td><td class="num">2026-06-29</td><td class="num">10</td><td>Portfolio referral, in discussions</td><td>Anna Edwin — Global Head of HR</td></tr>
+        <tr><td class="name">Brightwheel</td><td>Systems Admin</td><td><span class="pill p-new">New</span></td><td class="num thin">never</td><td class="num">0</td><td>None</td><td>Anisha Vachani — Chief of Staff</td></tr>
+        <tr><td class="name">Major League Soccer</td><td>Yurgosky</td><td><span class="pill p-new">New</span></td><td class="num">2016-05-05</td><td class="num">1</td><td>None</td><td>Bari Greenfield — VP, Enterprise Partnerships</td></tr>
+        <tr><td class="name">National Football League</td><td>Shay Pezzulo</td><td><span class="pill p-new">New</span></td><td class="num thin">never</td><td class="num">0</td><td>None</td><td>Josh Helmrich — Senior Director, Media Strategy</td></tr>
+        <tr><td class="name">Cava</td><td class="thin">— none —</td><td><span class="pill p-new">New</span></td><td class="num thin">never</td><td class="num">0</td><td>None</td><td>Caitlin Slowinski <em>(no title stored)</em></td></tr>
+        <tr><td class="name">ITV</td><td class="thin">— none —</td><td><span class="pill p-new">New</span></td><td class="num thin">never</td><td class="num">0</td><td>None</td><td>Danielle Bibbo — Chief Business Officer</td></tr>
+        <tr><td class="name">Stew Leonard&rsquo;s</td><td class="thin">— none —</td><td><span class="pill p-new">New</span></td><td class="num thin">never</td><td class="num">0</td><td>None</td><td>Stew Leonard Jr. <em>(no title stored)</em></td></tr>
+        <tr><td class="name">Northwell</td><td class="thin">— none —</td><td><span class="pill p-crit">No record</span></td><td class="num">2026-08-07</td><td class="num">19*</td><td>None</td><td class="thin">None with a title</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section>
+  <h2><span class="num">03</span>Account by account</h2>
+  <p class="section-note">Grouped by the state of the relationship rather than alphabetically, so the accounts needing a decision sit together.</p>
+
+  <h3 class="tier">Live &amp; funded <span>money in effect or a proposal pending</span></h3>
+
+  <div class="acct live">
+    <div class="acct-head"><h4>Con Edison</h4><div class="owner">SF 0011U00000Dnvw1QAB &middot; Devika Gopal Agge &middot; Corporate</div></div>
+    <div class="facts">
+      <div class="fact"><span class="k">First touch</span><span class="v">2012-10-26</span></div>
+      <div class="fact"><span class="k">Last touch</span><span class="v">2026-08-11</span></div>
+      <div class="fact"><span class="k">Activity</span><span class="v">540 &middot; 206 mtgs</span></div>
+      <div class="fact"><span class="k">Opportunities</span><span class="v">26</span></div>
+      <div class="fact"><span class="k">Last SF task</span><span class="v">2026-06-03 done</span></div>
+    </div>
+    <div class="cols">
+      <div>
+        <p class="block-label">Most senior contacts</p>
+        <ul class="people">
+          <li><span class="who">Jen Hensley</span> — <span class="title">SVP, Corporate Affairs</span><span class="tagmark">Pursuit board</span><br><span class="stale">SF affiliation says &ldquo;Former&rdquo; (2024-11-01) — contradicted by the 28 Jul 2026 board invite.</span></li>
+          <li><span class="who">Joan Jacobs</span> — <span class="title">VP, Learning &amp; Inclusion</span></li>
+          <li><span class="who">Allisyn Glasser</span> — <span class="title">VP, IT</span></li>
+          <li><span class="who">La-Asia Hundley</span> — <span class="title">VP</span></li>
+          <li><span class="who">Richard David</span> — <span class="title">Director, Queens Regional &amp; Community Affairs</span></li>
+          <li><span class="who">David Caiafa</span> — <span class="title">AI Center of Excellence Lead</span></li>
+          <li><span class="who">Christina Cho</span> — <span class="title">day-to-day scheduler, no title stored</span></li>
+        </ul>
+      </div>
+      <div class="history">
+        <p class="block-label">History</p>
+        <p><strong>The deepest relationship on either list.</strong> 540 logged activities back to Oct 2012, including 206 meetings — more in-person contact than any other account. 588 emails touch a <span class="mono">coned.com</span> address.</p>
+        <p><strong>PBD:</strong> a $750K three-year AIJI pledge is booked as FY26/27/28 at $250k each, all <em>Ask in Progress</em>. FY25 Philanthropy $100k and FY25 Bash $50k both closed. FY26 Philanthropy $125k came back <em>Closed Lost</em>. Jen Hensley personally gave $4,500 and $4,000 via Benevity in Jan 2025 and Jan 2026.</p>
+        <p><strong>Jobs:</strong> a capstone deal — &ldquo;AI Solutions Architect&rdquo; — <strong>closed won</strong> 24 Jun 2026 under Avni Nahar. A separate full-time discussion is open but rated <em>low</em> likelihood. Six of ten pipeline contacts converted to opportunity.</p>
+        <p><strong>Last task:</strong> 11 Aug — Christina Cho rescheduling a 2:30 meeting. 6 Aug — &ldquo;Con Ed &ndash; Fire Warden Build&rdquo; from Avni Nahar.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="acct live">
+    <div class="acct-head"><h4>Adobe</h4><div class="owner">SF 0011U00000DnvvMQAR &middot; Devika Gopal Agge &middot; Corporate</div></div>
+    <div class="facts">
+      <div class="fact"><span class="k">First touch</span><span class="v">2013-07-16</span></div>
+      <div class="fact"><span class="k">Last touch</span><span class="v">2026-08-13</span></div>
+      <div class="fact"><span class="k">Activity</span><span class="v">48</span></div>
+      <div class="fact"><span class="k">Opportunities</span><span class="v">5</span></div>
+      <div class="fact"><span class="k">Open tasks</span><span class="v">1</span></div>
+    </div>
+    <div class="cols">
+      <div>
+        <p class="block-label">Most senior contacts</p>
+        <ul class="people">
+          <li><span class="who">Rachel Itwaru</span> — <span class="title">Global Lead, Nonprofit Skilling Partnerships</span><span class="tagmark">working contact</span></li>
+          <li><span class="who">Jack Sisson</span> — <span class="title">Senior Director of Engineering, Photoshop</span></li>
+          <li><span class="who">Judy Truong</span> — <span class="title">Sr. Technical Talent Partner</span></li>
+        </ul>
+        <div class="gap"><span class="cl-label">Gap</span>No C-level contact recorded anywhere, despite $300k/yr flowing. The relationship rests entirely on Rachel Itwaru.</div>
+      </div>
+      <div class="history">
+        <p class="block-label">History</p>
+        <p><strong>Small footprint, real money.</strong> Only 48 activities in 13 years, but currently the cleanest funded relationship on the list.</p>
+        <p><strong>PBD:</strong> FY26 Adobe Philanthropy/Marketing <strong>$300k/year is Collecting / In Effect</strong>. FY26 Employee Community Fund $20k is <em>Proposal Submitted</em> (closes 28 Aug). FY25 ECF $20k closed. The big swing — FY26 Local CSR/Marketing AIJI at <strong>$1.5M — was withdrawn</strong>.</p>
+        <p><strong>Recent:</strong> 29 Jun &ldquo;Fwd: Adobe Grant Approval&rdquo;. 19 Jun, Rachel Itwaru sent &ldquo;Adobe Digital Academy X Pursuit: Invitation to Apply&rdquo; to both Nick and Devika.</p>
+        <p><strong>Last task:</strong> 12 Jun, completed — &ldquo;[Adobe] Proposal Deck — Guilherme to work with Devika and include why-NY slides&rdquo;. One task open today: &ldquo;Youssef to be secondary? &ndash; Ask DGA&rdquo;.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="acct live">
+    <div class="acct-head"><h4>Wells Fargo</h4><div class="owner">SF 0011U00001uv39eQAA &middot; Devika Gopal Agge &middot; Corporate</div></div>
+    <div class="facts">
+      <div class="fact"><span class="k">First touch</span><span class="v">2018-12-14</span></div>
+      <div class="fact"><span class="k">Last touch</span><span class="v">2026-08-13</span></div>
+      <div class="fact"><span class="k">Activity</span><span class="v">128</span></div>
+      <div class="fact"><span class="k">Opportunities</span><span class="v">8</span></div>
+      <div class="fact"><span class="k">Open tasks</span><span class="v">1</span></div>
+    </div>
+    <div class="cols">
+      <div>
+        <p class="block-label">Most senior contacts</p>
+        <ul class="people">
+          <li><span class="who">Krissy Moore</span> — <span class="title">SVP &amp; Community Relations Northeast Sr. Manager</span><span class="tagmark">primary</span></li>
+          <li><span class="who">Wendy Takahisa</span> — <span class="title">Community Reinvestment Act (CRA) Leader</span></li>
+          <li><span class="who">Catherine Domenech</span> — <span class="title">Community Development Officer</span></li>
+          <li><span class="who">Bonnie Wallace</span> — <span class="title">Head of Financial Health Philanthropy</span></li>
+          <li><span class="who">Jessica Fried</span> — <span class="title">Early Careers Director, Head of Emerging Talent Programs</span></li>
+          <li><span class="who">Ebony A. Burt</span> — <span class="title">Head of Diversity, Equity and Inclusion</span></li>
+        </ul>
+        <div class="callout"><span class="cl-label">Note</span>The last three sit in <code>public.contacts</code> only — they are not linked to the Salesforce account and so are invisible to the PBD team.</div>
+      </div>
+      <div class="history">
+        <p class="block-label">History</p>
+        <p><strong>Warm and moving.</strong> FY25 Programmatic CRA Grant <strong>$300k closed 23 Oct 2025</strong>. FY26 AIJI $300k is <em>Proposal Submitted</em>, closing 1 Oct 2026.</p>
+        <p><strong>Live thread:</strong> on 5 Aug Devika submitted &ldquo;Invitation for Pursuit Transformation Company to Apply for Grant Funding by 8/14/26&rdquo;. Follow-ups on 7 and 11 Aug are both flagged <em>Slow to Respond</em>. <strong>That deadline is tomorrow.</strong></p>
+        <p><strong>Last tasks:</strong> 19 Jun — &ldquo;Share report with Nick before sending to Louisa, and fwd emails&rdquo;. 10 Jun — &ldquo;After 6/10 meeting send follow up about announcement and ask to expedite if possible&rdquo;. Both completed by Devika.</p>
+        <p><strong>Withdrawn:</strong> PBC 2025 $100k, FY23 Philanthropy $50k, Commit FY22 $96k.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="acct live">
+    <div class="acct-head"><h4>Goldman Sachs</h4><div class="owner">SF 0011U00000DnvwbQAB &middot; Devika Gopal Agge &middot; Financial Services</div></div>
+    <div class="facts">
+      <div class="fact"><span class="k">First touch</span><span class="v">2016-01-12</span></div>
+      <div class="fact"><span class="k">Last touch</span><span class="v">2026-08-05</span></div>
+      <div class="fact"><span class="k">Activity</span><span class="v">368</span></div>
+      <div class="fact"><span class="k">Opportunities</span><span class="v">25</span></div>
+      <div class="fact"><span class="k">Affiliations</span><span class="v">45</span></div>
+    </div>
+    <div class="cols">
+      <div>
+        <p class="block-label">Most senior contacts</p>
+        <ul class="people">
+          <li><span class="who">Jared Cohen</span> — <span class="title">Co-Head of Applied Innovation &amp; President of Global Affairs</span><span class="tagmark">most senior</span></li>
+          <li><span class="who">Susie Scher</span> — <span class="title">Partner</span></li>
+          <li><span class="who">Megan Hogan</span> — <span class="title">Chief Diversity Officer</span></li>
+          <li><span class="who">Margaret Anadu</span> — <span class="title">Head of Urban Investment Group</span></li>
+          <li><span class="who">Christopher Strazzella</span> — <span class="title">MD, Global Head of Engineering Recruiting</span></li>
+          <li><span class="who">Andrew Trout</span> — <span class="title">MD, Human Capital Management</span></li>
+          <li><span class="who">Belinda Neal</span> — <span class="title">Chief of Staff to the CIO</span></li>
+        </ul>
+        <div class="callout"><span class="cl-label">Flagged Former on 2024-11-01</span>Leke Osinubi (MD, Chief Risk Office &amp; CISO), Jumi Barnes (MD, IB Engineering), Mikhail Krel (MD, Global Head of Tech, EIG) — see finding 06; verify before writing them off.</div>
+      </div>
+      <div class="history">
+        <p class="block-label">History</p>
+        <p><strong>Reliable mid-size donor.</strong> FY25 Programmatic CRA Grant $150k closed Oct 2025; FY26 $30k closed Apr 2026. FY26 $200k is <em>Proposal Submitted</em>, closing 30 Oct.</p>
+        <p><strong>Two live threads, both unanswered.</strong> 5 Aug — &ldquo;Update: Goldman Sachs Community Development Champions Program&rdquo; from <span class="mono">gs-cd-grants</span>, Devika flagged Slow to Respond. 31 Jul and 3 Aug — &ldquo;Invitation to Honor Asahi at Pursuit Bash (Nov 18, Lincoln Center)&rdquo;, also Slow to Respond.</p>
+        <p><strong>Lost big:</strong> FY25 RFP GOS $1M withdrawn; FY26 PBC $100k withdrawn; Goldman Sachs FY24&ndash;25 $225k withdrawn.</p>
+        <p><strong>Jobs:</strong> four contacts in initial outreach, no opportunity. Last SF task completed 16 Jun 2026 by Avni Nahar.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="acct live">
+    <div class="acct-head"><h4>Macquarie</h4><div class="owner">SF 0011U00000DnvxCQAR &middot; Devika Gopal Agge &middot; Foundation</div></div>
+    <div class="facts">
+      <div class="fact"><span class="k">First touch</span><span class="v">2021-03-08</span></div>
+      <div class="fact"><span class="k">Last touch</span><span class="v">2026-08-12</span></div>
+      <div class="fact"><span class="k">Activity</span><span class="v">498</span></div>
+      <div class="fact"><span class="k">Opportunities</span><span class="v">10</span></div>
+      <div class="fact"><span class="k">Lifetime closed</span><span class="v">$2.75M</span></div>
+    </div>
+    <div class="cols">
+      <div>
+        <p class="block-label">Most senior contacts</p>
+        <ul class="people">
+          <li><span class="who">John Stowe</span> — <span class="title">COO</span><span class="tagmark">most senior</span></li>
+          <li><span class="who">William Gerald Demas</span> — <span class="title">Senior MD &amp; Head of Americas, Green Investment Group</span></li>
+          <li><span class="who">Pritha Mittal</span> — <span class="title">Interim Americas Head, Macquarie Group Foundation</span><span class="tagmark">working contact</span></li>
+          <li><span class="who">Jason Poley</span> — <span class="title">Head of Engineering</span></li>
+          <li><span class="who">Susan Clear</span> — <span class="title">Director, Social Impact Investing</span></li>
+          <li><span class="who">Olivia Templeman</span> — <span class="title">VP, Macquarie Group Foundation</span></li>
+          <li><span class="who">Erin Shakespeare</span> — <span class="title">Head of Philanthropy &amp; Engagement</span> <span class="stale">(marked Former 2024-11-01)</span></li>
+        </ul>
+      </div>
+      <div class="history">
+        <p class="block-label">History</p>
+        <p><strong>Both an investor and a funder.</strong> Macquarie $2M PBC Investment closed Mar 2023; FY23 Philanthropy $750,000 over three years closed Jun 2023. Together the largest lifetime value on the list.</p>
+        <p><strong>Two compliance items are overdue.</strong> 12 Aug — &ldquo;Pursuit PBC: Q4 and FY2025 Financials, Audited Financial extension and 2026 outlook&rdquo;, flagged <em>Slow to Respond</em>. 3 Aug — &ldquo;Request for KYC Refresh Information&rdquo;, also Slow to Respond. These are obligations to an existing investor, not asks.</p>
+        <p><strong>Live asks:</strong> FY26 AIJI $300k <em>Proposal Submitted</em>; FY26 PBC $100k <em>New Lead</em>; a $225k PBC line withdrawn.</p>
+        <p><strong>Recent inbound:</strong> Pritha Mittal sent &ldquo;Materials and Notes from MGF Virtual Lunch&rdquo; (24 Jul) and &ldquo;Thank You &amp; Action Requested&rdquo; (22 Jul). <strong>Jobs:</strong> full-time discussion open since 16 Apr.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="acct live">
+    <div class="acct-head"><h4>Blackstone</h4><div class="owner">SF 0011U00000Dnvz5QAB &middot; Devika Gopal Agge &middot; Foundation</div></div>
+    <div class="facts">
+      <div class="fact"><span class="k">First touch</span><span class="v">2014-08-01</span></div>
+      <div class="fact"><span class="k">Last touch</span><span class="v">2026-08-13</span></div>
+      <div class="fact"><span class="k">Activity</span><span class="v">698</span></div>
+      <div class="fact"><span class="k">Opportunities</span><span class="v">32</span></div>
+      <div class="fact"><span class="k">Affiliations</span><span class="v">78</span></div>
+    </div>
+    <div class="cols">
+      <div>
+        <p class="block-label">Most senior contacts</p>
+        <ul class="people">
+          <li><span class="who">John Stecher</span> — <span class="title">CTO</span><span class="tagmark">prior Commit</span></li>
+          <li><span class="who">Adam Fletcher</span> — <span class="title">Senior MD, BXTI, Chief Security Officer</span><span class="tagmark">CISO council</span></li>
+          <li><span class="who">Paige Ross</span> — <span class="title">Sr. MD, Global Head of Human Resources</span></li>
+          <li><span class="who">Maura Pally</span> — <span class="title">Executive Director, Blackstone Charitable Foundation</span></li>
+          <li><span class="who">Nimisha Patel</span> — <span class="title">Chief Financial &amp; Administrative Officer, Technology &amp; Innovations</span></li>
+          <li><span class="who">Megan Hayes</span> — <span class="title">MD, COO of Blackstone Technology &amp; Innovations</span></li>
+          <li><span class="who">Josh Blaine</span> — <span class="title">Senior Managing Director</span></li>
+          <li><span class="who">Arielle Samuels</span> — <span class="title">Global Head of Marketing</span></li>
+        </ul>
+      </div>
+      <div class="history">
+        <p class="block-label">History</p>
+        <p><strong>Three consecutive years of $150k.</strong> FY24 Employee Engagement $150k, FY25 Philanthropy $150k (Feb 2025), FY26 $150k (Jan 2026) — all Closed / Completed. The most predictable donor in the set.</p>
+        <p><strong>The stretch failed:</strong> FY26 Charitable Foundation AIJI at $1M was withdrawn, as was a $300k Gives Back Challenge in FY24.</p>
+        <p><strong>Open:</strong> FY26 PBC Blackstone [Cyber] $135,000, still <em>New Lead</em> since Jun 2024. Given Adam Fletcher&rsquo;s CISO-council tag and James Chiappetta on cybersecurity, this is the most obvious warm path on the account — and Fletcher was moved to <em>revisit</em> in the Jobs pipeline yesterday (12 Aug).</p>
+        <p><strong>Recent:</strong> 7 Aug — Blackstone procurement system downtime notice, flagged Slow to Respond. Last substantive task 20 Nov 2025, &ldquo;Meeting Request + Pursuit update&rdquo;; Sep&ndash;Oct 2025 saw a run of Women in Technology volunteer events.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="acct live">
+    <div class="acct-head"><h4>Mastercard</h4><div class="owner">SF 0011U00000Tpz74QAB (Devika) &plus; 0018Z00002nXrFkQAK (Steve Citrin) &mdash; duplicate</div></div>
+    <div class="facts">
+      <div class="fact"><span class="k">First touch</span><span class="v">2019-02-26</span></div>
+      <div class="fact"><span class="k">Last touch</span><span class="v">2026-06-02</span></div>
+      <div class="fact"><span class="k">Activity</span><span class="v">19 + 18</span></div>
+      <div class="fact"><span class="k">Opportunities</span><span class="v">8</span></div>
+      <div class="fact"><span class="k">Jobs stage</span><span class="v">In discussions</span></div>
+    </div>
+    <div class="cols">
+      <div>
+        <p class="block-label">Most senior contacts</p>
+        <ul class="people">
+          <li><span class="who">Lucrecia Borgonovo</span> — <span class="title">Chief Talent and Organizational Effectiveness Officer</span></li>
+          <li><span class="who">Sarah Walker</span> — <span class="title">SVP, Engineering Digital Marketing Programs</span><span class="tagmark">Pursuit op board</span></li>
+          <li><span class="who">Lois Bruu</span> — <span class="title">VP, Humanitarian &amp; Development</span></li>
+          <li><span class="who">Yudelkis Nunez-Rodriguez</span> — <span class="title">Sr. HRBP, Strategic Growth</span></li>
+          <li><span class="who">Marla Blow</span> — <span class="title">SVP, Social Impact North America</span> <span class="stale">(left 2021)</span></li>
+        </ul>
+        <div class="gap"><span class="cl-label">Duplicate</span>Both Salesforce accounts carry 2026 activity. Sarah Walker&rsquo;s May 2026 meeting sits on Steve Citrin&rsquo;s record, not Devika&rsquo;s. Merge before the next ask.</div>
+      </div>
+      <div class="history">
+        <p class="block-label">History</p>
+        <p><strong>Sarah Walker is the relationship.</strong> She sits on Pursuit&rsquo;s operating board and is the only two-way thread. 27 Apr — Elizabeth Sanchez brokered &ldquo;Devika | Sarah &ndash; Connect&rdquo;; 21 May — Sarah replied on &ldquo;PBC: Devika / Sarah Walker&rdquo;; 28 May — meeting held.</p>
+        <div class="callout"><span class="cl-label">Devika&rsquo;s note, 30 Jul 2026</span>&ldquo;Emailed with Sarah Walker. She is OOO. Plans to talk to Janet at Mastercard &amp; do the Accenture intro next week after she is back.&rdquo; <strong>That follow-up is now two weeks overdue.</strong></div>
+        <p><strong>PBD:</strong> nothing has ever closed beyond a $500 employee match. FY26 AIJI $500K sits at New Lead; FY25 Philanthropy $50k and Bash $5k both withdrawn; a 2022 Guaranteed Hire deal for $96k withdrawn.</p>
+        <p><strong>Jobs:</strong> full-time opportunity <em>active in discussions</em> since 20 May. Both Sarah Walker and Yudelkis Nunez-Rodriguez have converted to opportunity.</p>
+      </div>
+    </div>
+  </div>
+
+  <h3 class="tier">In arrears or broken down <span>money owed, or a partnership that has stopped converting</span></h3>
+
+  <div class="acct crit">
+    <div class="acct-head"><h4>Citi</h4><div class="owner">SF 0011U00000DnvzMQAR &middot; Devika &middot; + Citigroup (Alexis Medina) + Citibank (FinTech)</div></div>
+    <div class="facts">
+      <div class="fact"><span class="k">First touch</span><span class="v">2013-02-14</span></div>
+      <div class="fact"><span class="k">Last touch</span><span class="v">2026-08-10</span></div>
+      <div class="fact"><span class="k">Activity</span><span class="v">572</span></div>
+      <div class="fact"><span class="k">Opportunities</span><span class="v">30</span></div>
+      <div class="fact"><span class="k">Affiliations</span><span class="v">153</span></div>
+    </div>
+    <div class="cols">
+      <div>
+        <p class="block-label">Most senior contacts</p>
+        <ul class="people">
+          <li><span class="who">Mark Mason</span> — <span class="title">Chief Financial Officer, Citi</span><span class="tagmark">most senior</span></li>
+          <li><span class="who">Edward Skyler</span> — <span class="title">EVP, Global Public Affairs</span></li>
+          <li><span class="who">Erika Brown</span> — <span class="title">Chief DEI Officer &amp; Global Head of Talent</span> <span class="stale">(on the Citigroup duplicate)</span></li>
+          <li><span class="who">Brandee McHale</span> — <span class="title">Head of Community Investing &amp; President, Citi Foundation</span> <span class="stale">(Citigroup duplicate)</span></li>
+          <li><span class="who">Eleanor Drew</span> — <span class="title">MD, Global Head of Information Service Technology &amp; Operations</span></li>
+          <li><span class="who">Alexandra Brykman</span> — <span class="title">MD, Technology COO &amp; ICG Head of Transformation</span></li>
+          <li><span class="who">Colm Cunningham</span> — <span class="title">Head of HR</span></li>
+          <li><span class="who">Jorge Nava</span> — <span class="title">Global Head of Social Finance</span></li>
+          <li><span class="who">Florencia Spangaro</span> — <span class="title">COO, Citi Foundation</span></li>
+        </ul>
+      </div>
+      <div class="history">
+        <p class="block-label">History</p>
+        <p><strong>The best contact map on the list, and the worst conversion.</strong> 153 affiliations including the CFO — yet every FY25 and FY26 philanthropy attempt was withdrawn or lost.</p>
+        <p><strong>Withdrawn in the last 18 months:</strong> FY25 Philanthropy $250k, Bash25 $25k, Accelerate Youth Employability RFP $500k, Community Finance Innovation Fund RFP $500k, Citi UX Commit $50k, Citi Commit $375k. FY24 Community Progress Makers $1M/3yr — <em>Closed Lost</em>. The last thing to actually close was Citi Headcount Commit 4x at $40k in Apr 2024.</p>
+        <p><strong>Now in collections.</strong> Kirstie Chen sent three notices on 27 Jul (&ldquo;Overdue Payment Reminder&rdquo; &times;2, &ldquo;Overdue Balance&rdquo;) and followed up 10 Aug with &ldquo;Following up on Pursuit Support&rdquo;.</p>
+        <p><strong>Open ask:</strong> FY26 Citi AIJI $1M, still <em>New Lead</em> since 11 Feb. <strong>Jobs:</strong> 22 contacts staged but no opportunity. Last SF task closed Aug 2025.</p>
+        <div class="callout"><span class="cl-label">Don&rsquo;t confuse</span><strong>Citizens Bank</strong> is a separate, healthy account — five AI Cybersecurity Analyst roles at <em>active opportunity confirmed</em>, $80k starting, Rhode Island, interviews mid-late October.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="acct crit">
+    <div class="acct-head"><h4>Uber</h4><div class="owner">SF 0011U00000DnvycQAB &middot; Devika Gopal Agge &middot; Transportation</div></div>
+    <div class="facts">
+      <div class="fact"><span class="k">First touch</span><span class="v">2013-04-18</span></div>
+      <div class="fact"><span class="k">Last touch</span><span class="v">2026-07-13</span></div>
+      <div class="fact"><span class="k">Activity</span><span class="v">821 &mdash; highest</span></div>
+      <div class="fact"><span class="k">Affiliations</span><span class="v">165</span></div>
+      <div class="fact"><span class="k">Open tasks</span><span class="v">1</span></div>
+    </div>
+    <div class="cols">
+      <div>
+        <p class="block-label">Most senior contacts</p>
+        <ul class="people">
+          <li><span class="who">Dara Khosrowshahi</span> — <span class="title">CEO</span><span class="tagmark">prior Commit</span></li>
+          <li><span class="who">Tony West</span> — <span class="title">SVP, Chief Legal Officer &amp; Corporate Secretary</span></li>
+          <li><span class="who">Bo Young Lee</span> — <span class="title">Chief Diversity &amp; Inclusion Officer</span></li>
+          <li><span class="who">Lee Rudolph</span> — <span class="title">Vice President of Engineering</span></li>
+          <li><span class="who">Maasha Kah</span> — <span class="title">Senior Director, DEI</span></li>
+          <li><span class="who">Josh Gold</span> / <span class="who">Jason Post</span> — <span class="title">Directors, Public Policy &amp; Communications</span></li>
+        </ul>
+        <div class="callout"><span class="cl-label">Alumni depth</span>48 Salesforce contacts and 165 affiliations, the bulk of them Pursuit graduates placed as software engineers (SWE I through Staff). This is the largest alumni concentration of any account.</div>
+      </div>
+      <div class="history">
+        <p class="block-label">History</p>
+        <p><strong>Biggest history, collapsed funding.</strong> 821 activities since 2013 and three closed LevelUp cycles — 2020 $160k, 2022 $240k, 2023 $240k — plus Bash FY24 at $100k.</p>
+        <p><strong>Everything since has been withdrawn:</strong> FY26 AIJI Operating Campaign $5M, FY25 Bash $100k, FY24/25/26 Corporate Donation $25k each. FY26 PBC Uber LevelUp $315,000 has sat at <em>New Lead</em> since Mar 2023.</p>
+        <p><strong>In default.</strong> 13 Jul — &ldquo;Urgent: Payment Plan Default and Outstanding Balance&rdquo; from Kirstie Chen.</p>
+        <p><strong>Last task:</strong> open since 12 Jun, Devika — &ldquo;Research contacts to ping&rdquo;. Before that, a Mar 2026 thread on a possible Uber gong ceremony, and Damon Kornhauser&rsquo;s 23 Jun cold outreach. Johnny Shaw at Uber for Business was in touch 3 and 8 Jul about a premium account — a vendor thread, not a partnership one.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="acct crit">
+    <div class="acct-head"><h4>Peloton</h4><div class="owner">SF 0011U00000F6LvDQAV &middot; Devika Gopal Agge &middot; Corporate</div></div>
+    <div class="facts">
+      <div class="fact"><span class="k">First touch</span><span class="v">2016-06-08</span></div>
+      <div class="fact"><span class="k">Last touch</span><span class="v">2026-07-13</span></div>
+      <div class="fact"><span class="k">Activity</span><span class="v">164</span></div>
+      <div class="fact"><span class="k">Last closed</span><span class="v">2022-09-13</span></div>
+      <div class="fact"><span class="k">Open pipeline</span><span class="v thin">none</span></div>
+    </div>
+    <div class="cols">
+      <div>
+        <p class="block-label">Most senior contacts</p>
+        <ul class="people">
+          <li><span class="who">Barry McCarthy</span> — <span class="title">President and CEO</span> <span class="stale">CRM says &ldquo;Current&rdquo; — he has since stepped down. Stale.</span></li>
+          <li><span class="who">Matt Skavenski</span> — <span class="title">VP of Software Engineering, App</span></li>
+          <li><span class="who">Francis Shanahan</span> — <span class="title">VP, Cardio Software</span></li>
+          <li><span class="who">Paul Bouzakis</span> — <span class="title">Senior Director of Engineering</span></li>
+          <li><span class="who">Alia McCants</span> — <span class="title">Senior Director of ESG, Social Impact</span></li>
+          <li><span class="who">April Lecato</span> — <span class="title">Sr. Director, ESG Strategy</span></li>
+        </ul>
+      </div>
+      <div class="history">
+        <p class="block-label">History</p>
+        <p><strong>A Commit partner that stopped.</strong> Peloton FY22 Commit Tranche 1 closed at $240,000 in Sep 2022, following an allocated-headcount deal in 2020. Nothing has closed since.</p>
+        <p><strong>Withdrawn:</strong> FY23 Commit $240,000, FY23 Philanthropy $25k, FY25 Commit $165,000, FY25 Philanthropy $10k.</p>
+        <p><strong>In default.</strong> 8 Jul — &ldquo;June Payment Overdue&rdquo;; 13 Jul — &ldquo;Urgent: Overdue Payment Plan Payment&rdquo;. Both from Kirstie Chen.</p>
+        <p>The only other 2026 contact is Damon Kornhauser&rsquo;s 30 Jun cold outreach. <strong>Jobs:</strong> seven contacts staged, four assigned, none converted. No live opportunity anywhere in the system.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="acct crit">
+    <div class="acct-head"><h4>Red Canary</h4><div class="owner">SF 001Pa00000CuHaPIAV &middot; Devika Gopal Agge &middot; Corporate</div></div>
+    <div class="facts">
+      <div class="fact"><span class="k">First touch</span><span class="v">2024-04-08</span></div>
+      <div class="fact"><span class="k">Last touch</span><span class="v">2026-07-13</span></div>
+      <div class="fact"><span class="k">Activity</span><span class="v">76</span></div>
+      <div class="fact"><span class="k">In effect</span><span class="v">~$246k</span></div>
+      <div class="fact"><span class="k">Opportunities</span><span class="v">5</span></div>
+    </div>
+    <div class="cols">
+      <div>
+        <p class="block-label">Most senior contacts</p>
+        <ul class="people">
+          <li><span class="who">Bryan Beyer</span> — <span class="title">Co-Founder and CEO</span><span class="tagmark">most senior</span></li>
+          <li><span class="who">Keith McCammon</span> — <span class="title">Co-Founder and CSO</span></li>
+          <li><span class="who">Joe Moles</span> — <span class="title">CTO</span><span class="tagmark">prior Commit</span></li>
+          <li><span class="who">Melissa Czapiga</span> — <span class="title">Chief Marketing Officer</span></li>
+          <li><span class="who">Todd Gaiser</span> — <span class="title">Vice President, Engineering</span></li>
+          <li><span class="who">Jason Joyce</span> — <span class="title">Senior Director, Detection Engineering &amp; Response</span></li>
+        </ul>
+      </div>
+      <div class="history">
+        <p class="block-label">History</p>
+        <p><strong>Newest real hiring partner, oldest unpaid invoice.</strong> Onboarded Apr 2024. Three opportunities are still marked <em>Collecting / In Effect</em>: Red Canary/Zscaler Commit 2x $123,000, program fee $75,000, and Commit 2x $48,000.</p>
+        <p><strong>But:</strong> 12 Feb — &ldquo;Pursuit &ndash; Invoice 990&rdquo; from Agnieszka Zebzda. 13 Jul — &ldquo;Overdue Notice &ndash; Action Required&rdquo; from Kirstie Chen. The contracted revenue is not arriving.</p>
+        <p><strong>Open asks:</strong> FY26 PBC program fee $75k and FY26 AIJI $100K, both <em>New Lead</em>.</p>
+        <p><strong>Jobs:</strong> the deepest staged bench of any account relative to size — 12 contacts, 10 assigned, spanning CEO, CSO, CTO, CMO, VP Eng and two recruiters. Two alumni are placed there as software engineers.</p>
+      </div>
+    </div>
+  </div>
+
+  <h3 class="tier">Capital relationships <span>lenders, investors and board — not donor accounts</span></h3>
+
+  <div class="acct warn">
+    <div class="acct-head"><h4>Maycomb Capital</h4><div class="owner">SF 0011U00001OVFxNQAX &middot; Devika Gopal Agge &middot; Corporate</div></div>
+    <div class="facts">
+      <div class="fact"><span class="k">First touch</span><span class="v">2017-10-31</span></div>
+      <div class="fact"><span class="k">Last touch</span><span class="v">2026-07-29</span></div>
+      <div class="fact"><span class="k">Activity</span><span class="v">197</span></div>
+      <div class="fact"><span class="k">Position</span><span class="v">$1.75M PBC</span></div>
+    </div>
+    <div class="cols">
+      <div>
+        <p class="block-label">Most senior contacts</p>
+        <ul class="people">
+          <li><span class="who">Andrea (Andi) Phillips</span> — <span class="title">Founder / Managing Partner</span> <span class="stale">no title stored in CRM</span></li>
+          <li><span class="who">Shelby Kohn</span> — <span class="title">Director of Public-Private Partnerships</span></li>
+          <li><span class="who">Danielle Schweitzer</span> — <span class="title">loan servicing contact</span></li>
+          <li><span class="who">Luis Schwedler</span> — <span class="title">Associate</span></li>
+          <li><span class="who">Simone Gross</span> — <span class="title">no title stored</span></li>
+        </ul>
+      </div>
+      <div class="history">
+        <p class="block-label">History</p>
+        <p><strong>A lender, not a donor.</strong> Maycomb Capital $1.75M PBC Investment closed Mar 2023. Pursuit is servicing that loan — &ldquo;Loan Payment Invoice &ndash; Maycomb&rdquo; arrived 1 Jun 2026 from Danielle Schweitzer.</p>
+        <p>An earlier 2020 approach was closed as &ldquo;Not a structural fit &ndash; Maycomb&rdquo;.</p>
+        <p><strong>The live thread has stalled on staffing.</strong> 13 May — &ldquo;Re: Pursuit / Maycomb &ndash; Follow-Up&rdquo;. 21 Jul — Andi Phillips replied &ldquo;Tentative&rdquo; to a Maycomb/Pursuit follow-up. 29 Jul — the thread bounced with Rebecca Qian&rsquo;s maternity-leave auto-reply. <strong>Nobody has picked it back up.</strong></p>
+      </div>
+    </div>
+  </div>
+
+  <div class="acct warn">
+    <div class="acct-head"><h4>Gutter Capital</h4><div class="owner">SF 0011U00001xbQi6QAE &middot; Devika Gopal Agge &middot; Corporate (VC)</div></div>
+    <div class="facts">
+      <div class="fact"><span class="k">First touch</span><span class="v">2021-11-16</span></div>
+      <div class="fact"><span class="k">Last touch</span><span class="v">2025-07-18</span></div>
+      <div class="fact"><span class="k">Activity</span><span class="v">1</span></div>
+      <div class="fact"><span class="k">Opportunities</span><span class="v">4</span></div>
+    </div>
+    <div class="cols">
+      <div>
+        <p class="block-label">Most senior contacts</p>
+        <ul class="people">
+          <li><span class="who">Dan Teran</span> — <span class="title">Co-Founder &amp; Managing Partner</span><span class="tagmark">Pursuit board</span></li>
+          <li><span class="who">James Gettinger</span> — <span class="title">Co-Founder &amp; Managing Partner</span></li>
+          <li><span class="who">Richard Hughes</span> — <span class="title">Operating Partner</span> <span class="stale">filed under the misspelled &ldquo;Gutter Captial&rdquo; account</span></li>
+        </ul>
+      </div>
+      <div class="history">
+        <p class="block-label">History</p>
+        <p><strong>A board relationship with a small annual give.</strong> FY25 Gutter Capital (Dan Teran) Board $15k closed 31 Jul 2025 under Jukay Hsu. FY21 Philanthropy $10k closed; FY22 $5k withdrawn.</p>
+        <p><strong>The strategic play was lost.</strong> &ldquo;Gutter Capital &ndash; Commit for Portfolio &ndash; $240,000&rdquo; was <em>Closed Lost</em> at the end of 2023 — the same portfolio-referral thesis now being tried at TPG.</p>
+        <p>Only one logged activity in the entire warehouse: &ldquo;Email: Re: Pursuit Wire&rdquo;, 18 Jul 2025. Given Dan Teran sits on the board, the relationship clearly runs through channels that never reach the CRM.</p>
+      </div>
+    </div>
+  </div>
+
+  <h3 class="tier">Dormant <span>real contact maps, no live thread</span></h3>
+
+  <div class="acct dorm">
+    <div class="acct-head"><h4>American Express</h4><div class="owner">SF 0011U00000F6LsIQAV &middot; Devika Gopal Agge &middot; Banking</div></div>
+    <div class="facts">
+      <div class="fact"><span class="k">First touch</span><span class="v">2014-04-07</span></div>
+      <div class="fact"><span class="k">Last real touch</span><span class="v">2026-06-23</span></div>
+      <div class="fact"><span class="k">Activity</span><span class="v">27</span></div>
+      <div class="fact"><span class="k">Closed ever</span><span class="v thin">$0 philanthropy</span></div>
+    </div>
+    <div class="cols">
+      <div>
+        <p class="block-label">Most senior contacts</p>
+        <ul class="people">
+          <li><span class="who">Hilary Packer</span> — <span class="title">EVP and CTO</span><span class="tagmark">most senior</span></li>
+          <li><span class="who">Andie Kortes</span> — <span class="title">Chief Talent Officer</span></li>
+          <li><span class="who">Madge Thomas</span> — <span class="title">President, Amex Foundation &amp; Head of Corporate Sustainability</span><span class="tagmark">best for PBD</span></li>
+          <li><span class="who">Anna Marrs</span> — <span class="title">Group President, Global Commercial Services</span></li>
+          <li><span class="who">Courtney Kelso</span> — <span class="title">EVP &amp; GM, Global Commercial Card</span></li>
+          <li><span class="who">Sofia Martins</span> — <span class="title">VP, DEI</span> &middot; plus five VPs of Engineering</li>
+        </ul>
+        <div class="callout"><span class="cl-label">Note</span>Madge Thomas and Anna Marrs exist only in <code>public.contacts</code> — neither is linked to the Salesforce account, so the single most relevant person for a foundation ask is invisible to PBD.</div>
+      </div>
+      <div class="history">
+        <p class="block-label">History</p>
+        <p><strong>Excellent access, zero conversion.</strong> Chief Talent Officer, EVP/CTO and five engineering VPs on file — and no philanthropy has ever closed. The only thing ever marked Collecting was a 2020 Guaranteed Hire agreement.</p>
+        <p><strong>Withdrawn:</strong> FY25 Philanthropy $1M, FY25 Bash $25k, FY23 Philanthropy $25k. FY26 Amex Foundation AIJI $250K sits at <em>New Lead</em>.</p>
+        <p><strong>Nothing warm is running.</strong> The only 2026 contact is Damon Kornhauser&rsquo;s 23 Jun mass outreach. The last human thread was 1 May 2025 — &ldquo;Follow-Up: Meeting with Alice &amp; Pursuit Team&rdquo; from Melanie Okuneye-Williams. The one open task is the generic &ldquo;Youssef to be secondary?&rdquo; note.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="acct dorm">
+    <div class="acct-head"><h4>Spotify</h4><div class="owner">SF 0011U00000DnvyFQAR &middot; <strong>JP Bowditch</strong> &middot; Media &mdash; not a Devika account</div></div>
+    <div class="facts">
+      <div class="fact"><span class="k">First touch</span><span class="v">2016-02-17</span></div>
+      <div class="fact"><span class="k">Last touch</span><span class="v">2026-06-30</span></div>
+      <div class="fact"><span class="k">Activity</span><span class="v">69 &middot; 3 mtgs</span></div>
+      <div class="fact"><span class="k">Closed ever</span><span class="v">$100 match</span></div>
+    </div>
+    <div class="cols">
+      <div>
+        <p class="block-label">Most senior contacts</p>
+        <ul class="people">
+          <li><span class="who">Nora Wessel</span> — <span class="title">Head of Strategy &amp; Business Development</span><span class="tagmark">warmest</span></li>
+          <li><span class="who">M&aacute;uhan M Zonoozy</span> — <span class="title">Head of Innovation</span></li>
+          <li><span class="who">Maya Prohovnik</span> — <span class="title">VP, Head of Podcast Product</span></li>
+          <li><span class="who">Anna Hougart</span> — <span class="title">Global Head of Sales Operations</span></li>
+          <li><span class="who">Alexis Wilson</span> — <span class="title">Senior Manager, Social Impact</span> <span class="stale">only linked SF contact</span></li>
+        </ul>
+      </div>
+      <div class="history">
+        <p class="block-label">History</p>
+        <p><strong>Nine years, nothing closed.</strong> Every opportunity since 2017 was withdrawn or lost: FY17 $25k, FY19 Bash $25k, FY21 Volunteering $20k (did not fulfil), FY22 $20k, 2022 Allocated Hires $40k, FY25 Philanthropy $25k. The only money ever received is a $100 employee match.</p>
+        <p><strong>The one warm signal:</strong> 5 Mar 2026 — &ldquo;Coffee: Nick Simmons &lt;&gt; Nora Wessel&rdquo;, a real meeting with the Head of Strategy &amp; BD. Nothing was built on it; the account&rsquo;s only subsequent activity is Damon&rsquo;s mass outreach on 23 and 30 Jun.</p>
+        <p><strong>Open:</strong> FY26 Spotify AIJI $100K at <em>New Lead</em>, owned by JP Bowditch — note this is the one account on your list <em>not</em> tagged to Devika.</p>
+        <p><strong>Jobs:</strong> nine contacts; M&aacute;uhan Zonoozy and Amanda Yepez were both moved to <em>revisit</em> on 12 Aug.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="acct dorm">
+    <div class="acct-head"><h4>Tripadvisor</h4><div class="owner">SF 0011U00000NuH9vQAF &middot; <strong>Systems Admin</strong> &mdash; orphaned</div></div>
+    <div class="facts">
+      <div class="fact"><span class="k">Created</span><span class="v">2019-04-05</span></div>
+      <div class="fact"><span class="k">SF last activity</span><span class="v">2019-03-18</span></div>
+      <div class="fact"><span class="k">Activity</span><span class="v">1</span></div>
+      <div class="fact"><span class="k">Opportunities</span><span class="v">1, lost</span></div>
+    </div>
+    <div class="cols">
+      <div>
+        <p class="block-label">Most senior contacts</p>
+        <ul class="people">
+          <li><span class="who">Aaron Rudenstine</span> — <span class="title">Senior Director, Product</span> <span class="stale">personal gmail on file, not a corporate address</span></li>
+          <li><span class="who">Kat Krieger</span> — <span class="title">Head of Strategy</span> <span class="stale">Bedrock only, no SF link</span></li>
+        </ul>
+      </div>
+      <div class="history">
+        <p class="block-label">History</p>
+        <p><strong>Effectively a blank account.</strong> One opportunity ever — &ldquo;Tripadvisor Hiring Fellows &ndash; Non-Guaranteed Hire&rdquo; — <em>Closed Lost</em> 31 May 2019. Nothing since.</p>
+        <p><strong>It is being revived right now, by you.</strong> The single logged activity and the single open task both date to today: &ldquo;Add to Jobs accounts and add Nick&rsquo;s contact&rdquo;, owner Kwame Assoku, Not Started.</p>
+        <p>Before working it, reassign ownership away from Systems Admin and get a corporate email for Aaron Rudenstine.</p>
+      </div>
+    </div>
+  </div>
+
+  <h3 class="tier">Unworked &amp; new targets <span>leads with an ask on file but no relationship yet</span></h3>
+
+  <div class="acct new">
+    <div class="acct-head"><h4>OpenRouter</h4><div class="owner">SF 001Pa00001E0uo2IAB &middot; Devika Gopal Agge &middot; Corporate</div></div>
+    <div class="facts">
+      <div class="fact"><span class="k">Created</span><span class="v">2026-02-11</span></div>
+      <div class="fact"><span class="k">Last touch</span><span class="v">2026-07-12</span></div>
+      <div class="fact"><span class="k">Activity</span><span class="v">28*</span></div>
+      <div class="fact"><span class="k">Ask</span><span class="v">$1M AIJI</span></div>
+      <div class="fact"><span class="k">Stage</span><span class="v">New Lead</span></div>
+    </div>
+    <div class="cols">
+      <div>
+        <p class="block-label">Most senior contacts</p>
+        <ul class="people">
+          <li><span class="who">Alex Atallah</span> — <span class="title">no title stored</span> <span class="stale">OpenRouter co-founder; staged &ldquo;assigned&rdquo; in Jobs</span></li>
+          <li><span class="who">Emma Cryer</span> — <span class="title">no title stored</span> <span class="stale">converted to opportunity</span></li>
+        </ul>
+        <div class="gap"><span class="cl-label">Gap</span>No Salesforce contacts and no affiliations. Neither person has a title in any system. A $1M ask with no named decision-maker.</div>
+      </div>
+      <div class="history">
+        <p class="block-label">History</p>
+        <p><strong>A board-sourced lead that was never worked.</strong> The Jobs opportunity records <code>source: board</code> and <code>relationship_owner: devika</code>, opened 18 Jun, last updated yesterday — but rated <em>low</em> likelihood.</p>
+        <p><strong>FY26 OpenRouter AIJI $1M has sat at New Lead for six months</strong>, since 11 Feb.</p>
+        <p><strong>*The 28 &ldquo;activities&rdquo; are misleading.</strong> All 24 <span class="mono">openrouter.ai</span> emails are product marketing from <span class="mono">welcome@openrouter.ai</span> to Pursuit staff inboxes (Zhong, Agnieszka, Yoshi, Kirstie) — Pursuit is a <em>customer</em> of OpenRouter. There is no relationship correspondence at all.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="acct new">
+    <div class="acct-head"><h4>TPG</h4><div class="owner">No Salesforce account &middot; Bedrock only &middot; Devika Gopal Agge</div></div>
+    <div class="facts">
+      <div class="fact"><span class="k">First touch</span><span class="v">2021-03-15</span></div>
+      <div class="fact"><span class="k">Last touch</span><span class="v">2026-06-29</span></div>
+      <div class="fact"><span class="k">Activity</span><span class="v">10</span></div>
+      <div class="fact"><span class="k">Jobs stage</span><span class="v">In discussions</span></div>
+      <div class="fact"><span class="k">Segment</span><span class="v">vc_pe</span></div>
+    </div>
+    <div class="cols">
+      <div>
+        <p class="block-label">Most senior contacts</p>
+        <ul class="people">
+          <li><span class="who">Anna Edwin</span> — <span class="title">Global Head of HR</span><span class="tagmark">target</span> <span class="stale">named in Devika&rsquo;s call note, not yet a CRM record</span></li>
+          <li><span class="who">&ldquo;Jackie&rdquo;</span> — <span class="title">Managing Director, Chief of Staff, HR</span> <span class="stale">no surname captured</span></li>
+          <li><span class="who">John Flynn</span> — <span class="title">Partner</span></li>
+          <li><span class="who">Swetha Sanagavarapu</span>, <span class="who">Divya Arya</span>, <span class="who">Bruno Moguel Gallegos</span> — <span class="title">Vice Presidents</span></li>
+        </ul>
+      </div>
+      <div class="history">
+        <p class="block-label">History</p>
+        <p><strong>The most advanced of the new accounts.</strong> First contact Mar 2021 — Daniel Chait of Greenhouse introduced &ldquo;Pursuit &lt;&gt; TPG&rdquo; to Jukay Hsu. Then five years of silence.</p>
+        <p><strong>Revived Jun 2026:</strong> 9 Jun, Nick Simmons sent &ldquo;Reconnecting &ndash; TPG &lt;&gt; Pursuit&rdquo;. 23 Jun, &ldquo;Great convo &ndash; next steps and materials&rdquo;. Devika&rsquo;s follow-ups on 26 and 29 Jun are both flagged <em>Slow to Respond</em>.</p>
+        <div class="callout"><span class="cl-label">Devika&rsquo;s call note, 24 Jul 2026</span>Call with Jackie (MD, Chief of Staff, HR): 3 years at TPG, 16 at the firm; oversees HR business partners and works closely with <strong>Anna Edwin, Global Head of HR</strong>, on talent strategy. <strong>&ldquo;TPG does not directly support portfolio companies on HR; that sits with the ops team.&rdquo;</strong> Occasionally advises as needed. Action: send follow-up email — <em>still outstanding.</em></div>
+        <p>That note is the key finding: the portfolio-referral thesis needs the <strong>ops team</strong>, not central HR. It is the same play that was Closed Lost at Gutter Capital in 2023.</p>
+        <div class="gap"><span class="cl-label">Data</span>The Jobs opportunity has <code>account_id = 'UNKNOWN'</code> and there is no Salesforce account. Also note: the six <code>coretrustpg.com</code> contacts are CoreTrust, a false match — exclude them.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="acct new">
+    <div class="acct-head"><h4>Brightwheel</h4><div class="owner">SF 0011U00000rH2gBQAS &middot; <strong>Systems Admin</strong> &mdash; orphaned since 2019</div></div>
+    <div class="facts">
+      <div class="fact"><span class="k">SF created</span><span class="v">2019-09-06</span></div>
+      <div class="fact"><span class="k">Last activity</span><span class="v thin">never</span></div>
+      <div class="fact"><span class="k">Emails</span><span class="v">0</span></div>
+      <div class="fact"><span class="k">Opportunities</span><span class="v">0</span></div>
+    </div>
+    <div class="cols">
+      <div>
+        <p class="block-label">Most senior contacts</p>
+        <ul class="people">
+          <li><span class="who">Anisha Vachani</span> — <span class="title">Chief of Staff</span><span class="tagmark">operation_35</span></li>
+          <li><span class="who">Stacey Chin</span> — <span class="title">VP of People</span></li>
+        </ul>
+      </div>
+      <div class="history">
+        <p class="block-label">History</p>
+        <p><strong>None.</strong> The Salesforce account has existed since 2019 with no contacts, no affiliations, no opportunities and a null last-activity date. No email has ever been exchanged with a <span class="mono">brightwheel.com</span> or <span class="mono">mybrightwheel.com</span> address.</p>
+        <p>Anisha Vachani was tagged <code>influence</code> and assigned to Devika under <code>operation_35_lt_nick</code>; her record was updated today. Stacey Chin came in via LinkedIn import in Feb 2026.</p>
+        <p><strong>Chief of Staff and VP of People is a workable pair for a hiring conversation</strong> — but this is a cold start, not a revival.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="acct new">
+    <div class="acct-head"><h4>Major League Soccer</h4><div class="owner">SF 0011U00000mG2iYQAS &middot; <strong>Yurgosky</strong> (outside vendor) &mdash; orphaned</div></div>
+    <div class="facts">
+      <div class="fact"><span class="k">SF created</span><span class="v">2019-08-08</span></div>
+      <div class="fact"><span class="k">Last activity</span><span class="v thin">null</span></div>
+      <div class="fact"><span class="k">Emails</span><span class="v">1 (2016, unrelated)</span></div>
+      <div class="fact"><span class="k">Opportunities</span><span class="v">0</span></div>
+    </div>
+    <div class="cols">
+      <div>
+        <p class="block-label">Most senior contacts</p>
+        <ul class="people">
+          <li><span class="who">Bari Greenfield</span> — <span class="title">Vice President, Enterprise Partnerships</span><span class="tagmark">best route</span></li>
+          <li><span class="who">Mac Bartels</span> — <span class="title">Senior Director, Commercial Operations &mdash; MLS NEXT Pro</span></li>
+          <li><span class="who">Charles Altchek</span> — <span class="title">no title stored</span> <span class="stale">added today under operation_35</span></li>
+        </ul>
+      </div>
+      <div class="history">
+        <p class="block-label">History</p>
+        <p><strong>No commercial history at all.</strong> Zero opportunities, zero real correspondence — the single <span class="mono">mlssoccer.com</span> email in the warehouse is a 2016 Woodside on the Move newsletter that happens to have an MLS address on it.</p>
+        <p><strong>The only genuine tie is alumni placement:</strong> Bryan Bethea (Software Engineer, current) and Samantha Bretous (Software Engineer, left Jul 2018). Both are Pursuit graduates.</p>
+        <p>Separate team-level accounts exist for New York City FC and New York Red Bulls, created in a 24 Dec 2024 bulk load by Systems Admin, all empty. Reassign ownership off Yurgosky before working this.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="acct new">
+    <div class="acct-head"><h4>National Football League</h4><div class="owner">SF 0011U00001MBGtYQAX &middot; Shay Pezzulo &middot; Corporate</div></div>
+    <div class="facts">
+      <div class="fact"><span class="k">SF created</span><span class="v">2020-06-05</span></div>
+      <div class="fact"><span class="k">Last activity</span><span class="v thin">null</span></div>
+      <div class="fact"><span class="k">Emails</span><span class="v">0</span></div>
+      <div class="fact"><span class="k">Opportunities</span><span class="v">0</span></div>
+    </div>
+    <div class="cols">
+      <div>
+        <p class="block-label">Most senior contacts</p>
+        <ul class="people">
+          <li><span class="who">Josh Helmrich</span> — <span class="title">Senior Director, Media Strategy, Business Development and Next Gen Stats</span><span class="tagmark">operation_35</span></li>
+          <li><span class="who">Allison Bojarski</span> — <span class="title">Administrative Assistant, Consumer Products / Data &amp; Analytics</span> <span class="stale">Pursuit alumna</span></li>
+        </ul>
+      </div>
+      <div class="history">
+        <p class="block-label">History</p>
+        <p><strong>None.</strong> No opportunities, no logged activity, no <span class="mono">nfl.com</span> email in six years. The account has sat with Shay Pezzulo since Jun 2020.</p>
+        <p>Team-level shells — Buffalo Bills, New York Giants, New York Jets — were bulk-created 11 Dec 2024 by Systems Admin and are equally empty.</p>
+        <p><strong>Two routes in:</strong> Josh Helmrich (Senior Director, tagged to Devika today) and Allison Bojarski, a placed Pursuit alumna who could warm the introduction.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="acct new">
+    <div class="acct-head"><h4>Cava</h4><div class="owner">No Salesforce account &middot; bedrock.jobs_account &ldquo;cava&rdquo;, no owner &middot; created today</div></div>
+    <div class="facts">
+      <div class="fact"><span class="k">Created</span><span class="v">2026-08-13</span></div>
+      <div class="fact"><span class="k">Emails</span><span class="v">0</span></div>
+      <div class="fact"><span class="k">Opportunities</span><span class="v">0</span></div>
+      <div class="fact"><span class="k">Contacts</span><span class="v">1</span></div>
+    </div>
+    <div class="cols">
+      <div>
+        <p class="block-label">Most senior contacts</p>
+        <ul class="people">
+          <li><span class="who">Caitlin Slowinski</span> — <span class="title">no title stored</span> <span class="stale">marked active, assigned to Devika, tagged operation_35_lt_nick</span></li>
+        </ul>
+      </div>
+      <div class="history">
+        <p class="block-label">History</p>
+        <p><strong>Nothing exists yet.</strong> The Jobs account row and the single contact were both created today. No Salesforce account, no owner on the Jobs account, no email history, no opportunity, no company record with a domain.</p>
+        <p>Before this can be worked, someone needs to establish Caitlin Slowinski&rsquo;s title and function, and the Jobs account needs an owner.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="acct new">
+    <div class="acct-head"><h4>ITV</h4><div class="owner">No Salesforce account &middot; bedrock.jobs_account &ldquo;itv&rdquo;, no owner &middot; created today</div></div>
+    <div class="facts">
+      <div class="fact"><span class="k">Created</span><span class="v">2026-08-13</span></div>
+      <div class="fact"><span class="k">Emails</span><span class="v">0</span></div>
+      <div class="fact"><span class="k">Opportunities</span><span class="v">0</span></div>
+      <div class="fact"><span class="k">Contacts</span><span class="v">1</span></div>
+    </div>
+    <div class="cols">
+      <div>
+        <p class="block-label">Most senior contacts</p>
+        <ul class="people">
+          <li><span class="who">Danielle Bibbo</span> — <span class="title">Chief Business Officer</span><span class="tagmark">operation_35</span></li>
+        </ul>
+      </div>
+      <div class="history">
+        <p class="block-label">History</p>
+        <p><strong>Nothing exists yet</strong> — but the single contact is the strongest cold start of the new batch: a Chief Business Officer, marked active, assigned to Devika, created today.</p>
+        <p>No Salesforce account, no email history, no opportunity. The Jobs account has no owner assigned.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="acct new">
+    <div class="acct-head"><h4>Stew Leonard&rsquo;s</h4><div class="owner">No record in any system except one contact created today</div></div>
+    <div class="facts">
+      <div class="fact"><span class="k">Created</span><span class="v">2026-08-13</span></div>
+      <div class="fact"><span class="k">SF account</span><span class="v thin">none</span></div>
+      <div class="fact"><span class="k">Jobs account</span><span class="v thin">none</span></div>
+      <div class="fact"><span class="k">Emails</span><span class="v">0</span></div>
+    </div>
+    <div class="cols">
+      <div>
+        <p class="block-label">Most senior contacts</p>
+        <ul class="people">
+          <li><span class="who">Stew Leonard Jr.</span> — <span class="title">no title stored</span> <span class="stale">President &amp; CEO of the company; marked active, assigned to Devika</span></li>
+        </ul>
+      </div>
+      <div class="history">
+        <p class="block-label">History</p>
+        <p><strong>The thinnest record on either list.</strong> No Salesforce account, no <code>bedrock.jobs_account</code> row, not even a <code>public.companies</code> entry. A single contact, created today under <code>operation_35_lt_nick</code>.</p>
+        <p>It is at least a direct-to-CEO target, which removes the usual routing problem — but every other record has to be built from scratch.</p>
+      </div>
+    </div>
+  </div>
+
+  <h3 class="tier">Not in the CRM <span>requested, but no account exists</span></h3>
+
+  <div class="acct crit">
+    <div class="acct-head"><h4>Northwell</h4><div class="owner">No Salesforce Account, Contact or Lead &mdash; verified by SOSL across all fields</div></div>
+    <div class="facts">
+      <div class="fact"><span class="k">SF account</span><span class="v thin">none</span></div>
+      <div class="fact"><span class="k">Jobs account</span><span class="v thin">none</span></div>
+      <div class="fact"><span class="k">Opportunities</span><span class="v">0</span></div>
+      <div class="fact"><span class="k">Domain emails</span><span class="v">19</span></div>
+      <div class="fact"><span class="k">Span</span><span class="v">2019 &ndash; 2026</span></div>
+    </div>
+    <div class="cols">
+      <div>
+        <p class="block-label">Contacts on file</p>
+        <ul class="people">
+          <li><span class="stale">No contact with a partnership-relevant title exists in any system.</span></li>
+          <li><span class="who">Six raw email addresses</span> — <span class="title">baquart@, dangle@, amancini@, lphipps@, evfeuer@, kcasler@northwell.edu</span> <span class="stale">no names, no titles, flagged email_review</span></li>
+          <li><span class="who">LinkedIn imports</span> — <span class="title">an anaesthesiology resident, an LPN, an operations supervisor, a Manager of Corporate Finance, a Learning &amp; OD Educator</span> <span class="stale">none decision-makers</span></li>
+        </ul>
+        <div class="gap"><span class="cl-label">Only company records</span><code>public.companies</code> holds &ldquo;Northwell Health&rdquo; (Healthcare, enterprise, New Hyde Park NY) and &ldquo;Northwell Careers&rdquo; (<span class="mono">northwell.edu</span>). Nothing else.</div>
+      </div>
+      <div class="history">
+        <p class="block-label">History</p>
+        <p><strong>There is no Pursuit&ndash;Northwell relationship in the data.</strong> Of the 19 emails touching a <span class="mono">northwell.edu</span> address, roughly fifteen are US&nbsp;Department of Labor / ETA listserv threads on which Northwell is simply a co-recipient.</p>
+        <p><strong>But that is itself the opening.</strong> Pursuit and Northwell are co-participants in the DOL&rsquo;s <em>NY Apprenticeship &amp; H-1B Partnership Pilot</em> cohort. Nick Simmons, Jukay Hsu, JP and Andrew are all on those threads — &ldquo;NY Partnership Pilot Apprenticeship &amp; H-1B grants discussion&rdquo; (10 Jul 2026), &ldquo;NY Apprenticeship/H-1B Partnership pilot cohort meeting&rdquo; (24 Apr), &ldquo;Partnership results&rdquo; (5 Jan).</p>
+        <p><strong>One genuine inbound:</strong> 13 Apr 2026 — &ldquo;Re: Interested in learning more about training and potential partnership&rdquo;, handled by <span class="mono">admissions@pursuit.org</span>, never escalated to a partnerships owner.</p>
+        <p>The most recent touch is 7 Aug 2026, but it is a DOL reporting reminder, not Northwell.</p>
+      </div>
+    </div>
+  </div>
+
+</section>
+
+<footer>
+  <p><strong>Method.</strong> Salesforce was queried for Accounts, Contacts, NPSP Affiliations, Opportunities and Tasks across all matched account IDs; Northwell, Cava, ITV, TPG and Stew Leonard&rsquo;s were additionally checked by SOSL across all fields to confirm absence. Bedrock Postgres was queried for <code>bedrock.activity</code>, <code>jobs_account</code>, <code>jobs_opportunity</code>, <code>jobs_contact_membership</code>, <code>jobs_account_comment</code>, and <code>public.contacts</code> / <code>companies</code>.</p>
+  <p><strong>Seniority ranking</strong> is taken from stored titles in Salesforce Contact, NPSP Affiliation role, and <code>public.contacts.current_title</code>, ordered C-suite &rarr; President/Partner &rarr; EVP/SVP &rarr; Global Head/Head of &rarr; MD &rarr; VP &rarr; Senior Director. Where a person appears in more than one system with different titles, the Salesforce value is shown and the discrepancy noted.</p>
+  <p><strong>Caveats.</strong> Affiliation counts for Uber (165), Citi (153) and Blackstone (78) are inflated by placed alumni, who are not partnership contacts. Any affiliation with an end date of <code>2024-11-01</code> should be treated as unverified. Activity counts reflect what was synced into <code>bedrock.activity</code> and undercount relationships conducted outside logged email and calendar — Gutter Capital, with a board member and one logged email, is the clearest example.</p>
+</footer>
+
+</div>
