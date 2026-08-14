@@ -22,8 +22,10 @@ import { useAccountEnrichment, useAccounts, useUpdateAccount } from "@/services/
 import { useAccountFullActivities } from "@/services/activities";
 import { useContacts, useCreateContact, useUpdateContact } from "@/services/contacts";
 import { useAwards, type Award, type AwardStatus } from "@/services/awards";
+import { useAccountUpcomingDeliverables } from "@/services/deliverables";
 import { useCreateOpportunity, useOppRecordTypes, useOpportunities, useOpportunityPriorStages, type PriorStage } from "@/services/opportunities";
 import { useActiveUsers } from "@/services/users";
+import { UpcomingDeliverablesPanel } from "@/components/UpcomingDeliverablesPanel";
 import type { SfContact, SfOpportunity } from "@/types/salesforce";
 
 export function AccountDetailPage() {
@@ -36,6 +38,7 @@ export function AccountDetailPage() {
   );
 
   const { data: contacts = [] } = useContacts(id);
+  const { data: upcomingDeliverables = [] } = useAccountUpcomingDeliverables(id || null);
   const { data: allOpps = [] } = useOpportunities();
   const opps = useMemo(
     () => allOpps.filter((o) => o.AccountId === id),
@@ -191,6 +194,13 @@ export function AccountDetailPage() {
           </a>
         ) : null}
       </div>
+
+      {/* Upcoming deliverables alert — only when open opps have deliverables due within 30 days */}
+      {upcomingDeliverables.length > 0 && (
+        <div className="mt-5">
+          <UpcomingDeliverablesPanel deliverables={upcomingDeliverables} context="account" />
+        </div>
+      )}
 
       {/* Stats row */}
       <div className="mt-6 grid grid-cols-2 gap-3 md:grid-cols-4">

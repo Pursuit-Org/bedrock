@@ -1,9 +1,10 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useParams } from "react-router-dom";
-import { ExternalLink, Plus } from "lucide-react";
+import { ExternalLink, Info, Plus } from "lucide-react";
 
 import { AccountAvatar } from "@/components/AccountAvatar";
 import { ActivityTimeline } from "@/components/ActivityTimeline";
+import { OpportunityDeliverablesSection } from "@/components/OpportunityDeliverablesSection";
 import { OppTasksSection } from "@/components/OppTasksSection";
 import { PaymentScheduleBuilder } from "@/components/PaymentScheduleBuilder";
 import { AwardSetupDialog } from "@/components/AwardSetupDialog";
@@ -21,6 +22,7 @@ import { ContactPicker } from "@/components/ui/ContactPicker";
 import { InlineDate, InlineSelect, InlineText } from "@/components/ui/InlineEdit";
 import { StageChip } from "@/components/ui/StageChip";
 import { Tag } from "@/components/ui/Tag";
+import { Tooltip } from "@/components/ui/Tooltip";
 import { fmtDate, fmtMoneyFull } from "@/lib/format";
 import { getStageGate } from "@/lib/stageGates";
 import { useProbabilityScheduleGate } from "@/lib/useProbabilityScheduleGate";
@@ -133,10 +135,18 @@ export function OpportunityDetailPage() {
   // Also auto-opens when a stage change triggers award creation, or
   // when the backend requires a schedule before allowing the stage change.
   const [scheduleModalOpen, setScheduleModalOpen] = useState(false);
-  // When the backend blocks a stage change with "create_payment_schedule",
-  // we store the intended stage here so we can retry it after the user
-  // saves the schedule.
   const [pendingStage, setPendingStage] = useState<string | null>(null);
+  // Controlled locally so check/uncheck is instant — not derived from opp data
+  // which would lag by one SF round-trip.
+  const [showGrantDates, setShowGrantDates] = useState(() => !!(opp?.Grant_Start_Date__c));
+
+  // Sync when navigating to a different opportunity (opp.Id changes).
+  // Deliberately NOT keyed on Grant_Start_Date__c so user's explicit
+  // uncheck isn't overwritten while the SF clear is in-flight.
+  useEffect(() => {
+    setShowGrantDates(!!(opp?.Grant_Start_Date__c));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [opp?.Id]);
 
   const handleStageChange = async (newStage: string) => {
     // First: does the playbook require a gate for this transition?
@@ -183,6 +193,14 @@ export function OpportunityDetailPage() {
 
   const patch = (field: string, val: unknown): Promise<void> =>
     updateOpp.mutateAsync({ id: opp.Id, patch: { [field]: val } }).then(() => undefined);
+
+  const hasGrantDates = !!(opp.Grant_Start_Date__c);
+  const grantDateError =
+    opp.Grant_Start_Date__c && !opp.Grant_End_Date__c
+      ? "Grant end date is also required."
+      : !opp.Grant_Start_Date__c && opp.Grant_End_Date__c
+        ? "Grant start date is also required."
+        : null;
 
   const saveOwner = async (ownerId: string) => {
     const ownerName = (usersQ.data ?? []).find((u) => u.Id === ownerId)?.Name ?? null;
@@ -397,8 +415,70 @@ export function OpportunityDetailPage() {
               renderValue={(v) => <StageChip stage={v ?? opp.StageName} status={stageStatus({ ...opp, StageName: v ?? opp.StageName })} />}
             />
           </EditField>
+
+          {/* Multi-year grant — full-width row below the 3-column grid */}
+          <div className="col-span-full mt-1 border-t border-border pt-3 flex flex-col gap-2">
+            <div className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                id="multi-year-grant"
+                checked={showGrantDates}
+                onChange={(e) => {
+                  if (e.target.checked) {
+                    setShowGrantDates(true);
+                  } else {
+                    setShowGrantDates(false);
+                    if (hasGrantDates) {
+                      void patch("Grant_Start_Date__c", null);
+                      void patch("Grant_End_Date__c", null);
+                    }
+                  }
+                }}
+                className="h-3.5 w-3.5 cursor-pointer rounded border-border-strong accent-accent"
+              />
+              <label
+                htmlFor="multi-year-grant"
+                className="cursor-pointer select-none text-[13px] font-medium text-ink"
+              >
+                Enter Grant Period?
+              </label>
+              <Tooltip
+                content="If this grant spans multiple years, enter start and end dates that encapsulate the full period within which the funds will be disbursed."
+                side="right"
+              >
+                <Info size={13} className="cursor-help text-ink-3" />
+              </Tooltip>
+            </div>
+
+            {showGrantDates ? (
+              <div className="flex flex-wrap items-start gap-6 pl-5">
+                <EditField label="Grant start date">
+                  <InlineDate
+                    value={opp.Grant_Start_Date__c ?? null}
+                    onSave={(v) => {
+                      void patch("Grant_Start_Date__c", v);
+                    }}
+                  />
+                </EditField>
+                <EditField label="Grant end date">
+                  <InlineDate
+                    value={opp.Grant_End_Date__c ?? null}
+                    onSave={(v) => {
+                      void patch("Grant_End_Date__c", v);
+                    }}
+                  />
+                </EditField>
+                {grantDateError ? (
+                  <p className="col-span-full text-[12px] text-red">{grantDateError}</p>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
         </div>
       </SectionCard>
+
+      {/* Deliverables — SF npsp__Grant_Deadline__c records */}
+      <OpportunityDeliverablesSection opportunityId={opp.Id} />
 
       {/* Tasks */}
       <OppTasksSection opportunityId={opp.Id} />

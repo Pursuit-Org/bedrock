@@ -66,6 +66,7 @@ from routes.admin_company_match import router as admin_company_match_router
 from routes.activities import router as activities_router
 from routes.platform_intake import router as platform_intake_router
 from routes.awards import router as awards_router
+from routes.deliverables import router as deliverables_router
 from routes.saved_views import router as saved_views_router
 from routes.affiliations import router as affiliations_router
 from routes.airtable_jobs import router as airtable_jobs_router
@@ -164,6 +165,7 @@ app.include_router(account_enrichment_router)
 app.include_router(activities_router)
 app.include_router(platform_intake_router)
 app.include_router(awards_router)
+app.include_router(deliverables_router)
 app.include_router(saved_views_router)
 app.include_router(affiliations_router)
 app.include_router(airtable_jobs_router)
@@ -529,7 +531,8 @@ async def get_opportunities(
                Ask_Amount_if_different_from_actual__c,
                Philanthropy_Type__c,
                Manager_Probability_Override__c,
-               Priority__c
+               Priority__c,
+               Grant_Start_Date__c, Grant_End_Date__c
         FROM Opportunity
         """
 

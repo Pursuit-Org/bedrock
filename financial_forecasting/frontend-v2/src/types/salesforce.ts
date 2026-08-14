@@ -154,6 +154,22 @@ export interface SfOpportunity {
   npsp__Next_Grant_Deadline_Due_Date__c?: string | null;
 }
 
+/** Mirrors `npsp__Grant_Deadline__c` — deliverable attached to an Opportunity. */
+export interface SfDeliverable {
+  id: string;
+  name: string | null;
+  opportunity_id: string;
+  type: "LOI" | "Application" | "Interim Report" | "Final Report" | null;
+  due_date: string | null;
+  close_date: string | null;
+  requirements: string | null;
+}
+
+/** Returned by the /upcoming endpoints — includes the parent opportunity name. */
+export interface SfDeliverableWithOppName extends SfDeliverable {
+  opportunity_name: string | null;
+}
+
 /**
  * Mirrors `GET /api/salesforce/contacts` (main.py:621).
  */
