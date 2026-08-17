@@ -358,7 +358,8 @@ export function AccountDetailPage() {
               {contacts.map((c) => (
                 <tr
                   key={c.Id}
-                  className="border-b border-border-strong last:border-b-0"
+                  className="cursor-pointer border-b border-border-strong last:border-b-0 hover:bg-surface-2"
+                  onClick={() => navigate(`/contacts/${c.Id}`)}
                 >
                   <td className="px-5 py-2.5 text-[13px]">
                     <div className="flex items-center gap-2.5">
@@ -380,6 +381,7 @@ export function AccountDetailPage() {
                       <a
                         href={`mailto:${c.Email}`}
                         className="inline-flex items-center gap-1 hover:text-accent-ink"
+                        onClick={(e) => e.stopPropagation()}
                       >
                         <Mail size={12} /> {c.Email}
                       </a>
