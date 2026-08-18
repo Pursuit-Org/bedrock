@@ -9,7 +9,7 @@
  */
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { Briefcase, CheckSquare, ChevronsDownUp, ChevronsUpDown, ExternalLink, Linkedin, MessageSquare, Plus, Search, X, Zap } from "lucide-react";
+import { Briefcase, Building2, CheckSquare, ChevronsDownUp, ChevronsUpDown, ExternalLink, Linkedin, MessageSquare, Plus, Search, X, Zap } from "lucide-react";
 import { toast } from "sonner";
 
 import { PageHeader } from "@/components/PageHeader";
@@ -150,9 +150,11 @@ const EMPTY: string[] = [];
 /** Which pane of an account's panel is showing. */
 type AccountPanelTab = "tasks" | "comments";
 
-const ACCOUNT_TITLE_GRID = "14px minmax(0, 320px) auto 1fr";
+const ACCOUNT_TITLE_GRID = "14px 18px minmax(0, 320px) auto 1fr";
+/** Leading track indents the facts under the title rather than aligning to
+ *  the chevron — they're subordinate to the account name. */
 const ACCOUNT_META_GRID =
-  "14px 108px 104px minmax(0, 1.3fr) minmax(0, 260px) 1fr";
+  "32px 108px 104px minmax(0, 1.3fr) minmax(0, 260px) 1fr";
 
 /**
  * The group header when contacts are grouped by account.
@@ -186,15 +188,22 @@ function AccountGroupHeader({
   const openTasks = account?.open_tasks ?? 0;
   return (
     <>
-      {/* NB: bg-surface-2/70 (the old value here) compiled to nothing — the
-          palette tokens are bare var(--x), which Tailwind can't give an alpha
-          channel, so it dropped the class and the header had no background at
-          all. Plain tokens only. */}
-      <tr className="cursor-pointer border-y border-border-strong bg-surface hover:bg-surface-2" onClick={onToggle}>
+      {/* Delineation: a 2px top rule plus the grey band marks where one account
+          ends and the next begins. Contacts below carry a hairline
+          (border-border), so the two never read alike — with both at
+          border-t border-border-strong there was nothing to tell them apart.
+          NB: plain tokens only. bg-surface-2/70 (the old value) compiled to
+          nothing, since bare var(--x) tokens can't take an alpha channel. */}
+      <tr className="cursor-pointer border-t-2 border-b border-border-strong bg-surface-2" onClick={onToggle}>
         <td colSpan={colSpan} className="px-3 py-2.5">
           {/* ── Line 1 · who this is, and what you can do to it ── */}
           <div className="grid items-center gap-x-3" style={{ gridTemplateColumns: ACCOUNT_TITLE_GRID }}>
             <span className="text-ink-3">{collapsed ? "▸" : "▾"}</span>
+
+            {/* Account mark — gives the title row an anchor the contact rows
+                below don't have, so the eye catches where each account starts.
+                Muted further when the company has no account record. */}
+            <Building2 size={14} className={account ? "text-ink-3" : "text-ink-4"} aria-hidden />
 
             <span className="min-w-0">
               {account ? (
@@ -266,10 +275,10 @@ function AccountGroupHeader({
           </div>
 
           {/* ── Line 2 · the facts, on fixed tracks so they scan down ──
-                 Sits in its own bordered grey box so it reads as a distinct
-                 strip from the title line above. The border (not just the
-                 fill) keeps it visible when the row greys on hover. */}
-          <div className="mt-1.5 grid items-center gap-x-3 rounded-md border border-border-strong bg-surface-2 px-2 py-1.5"
+                 Outline only, no fill: the filled box read as crowded against
+                 the title above it. A hairline (border-border, the lightest
+                 token) is enough to bound the strip. */}
+          <div className="mt-1.5 grid items-center gap-x-3 rounded-md border border-border py-1 pr-2"
             style={{ gridTemplateColumns: ACCOUNT_META_GRID }}>
             <span aria-hidden />
 
@@ -554,12 +563,17 @@ function ContactRow({ contact, expanded, onOpen, visibleCols, selected, onToggle
   };
   return (
     <Fragment>
-      <tr id={`contact-${contact.contact_id}`} className={cn("cursor-pointer border-t border-border-strong hover:bg-surface-2/40", expanded && "bg-surface-2/40")} onClick={onOpen}>
+      {/* Hairline between contacts (border-border), so the heavier rule on an
+          account header reads as "new account" rather than "next row". The
+          /40 and /20 alphas that used to be here emitted no CSS at all —
+          bare var(--x) tokens can't take an alpha channel — so the hover and
+          expanded states were invisible. */}
+      <tr id={`contact-${contact.contact_id}`} className={cn("cursor-pointer border-t border-border hover:bg-surface-2", expanded && "bg-surface-2")} onClick={onOpen}>
         {visibleCols.map((key, i) => (
           <td key={key} className={cn("overflow-hidden px-3 py-1.5 align-middle", i === 0 && "sticky left-0 z-10 bg-surface")} onClick={["flag", "prospect", "owner", "tags"].includes(key) ? (e) => e.stopPropagation() : undefined}>{cells[key]}</td>
         ))}
       </tr>
-      {expanded && <tr className="bg-surface-2/20"><td colSpan={visibleCols.length} className="p-0"><ContactExpandTabs contactId={contact.contact_id} /></td></tr>}
+      {expanded && <tr className="bg-surface-2"><td colSpan={visibleCols.length} className="p-0"><ContactExpandTabs contactId={contact.contact_id} /></td></tr>}
       {/* Rendered outside the cells: a modal can't live inside a <td> in a
           ternary, and only the row you clicked has a pending revisit. */}
       {stageChange.dialog}
