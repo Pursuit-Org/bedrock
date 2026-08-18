@@ -10,7 +10,7 @@ import { AccountAvatar } from "@/components/AccountAvatar";
 import { BackLink as SharedBackLink, LinkedProjectsCard } from "@/components/detail";
 import { AccountTasksSection } from "@/components/AccountTasksSection";
 import { ActivityTimeline } from "@/components/ActivityTimeline";
-import { InlineSelect, InlineText } from "@/components/ui/InlineEdit";
+import { InlineDate, InlineSelect, InlineText } from "@/components/ui/InlineEdit";
 import { StageChip } from "@/components/ui/StageChip";
 import { Tag } from "@/components/ui/Tag";
 import { Tooltip } from "@/components/ui/Tooltip";
@@ -287,21 +287,36 @@ export function AccountDetailPage() {
               />
             </DetailRow>
             <DetailRow label="Qualification status">
-              <span className="text-[12.5px] text-ink-2">
-                {account.Qualification_Status__c ?? "—"}
-              </span>
+              <InlineSelect
+                value={account.Qualification_Status__c ?? null}
+                options={[
+                  { value: "Qualified", label: "Qualified" },
+                  { value: "Not Qualified", label: "Not Qualified" },
+                ]}
+                emptyLabel="—"
+                onSave={(next) =>
+                  updateAccount.mutateAsync({
+                    id: account.Id,
+                    patch: { Qualification_Status__c: next },
+                    displayPatch: next === "Not Qualified"
+                      ? { account_status: "On Hold" }
+                      : { account_status: undefined },
+                  }).then(() => undefined)
+                }
+              />
             </DetailRow>
             <DetailRow label="Qualification date">
-              <span className="text-[12.5px] text-ink-2">
-                {account.Qualification_Date_Updated__c
-                  ? new Date(account.Qualification_Date_Updated__c).toLocaleDateString()
-                  : "—"}
-              </span>
+              <InlineDate
+                value={account.Qualification_Date_Updated__c ?? null}
+                onSave={(next) => patch("Qualification_Date_Updated__c", next)}
+              />
             </DetailRow>
             <DetailRow label="Qualification explanation">
-              <span className="text-[12.5px] text-ink-2">
-                {account.Qualification_Explanation__c ?? "—"}
-              </span>
+              <InlineText
+                value={account.Qualification_Explanation__c ?? null}
+                placeholder="—"
+                onSave={(next) => patch("Qualification_Explanation__c", next || null)}
+              />
             </DetailRow>
           </div>
         </SectionCard>
