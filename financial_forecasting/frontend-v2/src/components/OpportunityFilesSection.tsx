@@ -48,14 +48,18 @@ export function OpportunityFilesUploadAction({ opportunityId }: { opportunityId:
 
   const handleFiles = async (fileList: FileList | null) => {
     if (!fileList || fileList.length === 0) return;
-    const file = fileList[0];
-    setPendingName(file.name);
-    try {
-      await upload.mutateAsync({ file });
-    } finally {
-      setPendingName(null);
-      if (fileInputRef.current) fileInputRef.current.value = "";
+    const files = Array.from(fileList);
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      setPendingName(files.length > 1 ? `${file.name} (${i + 1}/${files.length})` : file.name);
+      try {
+        await upload.mutateAsync({ file });
+      } catch {
+        // individual failure surfaced via upload.isError; continue with remaining files
+      }
     }
+    setPendingName(null);
+    if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
   return (
@@ -68,6 +72,7 @@ export function OpportunityFilesUploadAction({ opportunityId }: { opportunityId:
       <input
         ref={fileInputRef}
         type="file"
+        multiple
         className="hidden"
         onChange={(e) => void handleFiles(e.target.files)}
       />
