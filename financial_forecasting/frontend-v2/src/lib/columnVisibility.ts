@@ -62,11 +62,40 @@ export function useColumnVisibility<K extends string>(
     return [...defaults];
   });
 
+  /** Re-show `col` without disturbing a user's drag-reordered layout.
+   *  orderBy() would re-sort the whole row back to canonical order, silently
+   *  undoing a manual arrangement every time a column is toggled. Instead the
+   *  column lands before the first visible column that follows it canonically
+   *  — identical to orderBy() when the layout is untouched. */
+  const insertNear = (prev: K[], col: K): K[] => {
+    const rank = allColumns.indexOf(col);
+    const at = prev.findIndex((k) => allColumns.indexOf(k) > rank);
+    if (at === -1) return [...prev, col];
+    return [...prev.slice(0, at), col, ...prev.slice(at)];
+  };
+
   const toggle = (col: K) => {
     setVisible((prev) => {
       const next = prev.includes(col)
         ? prev.filter((k) => k !== col)
-        : orderBy([...prev, col], allColumns);
+        : insertNear(prev, col);
+      persist(next);
+      return next;
+    });
+  };
+
+  /** Drag-reorder: drop `col` onto `target`. Dragging rightwards lands after
+   *  the target, leftwards lands before — the behavior spreadsheet users
+   *  expect from dragging a column header. */
+  const move = (col: K, target: K) => {
+    if (col === target) return;
+    setVisible((prev) => {
+      const from = prev.indexOf(col);
+      const to = prev.indexOf(target);
+      if (from === -1 || to === -1) return prev;
+      const rest = prev.filter((k) => k !== col);
+      const at = rest.indexOf(target);
+      const next = [...rest.slice(0, from < to ? at + 1 : at), col, ...rest.slice(from < to ? at + 1 : at)];
       persist(next);
       return next;
     });
@@ -81,5 +110,5 @@ export function useColumnVisibility<K extends string>(
     persist(valid);
   };
 
-  return { visible, toggle, replaceAll };
+  return { visible, toggle, replaceAll, move };
 }

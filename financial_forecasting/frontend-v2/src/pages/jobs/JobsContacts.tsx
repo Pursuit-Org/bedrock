@@ -9,13 +9,15 @@
  */
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { Briefcase, CheckSquare, ChevronsDownUp, ChevronsUpDown, ExternalLink, Linkedin, Plus, Search, X, Zap } from "lucide-react";
+import { Briefcase, CheckSquare, ChevronsDownUp, ChevronsUpDown, ExternalLink, Linkedin, MessageSquare, Plus, Search, X, Zap } from "lucide-react";
 import { toast } from "sonner";
 
 import { PageHeader } from "@/components/PageHeader";
 import { ContactDetail, initials } from "@/components/jobs/ProspectAccountExpandPanel";
 import { ContactExpandTabs, jobsAccountPath, jobsContactPath } from "@/components/jobs/jobsEntity";
 import { CompanyPicker } from "@/components/jobs/CompanyPicker";
+import { JobsComments } from "@/components/jobs/JobsComments";
+import { JobsTasks } from "@/components/jobs/JobsTasks";
 import { ExportButton } from "@/components/jobs/ExportButton";
 import { withReferrer } from "@/components/detail";
 import { ColumnChooser } from "@/components/ui/ColumnChooser";
@@ -137,12 +139,20 @@ interface JobsContactsView {
 const EMPTY: string[] = [];
 
 // ── Account group header ───────────────────────────────────────────────────────
-/** One muted-label / value pair in the header's meta strip. */
+/** Fixed track widths for the account header. Every group row uses the same
+ *  grid, so status sits under status and owner under owner all the way down
+ *  the page — the whole point of the account cut is scanning that column, and
+ *  a flex-wrapped strip put every value at a different x-offset. */
+const ACCOUNT_HEADER_GRID =
+  "14px minmax(0, 2fr) 108px 104px minmax(0, 1.3fr) minmax(0, 1.4fr) minmax(0, 1.1fr) 52px auto";
+
+/** One cell in that grid: a muted label above nothing, value below — kept on
+ *  one line so row height doesn't change between accounts. */
 function Meta({ label, children, title }: { label: string; children: React.ReactNode; title?: string }) {
   return (
-    <span className="inline-flex items-baseline gap-1 whitespace-nowrap text-[11.5px]" title={title}>
-      <span className="text-ink-4">{label}</span>
-      <span className="font-medium text-ink-2">{children}</span>
+    <span className="flex min-w-0 items-baseline gap-1 text-[11.5px]" title={title}>
+      <span className="flex-shrink-0 text-ink-4">{label}</span>
+      <span className="truncate font-medium text-ink-2">{children}</span>
     </span>
   );
 }
@@ -157,7 +167,7 @@ function Meta({ label, children, title }: { label: string; children: React.React
  * "3 of 11" instead of silently under-reporting.
  */
 function AccountGroupHeader({
-  label, account, shown, collapsed, colSpan, onToggle,
+  label, account, shown, collapsed, colSpan, onToggle, notesOpen, onToggleNotes,
 }: {
   label: string;
   account?: JobsAccount;
@@ -165,62 +175,109 @@ function AccountGroupHeader({
   collapsed: boolean;
   colSpan: number;
   onToggle: () => void;
+  notesOpen: boolean;
+  onToggleNotes: () => void;
 }) {
   const total = account?.prospect_count ?? 0;
   const opps = account?.opportunities ?? [];
   const portfolioCount = account?.portfolio_count ?? 0;
+  const openTasks = account?.open_tasks ?? 0;
   return (
-    <tr className="cursor-pointer border-y border-border-strong bg-surface-2/70 hover:bg-surface-2" onClick={onToggle}>
-      <td colSpan={colSpan} className="px-3 py-2">
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-          <span className="w-3 flex-shrink-0 text-ink-3">{collapsed ? "▸" : "▾"}</span>
+    <>
+      <tr className="cursor-pointer border-y border-border-strong bg-surface-2/70 hover:bg-surface-2" onClick={onToggle}>
+        <td colSpan={colSpan} className="px-3 py-2">
+          <div className="grid items-center gap-x-3" style={{ gridTemplateColumns: ACCOUNT_HEADER_GRID }}>
+            <span className="text-ink-3">{collapsed ? "▸" : "▾"}</span>
 
-          {account ? (
-            <Link to={jobsAccountPath(account.account_key)} onClick={(e) => e.stopPropagation()}
-              className="text-[12.5px] font-semibold text-ink hover:text-accent hover:underline"
-              title={`Open ${account.account}`}>
-              {label}
-            </Link>
-          ) : (
-            <span className="text-[12.5px] font-semibold text-ink">{label}</span>
-          )}
-
-          {/* The contact count is the reason this page groups at all — keep it
-              adjacent to the name rather than buried in the meta strip. */}
-          <span className="rounded-full bg-accent-soft px-2 py-0.5 text-[11px] font-semibold text-accent-ink"
-            title={total > shown ? `${shown} shown by the current filters · ${total} flagged at this account` : undefined}>
-            {total > shown ? `${shown} of ${total}` : shown} contact{shown === 1 ? "" : "s"}
-          </span>
-
-          {account && <Tag variant={accountStatusVariant(account.account_status)}>{account.account_status}</Tag>}
-
-          {/* Investor is a relationship, not a flag: an account either HAS one
-              (portfolio company) or IS one (other accounts point at it). */}
-          {account?.investor_name ? (
-            <span title={`Backed by ${account.investor_name}`}>
-              <Tag variant="default">Investor: {account.investor_name}</Tag>
+            <span className="min-w-0">
+              {account ? (
+                <Link to={jobsAccountPath(account.account_key)} onClick={(e) => e.stopPropagation()}
+                  className="block truncate text-[12.5px] font-semibold text-ink hover:text-accent hover:underline"
+                  title={`Open ${account.account}`}>
+                  {label}
+                </Link>
+              ) : (
+                <span className="block truncate text-[12.5px] font-semibold text-ink" title={label}>{label}</span>
+              )}
             </span>
-          ) : portfolioCount > 0 ? (
-            <span title={`${portfolioCount} portfolio compan${portfolioCount === 1 ? "y" : "ies"}`}>
-              <Tag variant="sky">Investor · {portfolioCount} portfolio</Tag>
-            </span>
-          ) : null}
 
-          {account && (
-            <>
-              <Meta label="Owner">{account.owner_email || <span className="text-ink-4">Unassigned</span>}</Meta>
-              <Meta label="Industry">{account.industry || <span className="text-ink-4">—</span>}</Meta>
-              <Meta
-                label="Opps"
-                title={opps.length ? opps.map((o) => `${o.title || "Untitled"} — ${o.stage}`).join("\n") : "No opportunities at this account"}
+            {/* The contact count is the reason this page groups at all — keep it
+                adjacent to the name rather than buried in the meta strip. */}
+            <span className="justify-self-start rounded-full bg-accent-soft px-2 py-0.5 text-[11px] font-semibold text-accent-ink"
+              title={total > shown ? `${shown} shown by the current filters · ${total} flagged at this account` : undefined}>
+              {total > shown ? `${shown} of ${total}` : shown} contact{shown === 1 ? "" : "s"}
+            </span>
+
+            <span className="min-w-0">
+              {account ? <Tag variant={accountStatusVariant(account.account_status)}>{account.account_status}</Tag> : null}
+            </span>
+
+            {/* Investor is a relationship, not a flag: an account either HAS one
+                (portfolio company) or IS one (other accounts point at it). */}
+            <span className="min-w-0 truncate">
+              {account?.investor_name ? (
+                <span title={`Backed by ${account.investor_name}`}>
+                  <Tag variant="default">Investor: {account.investor_name}</Tag>
+                </span>
+              ) : portfolioCount > 0 ? (
+                <span title={`${portfolioCount} portfolio compan${portfolioCount === 1 ? "y" : "ies"}`}>
+                  <Tag variant="sky">Investor · {portfolioCount} portfolio</Tag>
+                </span>
+              ) : null}
+            </span>
+
+            <Meta label="Owner">{account?.owner_email || <span className="text-ink-4">—</span>}</Meta>
+            <Meta label="Industry">{account?.industry || <span className="text-ink-4">—</span>}</Meta>
+            <Meta
+              label="Opps"
+              title={opps.length ? opps.map((o) => `${o.title || "Untitled"} — ${o.stage}`).join("\n") : "No opportunities at this account"}
+            >
+              {account && account.opp_count > 0 ? account.opp_count : <span className="text-ink-4">—</span>}
+            </Meta>
+
+            {/* Notes/tasks hang off the ACCOUNT record, so they're only offered
+                where the company resolved to one. An unlinked company has
+                nothing to attach them to. */}
+            {account ? (
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); onToggleNotes(); }}
+                title={`Tasks & comments for ${account.account}`}
+                className={cn(
+                  "inline-flex h-6 items-center gap-1 whitespace-nowrap rounded border px-2 text-[11.5px]",
+                  notesOpen
+                    ? "border-accent bg-accent-soft text-accent-ink"
+                    : "border-border-strong bg-surface text-ink-3 hover:text-ink",
+                )}
               >
-                {account.opp_count > 0 ? account.opp_count : <span className="text-ink-4">—</span>}
-              </Meta>
-            </>
-          )}
-        </div>
-      </td>
-    </tr>
+                <MessageSquare size={11} />
+                Notes
+                {openTasks > 0 && (
+                  <span className="rounded-full bg-amber-soft px-1 text-[10px] font-semibold text-amber">{openTasks}</span>
+                )}
+              </button>
+            ) : (
+              <span className="text-[11px] text-ink-4" title="This company isn't linked to an account yet, so it has nothing to attach tasks or comments to.">
+                No account link
+              </span>
+            )}
+          </div>
+        </td>
+      </tr>
+
+      {/* Mounted only while open — each panel fetches its own tasks/comments,
+          so rendering them for every group would be a request per account. */}
+      {account && notesOpen && (
+        <tr className="border-b border-border-strong bg-surface">
+          <td colSpan={colSpan} className="px-3 py-3">
+            <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
+              <JobsTasks parentType="account" parentId={account.account_key} />
+              <JobsComments parentType="account" parentId={account.account_key} />
+            </div>
+          </td>
+        </tr>
+      )}
+    </>
   );
 }
 
@@ -456,6 +513,9 @@ export function JobsContacts({ initialQuery, initialContactId, initialConnectedO
   // collapsed keys. That makes "collapse all" a single flip that also covers
   // groups scrolled out of view or created by a later filter change — an
   // enumerate-every-key approach goes stale the moment the buckets change.
+  // Which account's tasks/comments panel is open (account_key). One at a time:
+  // the panel is a working surface, not something to read across accounts.
+  const [notesKey, setNotesKey] = useState<string | null>(null);
   const [groupMode, setGroupMode] = useSessionState<"expanded" | "collapsed">("jobs-contacts:groupMode", "expanded");
   const [groupExceptions, setGroupExceptions] = useSessionState<string[]>("jobs-contacts:groupToggles", EMPTY);
   const [showNewContact, setShowNewContact] = useState(false);
@@ -475,8 +535,12 @@ export function JobsContacts({ initialQuery, initialContactId, initialConnectedO
   const unflag = useUnflagJobsContact();
   const toggleSelect = useCallback((id: number) => setSelected((p) => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; }), []);
   const { sort, toggle, setSort } = useSort<ColKey>({ key: "name", direction: "asc" });
-  const { visible: visibleCols, toggle: toggleCol, replaceAll: replaceVisibleCols } =
+  const { visible: visibleCols, toggle: toggleCol, replaceAll: replaceVisibleCols, move: moveCol } =
     useColumnVisibility<ColKey>("bedrock-v2:vis:jobs-contacts-v2", COLUMN_ORDER, DEFAULT_VISIBLE);
+  // Column drag-reorder (spreadsheet-style: grab a header, drop it where you
+  // want it). `dragCol` is what's moving, `dropCol` is what it's hovering.
+  const [dragCol, setDragCol] = useState<ColKey | null>(null);
+  const [dropCol, setDropCol] = useState<ColKey | null>(null);
   const { widths, startResize } = useColumnWidths<ColKey>("bedrock-v2:cols:jobs-contacts", DEFAULT_WIDTHS);
   const [showAllRows, setShowAllRows] = useState(false);
 
@@ -821,6 +885,18 @@ export function JobsContacts({ initialQuery, initialContactId, initialConnectedO
                 width={widths[key]}
                 onStartResize={(e) => startResize(key, e)}
                 isLast={idx === visibleCols.length - 1}
+                drag={{
+                  onDragStart: () => setDragCol(key),
+                  onDragEnter: () => setDropCol(key),
+                  onDrop: () => { if (dragCol) moveCol(dragCol, key); setDragCol(null); setDropCol(null); },
+                  onDragEnd: () => { setDragCol(null); setDropCol(null); },
+                  dragging: dragCol === key,
+                  // The line marks where the column will land: to the right of
+                  // the target when dragging rightwards, left when leftwards.
+                  dropEdge: dragCol && dropCol === key && dragCol !== key
+                    ? (visibleCols.indexOf(dragCol) < idx ? "right" : "left")
+                    : null,
+                }}
                 className={cn("py-1.5 font-semibold", idx === 0 && "sticky left-0 z-30")}
               >
                 {key === "name" ? (
@@ -849,6 +925,8 @@ export function JobsContacts({ initialQuery, initialContactId, initialConnectedO
                   collapsed={item.collapsed}
                   colSpan={visibleCols.length}
                   onToggle={() => toggleGroup(item.key)}
+                  notesOpen={notesKey === item.key}
+                  onToggleNotes={() => setNotesKey((p) => (p === item.key ? null : item.key))}
                 />
               ) : (
                 <tr key={`g-${item.key}`} className="cursor-pointer border-y border-border-strong bg-surface-2/70 hover:bg-surface-2" onClick={() => toggleGroup(item.key)}>

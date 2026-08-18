@@ -1431,11 +1431,14 @@ export function JobsOutreach() {
           <span className="text-[11px] font-bold uppercase tracking-[.12em] text-accent">
             In period
           </span>
+          {/* Reference detail, not a headline — same muted weight as a page
+              subtitle. The dates used to carry text-ink-2 + font-medium, which
+              made them compete with the zone label they sit beside. */}
           {sc && (
             <span className="text-[11.5px] text-ink-3">
-              <span className="font-medium text-ink-2">{rangeLabel}</span>
+              {rangeLabel}
               {" · trends compare with "}
-              <span className="font-medium text-ink-2">{fmtRange(sc.period.last_start, sc.period.last_end)}</span>
+              {fmtRange(sc.period.last_start, sc.period.last_end)}
             </span>
           )}
         </div>
@@ -1508,7 +1511,7 @@ export function JobsOutreach() {
              The divider is deliberately heavier than the "Segments & activity"
              rule above, which separates two period-scoped panels — this one
              separates two different notions of time. ── */}
-      <ZoneBoundary senderLabel={owner ? nameOf(owner) : undefined} />
+      <ZoneBoundary />
 
       <TouchDepthPanel scope={scope} owner={owner || undefined} nameOf={nameOf} />
 
@@ -1531,18 +1534,15 @@ export function JobsOutreach() {
  *  correct an expectation the period bar sets. Note the precision: scope and
  *  sender DO still apply below this line — only the period stops. Saying "the
  *  filters above don't apply" would trade one wrong belief for another. */
-function ZoneBoundary({ senderLabel }: { senderLabel?: string }) {
+/** The divider between the period-scoped zone above and the live zone below.
+ *  The rule and label carry the boundary on their own — the explanatory caption
+ *  that used to sit under it was permanent chrome for a one-time explanation. */
+function ZoneBoundary() {
   return (
-    <div className="mt-8 flex flex-col gap-1.5">
-      <div className="flex items-center gap-3">
-        <div className="h-px flex-1 bg-ink-4/40" />
-        <span className="text-[11px] font-bold uppercase tracking-[.12em] text-ink-2">Current state</span>
-        <div className="h-px flex-1 bg-ink-4/40" />
-      </div>
-      <p className="text-center text-[11.5px] text-ink-4">
-        Live as of today — the period above doesn't apply here
-        {senderLabel ? <>, but {senderLabel} does</> : <>, though scope and sender still do</>}.
-      </p>
+    <div className="mt-8 flex items-center gap-3">
+      <div className="h-px flex-1 bg-ink-4/40" />
+      <span className="text-[11px] font-bold uppercase tracking-[.12em] text-ink-2">Current state</span>
+      <div className="h-px flex-1 bg-ink-4/40" />
     </div>
   );
 }

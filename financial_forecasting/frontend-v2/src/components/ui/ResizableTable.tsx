@@ -14,6 +14,7 @@ export function ResizableTh({
   isLast,
   align = "left",
   className,
+  drag,
 }: {
   children: ReactNode;
   width: number;
@@ -21,20 +22,55 @@ export function ResizableTh({
   isLast?: boolean;
   align?: "left" | "right";
   className?: string;
+  /** Opt-in column reordering. Omit and the header behaves exactly as before.
+   *  `dropEdge` draws the insertion line while a column is dragged over this
+   *  one; `dragging` dims the column being moved. */
+  drag?: {
+    onDragStart: () => void;
+    onDragEnter: () => void;
+    onDrop: () => void;
+    onDragEnd: () => void;
+    dragging?: boolean;
+    dropEdge?: "left" | "right" | null;
+  };
 }) {
   return (
     <th
       style={{ width }}
+      draggable={drag ? true : undefined}
+      onDragStart={drag ? () => drag.onDragStart() : undefined}
+      onDragEnter={drag ? () => drag.onDragEnter() : undefined}
+      // Without preventDefault the browser refuses the drop outright.
+      onDragOver={drag ? (e) => e.preventDefault() : undefined}
+      onDrop={drag ? (e) => { e.preventDefault(); drag.onDrop(); } : undefined}
+      onDragEnd={drag ? () => drag.onDragEnd() : undefined}
       className={cn(
         "relative border-b border-border-strong bg-surface-2 px-3 py-2",
         align === "right" ? "text-right" : "text-left",
+        drag && "cursor-grab active:cursor-grabbing",
+        drag?.dragging && "opacity-40",
         className,
       )}
     >
+      {/* Insertion line — a shadow of the column's landing spot, drawn inside
+          the cell so it can't disturb the fixed table layout. */}
+      {drag?.dropEdge ? (
+        <span
+          className={cn(
+            "pointer-events-none absolute inset-y-0 z-20 w-0.5 bg-accent",
+            drag.dropEdge === "left" ? "left-0" : "right-0",
+          )}
+          aria-hidden
+        />
+      ) : null}
       {children}
       {!isLast ? (
         <span
           onPointerDown={onStartResize}
+          // The resize strip must not become the drag source, or grabbing the
+          // edge to widen a column would move it instead.
+          draggable={false}
+          onDragStart={(e) => { e.preventDefault(); e.stopPropagation(); }}
           className="group absolute right-0 top-0 z-10 flex h-full w-1.5 cursor-col-resize touch-none items-center justify-center hover:bg-accent/40 active:bg-accent"
           aria-hidden
         >
