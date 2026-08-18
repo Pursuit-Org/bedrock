@@ -147,6 +147,9 @@ const EMPTY: string[] = [];
  *
  *  Row 1: chevron · name · actions · filler
  *  Row 2: indent · contacts · status · investor · owner · filler */
+/** Which pane of an account's panel is showing. */
+type AccountPanelTab = "tasks" | "comments";
+
 const ACCOUNT_TITLE_GRID = "14px minmax(0, 320px) auto 1fr";
 const ACCOUNT_META_GRID =
   "14px 108px 104px minmax(0, 1.3fr) minmax(0, 260px) 1fr";
@@ -161,7 +164,7 @@ const ACCOUNT_META_GRID =
  * "3 of 11" instead of silently under-reporting.
  */
 function AccountGroupHeader({
-  label, account, ownerName, shown, collapsed, colSpan, onToggle, notesOpen, onToggleNotes, onOpenNotes, onAddContact,
+  label, account, ownerName, shown, collapsed, colSpan, onToggle, panelTab, onSelectTab, onAddContact,
 }: {
   label: string;
   account?: JobsAccount;
@@ -171,11 +174,11 @@ function AccountGroupHeader({
   collapsed: boolean;
   colSpan: number;
   onToggle: () => void;
-  notesOpen: boolean;
-  onToggleNotes: () => void;
-  /** Open (never close) the panel — "+ Task" should land on the task input
-   *  whether or not the panel was already showing. */
-  onOpenNotes: () => void;
+  /** Which pane is open for THIS account, or null when its panel is closed.
+   *  One value drives both the panel and which button reads as selected —
+   *  a shared open/closed boolean lit up the wrong button. */
+  panelTab: AccountPanelTab | null;
+  onSelectTab: (tab: AccountPanelTab) => void;
   onAddContact: () => void;
 }) {
   const total = account?.prospect_count ?? 0;
@@ -183,7 +186,11 @@ function AccountGroupHeader({
   const openTasks = account?.open_tasks ?? 0;
   return (
     <>
-      <tr className="cursor-pointer border-y border-border-strong bg-surface-2/70 hover:bg-surface-2" onClick={onToggle}>
+      {/* NB: bg-surface-2/70 (the old value here) compiled to nothing — the
+          palette tokens are bare var(--x), which Tailwind can't give an alpha
+          channel, so it dropped the class and the header had no background at
+          all. Plain tokens only. */}
+      <tr className="cursor-pointer border-y border-border-strong bg-surface hover:bg-surface-2" onClick={onToggle}>
         <td colSpan={colSpan} className="px-3 py-2.5">
           {/* ── Line 1 · who this is, and what you can do to it ── */}
           <div className="grid items-center gap-x-3" style={{ gridTemplateColumns: ACCOUNT_TITLE_GRID }}>
@@ -214,34 +221,40 @@ function AccountGroupHeader({
               </button>
 
               {/* Tasks and comments hang off the ACCOUNT record, so they're only
-                  offered where the company resolved to one. Both buttons open
-                  the same panel — the task input sits at the top of it. */}
+                  offered where the company resolved to one. Each button opens
+                  its OWN pane and lights up on its own — previously both read
+                  from one open/closed flag, so pressing Task selected Notes. */}
               {account ? (
                 <>
                   <button
                     type="button"
-                    onClick={(e) => { e.stopPropagation(); onOpenNotes(); }}
-                    title={`Add a task for ${account.account}`}
-                    className="inline-flex h-6 items-center gap-1 whitespace-nowrap rounded border border-border-strong bg-surface px-2 text-[11.5px] text-ink-3 hover:text-ink"
-                  >
-                    <Plus size={11} /> Task
-                  </button>
-                  <button
-                    type="button"
-                    onClick={(e) => { e.stopPropagation(); onToggleNotes(); }}
-                    title={`Tasks & comments for ${account.account}`}
+                    onClick={(e) => { e.stopPropagation(); onSelectTab("tasks"); }}
+                    title={`Tasks for ${account.account}`}
                     className={cn(
                       "inline-flex h-6 items-center gap-1 whitespace-nowrap rounded border px-2 text-[11.5px]",
-                      notesOpen
+                      panelTab === "tasks"
                         ? "border-accent bg-accent-soft text-accent-ink"
                         : "border-border-strong bg-surface text-ink-3 hover:text-ink",
                     )}
                   >
-                    <MessageSquare size={11} />
-                    Notes
+                    <Plus size={11} />
+                    Task
                     {openTasks > 0 && (
                       <span className="rounded-full bg-amber-soft px-1 text-[10px] font-semibold text-amber">{openTasks}</span>
                     )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); onSelectTab("comments"); }}
+                    title={`Comments for ${account.account}`}
+                    className={cn(
+                      "inline-flex h-6 items-center gap-1 whitespace-nowrap rounded border px-2 text-[11.5px]",
+                      panelTab === "comments"
+                        ? "border-accent bg-accent-soft text-accent-ink"
+                        : "border-border-strong bg-surface text-ink-3 hover:text-ink",
+                    )}
+                  >
+                    <MessageSquare size={11} /> Comments
                   </button>
                 </>
               ) : (
@@ -252,11 +265,17 @@ function AccountGroupHeader({
             </span>
           </div>
 
-          {/* ── Line 2 · the facts, on fixed tracks so they scan down ── */}
-          <div className="mt-1 grid items-center gap-x-3" style={{ gridTemplateColumns: ACCOUNT_META_GRID }}>
+          {/* ── Line 2 · the facts, on fixed tracks so they scan down ──
+                 Sits in its own bordered grey box so it reads as a distinct
+                 strip from the title line above. The border (not just the
+                 fill) keeps it visible when the row greys on hover. */}
+          <div className="mt-1.5 grid items-center gap-x-3 rounded-md border border-border-strong bg-surface-2 px-2 py-1.5"
+            style={{ gridTemplateColumns: ACCOUNT_META_GRID }}>
             <span aria-hidden />
 
-            <span className="justify-self-start rounded-full bg-accent-soft px-2 py-0.5 text-[11px] font-semibold text-accent-ink"
+            {/* Neutral rather than accent-blue: on this strip the blue fought
+                both the status tag and the selected-button state. */}
+            <span className="justify-self-start rounded-full border border-border-strong bg-surface px-2 py-0.5 text-[11px] font-semibold text-ink-2"
               title={total > shown ? `${shown} shown by the current filters · ${total} flagged at this account` : undefined}>
               {total > shown ? `${shown} of ${total}` : shown} contact{shown === 1 ? "" : "s"}
             </span>
@@ -289,14 +308,34 @@ function AccountGroupHeader({
         </td>
       </tr>
 
-      {/* Mounted only while open — each panel fetches its own tasks/comments,
-          so rendering them for every group would be a request per account. */}
-      {account && notesOpen && (
+      {/* Mounted only while open, and only the selected pane — each fetches its
+          own data, so showing both would double the requests for a pane you
+          may not be looking at. The other stays one click away in the toggle. */}
+      {account && panelTab && (
         <tr className="border-b border-border-strong bg-surface">
           <td colSpan={colSpan} className="px-3 py-3">
-            <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
-              <JobsTasks parentType="account" parentId={account.account_key} />
-              <JobsComments parentType="account" parentId={account.account_key} />
+            <div className="inline-flex rounded-md border border-border-strong bg-surface-2 p-0.5">
+              {(["tasks", "comments"] as const).map((t) => (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => onSelectTab(t)}
+                  className={cn(
+                    "inline-flex items-center gap-1 rounded px-2.5 py-1 text-[12px] font-medium capitalize",
+                    panelTab === t ? "bg-surface text-ink shadow-sm" : "text-ink-3 hover:text-ink-2",
+                  )}
+                >
+                  {t}
+                  {t === "tasks" && openTasks > 0 && (
+                    <span className="rounded-full bg-amber-soft px-1 text-[10px] font-semibold text-amber">{openTasks}</span>
+                  )}
+                </button>
+              ))}
+            </div>
+            <div className="mt-3">
+              {panelTab === "tasks"
+                ? <JobsTasks parentType="account" parentId={account.account_key} />
+                : <JobsComments parentType="account" parentId={account.account_key} />}
             </div>
           </td>
         </tr>
@@ -541,9 +580,14 @@ export function JobsContacts({ initialQuery, initialContactId, initialConnectedO
   // collapsed keys. That makes "collapse all" a single flip that also covers
   // groups scrolled out of view or created by a later filter change — an
   // enumerate-every-key approach goes stale the moment the buckets change.
-  // Which account's tasks/comments panel is open (account_key). One at a time:
+  // Which account's panel is open and which pane it's showing. One at a time:
   // the panel is a working surface, not something to read across accounts.
-  const [notesKey, setNotesKey] = useState<string | null>(null);
+  const [panel, setPanel] = useState<{ key: string; tab: AccountPanelTab } | null>(null);
+  /** Clicking the pane you're already on closes the panel; clicking the other
+   *  switches to it without closing. */
+  const selectPanelTab = useCallback((key: string, tab: AccountPanelTab) => {
+    setPanel((p) => (p && p.key === key && p.tab === tab ? null : { key, tab }));
+  }, []);
   const [groupMode, setGroupMode] = useSessionState<"expanded" | "collapsed">("jobs-contacts:groupMode", "expanded");
   const [groupExceptions, setGroupExceptions] = useSessionState<string[]>("jobs-contacts:groupToggles", EMPTY);
   // null = closed. `company` is set when opened from an account row so the
@@ -957,13 +1001,12 @@ export function JobsContacts({ initialQuery, initialContactId, initialConnectedO
                   collapsed={item.collapsed}
                   colSpan={visibleCols.length}
                   onToggle={() => toggleGroup(item.key)}
-                  notesOpen={notesKey === item.key}
-                  onToggleNotes={() => setNotesKey((p) => (p === item.key ? null : item.key))}
-                  onOpenNotes={() => setNotesKey(item.key)}
+                  panelTab={panel?.key === item.key ? panel.tab : null}
+                  onSelectTab={(tab) => selectPanelTab(item.key, tab)}
                   onAddContact={() => setNewContact({ company: item.account?.account ?? item.label })}
                 />
               ) : (
-                <tr key={`g-${item.key}`} className="cursor-pointer border-y border-border-strong bg-surface-2/70 hover:bg-surface-2" onClick={() => toggleGroup(item.key)}>
+                <tr key={`g-${item.key}`} className="cursor-pointer border-y border-border-strong bg-surface-2 hover:bg-surface" onClick={() => toggleGroup(item.key)}>
                   <td colSpan={visibleCols.length} className="px-3 py-1.5 text-[11.5px] font-semibold uppercase tracking-wider text-ink-2"><span className="inline-block w-3 text-ink-3">{item.collapsed ? "▸" : "▾"}</span>{item.label}<span className="ml-2 normal-case tracking-normal text-ink-3">{item.count}</span></td>
                 </tr>
               ))
