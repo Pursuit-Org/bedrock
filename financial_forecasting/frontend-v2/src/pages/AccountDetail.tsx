@@ -217,7 +217,7 @@ export function AccountDetailPage() {
             );
           })()}
           <Tooltip
-            content="All accounts should default to 'Active'. Uncheck if there has been no recent contact with this account and there is no reason to engage with it in the foreseeable future."
+            content="All accounts are a 'priority' by default. Hit deprioritize if there has been no recent contact with this account and there is no reason to engage with it in the foreseeable future. This reverts account status to 'Deprioritized.'"
             side="bottom"
           >
             <Info size={14} className="cursor-help text-ink-3" />
