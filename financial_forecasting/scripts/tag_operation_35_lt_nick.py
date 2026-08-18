@@ -38,8 +38,17 @@ Guarded: before writing, the script re-reads every frozen id and aborts if a
 full_name no longer matches the name recorded here (a merge or a rename since
 resolution).
 
+WHICH DATABASE: read from DATABASE_URL in financial_forecasting/.env, or from
+--database-url. Per DEV_SETUP_GUIDE that .env points at the SHARED STAGING DB in
+local dev, not production — so running this with a default local setup tags
+staging and nothing shows up in the Bedrock the team uses. The script prints the
+host and database name it connected to before doing anything, in both modes, so
+the target is something you read rather than assume. (There is precedent: a dev
+session silently wrote to the wrong DB on 2026-04-17.)
+
     python3 scripts/tag_operation_35_lt_nick.py              # dry run (default)
     python3 scripts/tag_operation_35_lt_nick.py --apply
+    python3 scripts/tag_operation_35_lt_nick.py --database-url "$PROD_DATABASE_URL" --apply
 """
 from __future__ import annotations
 
@@ -210,12 +219,14 @@ async def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--apply", action="store_true",
                     help="write the changes; without it the script only reports")
+    ap.add_argument("--database-url", default=None,
+                    help="target DB; overrides DATABASE_URL from .env")
     args = ap.parse_args()
 
     load_dotenv(Path(__file__).resolve().parent.parent / ".env")
-    dsn = os.getenv("DATABASE_URL")
+    dsn = args.database_url or os.getenv("DATABASE_URL")
     if not dsn:
-        print("DATABASE_URL not set", file=sys.stderr)
+        print("DATABASE_URL not set (or pass --database-url)", file=sys.stderr)
         return 1
 
     frozen = [cid for cid, _ in CONTACTS]
@@ -225,6 +236,15 @@ async def main() -> int:
 
     conn = await asyncpg.connect(dsn)
     try:
+        # Name the target before touching it. Staging and production differ only
+        # by a substring buried in a URL, which is not a thing to eyeball.
+        where = await conn.fetchrow(
+            "SELECT current_database() AS db, "
+            "       inet_server_addr()::text AS host, current_user AS role")
+        src = "--database-url" if args.database_url else ".env DATABASE_URL"
+        print(f"target: {where['db']} on {where['host'] or 'local socket'} "
+              f"as {where['role']}  (from {src})\n")
+
         rows = await conn.fetch(
             "SELECT contact_id, full_name, current_company, contact_stage, "
             "       is_jobs_contact, coalesce(tags, '{}'::text[]) AS tags "
