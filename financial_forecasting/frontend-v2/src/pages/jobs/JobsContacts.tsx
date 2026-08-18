@@ -139,12 +139,17 @@ interface JobsContactsView {
 const EMPTY: string[] = [];
 
 // ── Account group header ───────────────────────────────────────────────────────
-/** Fixed track widths for the account header. Every group row uses the same
- *  grid, so status sits under status and owner under owner all the way down
- *  the page — the whole point of the account cut is scanning that column, and
- *  a flex-wrapped strip put every value at a different x-offset. */
-const ACCOUNT_HEADER_GRID =
-  "14px minmax(0, 2fr) 108px 104px minmax(0, 1.3fr) minmax(0, 1.4fr) minmax(0, 1.1fr) 52px auto";
+/** The account header is two lines: the name (plus its actions) on top, the
+ *  facts underneath. Both rows are grids with fixed tracks, so the name
+ *  column, the action buttons and every meta value land on the same x-offset
+ *  on every account — the whole point of the account cut is scanning a column
+ *  straight down, which a wrapped flex strip can't do.
+ *
+ *  Row 1: chevron · name · actions · filler
+ *  Row 2: indent · contacts · status · investor · owner · industry · opps */
+const ACCOUNT_TITLE_GRID = "14px minmax(0, 320px) auto 1fr";
+const ACCOUNT_META_GRID =
+  "14px 108px 104px minmax(0, 1.3fr) minmax(0, 1.5fr) minmax(0, 1.2fr) 60px";
 
 /** One cell in that grid: a muted label above nothing, value below — kept on
  *  one line so row height doesn't change between accounts. */
@@ -167,7 +172,7 @@ function Meta({ label, children, title }: { label: string; children: React.React
  * "3 of 11" instead of silently under-reporting.
  */
 function AccountGroupHeader({
-  label, account, shown, collapsed, colSpan, onToggle, notesOpen, onToggleNotes,
+  label, account, shown, collapsed, colSpan, onToggle, notesOpen, onToggleNotes, onOpenNotes, onAddContact,
 }: {
   label: string;
   account?: JobsAccount;
@@ -177,6 +182,10 @@ function AccountGroupHeader({
   onToggle: () => void;
   notesOpen: boolean;
   onToggleNotes: () => void;
+  /** Open (never close) the panel — "+ Task" should land on the task input
+   *  whether or not the panel was already showing. */
+  onOpenNotes: () => void;
+  onAddContact: () => void;
 }) {
   const total = account?.prospect_count ?? 0;
   const opps = account?.opportunities ?? [];
@@ -185,24 +194,78 @@ function AccountGroupHeader({
   return (
     <>
       <tr className="cursor-pointer border-y border-border-strong bg-surface-2/70 hover:bg-surface-2" onClick={onToggle}>
-        <td colSpan={colSpan} className="px-3 py-2">
-          <div className="grid items-center gap-x-3" style={{ gridTemplateColumns: ACCOUNT_HEADER_GRID }}>
+        <td colSpan={colSpan} className="px-3 py-2.5">
+          {/* ── Line 1 · who this is, and what you can do to it ── */}
+          <div className="grid items-center gap-x-3" style={{ gridTemplateColumns: ACCOUNT_TITLE_GRID }}>
             <span className="text-ink-3">{collapsed ? "▸" : "▾"}</span>
 
             <span className="min-w-0">
               {account ? (
                 <Link to={jobsAccountPath(account.account_key)} onClick={(e) => e.stopPropagation()}
-                  className="block truncate text-[12.5px] font-semibold text-ink hover:text-accent hover:underline"
+                  className="block truncate text-[13px] font-semibold text-ink hover:text-accent hover:underline"
                   title={`Open ${account.account}`}>
                   {label}
                 </Link>
               ) : (
-                <span className="block truncate text-[12.5px] font-semibold text-ink" title={label}>{label}</span>
+                <span className="block truncate text-[13px] font-semibold text-ink" title={label}>{label}</span>
               )}
             </span>
 
-            {/* The contact count is the reason this page groups at all — keep it
-                adjacent to the name rather than buried in the meta strip. */}
+            <span className="flex items-center gap-1.5">
+              {/* Adding a contact only needs a company name, so it works even
+                  for a company with no account record behind it. */}
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); onAddContact(); }}
+                title={`Add a contact at ${label}`}
+                className="inline-flex h-6 items-center gap-1 whitespace-nowrap rounded border border-border-strong bg-surface px-2 text-[11.5px] text-ink-3 hover:text-ink"
+              >
+                <Plus size={11} /> Contact
+              </button>
+
+              {/* Tasks and comments hang off the ACCOUNT record, so they're only
+                  offered where the company resolved to one. Both buttons open
+                  the same panel — the task input sits at the top of it. */}
+              {account ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); onOpenNotes(); }}
+                    title={`Add a task for ${account.account}`}
+                    className="inline-flex h-6 items-center gap-1 whitespace-nowrap rounded border border-border-strong bg-surface px-2 text-[11.5px] text-ink-3 hover:text-ink"
+                  >
+                    <Plus size={11} /> Task
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); onToggleNotes(); }}
+                    title={`Tasks & comments for ${account.account}`}
+                    className={cn(
+                      "inline-flex h-6 items-center gap-1 whitespace-nowrap rounded border px-2 text-[11.5px]",
+                      notesOpen
+                        ? "border-accent bg-accent-soft text-accent-ink"
+                        : "border-border-strong bg-surface text-ink-3 hover:text-ink",
+                    )}
+                  >
+                    <MessageSquare size={11} />
+                    Notes
+                    {openTasks > 0 && (
+                      <span className="rounded-full bg-amber-soft px-1 text-[10px] font-semibold text-amber">{openTasks}</span>
+                    )}
+                  </button>
+                </>
+              ) : (
+                <span className="text-[11px] text-ink-4" title="This company isn't linked to an account yet, so there's nothing to attach tasks or comments to.">
+                  No account link
+                </span>
+              )}
+            </span>
+          </div>
+
+          {/* ── Line 2 · the facts, on fixed tracks so they scan down ── */}
+          <div className="mt-1 grid items-center gap-x-3" style={{ gridTemplateColumns: ACCOUNT_META_GRID }}>
+            <span aria-hidden />
+
             <span className="justify-self-start rounded-full bg-accent-soft px-2 py-0.5 text-[11px] font-semibold text-accent-ink"
               title={total > shown ? `${shown} shown by the current filters · ${total} flagged at this account` : undefined}>
               {total > shown ? `${shown} of ${total}` : shown} contact{shown === 1 ? "" : "s"}
@@ -234,33 +297,6 @@ function AccountGroupHeader({
             >
               {account && account.opp_count > 0 ? account.opp_count : <span className="text-ink-4">—</span>}
             </Meta>
-
-            {/* Notes/tasks hang off the ACCOUNT record, so they're only offered
-                where the company resolved to one. An unlinked company has
-                nothing to attach them to. */}
-            {account ? (
-              <button
-                type="button"
-                onClick={(e) => { e.stopPropagation(); onToggleNotes(); }}
-                title={`Tasks & comments for ${account.account}`}
-                className={cn(
-                  "inline-flex h-6 items-center gap-1 whitespace-nowrap rounded border px-2 text-[11.5px]",
-                  notesOpen
-                    ? "border-accent bg-accent-soft text-accent-ink"
-                    : "border-border-strong bg-surface text-ink-3 hover:text-ink",
-                )}
-              >
-                <MessageSquare size={11} />
-                Notes
-                {openTasks > 0 && (
-                  <span className="rounded-full bg-amber-soft px-1 text-[10px] font-semibold text-amber">{openTasks}</span>
-                )}
-              </button>
-            ) : (
-              <span className="text-[11px] text-ink-4" title="This company isn't linked to an account yet, so it has nothing to attach tasks or comments to.">
-                No account link
-              </span>
-            )}
           </div>
         </td>
       </tr>
@@ -287,9 +323,13 @@ const DEFAULT_NEW_CONTACT_FORM: NewContactForm = { fullName: "", email: "", titl
 function Spinner() {
   return <svg className="h-3 w-3 animate-spin" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" /></svg>;
 }
-function NewContactModal({ onClose }: { onClose: () => void }) {
+function NewContactModal({ onClose, initialCompany }: { onClose: () => void; initialCompany?: string }) {
   const nav = useNavigate();
-  const [form, setForm] = useState<NewContactForm>(DEFAULT_NEW_CONTACT_FORM);
+  // Opened from an account row, the company is already known — prefill it so
+  // the new contact lands in that account's group rather than its own.
+  const [form, setForm] = useState<NewContactForm>(
+    initialCompany ? { ...DEFAULT_NEW_CONTACT_FORM, company: initialCompany } : DEFAULT_NEW_CONTACT_FORM,
+  );
   const createContact = useCreateContact();
   const set = <K extends keyof NewContactForm>(k: K, v: NewContactForm[K]) => setForm((p) => ({ ...p, [k]: v }));
   async function handleSubmit(e: React.FormEvent) {
@@ -518,7 +558,9 @@ export function JobsContacts({ initialQuery, initialContactId, initialConnectedO
   const [notesKey, setNotesKey] = useState<string | null>(null);
   const [groupMode, setGroupMode] = useSessionState<"expanded" | "collapsed">("jobs-contacts:groupMode", "expanded");
   const [groupExceptions, setGroupExceptions] = useSessionState<string[]>("jobs-contacts:groupToggles", EMPTY);
-  const [showNewContact, setShowNewContact] = useState(false);
+  // null = closed. `company` is set when opened from an account row so the
+  // modal can prefill it; the toolbar button opens it with an empty string.
+  const [newContact, setNewContact] = useState<{ company: string } | null>(null);
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [exporting, setExporting] = useState(false);
@@ -721,7 +763,7 @@ export function JobsContacts({ initialQuery, initialContactId, initialConnectedO
 
   return (
     <div className="flex flex-col px-5 py-2">
-      {showNewContact && <NewContactModal onClose={() => setShowNewContact(false)} />}
+      {newContact && <NewContactModal onClose={() => setNewContact(null)} initialCompany={newContact.company || undefined} />}
 
       {/* Preview */}
       {previewContact && (
@@ -781,7 +823,7 @@ export function JobsContacts({ initialQuery, initialContactId, initialConnectedO
         <div className="ml-auto flex items-center gap-2">
           <ColumnChooser allColumns={COLUMN_ORDER} labels={COL_LABELS} visible={visibleCols} required={["name"]} onToggle={toggleCol} />
           <SavedViewsPicker<JobsContactsView> scopeKey="jobs-contacts" currentFilters={{ query, rules, visibleCols, groupBy, sort }} onLoad={(v) => { setQuery(v.query ?? ""); setRules(v.rules ?? []); const g = v.groupBy ?? ""; setGroupBy(g); setGroupExceptions(EMPTY); setGroupMode(g === ACCOUNT_GROUP ? "collapsed" : "expanded"); if (v.visibleCols?.length) replaceVisibleCols(v.visibleCols); if (v.sort) setSort(v.sort); }} />
-          <button type="button" onClick={() => setShowNewContact(true)} className="inline-flex h-7 items-center gap-1.5 rounded border border-ink bg-ink px-3 text-[12.5px] font-medium text-surface hover:opacity-90"><Plus size={13} /> New Contact</button>
+          <button type="button" onClick={() => setNewContact({ company: "" })} className="inline-flex h-7 items-center gap-1.5 rounded border border-ink bg-ink px-3 text-[12.5px] font-medium text-surface hover:opacity-90"><Plus size={13} /> New Contact</button>
         </div>
       </Toolbar>
 
@@ -927,6 +969,8 @@ export function JobsContacts({ initialQuery, initialContactId, initialConnectedO
                   onToggle={() => toggleGroup(item.key)}
                   notesOpen={notesKey === item.key}
                   onToggleNotes={() => setNotesKey((p) => (p === item.key ? null : item.key))}
+                  onOpenNotes={() => setNotesKey(item.key)}
+                  onAddContact={() => setNewContact({ company: item.account?.account ?? item.label })}
                 />
               ) : (
                 <tr key={`g-${item.key}`} className="cursor-pointer border-y border-border-strong bg-surface-2/70 hover:bg-surface-2" onClick={() => toggleGroup(item.key)}>
