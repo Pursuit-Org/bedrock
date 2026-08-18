@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 
 import { api } from "@/lib/api";
-import { ChevronDown, ChevronRight, ExternalLink, Mail, Pencil, Phone, Plus, Search, UserPlus, X } from "lucide-react";
+import { ChevronDown, ChevronRight, ExternalLink, Info, Mail, Pencil, Phone, Plus, Search, UserPlus, X } from "lucide-react";
 
 import { AccountAvatar } from "@/components/AccountAvatar";
 import { BackLink as SharedBackLink, LinkedProjectsCard } from "@/components/detail";
@@ -13,6 +13,7 @@ import { ActivityTimeline } from "@/components/ActivityTimeline";
 import { InlineSelect, InlineText } from "@/components/ui/InlineEdit";
 import { StageChip } from "@/components/ui/StageChip";
 import { Tag } from "@/components/ui/Tag";
+import { Tooltip } from "@/components/ui/Tooltip";
 import { accountStatusVariant } from "@/lib/accountStatus";
 import { fmtDate, fmtMoney, fmtMoneyFull, initials } from "@/lib/format";
 import { useCollapsible } from "@/lib/collapsible";
@@ -178,18 +179,50 @@ export function AccountDetailPage() {
             {account.Type ? <Tag>{account.Type}</Tag> : null}
           </div>
         </div>
-        {account.Website ? (
-          <a
-            href={
-              account.Website.startsWith("http") ? account.Website : `https://${account.Website}`
-            }
-            target="_blank"
-            rel="noreferrer"
-            className="inline-flex h-[30px] items-center gap-1.5 rounded border border-border-strong bg-surface px-3 text-[13px] font-medium text-ink-2 hover:bg-surface-2"
+        <div className="flex items-center gap-2">
+          {account.Website ? (
+            <a
+              href={
+                account.Website.startsWith("http") ? account.Website : `https://${account.Website}`
+              }
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex h-[30px] items-center gap-1.5 rounded border border-border-strong bg-surface px-3 text-[13px] font-medium text-ink-2 hover:bg-surface-2"
+            >
+              <ExternalLink size={14} /> Website
+            </a>
+          ) : null}
+          {(() => {
+            const isActive = account.Active__c !== false;
+            return (
+              <button
+                type="button"
+                disabled={updateAccount.isPending}
+                onClick={() =>
+                  updateAccount.mutate({
+                    id: account.Id,
+                    patch: { Active__c: !isActive },
+                    displayPatch: isActive ? { account_status: "Inactive" } : undefined,
+                  })
+                }
+                className={cn(
+                  "inline-flex h-[30px] items-center gap-1.5 rounded border px-3 text-[13px] font-medium transition-colors disabled:opacity-50",
+                  isActive
+                    ? "border-border-strong bg-surface text-ink-2 hover:border-red/40 hover:bg-red-soft hover:text-red"
+                    : "border-border-strong bg-surface text-ink-2 hover:border-green/40 hover:bg-green-soft hover:text-green",
+                )}
+              >
+                {isActive ? "Mark as inactive" : "Mark as active"}
+              </button>
+            );
+          })()}
+          <Tooltip
+            content="All accounts should default to 'Active'. Uncheck if there has been no recent contact with this account and there is no reason to engage with it in the foreseeable future."
+            side="bottom"
           >
-            <ExternalLink size={14} /> Website
-          </a>
-        ) : null}
+            <Info size={14} className="cursor-help text-ink-3" />
+          </Tooltip>
+        </div>
       </div>
 
       {/* Stats row */}

@@ -24,6 +24,7 @@ export interface SfUser {
 /** Playbook-defined Account Status, derived server-side. Values come
  *  from services/account_status.py — kept in sync there. */
 export type AccountStatus =
+  | "Inactive"
   | "Prospect"
   | "Activating"
   | "Pursuing"

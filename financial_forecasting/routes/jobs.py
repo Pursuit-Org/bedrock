@@ -5047,6 +5047,7 @@ async def jobs_accounts(
     deal_type: Optional[str] = Query(None),
     scope: str = Query("engaged", pattern="^(engaged|all)$"),
     user=Depends(require_auth),
+    client=Depends(get_mcp_client),
 ):
     """Account-level hub: every company with an opportunity OR a jobs prospect,
     keyed by normalized company name, with its opportunities and prospects nested
@@ -5313,6 +5314,21 @@ async def jobs_accounts(
         prospect_counts[key] = r["n"]
 
     ja = {r["account_key"]: r for r in ja_rows}
+
+    # Fetch Active__c from Salesforce for all linked SF accounts so that
+    # explicitly-deactivated accounts show status = "Inactive".
+    sf_active_by_id: dict[str, bool] = {}
+    sf_ids_to_check = [r["sf_account_id"] for r in ja_rows if r["sf_account_id"]]
+    if sf_ids_to_check:
+        try:
+            id_list = ", ".join(f"'{i}'" for i in sf_ids_to_check)
+            result = await client.salesforce.query_all(
+                f"SELECT Id, Active__c FROM Account WHERE Id IN ({id_list})"
+            )
+            for rec in (result.get("records") or []):
+                sf_active_by_id[rec["Id"]] = bool(rec.get("Active__c", True))
+        except Exception:
+            pass  # degraded gracefully — status derivation falls back to playbook
     # Pretty name for an investor key, and the reverse count (how many companies
     # name this account as their investor). Derived from the rows already
     # fetched — no extra query, and no-op before the migration adds the column.
@@ -5414,7 +5430,12 @@ async def jobs_accounts(
         a = acct_act.get(key)
         has_activity = bool(a and (a["last"] or a["recent"]))
         has_flagged = key in flagged_keys
-        if rec and rec["status_override"]:
+        # Inactive gate: Active__c == false in Salesforce overrides everything.
+        sf_acct_id = rec["sf_account_id"] if rec else None
+        sf_active = sf_active_by_id.get(sf_acct_id, True) if sf_acct_id else True
+        if not sf_active:
+            status = "Inactive"
+        elif rec and rec["status_override"]:
             status = rec["status_override"]
         elif has_open:
             status = "Pursuing"
@@ -5430,6 +5451,7 @@ async def jobs_accounts(
             status = "Prospect"
         g["account_key"] = key
         g["account_status"] = status
+        g["sf_active"] = sf_active
         g["opp_count"] = len(opps)
         g["prospect_count"] = prospect_counts.get(key, 0)
         # Everyone on file at this company, flagged or not — "no prospects" and

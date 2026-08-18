@@ -28,6 +28,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional
 
+STATUS_INACTIVE = "Inactive"
 STATUS_PROSPECT = "Prospect"
 STATUS_PURSUING = "Pursuing"
 STATUS_STEWARDING = "Stewarding"
@@ -35,6 +36,7 @@ STATUS_REACTIVATING = "Re-activating"
 STATUS_DORMANT = "Dormant"
 
 ACCOUNT_STATUSES = (
+    STATUS_INACTIVE,
     STATUS_PROSPECT,
     STATUS_PURSUING,
     STATUS_STEWARDING,
@@ -107,6 +109,7 @@ def compute_account_status(
     awards_by_opp: Dict[str, List[Dict[str, Any]]],
     latest_activity_by_account: Dict[str, datetime],
     now: Optional[datetime] = None,
+    is_active: bool = True,
 ) -> str:
     """Pure derivation. Caller assembles the three lookup maps.
 
@@ -119,7 +122,12 @@ def compute_account_status(
         latest_activity_by_account: AccountId → most recent activity_date
             as a tz-aware datetime. Missing accounts mean "no activity".
         now: defaults to datetime.now(tz=UTC). Pass in tests.
+        is_active: if False (SF Active__c unchecked), returns Inactive
+            immediately, overriding all playbook-derived statuses.
     """
+    if not is_active:
+        return STATUS_INACTIVE
+
     if now is None:
         now = datetime.now(timezone.utc)
 

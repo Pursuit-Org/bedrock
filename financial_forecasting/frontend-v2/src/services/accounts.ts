@@ -226,12 +226,12 @@ export function useUpdateAccount() {
     },
     onSuccess: (_data, { id, patch, displayPatch }) => {
       const merged = { ...patch, ...(displayPatch ?? {}) };
-      qc.setQueryData<SfAccount[]>(["accounts"], (old) => {
+      const patchCache = (old: SfAccount[] | undefined) => {
         if (!old) return old;
-        return old.map((a) =>
-          a.Id === id ? ({ ...a, ...merged } as SfAccount) : a,
-        );
-      });
+        return old.map((a) => (a.Id === id ? ({ ...a, ...merged } as SfAccount) : a));
+      };
+      qc.setQueryData<SfAccount[]>(["accounts"], patchCache);
+      qc.setQueryData<SfAccount[]>(["accounts", "active-only"], patchCache);
     },
     onSettled: () => {
       setTimeout(

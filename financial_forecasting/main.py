@@ -803,7 +803,7 @@ async def get_accounts(
             query = """
             SELECT Id, Name, Type, Industry, Website, Description,
                    BillingCity, BillingState, OwnerId, Owner.Name,
-                   Account_Tier__c,
+                   Account_Tier__c, Active__c,
                    npo02__TotalOppAmount__c, npo02__NumberOfClosedOpps__c,
                    Total_Revenue_Generated__c,
                    Last_Activity_Date__c, LastActivityDate,
@@ -945,6 +945,7 @@ async def _attach_account_status(accounts: list, salesforce) -> None:
             opps_by_account,
             awards_by_opp,
             latest_activity_by_account,
+            is_active=bool(a.get("Active__c", True)),
         )
 
 

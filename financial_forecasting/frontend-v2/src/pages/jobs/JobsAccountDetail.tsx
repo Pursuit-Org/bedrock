@@ -5,12 +5,15 @@
  */
 import { useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { Cloud, CloudOff, ExternalLink } from "lucide-react";
+import { Cloud, CloudOff, ExternalLink, Info } from "lucide-react";
 
 import { AccountAvatar } from "@/components/AccountAvatar";
 import { BackLink, SectionCard } from "@/components/detail";
 import { Tag } from "@/components/ui/Tag";
+import { Tooltip } from "@/components/ui/Tooltip";
+import { cn } from "@/lib/utils";
 import { accountStatusVariant } from "@/lib/accountStatus";
+import { useUpdateAccount } from "@/services/accounts";
 import {
   useAccountProspects,
   useJobsAccounts,
@@ -122,6 +125,7 @@ export function JobsAccountDetailPage() {
 
   const { data: staff = [] } = useJobsStaff();
   const updateAccount = useUpdateJobsAccount();
+  const updateSfAccount = useUpdateAccount();
   const [promoteOpen, setPromoteOpen] = useState(false);
 
   if (isLoading) {
@@ -162,6 +166,36 @@ export function JobsAccountDetailPage() {
             <button type="button" onClick={() => setPromoteOpen(true)} className="inline-flex items-center gap-1 rounded-lg border border-accent px-2.5 py-1 text-[11.5px] font-medium text-accent hover:bg-accent-soft"><ExternalLink size={12} /> Add to Salesforce</button>
           </>
         )}
+        {account.sf_account_id != null && (() => {
+          const isActive = account.sf_active !== false;
+          return (
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                disabled={updateSfAccount.isPending}
+                onClick={() => updateSfAccount.mutate({
+                  id: account.sf_account_id!,
+                  patch: { Active__c: !isActive },
+                  displayPatch: isActive ? { account_status: "Inactive" } : undefined,
+                })}
+                className={cn(
+                  "inline-flex h-[30px] items-center gap-1.5 rounded border px-3 text-[13px] font-medium transition-colors",
+                  isActive
+                    ? "border-border-strong bg-surface text-ink-2 hover:border-red/40 hover:bg-red-soft hover:text-red"
+                    : "border-border-strong bg-surface text-ink-2 hover:border-green/40 hover:bg-green-soft hover:text-green",
+                )}
+              >
+                {isActive ? "Mark as inactive" : "Mark as active"}
+              </button>
+              <Tooltip
+                content="All accounts should default to 'Active'. Uncheck if there has been no recent contact with this account and there is no reason to engage with it in the foreseeable future."
+                side="bottom"
+              >
+                <Info size={14} className="cursor-help text-ink-3" />
+              </Tooltip>
+            </div>
+          );
+        })()}
         <div className="ml-auto flex items-center gap-2">
           <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">Owner</span>
           <OwnerSelect

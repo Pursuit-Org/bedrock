@@ -15,8 +15,9 @@ import type { AccountStatus } from "@/types/salesforce";
  */
 export function accountStatusVariant(
   s: AccountStatus,
-): "default" | "accent" | "green" | "amber" | "red" | "sky" {
+): "default" | "accent" | "green" | "amber" | "red" | "sky" | "zinc" {
   switch (s) {
+    case "Inactive": return "zinc";
     case "Activating": return "sky";
     case "Pursuing": return "accent";
     case "Stewarding": return "green";
