@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import { useMutation, useQuery, useQueryClient, keepPreviousData, type QueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
+import { serializeRulesForServer, type FilterRule } from "@/pages/cleanup/Filters";
 
 /**
  * Invalidate the query families that depend on opportunities/activity — opp
@@ -19,6 +20,11 @@ function invalidateOppDependents(qc: QueryClient, extra: string[][] = []) {
     ["jobs", "funnel"],
     ["jobs", "this-week-summary"],
     ["jobs", "interview-pipeline"],
+    // Closing a deal as revisit files a jobs_task for the owner. These are the
+    // real task keys — "jobs-tasks" per parent and "jobs-tasks-all" for the Jobs
+    // Home widget; ["jobs","tasks"] matches nothing.
+    ["jobs-tasks"],
+    ["jobs-tasks-all"],
     ...extra,
   ];
   for (const queryKey of families) qc.invalidateQueries({ queryKey });
@@ -26,14 +32,19 @@ function invalidateOppDependents(qc: QueryClient, extra: string[][] = []) {
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
+// The 2026-08-05 simplification: six stages. The legacy values stay in the union
+// so rows written before the migration still type-check and render a label —
+// they just aren't offered as choices (see STAGES_ORDERED / useStageVocabulary).
 export type JobStage =
   | "lead_submitted"
-  | "initial_outreach"
   | "active_in_discussions"
   | "active_opportunity_confirmed"
-  | "active_builder_interview"
+  | "reviewing_builders"
   | "closed_won"
   | "closed_lost"
+  // legacy, pre-2026-08-05
+  | "initial_outreach"
+  | "active_builder_interview"
   | "on_hold_not_selected"
   | "on_hold_not_interested"
   | "on_hold_not_responsive";
@@ -76,6 +87,9 @@ export interface JobsOpportunity {
   activity_count?: number;
   last_activity_at?: string | null;
   recent_activity_count?: number;
+  /** Campaign tags — same vocabulary as contacts. Empty until the
+   *  2026-08-05 migration adds the column. */
+  tags?: string[];
 }
 
 export interface JobContact {
@@ -168,12 +182,14 @@ export interface OpportunityFilters {
 
 export const STAGE_LABELS: Record<JobStage, string> = {
   lead_submitted:               "Lead Submitted",
-  initial_outreach:             "Initial Outreach",
   active_in_discussions:        "In Discussions",
   active_opportunity_confirmed: "Opportunity Confirmed",
-  active_builder_interview:     "Builder Interview",
+  reviewing_builders:           "Reviewing Builders",
   closed_won:                   "Closed — Won",
   closed_lost:                  "Closed — Lost",
+  // Legacy — labelled so un-migrated rows and history read as words, not slugs.
+  initial_outreach:             "Initial Outreach",
+  active_builder_interview:     "Builder Interview",
   on_hold_not_selected:         "Not Selected",
   on_hold_not_interested:       "Not Interested",
   on_hold_not_responsive:       "Not Responsive",
@@ -188,14 +204,23 @@ export const DEAL_TYPE_LABELS: Record<DealType, string> = {
   pilot:       "Pilot",
 };
 
+/** Board columns and pickers, in pipeline order. Six stages as of 2026-08-05.
+ *  Legacy values are deliberately absent: a picker must not offer a stage the
+ *  team has retired. Anything still stored under one renders via STAGE_LABELS
+ *  and moves to a current stage on the next edit. */
 export const STAGES_ORDERED: JobStage[] = [
   "lead_submitted",
-  "initial_outreach",
   "active_in_discussions",
   "active_opportunity_confirmed",
-  "active_builder_interview",
+  "reviewing_builders",
   "closed_won",
   "closed_lost",
+];
+
+/** Legacy stages that still exist in un-migrated data. Rendered, never offered. */
+export const LEGACY_STAGES: JobStage[] = [
+  "initial_outreach",
+  "active_builder_interview",
   "on_hold_not_selected",
   "on_hold_not_interested",
   "on_hold_not_responsive",
@@ -204,7 +229,7 @@ export const STAGES_ORDERED: JobStage[] = [
 export const ACTIVE_STAGES: JobStage[] = [
   "active_in_discussions",
   "active_opportunity_confirmed",
-  "active_builder_interview",
+  "reviewing_builders",
 ];
 
 // ── Hooks ────────────────────────────────────────────────────────────────────
@@ -239,12 +264,56 @@ export interface JobContactWithDeal extends JobContact {
 // carries a real funnel stage a user sets; a jobs prospect with NO membership
 // has no stage yet (blank). 'assigned' is the first real stage (deliberately
 // set), not an auto-applied placeholder.
-export type MembershipStage = "assigned" | "initial_outreach" | "converted_to_opportunity" | "on_hold" | "not_a_fit";
-export const MEMBERSHIP_STAGES: MembershipStage[] = ["assigned", "initial_outreach", "converted_to_opportunity", "on_hold", "not_a_fit"];
+// `on_hold` is the pre-2026-08-05 value, replaced by `revisit` (which carries a
+// date and files a task). It stays in the union so rows written before the
+// migration still type-check and render a label.
+export type MembershipStage =
+  | "assigned" | "initial_outreach" | "call_booked"
+  | "converted_to_opportunity" | "revisit" | "not_a_fit"
+  | "on_hold";
+/** Offered stages. `on_hold` is absent on purpose — Revisit replaces it, and the
+ *  API canonicalises any row still stored as on_hold, so it never reaches here.
+ *  It stays in MembershipStage and the label map for safety, not as a choice. */
+export const MEMBERSHIP_STAGES: MembershipStage[] = [
+  "assigned", "initial_outreach", "call_booked", "converted_to_opportunity", "revisit", "not_a_fit",
+];
 export const MEMBERSHIP_STAGE_LABELS: Record<MembershipStage, string> = {
-  assigned: "Assigned", initial_outreach: "Initial outreach",
-  converted_to_opportunity: "Converted to opportunity", on_hold: "On hold", not_a_fit: "Not a fit",
+  assigned: "Assigned", initial_outreach: "Initial outreach", call_booked: "Call booked",
+  converted_to_opportunity: "Converted to opportunity", revisit: "Revisit", not_a_fit: "Not a fit",
+  on_hold: "On hold",
 };
+
+/** What the database will actually accept right now. The stage migration is
+ *  applied by Jac out-of-band, so the writable vocabulary can change without a
+ *  deploy — building pickers from this is what stops the UI offering a stage the
+ *  CHECK constraint rejects (which would fail saves for everyone). */
+export interface StageOption {
+  value: string;
+  label: string;
+  /** False while the database CHECK constraint still rejects it — shown in the
+   *  picker but not selectable, so a pending migration reads as "coming" rather
+   *  than "missing". */
+  available: boolean;
+  unavailable_reason?: string | null;
+}
+export interface StageVocabulary {
+  opportunity_stages: StageOption[];
+  membership_stages: (StageOption & { value: MembershipStage })[];
+  closed_lost_reasons: StageOption[];
+  /** True once the 2026-08-05 stage migration has landed. */
+  migrated: boolean;
+}
+
+export function useStageVocabulary() {
+  return useQuery<StageVocabulary>({
+    queryKey: ["jobs", "stage-vocabulary"],
+    queryFn: async () => {
+      const { data } = await api.get<ApiResponse<StageVocabulary>>("/api/jobs/stage-vocabulary");
+      return data.data;
+    },
+    staleTime: 300_000,
+  });
+}
 
 export interface ContactFilters {
   stage?: string;
@@ -385,14 +454,24 @@ export function useFlagContactsForJobs() {
 export function useUpdateJobsMembership() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async ({ contact_id, ...body }: { contact_id: number; stage?: string; owner_email?: string; first_outreach_by?: string; not_a_fit_reason?: string }) => {
+    mutationFn: async ({ contact_id, ...body }: { contact_id: number; stage?: string; owner_email?: string; first_outreach_by?: string; not_a_fit_reason?: string; revisit_date?: string }) => {
       await api.patch(`/api/jobs/contacts/${contact_id}/jobs-membership`, body);
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["jobs", "contacts"] });
       qc.invalidateQueries({ queryKey: ["jobs", "accounts"] });
+      // A revisit files a jobs_task, so the Jobs Home task widget is stale.
+      // Keys are "jobs-tasks" / "jobs-tasks-all" (see services/jobsTasks.ts).
+      qc.invalidateQueries({ queryKey: ["jobs-tasks"] });
+      qc.invalidateQueries({ queryKey: ["jobs-tasks-all"] });
     },
-    onError: () => toast.error("Failed to update stage"),
+    // Surface the server's reason when it gave one: a 409 here means the stage
+    // needs the pending migration, and "Failed to update stage" sent the user
+    // hunting for a bug that isn't in the app.
+    onError: (e: unknown) => {
+      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      toast.error(detail || "Failed to update stage");
+    },
   });
 }
 
@@ -491,7 +570,18 @@ export interface JobsAccount {
   sf_account_id?: string | null;
   owner_email: string | null;
   account_status: JobsAccountStatus;
+  /** Firmographics from public.companies — read-only in Bedrock; other systems
+   *  own this data, so the UI displays it and never edits it. */
   industry?: string | null;
+  size_bucket?: string | null;
+  hq_location?: string | null;
+  company_stage?: string | null;
+  /** The investor/owner of this company — itself an account, so the link is
+   *  navigable. Null until the 2026-08-05 migration adds the column. */
+  investor_account_key?: string | null;
+  investor_name?: string | null;
+  /** How many companies name THIS account as their investor. */
+  portfolio_count?: number;
   opportunities: JobsAccountOpp[];
   /** Prospects are NOT nested in the list payload (~38k rows) — fetch them
    *  lazily per account via useAccountProspects. Only the count ships here. */
@@ -712,6 +802,8 @@ export interface JobsAccountUpdate {
   owner_email?: string;
   status_override?: string;
   notes?: string;
+  /** account_key of the investor; "" clears it. */
+  investor_account_key?: string;
 }
 
 export function useUpdateJobsAccount() {
@@ -1002,6 +1094,14 @@ export interface FunnelStage {
   count: number;
   pct_of_max: number;
   conversion_to_next: number | null;
+  /** Share of the PREVIOUS stage's arrivals that reached this one. Same number
+   *  as the previous row's `conversion_to_next`, addressed to the row it
+   *  describes — which is how the team reads it. */
+  conversion_in: number | null;
+  /** Same measures over the window of equal length immediately before, for the
+   *  two trend columns. Null in snapshot mode (no prior window exists). */
+  count_prev: number | null;
+  conversion_in_prev: number | null;
   records: Record<string, string | null>[];
   movement: FunnelMovement[];
   advanced_in: number;
@@ -1010,19 +1110,46 @@ export interface FunnelStage {
 
 export interface FunnelData {
   type: FunnelType;
+  /** `period` = counts are records that ENTERED each stage inside the window.
+   *  `snapshot` = counts are records currently sitting in each stage. */
+  mode: "period" | "snapshot";
+  period: { from: string; to: string } | null;
+  /** Set only when the selected window came back empty: the most recent movement
+   *  of any kind, so the empty state can point at where the data actually is
+   *  instead of leaving "nothing happened" and "wrong week" indistinguishable. */
+  last_movement_at: string | null;
   stages: FunnelStage[];
   record_columns: { key: string; label: string }[];
 }
 
-export function useJobsFunnel(ftype: FunnelType, dealType?: string, segment?: string) {
+/** Window for period-flow mode. Omit it to get the all-time snapshot (the Exec
+ *  view, which has no period control, relies on that default). */
+export interface FunnelPeriod {
+  from: string;
+  to: string;
+}
+
+export function useJobsFunnel(
+  ftype: FunnelType,
+  dealType?: string,
+  segment?: string,
+  period?: FunnelPeriod,
+) {
   const dt = dealType && dealType !== "all" ? dealType : undefined;
   const seg = segment && segment !== "all" ? segment : undefined;
+  // The builders funnel has no stage-entry stamps, so a period would silently
+  // return zeros — the backend ignores it, and we keep it out of the key too.
+  const p0 = ftype === "builders" ? undefined : period;
   return useQuery<FunnelData>({
-    queryKey: ["jobs", "funnel", ftype, dt ?? "all", seg ?? "all"],
+    queryKey: ["jobs", "funnel", ftype, dt ?? "all", seg ?? "all", p0?.from ?? "", p0?.to ?? ""],
     queryFn: async () => {
       const p = new URLSearchParams();
       if (dt) p.set("deal_type", dt);
       if (seg) p.set("segment", seg);
+      if (p0?.from && p0?.to) {
+        p.set("period_from", p0.from);
+        p.set("period_to", p0.to);
+      }
       const qs = p.toString() ? `?${p}` : "";
       const { data } = await api.get<ApiResponse<FunnelData>>(`/api/jobs/funnel/${ftype}${qs}`);
       return data.data;
@@ -1079,7 +1206,7 @@ export interface ActivityTrends {
   coverage_note: string | null;
 }
 
-export type OutreachScope = "team" | "staff";
+export type OutreachScope = OutreachScopeKind;
 
 export interface OutreachRange { from: string; to: string }
 
@@ -1102,6 +1229,23 @@ export function useActivityTrends(granularity: "day" | "week" | "month", channel
 
 export type OutreachGranularity = "day" | "week" | "month";
 export type OutreachScopeKind = "pursuit" | "team" | "staff";
+
+/** The core jobs team. Mirrors JOBS_TEAM_EMAILS in routes/jobs.py — the backend
+ *  is the source of truth; this copy exists so client-side tables (the assigned
+ *  queue) can honour the same scope toggle the API endpoints do. Keep in sync. */
+export const JOBS_TEAM_EMAILS = [
+  "avni@pursuit.org",
+  "damon.kornhauser@pursuit.org",
+  "devika@pursuit.org",
+];
+
+/** Does this owner belong to the selected sender scope? */
+export function inScope(email: string | null | undefined, scope: OutreachScopeKind): boolean {
+  if (scope === "pursuit") return true;
+  const e = (email ?? "").toLowerCase();
+  const isTeam = JOBS_TEAM_EMAILS.includes(e);
+  return scope === "team" ? isTeam : !isTeam;
+}
 export interface OutreachDateRange { from: string; to: string }
 
 export interface ScorecardCell { warm: number; cold: number; total: number }
@@ -1128,6 +1272,37 @@ export interface BySenderRow {
   cold: number;
 }
 
+export interface TouchDepthContact {
+  contact_id: number;
+  name: string | null;
+  company: string | null;
+  owner: string | null;
+  touches: number;
+  last_touch_at: string | null;
+}
+export interface TouchDepthBucket {
+  key: string;
+  label: string;
+  count: number;
+  pct: number;
+  contacts: TouchDepthContact[];
+  /** Members beyond the response cap, so the panel can say what it's hiding. */
+  truncated: number;
+}
+/** Follow-up depth for everyone sitting in initial outreach right now.
+ *  Not period-scoped — it answers "who is under-touched today", so the window
+ *  ends today and the cohort is the live queue. */
+export interface TouchDepth {
+  /** Every contact in the cohort — the denominator for `pct`. */
+  total: number;
+  /** Length of the touch-counting window, in weeks. */
+  weeks: number;
+  /** The window itself (YYYY-MM-DD), ending today. */
+  touch_from: string;
+  touch_to: string;
+  buckets: TouchDepthBucket[];
+}
+
 export interface OutreachScorecard {
   granularity: OutreachGranularity;
   scope: OutreachScopeKind;
@@ -1152,6 +1327,25 @@ export function useOutreachScorecard(granularity: OutreachGranularity, scope: Ou
       const { data } = await api.get<ApiResponse<OutreachScorecard>>(
         `/api/jobs/outreach/scorecard?${outreachParams(granularity, scope, owner, range)}`,
       );
+      return data.data;
+    },
+    staleTime: 60_000,
+  });
+}
+
+/** Touch depth — who in initial outreach is under-touched right now.
+ *
+ *  Takes no period on purpose. It used to ride on the scorecard, which the
+ *  Outreach tab fetches once per period to build its trend columns, so it was
+ *  recomputed several times per page load to answer a question that never
+ *  depended on the period. Its own key means one fetch and its own cache. */
+export function useTouchDepth(scope: OutreachScopeKind, owner?: string) {
+  return useQuery<TouchDepth>({
+    queryKey: ["jobs", "outreach-touch-depth", scope, owner ?? ""],
+    queryFn: async () => {
+      const p = new URLSearchParams({ scope });
+      if (owner) p.set("owner", owner);
+      const { data } = await api.get<ApiResponse<TouchDepth>>(`/api/jobs/outreach/touch-depth?${p}`);
       return data.data;
     },
     staleTime: 60_000,
@@ -1211,6 +1405,10 @@ export interface OutreachDrillTouch {
   subject: string | null;
   snippet: string | null;
   direction: string;
+  /** Bare lowercase email of the Pursuit person behind the touch — the sender
+   *  when we sent it, the recipient when the contact replied. Resolve through
+   *  the staff name map. */
+  actor: string | null;
 }
 export interface OutreachDrillContact {
   contact_id: number;
@@ -1218,6 +1416,8 @@ export interface OutreachDrillContact {
   company: string | null;
   entered_at: string | null;
   touches: OutreachDrillTouch[];
+  /** Distinct actors across this contact's touches, for the collapsed row. */
+  actors?: string[];
 }
 export interface OutreachDrill {
   kind: "user" | "activity";
@@ -1458,6 +1658,33 @@ export function useTagCampaigns() {
   });
 }
 
+export interface TagCampaignContact {
+  contact_id: number;
+  full_name: string | null;
+  company: string | null;
+  stage: string | null;
+  stage_entered_at: string | null;
+  owner: string | null;
+  touches: number;
+  last_touch: string | null;
+}
+export interface TagCampaignAccount { company: string; contacts: number; contacted: number }
+
+/** The contacts and accounts behind a campaign's counts. Same slug set and
+ *  jobs-prospect gate as /tag-campaigns, so the drills tie to the numbers. */
+export function useTagCampaignRecords(key: string | null) {
+  return useQuery<{ contacts: TagCampaignContact[]; accounts: TagCampaignAccount[] }>({
+    queryKey: ["jobs", "tag-campaign-records", key ?? ""],
+    enabled: !!key,
+    queryFn: async () => {
+      const { data } = await api.get<ApiResponse<{ contacts: TagCampaignContact[]; accounts: TagCampaignAccount[] }>>(
+        `/api/jobs/tag-campaigns/${encodeURIComponent(key as string)}/records`);
+      return data.data;
+    },
+    staleTime: 60_000,
+  });
+}
+
 export function useSetTagCampaignOrder() {
   const qc = useQueryClient();
   return useMutation({
@@ -1627,29 +1854,231 @@ export interface NetworkConnection {
   touched: boolean;   // anyone at Pursuit has activity with them
   co_connections: number; company_hired_before: boolean; has_open_opp: boolean;
   status: string; status_reason: string | null;
+  /** "yes" | "no" | null (unanswered). Null until the hiring-fit migration runs. */
+  hiring_fit: string | null;
+  /** The Note cell. Backed by the most recent team comment on this contact whose
+   *  body starts with "relationship context:", with the prefix stripped. */
+  relationship_context: string | null;
+  /** The id of that comment, so an edit updates it in place instead of appending. */
+  relationship_context_id: string | null;
+  /** How many OTHER people have left relationship context on this contact. The
+   *  cell stays theirs alone; this is only a hint that more exists in the thread. */
+  relationship_context_others: number;
+  // Firmographics behind the page's filters. headcount_band/industry come from
+  // public.companies; tristate/seniority are derived in SQL (see routes/jobs.py
+  // _tristate_case / _seniority_case). tristate is 'Yes' | 'HQ elsewhere' |
+  // 'Unknown' — never 'No', because an HQ cannot refute an office.
+  headcount_band: string | null; industry: string | null; hq_location: string | null;
+  tristate: string | null; seniority: string | null;
+  /** Curated CRM tags (bedrock.contact_tag_catalog slugs). */
+  tags: string[];
+  /** "P1" | "P2" | null. Banded in SQL — see _net_priority_case in routes/jobs.py.
+   *  null means unranked, not "low priority". */
+  priority: string | null;
+  /** Company is in bedrock.company_investor. Always false until that migration
+   *  is applied. */
+  is_portco: boolean;
+  /** Shared jobs_comment count for this contact (team-visible, not per-staff). */
+  comment_count: number;
+  /** What LinkedIn says today, from bedrock.contact_enrichment — sent ONLY when it
+   *  disagrees with current_title / current_company, and null otherwise (including
+   *  for every contact not yet re-enriched). These are NOT authoritative: the
+   *  network's title/employer come from a LinkedIn CSV import that measured 64%
+   *  stale, and a change only reaches current_* after review, because
+   *  current_company is what resolves the company's firmographics. */
+  live_title: string | null;
+  live_company: string | null;
+  /** When this contact was last re-enriched, whatever the outcome. */
+  enriched_at: string | null;
 }
-export interface MyNetwork { mapped: boolean; total: number; connections: NetworkConnection[]; message?: string }
-export function useMyNetwork(q?: string) {
+/** The filter menu's option lists for this staff member's network. */
+export interface MyNetworkFacets {
+  headcount: string[]; industry: string[]; tristate: string[]; seniority: string[];
+}
+export interface MyNetwork {
+  mapped: boolean;
+  /** The whole network, ignoring search + filters. */
+  total: number;
+  /** How many match the active search + filters — counted in SQL, so it stays
+   *  right even when more match than the 2,000 `connections` can hold. */
+  matched: number;
+  /** False until db/migrations/2026-08-05-connection-hiring-fit.sql is applied.
+   *  The UI greys the Hiring fit cells rather than offering a control whose
+   *  writes the endpoint would refuse. */
+  hiring_fit_available: boolean;
+  connections: NetworkConnection[];
+  message?: string;
+}
+
+/** Facets live on their own key because they depend only on whose network it is,
+ *  not on the query — folded into useMyNetwork they re-ran on every keystroke. */
+export function useMyNetworkFacets(scope: NetworkScope = "mine", enabled = true) {
+  return useQuery<MyNetworkFacets>({
+    queryKey: ["jobs", "my-network-facets", scope],
+    queryFn: async () => {
+      const { data } = await api.get<ApiResponse<MyNetworkFacets>>("/api/jobs/my-network/facets", {
+        params: scope !== "mine" ? { scope } : {},
+      });
+      return data.data;
+    },
+    enabled,
+    staleTime: 10 * 60_000,
+  });
+}
+export type NetworkScope = "mine" | "pursuit";
+export function useMyNetwork(q?: string, rules?: FilterRule[], prioritized = false, scope: NetworkScope = "mine") {
+  // Filters go to the SERVER: seven staff have >2,000 connections, so sifting
+  // only the loaded page would under-report without saying so. Ranking is
+  // server-side for the same reason — a client-side sort could only order the
+  // loaded window and would leave P1s off-screen.
+  const serialized = rules?.length ? JSON.stringify(serializeRulesForServer(rules)) : "";
   return useQuery<MyNetwork>({
-    queryKey: ["jobs", "my-network", q ?? ""],
+    queryKey: ["jobs", "my-network", scope, q ?? "", serialized, prioritized],
     queryFn: async () => {
       // limit=2000 (server max) — the default 500 silently hid connections for
       // anyone with a bigger network ("total 647, loaded 500").
-      const { data } = await api.get<ApiResponse<MyNetwork>>("/api/jobs/my-network", { params: { limit: 2000, ...(q ? { q } : {}) } });
+      const { data } = await api.get<ApiResponse<MyNetwork>>("/api/jobs/my-network", {
+        params: {
+          limit: 2000,
+          ...(q ? { q } : {}),
+          ...(serialized ? { filters: serialized } : {}),
+          ...(prioritized ? { prioritized: true } : {}),
+          ...(scope !== "mine" ? { scope } : {}),
+        },
+      });
       return data.data;
     },
     staleTime: 60_000,
   });
 }
 
+/** One cell of a My Network row. Every field is optional — the endpoint updates
+ *  only what's sent, so saving one cell can't blank its neighbours. Clear with
+ *  status:"new" or hiring_fit:"". The Note cell does NOT go through here; see
+ *  useSaveRelationshipContext. */
+export interface ConnectionRowUpdate {
+  contact_id: number;
+  status?: string;
+  hiring_fit?: string;
+  reason?: string;
+}
+
+/** Prefix that marks the comment owned by the row's Note cell. Must match
+ *  RELATIONSHIP_CONTEXT_PREFIX in routes/jobs.py. */
+export const RELATIONSHIP_CONTEXT_PREFIX = "relationship context:";
+
+/** Save the Note cell as a real team comment on the contact.
+ *
+ *  The cell only ever holds the caller's OWN note, so this is a straight
+ *  create / update / delete of that one comment — no author check needed, and a
+ *  colleague's note can't be touched because it was never in the cell. */
+export function useSaveRelationshipContext() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ contact_id, text, existing_id }: {
+      contact_id: number; text: string; existing_id?: string | null;
+    }) => {
+      const body = `${RELATIONSHIP_CONTEXT_PREFIX} ${text}`.trim();
+      if (existing_id && !text) {
+        await api.delete(`/api/jobs/jobs-comments/${existing_id}`);
+        return;
+      }
+      if (!text) return;                     // nothing to add
+      if (existing_id) {
+        await api.patch(`/api/jobs/jobs-comments/${existing_id}`, { content: body });
+        return;
+      }
+      await api.post("/api/jobs/jobs-comments", {
+        parent_type: "prospect", parent_id: String(contact_id), content: body,
+      });
+    },
+    // Optimistic on the row so the cell doesn't flicker, and the contact's own
+    // comment thread is invalidated too — the expand panel reads that key.
+    onMutate: async ({ contact_id, text }) => {
+      await qc.cancelQueries({ queryKey: ["jobs", "my-network"] });
+      const snapshot = qc.getQueriesData<MyNetwork>({ queryKey: ["jobs", "my-network"] });
+      qc.setQueriesData<MyNetwork>({ queryKey: ["jobs", "my-network"] }, (prev) =>
+        prev
+          ? {
+              ...prev,
+              connections: prev.connections.map((c) =>
+                c.contact_id === contact_id ? { ...c, relationship_context: text || null } : c),
+            }
+          : prev,
+      );
+      return { snapshot };
+    },
+    onError: (_e, _v, ctx) => {
+      for (const [key, data] of ctx?.snapshot ?? []) qc.setQueryData(key, data);
+      toast.error("Failed to save the note");
+    },
+    // Same reasoning as the vote mutation: the optimistic patch already holds the
+    // text, so the 2,000-row list is not refetched. The contact's own comment
+    // thread IS invalidated — it's small, and the expand panel reads it.
+    onSettled: (_d, _e, { contact_id }) => {
+      qc.invalidateQueries({ queryKey: ["jobs-comments", "prospect", String(contact_id)] });
+    },
+  });
+}
+
 export function useSetConnectionStatus() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (body: { contact_id: number; status: string; reason?: string; note?: string }) => {
+    mutationFn: async (body: ConnectionRowUpdate) => {
       const { data } = await api.patch<ApiResponse<unknown>>("/api/jobs/my-network/status", body);
       return data.data;
     },
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["jobs", "my-network"] }),
+    // Optimistic: these cells are a rapid-entry control, and invalidating on
+    // success refetched up to 2,000 rows per edit. Patch every cached my-network
+    // page (they vary by search + filters), roll back on failure.
+    onMutate: async (body) => {
+      await qc.cancelQueries({ queryKey: ["jobs", "my-network"] });
+      const snapshot = qc.getQueriesData<MyNetwork>({ queryKey: ["jobs", "my-network"] });
+      const patch = (c: NetworkConnection): NetworkConnection => ({
+        ...c,
+        ...(body.status !== undefined ? { status: body.status } : {}),
+        // "" clears, and the server stores NULL — mirror that locally so the cell
+        // doesn't flash the old value back before the refetch lands.
+        ...(body.hiring_fit !== undefined ? { hiring_fit: body.hiring_fit || null } : {}),
+      });
+      qc.setQueriesData<MyNetwork>({ queryKey: ["jobs", "my-network"] }, (prev) =>
+        prev
+          ? { ...prev, connections: prev.connections.map((c) => (c.contact_id === body.contact_id ? patch(c) : c)) }
+          : prev,
+      );
+      return { snapshot };
+    },
+    // Confirm from the RESPONSE, never by refetching. The endpoint returns the
+    // stored row, so it is already authoritative — and a full my-network refetch
+    // costs ~5s over 2,000 rows with per-row LATERALs. At real entry rates (one
+    // click every ~3s) those refetches overlapped continuously and each new click
+    // cancelled the one in flight, which is what made cells appear to empty and
+    // refill. Nothing about a vote changes another row, the sort, or the bands, so
+    // there is nothing to refetch for.
+    onSuccess: (data, body) => {
+      const stored = (data ?? {}) as { status?: string; hiring_fit?: string | null };
+      qc.setQueriesData<MyNetwork>({ queryKey: ["jobs", "my-network"] }, (prev) =>
+        prev
+          ? {
+              ...prev,
+              connections: prev.connections.map((c) =>
+                c.contact_id === body.contact_id
+                  ? {
+                      ...c,
+                      ...(stored.status !== undefined ? { status: stored.status } : {}),
+                      ...(stored.hiring_fit !== undefined
+                        ? { hiring_fit: stored.hiring_fit || null }
+                        : {}),
+                    }
+                  : c,
+              ),
+            }
+          : prev,
+      );
+    },
+    onError: (_err, _body, ctx) => {
+      for (const [key, data] of ctx?.snapshot ?? []) qc.setQueryData(key, data);
+    },
   });
 }
 
@@ -2084,6 +2513,25 @@ export type OppBreakdownDim = "status" | "deal_type" | "segment" | "stage" | "ow
 
 export interface OppBreakdownItem { key: string; label: string; count: number }
 export interface OppAgingBucket { key: string; label: string; count: number; pct: number }
+/** One active-set opportunity with the keys every panel groups by. The aging
+ *  bars, set distribution and heatmap cells all drill by filtering this array,
+ *  so a drill list can never disagree with the number above it. */
+export interface OppActiveSetMember {
+  opportunity_id: string;
+  account: string | null;
+  owner: string | null;
+  stage: string;
+  stage_label: string;
+  priority: number | null;
+  /** Index into `heatmaps.buckets` / `aging.buckets` (0 = <2 weeks … 4 = 8+). */
+  age_bucket: number;
+  days_in_stage: number;
+  status: string;
+  deal_type: string;
+  segment: string;
+  owner_key: string;
+}
+
 export interface OppHeatRow { key: string; label: string; cells: number[]; total: number }
 export interface OppHeatmap { rows: OppHeatRow[]; col_totals: number[]; unset?: number; populated?: boolean }
 export interface OppNeedsRow {
@@ -2134,6 +2582,7 @@ export interface OpportunitiesOverview {
     stage: OppHeatmap;
   };
   needs_attention: OppNeedsRow[];
+  active_set: OppActiveSetMember[];
   /** Rows behind each summary card — same query as the count, so they agree. */
   drills: { in_set: OppDrillRow[]; stalled: OppDrillRow[]; net_new: OppDrillRow[]; won: OppDrillRow[]; lost: OppDrillRow[] };
   recent_activity: OppActivityEvent[];
@@ -2236,4 +2685,52 @@ export function useRespondedContacts(owner?: string) {
     },
     staleTime: 60_000,
   });
+}
+
+// ── Export ────────────────────────────────────────────────────────────────────
+
+export type ExportEntity = "contacts" | "accounts" | "opportunities";
+
+/** Download an .xlsx of the given rows. Pass ids for a selection; omit for the
+ *  whole (server-capped) set. Returns the row count the server wrote.
+ *
+ *  Uses a blob + object URL rather than navigating: the endpoint is a POST (the
+ *  id list can be thousands long, well past a URL), and axios already carries
+ *  the auth cookie. */
+export interface ExportColumn { key: string; label: string; default: boolean }
+
+/** What this entity can export. Server-owned so the picker and the allowlist
+ *  that filters the request can't drift apart. */
+export function useExportColumns(entity: ExportEntity, enabled = true) {
+  return useQuery<ExportColumn[]>({
+    queryKey: ["jobs", "export-columns", entity],
+    queryFn: async () => {
+      const { data } = await api.get<ApiResponse<{ columns: ExportColumn[] }>>(
+        `/api/jobs/export/${entity}/columns`);
+      return data.data.columns;
+    },
+    enabled,
+    staleTime: 30 * 60_000,   // a static allowlist; no reason to refetch
+  });
+}
+
+export async function exportJobsRows(
+  entity: ExportEntity,
+  ids?: (string | number)[],
+  columns?: string[],
+): Promise<void> {
+  const res = await api.post(`/api/jobs/export/${entity}`,
+    { ids: ids?.map(String), columns },
+    { responseType: "blob" });
+  const stamp = new Date().toISOString().slice(0, 10);
+  const url = URL.createObjectURL(res.data as Blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `bedrock-${entity}-${stamp}.xlsx`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  // Revoke on the next tick — revoking synchronously can cancel the download in
+  // Safari before it starts.
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }

@@ -242,7 +242,10 @@ export function InlineText({
 
 interface InlineSelectProps<T extends string> {
   value: T | null | undefined;
-  options: { value: T; label: string }[];
+  /** `disabled` renders the option greyed and unselectable — used for stages a
+   *  pending migration hasn't enabled yet, so they're visibly coming rather than
+   *  silently absent. `title` explains why on hover. */
+  options: { value: T; label: string; disabled?: boolean; title?: string }[];
   onSave: (next: T) => Promise<void> | void;
   emptyLabel?: string;
   renderValue?: (v: T | null | undefined) => React.ReactNode;
@@ -326,8 +329,8 @@ export function InlineSelect<T extends string>({
           {emptyLabel}
         </option>
         {options.map((o) => (
-          <option key={o.value} value={o.value}>
-            {o.label}
+          <option key={o.value} value={o.value} disabled={o.disabled} title={o.title}>
+            {o.label}{o.disabled ? " (needs migration)" : ""}
           </option>
         ))}
       </select>

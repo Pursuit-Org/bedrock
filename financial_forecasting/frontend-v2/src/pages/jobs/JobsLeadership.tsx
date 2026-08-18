@@ -1,18 +1,10 @@
-import { useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { useState } from "react";
 import { Users, Trophy, DollarSign } from "lucide-react";
 
-import {
-  usePlacements,
-  useBuilderSegments,
-  useJobsStaff,
-  useJobsAccounts,
-  useJobsOpportunities,
-} from "@/services/jobs";
+import { usePlacements, useBuilderSegments } from "@/services/jobs";
 import { JobsFunnels } from "@/components/jobs/JobsFunnels";
 import { MetricDrawer } from "@/components/jobs/MetricDrawer";
 import { JobsStatBubble } from "@/components/jobs/JobsStatBubble";
-import { cn } from "@/lib/utils";
 
 
 // ── Section wrapper ───────────────────────────────────────────────────────
@@ -30,40 +22,6 @@ function SectionWrap({
         {title}
       </div>
       {children}
-    </div>
-  );
-}
-
-// ── Hygiene line ─────────────────────────────────────────────────────────────
-// The two numbers no other band carries (2026-07-30 exec review pared the
-// 8-tile pulse band down to these — everything else restated Outreach/Pipeline
-// numbers one click away). Each links to the surface where it's fixed.
-
-function HygieneLine() {
-  const { data: staff = [] } = useJobsStaff();
-  const { data: accounts = [] } = useJobsAccounts(undefined, "all");
-  const { data: wonData } = useJobsOpportunities({ stage: "closed_won", limit: 500 });
-  const staffEmails = useMemo(() => new Set(staff.map((s) => s.email.toLowerCase())), [staff]);
-  const noProspect = useMemo(() => accounts.filter((a) =>
-    a.owner_email && staffEmails.has(a.owner_email.toLowerCase()) && a.prospect_count === 0).length,
-    [accounts, staffEmails]);
-  const wonOpenTasks = useMemo(
-    () => (wonData?.data ?? []).filter((op) => (op.open_tasks ?? 0) > 0).length,
-    [wonData]);
-  if (noProspect === 0 && wonOpenTasks === 0) return null;
-  return (
-    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border border-border-strong bg-surface-2/60 px-3 py-2 text-[12px] text-ink-3">
-      <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-4">Hygiene</span>
-      {noProspect > 0 && (
-        <Link to="/jobs/performance?tab=outreach" className="hover:text-ink">
-          <span className={cn("font-semibold tabular-nums", "text-amber")}>{noProspect}</span> accounts assigned with no prospect →
-        </Link>
-      )}
-      {wonOpenTasks > 0 && (
-        <Link to="/jobs/pipeline" className="hover:text-ink">
-          <span className="font-semibold tabular-nums text-red">{wonOpenTasks}</span> won with open tasks →
-        </Link>
-      )}
     </div>
   );
 }
@@ -162,10 +120,10 @@ export function JobsLeadership() {
       {/* ── ZONE 2 · The Funnel (the engine) ──────────────────────────── */}
       <JobsFunnels builderSegment={segment} />
 
-      {/* ── ZONE 2b · Hygiene (the two numbers nothing else carries) ──── */}
-      <HygieneLine />
-
-      {/* Tag campaigns + activity trends live on the Outreach tab (2026-07-30)
+      {/* Hygiene line removed 2026-08-04. "Won, open tasks" is a summary card on
+          the Pipeline page and the no-prospect accounts surface in Outreach's
+          Requiring Attention, so the strip only restated numbers one click away.
+          Tag campaigns + activity trends likewise live on Outreach (2026-07-30)
           — Monday-meeting material, not exec outcomes. */}
 
       <MetricDrawer metricKey={openMetric} onClose={() => setOpenMetric(null)} />
