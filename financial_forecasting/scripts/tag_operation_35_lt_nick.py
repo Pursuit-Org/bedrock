@@ -18,15 +18,25 @@ ADDITIVE ONLY. Two guarantees the code enforces, not just intends:
      also appear in this batch (Emma Bloomberg, Robin Selden, Phil Piro).
 Nothing is ever unset: is_jobs_contact only goes false -> true, never true -> false.
 
-IDs, NOT NAMES, are the input. Each name below was resolved against
+IDs, NOT NAMES, are the input. Each name in CONTACTS was resolved against
 public.contacts once (2026-08-18) and the contact_id frozen here, so a re-run
 cannot silently pick a different row as the table changes. Five names matched
-more than one row and were disambiguated on the title supplied with the batch;
-those calls are marked WHY below. Four names had no match at all and are listed
-in UNRESOLVED so they stay visible instead of vanishing into a count.
+more than one row and were disambiguated on the title supplied with the batch,
+then confirmed by Kwame; those calls are marked WHY below. As a cross-check every
+resolved row's company was compared against the company column of the batch —
+57 of 60 matched exactly and the three that differed were spelling variants of
+the same employer, not different people.
 
-Guarded: before writing, the script re-reads every id and aborts if a full_name
-no longer matches the name recorded here (a merge or a rename since resolution).
+CREATES: four names in the batch had no row at all. Kwame supplied their
+companies and asked for them to be created and tagged, so NEW_CONTACTS inserts
+them the same way POST /api/jobs/contacts does (source 'manual', a
+manual-<uuid> airtable_id, contact_stage 'lead') and they then flow through the
+same tag/flag pass as everyone else. The insert is keyed on name + company, so a
+re-run reuses the row it made rather than adding a second one.
+
+Guarded: before writing, the script re-reads every frozen id and aborts if a
+full_name no longer matches the name recorded here (a merge or a rename since
+resolution).
 
     python3 scripts/tag_operation_35_lt_nick.py              # dry run (default)
     python3 scripts/tag_operation_35_lt_nick.py --apply
@@ -121,14 +131,29 @@ CONTACTS: list[tuple[int, str]] = [
     (33058, "Phil Piro"),               # already tagged — skipped by the WHERE
 ]
 
-# In the batch, absent from public.contacts. Searched on surname, on the full
-# name, and on nickname/spelling variants (Cassandra Moulton, Mary Tunney) —
-# no row. They need creating before they can be tagged; that is a separate ask.
-UNRESOLVED = [
-    ("Alex Vannoni",  "Head of Healthcare Product"),
-    ("Cassie Moulton", ""),
-    ("Marry Tunney",   ""),
-    ("Bruce Taylor",  "Chairman/ CEO"),
+# In the batch, absent from public.contacts — searched on surname, on the full
+# name, on nickname/spelling variants (Cassandra Moulton, Mary Tunney) and on the
+# company. Created here rather than dropped, per Kwame.
+#
+# Company spelling follows what is already in the table where the employer is
+# unambiguously the same one, so the contact rolls up to the existing account
+# (accounts key on lower(trim(current_company))):
+#   WHOOP     — 6 contacts already stored under that casing, not "Whoop"
+#   Lovevery  — the company's own spelling; the batch read "LoveEvery"
+# The other two are taken verbatim from the batch:
+#   Taylor Farms  — no contact at that company yet, so nothing to match
+#   Vail Mountain — the table has "Vail Resorts" (5 contacts). Vail Mountain is
+#                   a Vail Resorts property, but they are not the same string
+#                   and picking one is a business call, so the batch's wording
+#                   stands and this rolls up as its own account. Flagged to
+#                   Kwame; a one-field edit on the Contacts page moves it.
+#
+# (full_name, current_title, current_company)
+NEW_CONTACTS: list[tuple[str, str | None, str]] = [
+    ("Alex Vannoni",  "Head of Healthcare Product", "WHOOP"),
+    ("Cassie Moulton", None,                        "Vail Mountain"),
+    ("Marry Tunney",   None,                        "Lovevery"),
+    ("Bruce Taylor",  "Chairman/ CEO",              "Taylor Farms"),
 ]
 
 # Names resolved here whose stored full_name differs from the batch spelling.
@@ -143,6 +168,44 @@ def _norm(s: str | None) -> str:
     return " ".join((s or "").split()).casefold()
 
 
+async def _resolve_new(conn, apply: bool) -> tuple[list[int], list[str]]:
+    """Find-or-create the four contacts that had no row. Returns (ids, notes).
+
+    Keyed on name + company so a second run reuses the row the first run made.
+    In dry-run nothing is inserted and the id list simply comes back short — the
+    caller reports the creates it would do rather than pretending they exist.
+    """
+    import uuid
+
+    ids, notes = [], []
+    for full_name, title, company in NEW_CONTACTS:
+        row = await conn.fetchrow(
+            "SELECT contact_id, full_name FROM public.contacts "
+            " WHERE lower(btrim(full_name)) = lower(btrim($1)) "
+            "   AND lower(btrim(coalesce(current_company,''))) = lower(btrim($2)) "
+            "   AND coalesce(contact_stage,'') <> 'merged' LIMIT 1",
+            full_name, company)
+        if row:
+            ids.append(row["contact_id"])
+            notes.append(f"  exists {row['contact_id']:>6} {full_name} — {company}")
+            continue
+        if not apply:
+            notes.append(f"  CREATE    ---- {full_name} — {company}"
+                         + (f" ({title})" if title else ""))
+            continue
+        first, _, last = full_name.partition(" ")
+        cid = await conn.fetchval(
+            "INSERT INTO public.contacts "
+            "  (first_name, last_name, full_name, current_title, current_company, "
+            "   source, airtable_id, contact_stage) "
+            "VALUES ($1,$2,$3,$4,$5,'manual',$6,'lead') RETURNING contact_id",
+            first, last, full_name, title, company,
+            f"manual-{uuid.uuid4().hex[:8]}")
+        ids.append(cid)
+        notes.append(f"  created {cid:>6} {full_name} — {company}")
+    return ids, notes
+
+
 async def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--apply", action="store_true",
@@ -155,8 +218,8 @@ async def main() -> int:
         print("DATABASE_URL not set", file=sys.stderr)
         return 1
 
-    ids = [cid for cid, _ in CONTACTS]
-    if len(set(ids)) != len(ids):
+    frozen = [cid for cid, _ in CONTACTS]
+    if len(set(frozen)) != len(frozen):
         print("duplicate contact_id in CONTACTS", file=sys.stderr)
         return 1
 
@@ -166,11 +229,11 @@ async def main() -> int:
             "SELECT contact_id, full_name, current_company, contact_stage, "
             "       is_jobs_contact, coalesce(tags, '{}'::text[]) AS tags "
             "  FROM public.contacts WHERE contact_id = ANY($1::int[])",
-            ids)
+            frozen)
         by_id = {r["contact_id"]: r for r in rows}
 
-        # Guard: every id must still exist, still be live, and still be the
-        # person we resolved. Abort the whole batch on any drift — a partial
+        # Guard: every frozen id must still exist, still be live, and still be
+        # the person we resolved. Abort the whole batch on any drift — a partial
         # apply on a half-stale list is worse than doing nothing.
         problems = []
         for cid, name in CONTACTS:
@@ -191,22 +254,27 @@ async def main() -> int:
                 print(f"  {p}", file=sys.stderr)
             return 1
 
-        to_tag = [cid for cid, _ in CONTACTS if TAG not in by_id[cid]["tags"]]
-        to_flag = [cid for cid, _ in CONTACTS if not by_id[cid]["is_jobs_contact"]]
         already = [cid for cid, _ in CONTACTS if TAG in by_id[cid]["tags"]]
+        to_tag  = [cid for cid, _ in CONTACTS if TAG not in by_id[cid]["tags"]]
+        to_flag = [cid for cid, _ in CONTACTS if not by_id[cid]["is_jobs_contact"]]
 
-        print(f"resolved      {len(CONTACTS)} contacts")
-        print(f"unresolved    {len(UNRESOLVED)} names (not in public.contacts): "
-              + ", ".join(n for n, _ in UNRESOLVED))
+        print(f"resolved      {len(CONTACTS)} contacts (ids frozen 2026-08-18)")
+        print(f"to create     {len(NEW_CONTACTS)} contacts")
         print(f"already {TAG}: {len(already)} — left untouched: "
               + ", ".join(f"{by_id[c]['full_name']} ({c})" for c in already))
-        print(f"tag to add    {len(to_tag)}")
-        print(f"prospect flag {len(to_flag)} to set true "
-              f"({len(CONTACTS) - len(to_flag)} already true)")
+        print(f"tag to add    {len(to_tag)} existing + {len(NEW_CONTACTS)} new")
+        print(f"prospect flag {len(to_flag)} of {len(CONTACTS)} existing to set true "
+              f"({len(CONTACTS) - len(to_flag)} already true), plus all "
+              f"{len(NEW_CONTACTS)} new rows = {len(to_flag) + len(NEW_CONTACTS)} total")
 
         if not args.apply:
             print("\nDRY RUN — nothing written. Re-run with --apply.")
-            for cid, name in CONTACTS:
+            _, notes = await _resolve_new(conn, apply=False)
+            print("\nnew contacts:")
+            for n in notes:
+                print(n)
+            print("\nexisting contacts:")
+            for cid, _name in CONTACTS:
                 r = by_id[cid]
                 mark = "skip" if cid in already else " tag"
                 flag = "" if r["is_jobs_contact"] else "  +prospect"
@@ -215,7 +283,11 @@ async def main() -> int:
                       f"tags=[{','.join(r['tags']) or '-'}]{flag}")
             return 0
 
+        # One transaction: the creates and the tag/flag pass land together, so a
+        # failure can never leave four untagged contacts behind.
         async with conn.transaction():
+            new_ids, notes = await _resolve_new(conn, apply=True)
+            ids = frozen + new_ids
             flagged = await conn.execute(
                 "UPDATE public.contacts SET is_jobs_contact = true, updated_at = now() "
                 " WHERE contact_id = ANY($1::int[]) AND is_jobs_contact IS DISTINCT FROM true",
@@ -229,6 +301,8 @@ async def main() -> int:
                 " WHERE contact_id = ANY($1::int[]) "
                 "   AND NOT ($2 = ANY(coalesce(tags, '{}'::text[])))",
                 ids, TAG)
+        for n in notes:
+            print(n)
         print(f"\nprospect flag set: {flagged}")
         print(f"tag added:         {tagged}")
 
