@@ -5315,18 +5315,20 @@ async def jobs_accounts(
 
     ja = {r["account_key"]: r for r in ja_rows}
 
-    # Fetch Active__c from Salesforce for all linked SF accounts so that
-    # explicitly-deactivated accounts show status = "Deprioritized".
+    # Fetch Active__c and Qualification_Status__c from Salesforce for all
+    # linked SF accounts so that deprioritized/on-hold statuses are reflected.
     sf_active_by_id: dict[str, bool] = {}
+    sf_qual_by_id: dict[str, str | None] = {}
     sf_ids_to_check = [r["sf_account_id"] for r in ja_rows if r["sf_account_id"]]
     if sf_ids_to_check:
         try:
             id_list = ", ".join(f"'{i}'" for i in sf_ids_to_check)
             result = await client.salesforce.query_all(
-                f"SELECT Id, Active__c FROM Account WHERE Id IN ({id_list})"
+                f"SELECT Id, Active__c, Qualification_Status__c FROM Account WHERE Id IN ({id_list})"
             )
             for rec in (result.get("records") or []):
                 sf_active_by_id[rec["Id"]] = bool(rec.get("Active__c", True))
+                sf_qual_by_id[rec["Id"]] = rec.get("Qualification_Status__c")
         except Exception:
             pass  # degraded gracefully — status derivation falls back to playbook
     # Pretty name for an investor key, and the reverse count (how many companies
@@ -5430,11 +5432,14 @@ async def jobs_accounts(
         a = acct_act.get(key)
         has_activity = bool(a and (a["last"] or a["recent"]))
         has_flagged = key in flagged_keys
-        # Deprioritized gate: Active__c == false in Salesforce overrides everything.
+        # Deprioritized / On Hold gates: SF field values override playbook logic.
         sf_acct_id = rec["sf_account_id"] if rec else None
         sf_active = sf_active_by_id.get(sf_acct_id, True) if sf_acct_id else True
+        sf_qual = sf_qual_by_id.get(sf_acct_id) if sf_acct_id else None
         if not sf_active:
             status = "Deprioritized"
+        elif sf_qual == "Not Qualified":
+            status = "On Hold"
         elif rec and rec["status_override"]:
             status = rec["status_override"]
         elif has_open:

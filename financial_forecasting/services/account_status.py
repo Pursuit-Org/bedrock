@@ -29,6 +29,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional
 
 STATUS_INACTIVE = "Deprioritized"
+STATUS_ON_HOLD = "On Hold"
 STATUS_PROSPECT = "Prospect"
 STATUS_PURSUING = "Pursuing"
 STATUS_STEWARDING = "Stewarding"
@@ -37,6 +38,7 @@ STATUS_DORMANT = "Dormant"
 
 ACCOUNT_STATUSES = (
     STATUS_INACTIVE,
+    STATUS_ON_HOLD,
     STATUS_PROSPECT,
     STATUS_PURSUING,
     STATUS_STEWARDING,
@@ -110,6 +112,7 @@ def compute_account_status(
     latest_activity_by_account: Dict[str, datetime],
     now: Optional[datetime] = None,
     is_active: bool = True,
+    qualification_status: Optional[str] = None,
 ) -> str:
     """Pure derivation. Caller assembles the three lookup maps.
 
@@ -124,9 +127,14 @@ def compute_account_status(
         now: defaults to datetime.now(tz=UTC). Pass in tests.
         is_active: if False (SF Active__c unchecked), returns Deprioritized
             immediately, overriding all playbook-derived statuses.
+        qualification_status: SF Qualification_Status__c. If "Not Qualified",
+            returns On Hold (second-priority gate, after is_active check).
     """
     if not is_active:
         return STATUS_INACTIVE
+
+    if qualification_status == "Not Qualified":
+        return STATUS_ON_HOLD
 
     if now is None:
         now = datetime.now(timezone.utc)

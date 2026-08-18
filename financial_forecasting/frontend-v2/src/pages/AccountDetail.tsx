@@ -286,6 +286,23 @@ export function AccountDetailPage() {
                 primary={primaryContact}
               />
             </DetailRow>
+            <DetailRow label="Qualification status">
+              <span className="text-[12.5px] text-ink-2">
+                {account.Qualification_Status__c ?? "—"}
+              </span>
+            </DetailRow>
+            <DetailRow label="Qualification date">
+              <span className="text-[12.5px] text-ink-2">
+                {account.Qualification_Date_Updated__c
+                  ? new Date(account.Qualification_Date_Updated__c).toLocaleDateString()
+                  : "—"}
+              </span>
+            </DetailRow>
+            <DetailRow label="Qualification explanation">
+              <span className="text-[12.5px] text-ink-2">
+                {account.Qualification_Explanation__c ?? "—"}
+              </span>
+            </DetailRow>
           </div>
         </SectionCard>
 

@@ -803,7 +803,7 @@ async def get_accounts(
             query = """
             SELECT Id, Name, Type, Industry, Website, Description,
                    BillingCity, BillingState, OwnerId, Owner.Name,
-                   Account_Tier__c, Active__c,
+                   Account_Tier__c, Active__c, Qualification_Status__c,
                    npo02__TotalOppAmount__c, npo02__NumberOfClosedOpps__c,
                    Total_Revenue_Generated__c,
                    Last_Activity_Date__c, LastActivityDate,
@@ -835,7 +835,9 @@ async def get_accounts(
                    npsp__Matching_Gift_Phone__c, npsp__Matching_Gift_Comments__c,
                    npsp__Matching_Gift_Info_Updated__c, npsp__Matching_Gift_Request_Deadline__c,
                    Total_Revenue_Generated__c,
-                   Last_Activity_Date__c, Date_of_First_Pursuit_Hire__c
+                   Last_Activity_Date__c, Date_of_First_Pursuit_Hire__c,
+                   Qualification_Status__c, Qualification_Date_Updated__c,
+                   Qualification_Explanation__c
             FROM Account
             ORDER BY Name ASC
             """
@@ -946,6 +948,7 @@ async def _attach_account_status(accounts: list, salesforce) -> None:
             awards_by_opp,
             latest_activity_by_account,
             is_active=bool(a.get("Active__c", True)),
+            qualification_status=a.get("Qualification_Status__c"),
         )
 
 
