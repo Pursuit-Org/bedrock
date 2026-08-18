@@ -5,6 +5,7 @@ import { ExternalLink, Plus } from "lucide-react";
 import { AccountAvatar } from "@/components/AccountAvatar";
 import { ActivityTimeline } from "@/components/ActivityTimeline";
 import { OppTasksSection } from "@/components/OppTasksSection";
+import { OpportunityFilesSection, OpportunityFilesUploadAction } from "@/components/OpportunityFilesSection";
 import { PaymentScheduleBuilder } from "@/components/PaymentScheduleBuilder";
 import { AwardSetupDialog } from "@/components/AwardSetupDialog";
 import { StageGateDialog } from "@/components/StageGateDialog";
@@ -398,6 +399,16 @@ export function OpportunityDetailPage() {
             />
           </EditField>
         </div>
+      </SectionCard>
+
+      {/* Files — merge note: when PR #274 (Deliverables) lands, place
+           OpportunityDeliverablesSection BEFORE this block so the order
+           is: Details → Deliverables → Files → Tasks */}
+      <SectionCard
+        title="Files"
+        action={<OpportunityFilesUploadAction opportunityId={opp.Id} />}
+      >
+        <OpportunityFilesSection opportunityId={opp.Id} />
       </SectionCard>
 
       {/* Tasks */}

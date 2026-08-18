@@ -17,7 +17,7 @@ from decimal import Decimal
 from difflib import SequenceMatcher
 import logging
 
-from fastapi import FastAPI, File, Form, HTTPException, Depends, BackgroundTasks, Query, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Depends, BackgroundTasks, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from starlette.middleware.sessions import SessionMiddleware
@@ -1438,6 +1438,39 @@ async def upload_opportunity_file(
         raise
     except Exception as e:
         logger.error(f"Error uploading file to opp {opportunity_id}: {e}", exc_info=True)
+        raise sf_http_error(e, "file")
+
+
+@app.delete("/api/salesforce/opportunities/{opportunity_id}/files/{content_document_id}")
+async def delete_opportunity_file(
+    opportunity_id: str,
+    content_document_id: str,
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
+    user=Depends(require_auth),
+):
+    """Delete a file from Salesforce (removes ContentDocument + all linked ContentDocumentLinks)."""
+    validate_salesforce_id(opportunity_id, "opportunity_id")
+    validate_salesforce_id(content_document_id, "content_document_id")
+    try:
+        salesforce = client.salesforce
+        # Verify the file is actually linked to this opportunity before deleting —
+        # prevents an authenticated user from deleting arbitrary ContentDocuments
+        # by guessing IDs.
+        link_check = await salesforce.query(
+            f"SELECT Id FROM ContentDocumentLink "
+            f"WHERE ContentDocumentId = '{escape_soql_string(content_document_id)}' "
+            f"AND LinkedEntityId = '{escape_soql_string(opportunity_id)}'"
+        )
+        if not (link_check.get("records") or []):
+            raise HTTPException(status_code=404, detail="File not found on this opportunity")
+        success = await salesforce.delete_record("ContentDocument", content_document_id)
+        if not success:
+            raise HTTPException(status_code=400, detail="Salesforce rejected the delete request")
+        return Response(status_code=204)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting file {content_document_id} from opportunity {opportunity_id}: {e}")
         raise sf_http_error(e, "file")
 
 
