@@ -57,10 +57,10 @@ export function AccountFilesSection({ accountId }: { accountId: string }) {
 
   const handleFiles = async (fileList: FileList | null) => {
     if (!fileList || fileList.length === 0) return;
-    const file = fileList[0];
-    setPendingName(file.name);
+    const files = Array.from(fileList);
+    setPendingName(files.length === 1 ? files[0].name : `${files.length} files`);
     try {
-      await upload.mutateAsync({ file });
+      await Promise.all(files.map((file) => upload.mutateAsync({ file })));
     } finally {
       setPendingName(null);
       if (fileInputRef.current) fileInputRef.current.value = "";
@@ -84,6 +84,7 @@ export function AccountFilesSection({ accountId }: { accountId: string }) {
         <input
           ref={fileInputRef}
           type="file"
+          multiple
           className="hidden"
           onChange={(e) => void handleFiles(e.target.files)}
         />
