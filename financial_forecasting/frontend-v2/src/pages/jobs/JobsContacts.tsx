@@ -43,7 +43,7 @@ import {
   useJobsContacts, useAddContactToJobs, useJobsAccounts, type JobsAccount,
   useContactDetail, useCreateContact, STAGE_LABELS,
   useFlagContactsForJobs, useUnflagJobsContact, useUpdateJobsMembership, MEMBERSHIP_STAGE_LABELS, MEMBERSHIP_STAGES,
-  useContactTagCatalog, useStaff, useUpdateContact, useBulkContactOwner, useBulkProspect,
+  useContactTagCatalog, useStaff, useStaffNameResolver, useUpdateContact, useBulkContactOwner, useBulkProspect,
   type JobStage, type JobContactWithDeal, type ContactSearchResult, type ContactCreateBody, type MembershipStage,
   exportJobsRows,
 } from "@/services/jobs";
@@ -151,17 +151,6 @@ const ACCOUNT_TITLE_GRID = "14px minmax(0, 320px) auto 1fr";
 const ACCOUNT_META_GRID =
   "14px 108px 104px minmax(0, 1.3fr) minmax(0, 260px) 1fr";
 
-/** One cell in that grid: a muted label above nothing, value below — kept on
- *  one line so row height doesn't change between accounts. */
-function Meta({ label, children, title }: { label: string; children: React.ReactNode; title?: string }) {
-  return (
-    <span className="flex min-w-0 items-baseline gap-1 text-[11.5px]" title={title}>
-      <span className="flex-shrink-0 text-ink-4">{label}</span>
-      <span className="truncate font-medium text-ink-2">{children}</span>
-    </span>
-  );
-}
-
 /**
  * The group header when contacts are grouped by account.
  *
@@ -172,10 +161,12 @@ function Meta({ label, children, title }: { label: string; children: React.React
  * "3 of 11" instead of silently under-reporting.
  */
 function AccountGroupHeader({
-  label, account, shown, collapsed, colSpan, onToggle, notesOpen, onToggleNotes, onOpenNotes, onAddContact,
+  label, account, ownerName, shown, collapsed, colSpan, onToggle, notesOpen, onToggleNotes, onOpenNotes, onAddContact,
 }: {
   label: string;
   account?: JobsAccount;
+  /** Resolved display name for the account owner — null when unassigned. */
+  ownerName: string | null;
   shown: number;
   collapsed: boolean;
   colSpan: number;
@@ -288,7 +279,12 @@ function AccountGroupHeader({
               ) : null}
             </span>
 
-            <Meta label="Owner">{account?.owner_email || <span className="text-ink-4">—</span>}</Meta>
+            {/* The owner reads as a person, not a field: full name, no label,
+                and muted so it sits apart from the account's own facts. The
+                email stays in the tooltip. */}
+            <span className="min-w-0 truncate text-[11.5px] text-ink-3" title={account?.owner_email || undefined}>
+              {ownerName || "—"}
+            </span>
           </div>
         </td>
       </tr>
@@ -630,6 +626,7 @@ export function JobsContacts({ initialQuery, initialContactId, initialConnectedO
 
   const { data: tagCatalog = [] } = useContactTagCatalog();
   const { data: staffForFilter = [] } = useStaff();
+  const staffName = useStaffNameResolver();
   // slug → campaign priority (lower = higher priority); a contact's priority is
   // its best (lowest) tag order. Untagged contacts sort last.
   const tagOrder = useMemo(() => Object.fromEntries(tagCatalog.map((t) => [t.slug, t.sort_order])), [tagCatalog]);
@@ -955,6 +952,7 @@ export function JobsContacts({ initialQuery, initialContactId, initialConnectedO
                   key={`g-${item.key}`}
                   label={item.label}
                   account={item.account}
+                  ownerName={item.account?.owner_email ? staffName(item.account.owner_email) : null}
                   shown={item.count}
                   collapsed={item.collapsed}
                   colSpan={visibleCols.length}
