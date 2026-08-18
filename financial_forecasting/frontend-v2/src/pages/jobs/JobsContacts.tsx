@@ -146,10 +146,10 @@ const EMPTY: string[] = [];
  *  straight down, which a wrapped flex strip can't do.
  *
  *  Row 1: chevron · name · actions · filler
- *  Row 2: indent · contacts · status · investor · owner · industry · opps */
+ *  Row 2: indent · contacts · status · investor · owner · filler */
 const ACCOUNT_TITLE_GRID = "14px minmax(0, 320px) auto 1fr";
 const ACCOUNT_META_GRID =
-  "14px 108px 104px minmax(0, 1.3fr) minmax(0, 1.5fr) minmax(0, 1.2fr) 60px";
+  "14px 108px 104px minmax(0, 1.3fr) minmax(0, 260px) 1fr";
 
 /** One cell in that grid: a muted label above nothing, value below — kept on
  *  one line so row height doesn't change between accounts. */
@@ -188,7 +188,6 @@ function AccountGroupHeader({
   onAddContact: () => void;
 }) {
   const total = account?.prospect_count ?? 0;
-  const opps = account?.opportunities ?? [];
   const portfolioCount = account?.portfolio_count ?? 0;
   const openTasks = account?.open_tasks ?? 0;
   return (
@@ -290,13 +289,6 @@ function AccountGroupHeader({
             </span>
 
             <Meta label="Owner">{account?.owner_email || <span className="text-ink-4">—</span>}</Meta>
-            <Meta label="Industry">{account?.industry || <span className="text-ink-4">—</span>}</Meta>
-            <Meta
-              label="Opps"
-              title={opps.length ? opps.map((o) => `${o.title || "Untitled"} — ${o.stage}`).join("\n") : "No opportunities at this account"}
-            >
-              {account && account.opp_count > 0 ? account.opp_count : <span className="text-ink-4">—</span>}
-            </Meta>
           </div>
         </td>
       </tr>
