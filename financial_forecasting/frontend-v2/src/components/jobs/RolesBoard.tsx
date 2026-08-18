@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
-import { format } from "date-fns";
-import { Plus, X, Check, ChevronDown, ChevronRight, Sparkles, GripVertical } from "lucide-react";
+import { Plus, X, Check, ChevronDown, ChevronRight, GripVertical } from "lucide-react";
 import { DndContext, closestCenter, PointerSensor, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
 import { SortableContext, verticalListSortingStrategy, useSortable, arrayMove } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { cn } from "@/lib/utils";
+import { fmtDate } from "@/lib/format";
 import { useBuilders, useCreateOpportunity, STAGES_ORDERED, STAGE_LABELS, type Builder, type JobStage } from "@/services/jobs";
 import { NewAccountDialog } from "@/components/jobs/NewAccountDialog";
 import {
@@ -12,16 +12,21 @@ import {
   useSearchOpportunities,
   useCreateRole,
   useCreateRoleApplication,
-  useMatchSuggestions,
+  useBuilderSourcedApplications,
+  useStaffSourcedApplications,
   useConfirmMatch,
   useReorderRolesBoard,
+  useMarkRoleBuilderSourced,
+  useUnmarkRoleBuilderSourced,
   useUnlinkApplication,
+  useUpdateBuilderActivity,
+  useUpdateRole,
   APP_STAGE_OPTIONS,
   type AppStage,
   type RolesBoardRole,
   type Commitment,
-  type MatchSuggestion,
   type UnmatchedApplication,
+  type StaffSourcedGroup,
 } from "@/services/jobsOpps2";
 
 // ── Shared display helpers (small lookup tables kept local to this board,
@@ -54,7 +59,10 @@ const PLACEMENT_STATUS_STYLES: Record<string, string> = {
 const APP_STAGE_LABELS: Record<string, string> = {
   prospect: "Prospect",
   applied: "Applied",
+  screen: "Screen",
+  oa: "OA",
   interview: "Interviewing",
+  offer: "Offer",
   accepted: "Hired",
   rejected: "Rejected",
   withdrawn: "Withdrawn",
@@ -63,19 +71,38 @@ const APP_STAGE_LABELS: Record<string, string> = {
 const APP_STAGE_STYLES: Record<string, string> = {
   prospect: "bg-stone-100 text-stone-600",
   applied: "bg-blue-50 text-blue-700",
+  screen: "bg-indigo-50 text-indigo-700",
+  oa: "bg-purple-50 text-purple-700",
   interview: "bg-amber-50 text-amber-700",
+  offer: "bg-teal-50 text-teal-700",
   accepted: "bg-green-100 text-green-800",
   rejected: "bg-red-50 text-red-700",
   withdrawn: "bg-stone-100 text-stone-500",
 };
 
-function fmtDate(iso: string | null): string {
-  if (!iso) return "—";
-  try {
-    return format(new Date(iso), "MMM d, yyyy");
-  } catch {
-    return "—";
-  }
+/** Inline stage editor — used anywhere an application's stage badge shows up
+ *  on the Roles board (Pursuit-Supported nested applications, Staff-Sourced,
+ *  Builder-Sourced), so a status change is a straight select instead of
+ *  needing to open the opportunity/activity log first. Colored per stage to
+ *  keep the same at-a-glance read as the static badges elsewhere. */
+function StageSelect({ appId, stage }: { appId: number; stage: string | null }) {
+  const update = useUpdateBuilderActivity("");
+  return (
+    <select
+      value={stage ?? "applied"}
+      onChange={(e) => update.mutate({ appId, stage: e.target.value as AppStage })}
+      disabled={update.isPending}
+      className={cn(
+        "rounded-full border-0 px-2 py-0.5 text-[10px] font-medium leading-none focus:outline-none focus:ring-1 focus:ring-accent/40",
+        APP_STAGE_STYLES[stage ?? ""] ?? "bg-stone-100 text-stone-500",
+      )}
+      title="Update status"
+    >
+      {APP_STAGE_OPTIONS.map((s) => (
+        <option key={s.value} value={s.value}>{s.label}</option>
+      ))}
+    </select>
+  );
 }
 
 function fmtSalary(n: number | null): string {
@@ -92,110 +119,124 @@ function Spinner() {
   );
 }
 
-// ── Suggested matches banner (one-time backfill review — never auto-applied) ──
+// ── Dismissal persistence — banners re-derive their list from server data on
+//    every load, so an in-memory-only dismiss reappeared after a refresh ────
 
-function SuggestedMatchesBanner({ data }: { data: MatchSuggestion[] }) {
+const DISMISS_STORAGE_PREFIX = "bedrock-v2:roles-board:dismissed:";
+
+function loadDismissed(key: string): Set<number> {
+  try {
+    const raw = localStorage.getItem(DISMISS_STORAGE_PREFIX + key);
+    if (!raw) return new Set();
+    return new Set(JSON.parse(raw) as number[]);
+  } catch {
+    return new Set();
+  }
+}
+
+function saveDismissed(key: string, ids: Set<number>) {
+  try {
+    localStorage.setItem(DISMISS_STORAGE_PREFIX + key, JSON.stringify(Array.from(ids)));
+  } catch {}
+}
+
+function usePersistedDismissed(key: string) {
+  const [dismissed, setDismissed] = useState<Set<number>>(() => loadDismissed(key));
+  const dismiss = (id: number) => {
+    setDismissed((d) => {
+      const next = new Set(d).add(id);
+      saveDismissed(key, next);
+      return next;
+    });
+  };
+  return [dismissed, dismiss] as const;
+}
+
+// ── Builder-sourced column — persistent mirror of segundo-db self-sourced
+//    applications, plus any role explicitly flagged via mark-builder-sourced.
+//    Each row offers Confirm match (company already has an open role),
+//    Create opportunity (it doesn't), or Unmark (already role-linked). ─────
+
+function BuilderSourcedRow({
+  a,
+  onCreateOpportunity,
+  onDismiss,
+}: {
+  a: UnmatchedApplication;
+  onCreateOpportunity: (a: UnmatchedApplication) => void;
+  onDismiss: (id: number) => void;
+}) {
   const confirm = useConfirmMatch();
-  const [dismissed, setDismissed] = useState<Set<number>>(new Set());
-  const suggestions = data.filter((s) => !dismissed.has(s.job_application_id));
-
-  if (suggestions.length === 0) return null;
-
+  const [expanded, setExpanded] = useState(false);
+  const [addingApp, setAddingApp] = useState(false);
   return (
-    <div className="flex flex-col gap-2 rounded-md border border-accent/30 bg-accent-soft/40 p-3">
-      <div className="flex items-center gap-1.5 text-[12px] font-semibold text-accent-ink">
-        <Sparkles size={13} />
-        {suggestions.length} suggested application match{suggestions.length === 1 ? "" : "es"} from the last 30 days
-      </div>
-      <ul className="flex flex-col gap-1.5">
-        {suggestions.map((s) => (
-          <li
-            key={s.job_application_id}
-            className="flex items-center justify-between gap-3 rounded bg-surface px-2.5 py-1.5"
-          >
-            <div className="flex min-w-0 flex-col gap-0.5">
-              <span className="truncate text-[12px] text-ink">
-                <span
-                  className={cn(
-                    "mr-1.5 inline-flex items-center rounded-full px-1.5 py-0.5 text-[9.5px] font-medium leading-none",
-                    APP_STAGE_STYLES[s.stage ?? ""] ?? "bg-stone-100 text-stone-500",
-                  )}
+    <li className="flex flex-col px-3 py-2.5">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="flex w-full min-w-0 items-start justify-between gap-2 text-left"
+      >
+        <div className="flex min-w-0 flex-col gap-0.5">
+          <div className="flex items-center gap-1.5">
+            {expanded ? (
+              <ChevronDown size={13} className="shrink-0 text-ink-4" />
+            ) : (
+              <ChevronRight size={13} className="shrink-0 text-ink-4" />
+            )}
+            <span className="truncate text-[13px] font-medium text-ink">
+              {a.builder ?? (a.job_application_id === null ? "No applicants yet" : "Unknown builder")}
+            </span>
+          </div>
+          <span className="truncate pl-[19px] text-[11.5px] text-ink-3">
+            {a.role_title} @ {a.company_name}
+          </span>
+        </div>
+        <span
+          className={cn(
+            "inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-[10px] font-medium leading-none",
+            APP_STAGE_STYLES[a.stage ?? ""] ?? "bg-stone-100 text-stone-500",
+          )}
+        >
+          {APP_STAGE_LABELS[a.stage ?? ""] ?? a.stage ?? "—"}
+        </span>
+      </button>
+
+      {expanded && (
+        <div className="mt-2 flex flex-col gap-2 pl-[19px]">
+          <span className="text-[11.5px] text-ink-4">
+            {a.suggested_match ? (
+              <>
+                → matches <span className="font-medium text-ink-3">{a.suggested_match.role_title}</span> @{" "}
+                {a.suggested_match.account_name} ·{" "}
+                {a.suggested_match.confidence === "exact" ? "exact match" : "likely match"}
+              </>
+            ) : (
+              fmtDate(a.date_applied)
+            )}
+          </span>
+          <div className="flex flex-wrap items-center gap-3">
+            {a.job_application_id !== null && <StageSelect appId={a.job_application_id} stage={a.stage} />}
+            {a.jobs_role_id ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setAddingApp(true)}
+                  className="text-[11.5px] text-accent hover:underline"
                 >
-                  {APP_STAGE_LABELS[s.stage ?? ""] ?? s.stage ?? "—"}
-                </span>
-                <span className="font-medium">{s.builder}</span> ·{" "}
-                <span className="text-ink-3">{s.role_title}</span> @ {s.company_name}
-              </span>
-              <span className="truncate text-[11px] text-ink-4">
-                → matches <span className="font-medium text-ink-3">{s.suggested_match.role_title}</span> @{" "}
-                {s.suggested_match.account_name} ·{" "}
-                {s.suggested_match.confidence === "exact" ? "exact match" : "likely match"}
-              </span>
-            </div>
-            <div className="flex shrink-0 items-center gap-2">
+                  + Add application
+                </button>
+                <UnmarkBuilderSourcedButton roleId={a.jobs_role_id} />
+              </>
+            ) : a.suggested_match ? (
               <button
                 type="button"
-                onClick={() =>
-                  confirm.mutate({ appId: s.job_application_id, jobsRoleId: s.suggested_match.jobs_role_id })
-                }
+                onClick={() => confirm.mutate({ appId: a.job_application_id!, jobsRoleId: a.suggested_match!.jobs_role_id })}
                 disabled={confirm.isPending}
                 className="flex items-center gap-1 rounded bg-accent px-2 py-1 text-[11px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
               >
-                <Check size={11} /> Confirm
+                <Check size={11} /> Confirm match
               </button>
-              <button
-                type="button"
-                onClick={() => setDismissed((d) => new Set(d).add(s.job_application_id))}
-                className="text-[11px] text-ink-3 hover:text-ink-2"
-              >
-                Dismiss
-              </button>
-            </div>
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-}
-
-// ── Unmatched applications banner (no opportunity exists yet to link to) ───────
-
-function UnmatchedApplicationsBanner({
-  data,
-  onCreateOpportunity,
-}: {
-  data: UnmatchedApplication[];
-  onCreateOpportunity: (app: UnmatchedApplication) => void;
-}) {
-  const [dismissed, setDismissed] = useState<Set<number>>(new Set());
-  const rows = data.filter((a) => !dismissed.has(a.job_application_id));
-
-  if (rows.length === 0) return null;
-
-  return (
-    <div className="flex flex-col gap-2 rounded-md border border-border-strong bg-surface-2/60 p-3">
-      <div className="flex items-center gap-1.5 text-[12px] font-semibold text-ink-2">
-        {rows.length} application{rows.length === 1 ? "" : "s"} with no matching Bedrock opportunity
-      </div>
-      <ul className="flex flex-col gap-1.5">
-        {rows.map((a) => (
-          <li
-            key={a.job_application_id}
-            className="flex items-center justify-between gap-3 rounded bg-surface px-2.5 py-1.5"
-          >
-            <span className="truncate text-[12px] text-ink">
-              <span
-                className={cn(
-                  "mr-1.5 inline-flex items-center rounded-full px-1.5 py-0.5 text-[9.5px] font-medium leading-none",
-                  APP_STAGE_STYLES[a.stage ?? ""] ?? "bg-stone-100 text-stone-500",
-                )}
-              >
-                {APP_STAGE_LABELS[a.stage ?? ""] ?? a.stage ?? "—"}
-              </span>
-              <span className="font-medium">{a.builder}</span> ·{" "}
-              <span className="text-ink-3">{a.role_title}</span> @ {a.company_name}
-            </span>
-            <div className="flex shrink-0 items-center gap-2">
+            ) : (
               <button
                 type="button"
                 onClick={() => onCreateOpportunity(a)}
@@ -203,17 +244,245 @@ function UnmatchedApplicationsBanner({
               >
                 <Plus size={11} /> Create opportunity
               </button>
+            )}
+            {/* Rows without a jobs_role_id always come from the job_applications-driven
+                branch of the backend union, so job_application_id is guaranteed set here —
+                only role-linked rows (which never show Dismiss) can have it be null. */}
+            {!a.jobs_role_id && a.job_application_id !== null && (
               <button
                 type="button"
-                onClick={() => setDismissed((d) => new Set(d).add(a.job_application_id))}
-                className="text-[11px] text-ink-3 hover:text-ink-2"
+                onClick={() => onDismiss(a.job_application_id!)}
+                className="text-[11.5px] text-ink-3 hover:text-ink-2"
               >
                 Dismiss
               </button>
-            </div>
-          </li>
-        ))}
-      </ul>
+            )}
+          </div>
+          {addingApp && a.jobs_role_id && (
+            <AddApplicationForm roleId={a.jobs_role_id} onClose={() => setAddingApp(false)} />
+          )}
+        </div>
+      )}
+    </li>
+  );
+}
+
+function UnmarkBuilderSourcedButton({ roleId }: { roleId: string }) {
+  const unmark = useUnmarkRoleBuilderSourced();
+  return (
+    <button
+      type="button"
+      title="This already has a Bedrock role — send it back to Pursuit-Supported"
+      onClick={() => unmark.mutate(roleId)}
+      disabled={unmark.isPending}
+      className="shrink-0 text-[11px] text-ink-3 hover:text-ink-2 disabled:opacity-50"
+    >
+      Unmark
+    </button>
+  );
+}
+
+function BuilderSourcedColumn({
+  onCreateOpportunity,
+}: {
+  onCreateOpportunity: (a: UnmatchedApplication) => void;
+}) {
+  const { data, isLoading } = useBuilderSourcedApplications();
+  const [dismissed, dismiss] = usePersistedDismissed("builder-sourced");
+  const all = (data ?? []).filter((a) => a.job_application_id === null || !dismissed.has(a.job_application_id));
+
+  return (
+    <div className="flex min-w-0 flex-col gap-3">
+      <div className="flex items-center justify-between">
+        <span className="text-[10.5px] uppercase tracking-wider text-ink-4">
+          Builder-Sourced
+          <span className="ml-2 font-normal normal-case text-ink-4">
+            · last 30 days
+          </span>
+        </span>
+        <span className="text-[11px] text-ink-4">{all.length}</span>
+      </div>
+
+      {isLoading ? (
+        <span className="text-[12px] text-ink-4">Loading…</span>
+      ) : all.length === 0 ? (
+        <span className="text-[12px] text-ink-4">No self-sourced applications in the last 30 days.</span>
+      ) : (
+        <ul className="flex flex-col divide-y divide-border-strong rounded-md border border-border-strong">
+          {all.map((a) => (
+            <BuilderSourcedRow
+              key={a.job_application_id ?? `role-${a.jobs_role_id}`}
+              a={a}
+              onCreateOpportunity={onCreateOpportunity}
+              onDismiss={dismiss}
+            />
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+// ── Staff-Sourced queue — grouped by (company, role_title): several
+//    applicants often share the same not-yet-formalized role, so it reads
+//    like Pursuit-Supported — role/company header, nested applicants —
+//    instead of one disconnected row per application. The group-level
+//    action (Confirm match / Create opportunity) links every applicant in
+//    the group to the role at once; nested rows keep per-applicant stage
+//    and Dismiss. ──────────────────────────────────────────────────────
+
+function StaffSourcedGroupRow({
+  g,
+  onCreateOpportunity,
+  onDismiss,
+}: {
+  g: StaffSourcedGroup;
+  onCreateOpportunity: (g: StaffSourcedGroup) => void;
+  onDismiss: (id: number) => void;
+}) {
+  const confirm = useConfirmMatch();
+  const [expanded, setExpanded] = useState(false);
+
+  // Excludes applicants already linked to the match elsewhere — confirming
+  // them again would create a second linked row for the same builder+role.
+  const confirmable = g.applications.filter((a) => !a.already_linked);
+
+  function confirmAll() {
+    if (!g.suggested_match) return;
+    for (const a of confirmable) {
+      confirm.mutate({ appId: a.job_application_id, jobsRoleId: g.suggested_match!.jobs_role_id });
+    }
+  }
+
+  return (
+    <li className="flex flex-col px-3 py-2.5">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="flex w-full min-w-0 items-start justify-between gap-2 text-left"
+      >
+        <div className="flex min-w-0 flex-col gap-0.5">
+          <div className="flex items-center gap-1.5">
+            {expanded ? (
+              <ChevronDown size={13} className="shrink-0 text-ink-4" />
+            ) : (
+              <ChevronRight size={13} className="shrink-0 text-ink-4" />
+            )}
+            <span className="truncate text-[13px] font-medium text-ink">{g.role_title || "Untitled role"}</span>
+            <span className="shrink-0 rounded-full bg-surface-2 px-1.5 py-0.5 text-[10px] font-medium text-ink-3">
+              {g.applications.length}
+            </span>
+          </div>
+          <span className="truncate pl-[19px] text-[11.5px] text-ink-3">{g.company_name}</span>
+        </div>
+        {g.suggested_match && (
+          <span className="inline-flex shrink-0 items-center rounded-full bg-accent-soft/60 px-2 py-0.5 text-[10px] font-medium leading-none text-accent-ink">
+            match found
+          </span>
+        )}
+      </button>
+
+      {expanded && (
+        <div className="mt-2 flex flex-col gap-2 pl-[19px]">
+          {g.suggested_match ? (
+            <span className="text-[11.5px] text-ink-4">
+              → matches <span className="font-medium text-ink-3">{g.suggested_match.role_title}</span> @{" "}
+              {g.suggested_match.account_name} ·{" "}
+              {g.suggested_match.confidence === "exact" ? "exact match" : "likely match"}
+            </span>
+          ) : null}
+          {g.suggested_match && confirmable.length > 0 ? (
+            <button
+              type="button"
+              onClick={confirmAll}
+              disabled={confirm.isPending}
+              className="flex w-fit items-center gap-1 rounded bg-accent px-2 py-1 text-[11px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+            >
+              <Check size={11} /> Confirm match ({confirmable.length})
+            </button>
+          ) : g.suggested_match ? (
+            <span className="text-[11px] text-ink-4">Everyone here is already linked to that role.</span>
+          ) : (
+            <button
+              type="button"
+              onClick={() => onCreateOpportunity(g)}
+              className="flex w-fit items-center gap-1 rounded bg-accent px-2 py-1 text-[11px] font-medium text-white transition-opacity hover:opacity-90"
+            >
+              <Plus size={11} /> Create opportunity
+            </button>
+          )}
+          <ul className="flex flex-col divide-y divide-border-strong rounded-md border border-border-strong">
+            {g.applications.map((a) => (
+              <li key={a.job_application_id} className="flex items-center justify-between gap-3 px-3 py-1.5">
+                <span className="truncate text-[12px] text-ink">
+                  {a.builder}
+                  {a.already_linked && (
+                    <span
+                      className="ml-1.5 text-[10px] text-ink-4"
+                      title="Already linked to the suggested role via a different application — excluded from Confirm match"
+                    >
+                      (already linked)
+                    </span>
+                  )}
+                </span>
+                <div className="flex shrink-0 items-center gap-2">
+                  <StageSelect appId={a.job_application_id} stage={a.stage} />
+                  <span className="font-mono text-[10.5px] text-ink-4">{fmtDate(a.date_applied)}</span>
+                  <button
+                    type="button"
+                    onClick={() => onDismiss(a.job_application_id)}
+                    className="text-[11px] text-ink-3 hover:text-ink-2"
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </li>
+  );
+}
+
+function StaffSourcedColumn({
+  onCreateOpportunity,
+}: {
+  onCreateOpportunity: (g: StaffSourcedGroup) => void;
+}) {
+  const { data, isLoading } = useStaffSourcedApplications();
+  const [dismissed, dismiss] = usePersistedDismissed("staff-sourced");
+  const groups = (data ?? [])
+    .map((g) => ({ ...g, applications: g.applications.filter((a) => !dismissed.has(a.job_application_id)) }))
+    .filter((g) => g.applications.length > 0);
+  const totalApplicants = groups.reduce((n, g) => n + g.applications.length, 0);
+
+  return (
+    <div className="flex min-w-0 flex-col gap-3">
+      <div className="flex items-center justify-between">
+        <span className="text-[10.5px] uppercase tracking-wider text-ink-4">
+          Staff-Sourced
+          <span className="ml-2 font-normal normal-case text-ink-4">· last 30 days</span>
+        </span>
+        <span className="text-[11px] text-ink-4">{totalApplicants}</span>
+      </div>
+
+      {isLoading ? (
+        <span className="text-[12px] text-ink-4">Loading…</span>
+      ) : groups.length === 0 ? (
+        <span className="text-[12px] text-ink-4">No staff-sourced applications waiting on a role in the last 30 days.</span>
+      ) : (
+        <ul className="flex flex-col divide-y divide-border-strong rounded-md border border-border-strong">
+          {groups.map((g) => (
+            <StaffSourcedGroupRow
+              key={`${g.company_name}::${g.role_title}`}
+              g={g}
+              onCreateOpportunity={onCreateOpportunity}
+              onDismiss={dismiss}
+            />
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
@@ -345,10 +614,12 @@ function AddApplicationForm({ roleId, onClose }: { roleId: string; onClose: () =
 interface AddRolePrefill {
   companyName: string;
   roleTitle?: string;
-  /** When set, the newly-created role is auto-linked to this application on
-   *  success — closes the loop for an "unmatched" application that had no
-   *  opportunity to attach to until now, no separate confirm step needed. */
-  linkApplicationId?: number;
+  /** When set, the newly-created role is auto-linked to every application id
+   *  here on success — closes the loop for unmatched application(s) that had
+   *  no opportunity to attach to until now, no separate confirm step needed.
+   *  Usually one id (Builder-Sourced); can be several when a Staff-Sourced
+   *  candidate role has multiple applicants sharing the same company+title. */
+  linkApplicationIds?: number[];
 }
 
 function AddRoleModal({ onClose, prefill }: { onClose: () => void; prefill?: AddRolePrefill }) {
@@ -412,8 +683,10 @@ function AddRoleModal({ onClose, prefill }: { onClose: () => void; prefill?: Add
       },
       {
         onSuccess: (createdRole) => {
-          if (prefill?.linkApplicationId && createdRole?.id) {
-            confirmMatch.mutate({ appId: prefill.linkApplicationId, jobsRoleId: createdRole.id });
+          if (prefill?.linkApplicationIds?.length && createdRole?.id) {
+            for (const appId of prefill.linkApplicationIds) {
+              confirmMatch.mutate({ appId, jobsRoleId: createdRole.id });
+            }
           }
           onClose();
         },
@@ -696,6 +969,9 @@ function RoleBoardRow({ role }: { role: RolesBoardRole }) {
   const [addingApp, setAddingApp] = useState(false);
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: role.id });
   const unlinkApplication = useUnlinkApplication();
+  const markBuilderSourced = useMarkRoleBuilderSourced();
+  const updateRole = useUpdateRole();
+  const isClosed = role.status === "cancelled";
 
   return (
     <li
@@ -762,14 +1038,7 @@ function RoleBoardRow({ role }: { role: RolesBoardRole }) {
                 <li key={a.job_application_id} className="flex items-center justify-between gap-3 px-3 py-1.5">
                   <span className="truncate text-[12px] text-ink">{a.builder}</span>
                   <div className="flex shrink-0 items-center gap-2">
-                    <span
-                      className={cn(
-                        "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium leading-none",
-                        APP_STAGE_STYLES[a.stage ?? ""] ?? "bg-stone-100 text-stone-500",
-                      )}
-                    >
-                      {APP_STAGE_LABELS[a.stage ?? ""] ?? a.stage ?? "—"}
-                    </span>
+                    <StageSelect appId={a.job_application_id} stage={a.stage} />
                     <span className="font-mono text-[10.5px] text-ink-4">{fmtDate(a.date_applied)}</span>
                     <button
                       type="button"
@@ -792,13 +1061,49 @@ function RoleBoardRow({ role }: { role: RolesBoardRole }) {
           {addingApp ? (
             <AddApplicationForm roleId={role.id} onClose={() => setAddingApp(false)} />
           ) : (
-            <button
-              type="button"
-              onClick={() => setAddingApp(true)}
-              className="self-start text-[11.5px] text-accent hover:underline"
-            >
-              + Add application
-            </button>
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() => setAddingApp(true)}
+                className="self-start text-[11.5px] text-accent hover:underline"
+              >
+                + Add application
+              </button>
+              <button
+                type="button"
+                title="This role only exists to track a self-found builder's progress — Pursuit has no real relationship with the company"
+                onClick={() => {
+                  if (window.confirm(`Mark "${role.title || "this role"}" as builder-sourced? It'll move to the Builder-Sourced column.`)) {
+                    markBuilderSourced.mutate(role.id);
+                  }
+                }}
+                disabled={markBuilderSourced.isPending}
+                className="self-start text-[11.5px] text-ink-3 hover:text-ink-2 disabled:opacity-50"
+              >
+                Mark as builder-sourced
+              </button>
+              {/* Someone's already placed here (incl. an active trial) — "everyone
+                  fell through" doesn't apply, and closing would clobber the
+                  filled/trial signal that placement_status derives from. */}
+              {(isClosed || !role.filled_by_user_id) && (
+                <button
+                  type="button"
+                  title={isClosed
+                    ? "Reopen — moves it back up with the active roles"
+                    : "Every candidate fell through — keep the history but stop it competing with active roles"}
+                  onClick={() => {
+                    const next = isClosed ? "open" : "cancelled";
+                    if (isClosed || window.confirm(`Close "${role.title || "this role"}"? It'll sink to the bottom of the list — nothing is deleted.`)) {
+                      updateRole.mutate({ roleId: role.id, status: next });
+                    }
+                  }}
+                  disabled={updateRole.isPending}
+                  className="self-start text-[11.5px] text-ink-3 hover:text-ink-2 disabled:opacity-50"
+                >
+                  {isClosed ? "Reopen role" : "Close role"}
+                </button>
+              )}
+            </div>
           )}
         </div>
       )}
@@ -810,7 +1115,6 @@ function RoleBoardRow({ role }: { role: RolesBoardRole }) {
 
 export function RolesBoard() {
   const rolesQ = useRolesBoard();
-  const suggestionsQ = useMatchSuggestions(30);
   const [showAddRole, setShowAddRole] = useState(false);
   const [addRolePrefill, setAddRolePrefill] = useState<AddRolePrefill | undefined>(undefined);
   const [items, setItems] = useState<RolesBoardRole[]>([]);
@@ -856,47 +1160,59 @@ export function RolesBoard() {
 
   return (
     <div className="flex flex-col gap-3">
-      <SuggestedMatchesBanner data={suggestionsQ.data?.matched ?? []} />
-      <UnmatchedApplicationsBanner
-        data={suggestionsQ.data?.unmatched ?? []}
-        onCreateOpportunity={(a) =>
-          openAddRole({
-            companyName: a.company_name ?? "",
-            roleTitle: a.role_title ?? undefined,
-            linkApplicationId: a.job_application_id,
-          })
-        }
-      />
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[2fr_1fr_1fr]">
+        <div className="flex min-w-0 flex-col gap-3">
+          <div className="flex items-center justify-between">
+            <span className="text-[10.5px] uppercase tracking-wider text-ink-4">
+              Pursuit-Supported
+              <span className="ml-2 font-normal normal-case text-ink-4">· drag the grip to reorder</span>
+            </span>
+            <button
+              type="button"
+              onClick={() => openAddRole()}
+              className="flex items-center gap-1 text-[12px] text-accent hover:underline"
+            >
+              <Plus size={12} /> Add role
+            </button>
+          </div>
 
-      <div className="flex items-center justify-between">
-        <span className="text-[10.5px] uppercase tracking-wider text-ink-4">
-          All Roles
-          <span className="ml-2 font-normal normal-case text-ink-4">· drag the grip to reorder</span>
-        </span>
-        <button
-          type="button"
-          onClick={() => openAddRole()}
-          className="flex items-center gap-1 text-[12px] text-accent hover:underline"
-        >
-          <Plus size={12} /> Add role
-        </button>
+          {rolesQ.isLoading ? (
+            <span className="text-[12px] text-ink-4">Loading…</span>
+          ) : items.length === 0 ? (
+            <span className="text-[12px] text-ink-4">No roles yet.</span>
+          ) : (
+            <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
+              <SortableContext items={items.map((r) => r.id)} strategy={verticalListSortingStrategy}>
+                <ul className="flex flex-col divide-y divide-border-strong rounded-md border border-border-strong">
+                  {items.map((r) => (
+                    <RoleBoardRow key={r.id} role={r} />
+                  ))}
+                </ul>
+              </SortableContext>
+            </DndContext>
+          )}
+        </div>
+
+        <StaffSourcedColumn
+          onCreateOpportunity={(g: StaffSourcedGroup) =>
+            openAddRole({
+              companyName: g.company_name ?? "",
+              roleTitle: g.role_title ?? undefined,
+              linkApplicationIds: g.applications.map((a) => a.job_application_id),
+            })
+          }
+        />
+
+        <BuilderSourcedColumn
+          onCreateOpportunity={(a) =>
+            openAddRole({
+              companyName: a.company_name ?? "",
+              roleTitle: a.role_title ?? undefined,
+              linkApplicationIds: a.job_application_id !== null ? [a.job_application_id] : undefined,
+            })
+          }
+        />
       </div>
-
-      {rolesQ.isLoading ? (
-        <span className="text-[12px] text-ink-4">Loading…</span>
-      ) : items.length === 0 ? (
-        <span className="text-[12px] text-ink-4">No roles yet.</span>
-      ) : (
-        <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
-          <SortableContext items={items.map((r) => r.id)} strategy={verticalListSortingStrategy}>
-            <ul className="flex flex-col divide-y divide-border-strong rounded-md border border-border-strong">
-              {items.map((r) => (
-                <RoleBoardRow key={r.id} role={r} />
-              ))}
-            </ul>
-          </SortableContext>
-        </DndContext>
-      )}
 
       {showAddRole && <AddRoleModal onClose={closeAddRole} prefill={addRolePrefill} />}
     </div>

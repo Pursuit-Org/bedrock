@@ -1353,8 +1353,9 @@ async def roles_board(
         FROM bedrock.jobs_role r
         JOIN bedrock.jobs_opportunity o ON o.id = r.opportunity_id
         LEFT JOIN jobs_analytics.role_sort_order s ON s.jobs_role_id = r.id
-        WHERE o.deleted_at IS NULL
-        ORDER BY (s.sort_position IS NULL), s.sort_position, r.updated_at DESC
+        LEFT JOIN jobs_analytics.role_origin ro ON ro.jobs_role_id = r.id
+        WHERE o.deleted_at IS NULL AND ro.jobs_role_id IS NULL
+        ORDER BY (r.status = 'cancelled'), (s.sort_position IS NULL) DESC, s.sort_position, r.updated_at DESC
         """
     )
     apps = await conn.fetch(
@@ -1430,6 +1431,46 @@ async def set_roles_board_order(
                 UUID(role_id), i, who,
             )
     return {"success": True, "data": {"updated": len(body.role_ids)}}
+
+
+@router.post("/roles/{role_id}/mark-builder-sourced")
+async def mark_role_builder_sourced(
+    role_id: UUID,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Flag a role as builder-sourced (see jobs_analytics.role_origin) — for
+    when a role was created through the app's own Opportunities/Placement
+    Roles flow just to track a self-found builder's progress, without
+    Pursuit actually having a relationship with the company. Drops the role
+    out of the Pursuit-Supported board and into Builder-Sourced instead."""
+    who = user.get("email") if isinstance(user, dict) else getattr(user, "email", None)
+    async with conn.transaction():
+        await conn.execute("SET LOCAL ROLE jobs_team")
+        await conn.execute(
+            """
+            INSERT INTO jobs_analytics.role_origin (jobs_role_id, set_by)
+            VALUES ($1, $2)
+            ON CONFLICT (jobs_role_id) DO NOTHING
+            """,
+            role_id, who,
+        )
+    return {"success": True, "data": {"jobs_role_id": str(role_id), "origin": "builder_sourced"}}
+
+
+@router.delete("/roles/{role_id}/mark-builder-sourced")
+async def unmark_role_builder_sourced(
+    role_id: UUID,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Revert a role back to the Pursuit-Supported default."""
+    async with conn.transaction():
+        await conn.execute("SET LOCAL ROLE jobs_team")
+        await conn.execute(
+            "DELETE FROM jobs_analytics.role_origin WHERE jobs_role_id = $1", role_id,
+        )
+    return {"success": True, "data": {"jobs_role_id": str(role_id), "origin": "pursuit_supported"}}
 
 
 class PlacementSyncChoice(BaseModel):
@@ -1620,8 +1661,11 @@ async def interview_pipeline(
     return {"success": True, "data": out}
 
 
-# public.job_applications.stage vocabulary (builder-side submission funnel).
-VALID_APP_STAGES = {"applied", "interview", "accepted", "rejected", "withdrawn"}
+# public.job_applications.stage vocabulary (builder-side submission funnel) —
+# must mirror the job_applications_stage_check DB constraint exactly. This set
+# used to omit screen/oa/offer, which are real, actively-used stage values
+# (10 existing rows) — a role's stage dropdown silently mislabeled them.
+VALID_APP_STAGES = {"prospect", "applied", "screen", "oa", "interview", "offer", "accepted", "rejected", "withdrawn"}
 
 
 class BuilderActivityCreate(BaseModel):
@@ -1771,26 +1815,202 @@ def _title_nkey(title: str) -> str:
     return s
 
 
-@router.get("/job-applications/match-suggestions")
-async def job_application_match_suggestions(
+@router.get("/job-applications/builder-sourced")
+async def builder_sourced_applications(
     days: int = Query(30, ge=1, le=365),
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
-    """One-time-backfill helper: for unlinked applications from the last N
-    days, suggest a jobs_role match by company + title so a human can confirm.
-    Never auto-applied — see confirm_job_application_match. Matching mirrors
-    the only existing precedent in this codebase (services/sf_company_matcher.py
-    and _acct_nkey above): exact normalized-name match first, then a looser
-    normalized-title check within the same account.
+    """The Builder-Sourced column: replaces the old separate match-suggestions
+    banners (folded in here so there's one place, not a temporary queue plus
+    a permanent column showing overlapping data). Two kinds of rows:
+    1. Applications not linked to a Bedrock role AND not staff/Pursuit-
+       originated. jobs_role_id IS NULL alone isn't enough: plenty of
+       staff-logged applications (source_type 'Pursuit_referred' or
+       'staff_sourced', e.g. logged via the Opportunities page before a
+       formal role existed) also have no role link yet, and those are
+       Pursuit-supported, not builder-sourced. 30-day window — this is a
+       working queue of recent activity, not a permanent historical archive.
+       Each of these gets annotated with `suggested_match` (same matching
+       as the old match-suggestions: exact normalized-name match first,
+       then a looser normalized-title check within the same account) when
+       its company already has an open Bedrock role, so the frontend can
+       offer "Confirm match" instead of "Create opportunity" — avoids
+       spawning a duplicate opportunity for a company Pursuit already has.
+    2. Applications linked to a role explicitly flagged in
+       jobs_analytics.role_origin (see mark_role_builder_sourced) — a role
+       created through the app's own UI just to track a self-found
+       builder's progress, with no real Pursuit-company relationship. No
+       date window here: once explicitly marked, it stays surfaced until
+       someone unmarks it, regardless of how old the application is. Never
+       gets a suggested_match — it already has a role.
 
-    Returns {matched, unmatched}: `matched` has a suggested_match to confirm;
-    `unmatched` is for applications whose company has no bedrock.jobs_opportunity
-    at all — surfaced so a human can decide which ones warrant creating a new
-    opportunity/role, rather than silently dropping them from view."""
-    apps = await conn.fetch(
+    Interview-or-further rows sort first: we only formally track a
+    self-sourced lead as a Bedrock opportunity once it reaches that stage,
+    to avoid cluttering the pipeline with every speculative application a
+    builder happens to log."""
+    rows = await conn.fetch(
         """
-        SELECT ja.job_application_id, ja.builder_id, ja.company_name, ja.role_title, ja.date_applied, ja.stage,
+        WITH combined AS (
+            SELECT ja.job_application_id, ja.builder_id, ja.company_name, ja.role_title,
+                   ja.date_applied, ja.stage,
+                   COALESCE(
+                       NULLIF(trim(b.full_name), ''),
+                       CASE WHEN ja.notes LIKE '%:%'
+                            THEN NULLIF(trim(split_part(ja.notes, ':', 1)), '') END,
+                       'Builder #' || ja.builder_id
+                   ) AS builder,
+                   NULL::uuid AS jobs_role_id
+            FROM public.job_applications ja
+            LEFT JOIN LATERAL bedrock.builder_by_id(ja.builder_id) b ON true
+            WHERE ja.jobs_role_id IS NULL
+              AND ja.date_applied >= (CURRENT_DATE - $1::int * INTERVAL '1 day')
+              AND (ja.source_type IS NULL OR ja.source_type NOT IN ('Pursuit_referred', 'staff_sourced'))
+              -- Exclude known seed/test data: rows explicitly marked as seeded, an
+              -- old ad-hoc smoke-test row, and anything tied to the synthetic
+              -- +auto-testing builder account (regardless of how its notes are
+              -- worded — matching by the test account itself is more reliable
+              -- than pattern-matching note text).
+              -- NULL notes must not exclude a row: `NULL NOT ILIKE x` evaluates to
+              -- NULL (not TRUE), which silently dropped every no-notes application
+              -- out of both queues regardless of source_type until this COALESCE.
+              AND COALESCE(ja.notes, '') NOT ILIKE '%seeded for platform demo%'
+              AND COALESCE(ja.notes, '') NOT ILIKE '%smoke test%'
+              AND (b.email IS NULL OR b.email NOT ILIKE '%+auto-testing%')
+
+            UNION ALL
+
+            -- Starts from role_origin (not job_applications) and LEFT JOINs
+            -- out to applications: a role can be marked builder-sourced
+            -- before any builder has applied to it, and it still needs to
+            -- show up here — otherwise it disappears from the Pursuit-
+            -- Supported board (roles_board excludes flagged roles) without
+            -- appearing anywhere on the Builder-Sourced side either.
+            SELECT ja.job_application_id, ja.builder_id,
+                   COALESCE(o.account_name, ja.company_name) AS company_name,
+                   COALESCE(r.title, ja.role_title) AS role_title,
+                   ja.date_applied, ja.stage,
+                   COALESCE(
+                       NULLIF(trim(b.full_name), ''),
+                       CASE WHEN ja.notes LIKE '%:%'
+                            THEN NULLIF(trim(split_part(ja.notes, ':', 1)), '') END,
+                       CASE WHEN ja.builder_id IS NOT NULL THEN 'Builder #' || ja.builder_id END
+                   ) AS builder,
+                   ro.jobs_role_id
+            FROM jobs_analytics.role_origin ro
+            JOIN bedrock.jobs_role r ON r.id = ro.jobs_role_id
+            JOIN bedrock.jobs_opportunity o ON o.id = r.opportunity_id
+            LEFT JOIN public.job_applications ja ON ja.jobs_role_id = ro.jobs_role_id
+            LEFT JOIN LATERAL bedrock.builder_by_id(ja.builder_id) b ON true
+        )
+        SELECT * FROM combined
+        ORDER BY
+          CASE WHEN stage IN ('interview', 'offer', 'accepted') THEN 0 ELSE 1 END,
+          date_applied DESC
+        """,
+        days,
+    )
+
+    return {"success": True, "data": await _annotate_suggested_matches(conn, rows)}
+
+
+async def _annotate_suggested_matches(conn, rows) -> list[dict]:
+    """Shared by builder-sourced and staff-sourced: given fetched application
+    rows (each with job_application_id, builder_id, company_name, role_title,
+    date_applied, stage, builder, jobs_role_id), annotate the still-unlinked
+    ones with a suggested_match when their company already has an open
+    Bedrock role — same matching as the old match-suggestions endpoint:
+    exact normalized-name match first, then a looser normalized-title check
+    within the same account."""
+    unlinked = [r for r in rows if r["jobs_role_id"] is None]
+    role_index = []
+    linked_pairs = set()
+    if unlinked:
+        roles = await conn.fetch(
+            """
+            SELECT r.id, r.title, o.account_name
+            FROM bedrock.jobs_role r
+            JOIN bedrock.jobs_opportunity o ON o.id = r.opportunity_id
+            WHERE o.deleted_at IS NULL AND r.status = 'open'
+            """
+        )
+        role_index = [
+            {"id": str(r["id"]), "title": r["title"], "account_name": r["account_name"],
+             "account_key": _acct_nkey(r["account_name"]), "title_key": _title_nkey(r["title"])}
+            for r in roles
+        ]
+        # A builder already linked to a role via some OTHER application is not
+        # a fresh match to suggest — confirming it would just recreate the
+        # same duplicate a human already resolved (see unlink_job_application_role).
+        already_linked = await conn.fetch(
+            "SELECT jobs_role_id, builder_id FROM public.job_applications WHERE jobs_role_id IS NOT NULL"
+        )
+        linked_pairs = {(str(r["jobs_role_id"]), r["builder_id"]) for r in already_linked}
+
+    out = []
+    for r in rows:
+        row = {
+            "job_application_id": r["job_application_id"],
+            "builder": r["builder"],
+            "company_name": r["company_name"],
+            "role_title": r["role_title"],
+            "date_applied": r["date_applied"].isoformat() if r["date_applied"] else None,
+            "stage": r["stage"],
+            "jobs_role_id": str(r["jobs_role_id"]) if r["jobs_role_id"] else None,
+            "suggested_match": None,
+        }
+        if r["jobs_role_id"] is None:
+            app_account_key = _acct_nkey(r["company_name"])
+            app_title_key = _title_nkey(r["role_title"])
+            best = None
+            for ri in role_index:
+                if ri["account_key"] != app_account_key:
+                    continue
+                confidence = "exact" if ri["title_key"] == app_title_key else "normalized"
+                if best is None or (confidence == "exact" and best["confidence"] != "exact"):
+                    best = {
+                        "jobs_role_id": ri["id"], "role_title": ri["title"],
+                        "account_name": ri["account_name"], "confidence": confidence,
+                    }
+                if confidence == "exact":
+                    break
+            if best and (best["jobs_role_id"], r["builder_id"]) not in linked_pairs:
+                row["suggested_match"] = best
+        out.append(row)
+    return out
+
+
+@router.get("/job-applications/staff-sourced")
+async def staff_sourced_applications(
+    days: int = Query(30, ge=1, le=365),
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """The Staff-Sourced queue: applications logged by staff (source_type
+    'Pursuit_referred' or 'staff_sourced', e.g. via the Opportunities/Activity
+    flow) that have no Bedrock role linked yet. These are real Pursuit-
+    relationship leads, just not yet formalized into a role/opportunity
+    record. Same 30-day working-queue window as Builder-Sourced — someone
+    owes each of these a decision: confirm a suggested_match, create the
+    opportunity/role from scratch, or — if it turns out staff misattributed
+    it and the builder actually found this one on their own — send it to
+    Builder-Sourced via mark_application_self_sourced.
+
+    Split out on 2026-08-18: builder-sourced's WHERE clause explicitly
+    excludes these source_types (they're not builder-sourced), but nothing
+    else was surfacing them, so a staff-logged application with no role
+    fell through the cracks entirely. This is the other half of that
+    same "jobs_role_id IS NULL" population, not a new concept.
+
+    Grouped by normalized (company, role_title), also 2026-08-18: several
+    applicants often share the same not-yet-formalized role (e.g. two
+    builders both applying to "Silna — AI Deployment Analyst"), and showing
+    each as its own disconnected row obscured that — mirrors the Pursuit-
+    Supported board's role-with-nested-applicants shape instead."""
+    rows = await conn.fetch(
+        """
+        SELECT ja.job_application_id, ja.builder_id, ja.company_name, ja.role_title,
+               ja.date_applied, ja.stage,
                COALESCE(
                    NULLIF(trim(b.full_name), ''),
                    CASE WHEN ja.notes LIKE '%:%'
@@ -1800,21 +2020,30 @@ async def job_application_match_suggestions(
         FROM public.job_applications ja
         LEFT JOIN LATERAL bedrock.builder_by_id(ja.builder_id) b ON true
         WHERE ja.jobs_role_id IS NULL
+          AND ja.source_type IN ('Pursuit_referred', 'staff_sourced')
           AND ja.date_applied >= (CURRENT_DATE - $1::int * INTERVAL '1 day')
-          -- Exclude known seed/test data: rows explicitly marked as seeded, an
-          -- old ad-hoc smoke-test row, and anything tied to the synthetic
-          -- +auto-testing builder account (regardless of how its notes are
-          -- worded — matching by the test account itself is more reliable
-          -- than pattern-matching note text).
-          AND ja.notes NOT ILIKE '%seeded for platform demo%'
-          AND ja.notes NOT ILIKE '%smoke test%'
+          AND COALESCE(ja.notes, '') NOT ILIKE '%seeded for platform demo%'
+          AND COALESCE(ja.notes, '') NOT ILIKE '%smoke test%'
           AND (b.email IS NULL OR b.email NOT ILIKE '%+auto-testing%')
-        ORDER BY ja.date_applied DESC
+        ORDER BY date_applied DESC
         """,
         days,
     )
-    if not apps:
-        return {"success": True, "data": {"matched": [], "unmatched": []}}
+
+    groups: dict = {}
+    order = []
+    for r in rows:
+        key = (_acct_nkey(r["company_name"]), _title_nkey(r["role_title"]))
+        if key not in groups:
+            groups[key] = {"company_name": r["company_name"], "role_title": r["role_title"], "applications": []}
+            order.append(key)
+        groups[key]["applications"].append({
+            "job_application_id": r["job_application_id"],
+            "builder_id": r["builder_id"],
+            "builder": r["builder"],
+            "stage": r["stage"],
+            "date_applied": r["date_applied"].isoformat() if r["date_applied"] else None,
+        })
 
     roles = await conn.fetch(
         """
@@ -1829,50 +2058,67 @@ async def job_application_match_suggestions(
          "account_key": _acct_nkey(r["account_name"]), "title_key": _title_nkey(r["title"])}
         for r in roles
     ]
-
-    # A builder already linked to a role via some OTHER application (e.g. one
-    # logged from the Opportunities page, another from the Roles board) is
-    # not a fresh match to suggest — confirming it would just recreate the
-    # same duplicate a human already resolved (see unlink_job_application_role).
+    # A builder already linked to the candidate role via some OTHER application
+    # shouldn't get re-confirmed onto it — same guard as _annotate_suggested_matches,
+    # otherwise "Confirm match (N)" would create a second linked row for them.
     already_linked = await conn.fetch(
         "SELECT jobs_role_id, builder_id FROM public.job_applications WHERE jobs_role_id IS NOT NULL"
     )
     linked_pairs = {(str(r["jobs_role_id"]), r["builder_id"]) for r in already_linked}
 
-    matched = []
-    unmatched = []
-    for a in apps:
-        app_account_key = _acct_nkey(a["company_name"])
-        app_title_key = _title_nkey(a["role_title"])
+    out = []
+    for account_key, title_key in order:
+        g = groups[(account_key, title_key)]
+        # Interview-or-further applicants sort first within the group; stable
+        # sort preserves the original date_applied DESC order within each tier.
+        g["applications"].sort(key=lambda a: 0 if a["stage"] in ("interview", "offer", "accepted") else 1)
         best = None
-        for r in role_index:
-            if r["account_key"] != app_account_key:
+        for ri in role_index:
+            if ri["account_key"] != account_key:
                 continue
-            confidence = "exact" if r["title_key"] == app_title_key else "normalized"
+            confidence = "exact" if ri["title_key"] == title_key else "normalized"
             if best is None or (confidence == "exact" and best["confidence"] != "exact"):
-                best = {
-                    "jobs_role_id": r["id"], "role_title": r["title"],
-                    "account_name": r["account_name"], "confidence": confidence,
-                }
+                best = {"jobs_role_id": ri["id"], "role_title": ri["title"],
+                        "account_name": ri["account_name"], "confidence": confidence}
             if confidence == "exact":
                 break
-        row = {
-            "job_application_id": a["job_application_id"],
-            "builder": a["builder"],
-            "company_name": a["company_name"],
-            "role_title": a["role_title"],
-            "date_applied": a["date_applied"].isoformat() if a["date_applied"] else None,
-            "stage": a["stage"],
-        }
-        if best and (best["jobs_role_id"], a["builder_id"]) not in linked_pairs:
-            matched.append({**row, "suggested_match": best})
-        elif not best:
-            # No account in bedrock.jobs_opportunity matches this application's
-            # company at all — there's genuinely nothing to link to yet. Surfaced
-            # separately so a human can decide which of these warrant a new
-            # opportunity/role, rather than silently dropping them.
-            unmatched.append(row)
-    return {"success": True, "data": {"matched": matched, "unmatched": unmatched}}
+        applications = [
+            {**{k: v for k, v in a.items() if k != "builder_id"},
+             "already_linked": bool(best) and (best["jobs_role_id"], a["builder_id"]) in linked_pairs}
+            for a in g["applications"]
+        ]
+        out.append({
+            "company_name": g["company_name"],
+            "role_title": g["role_title"],
+            "suggested_match": best,
+            "applications": applications,
+        })
+    return {"success": True, "data": out}
+
+
+@router.post("/job-applications/{app_id}/mark-self-sourced")
+async def mark_application_self_sourced(
+    app_id: int,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Reclassify a Staff-Sourced application as builder-sourced: clears
+    source_type so it falls out of the Staff-Sourced queue and into
+    Builder-Sourced on next fetch. One-way — this is a rare correction
+    (staff assumed they'd sourced it, but the builder had actually already
+    applied on their own), not a routine toggle, so there's no unmark
+    endpoint; revert by hand if it's ever wrong."""
+    result = await conn.execute(
+        """
+        UPDATE public.job_applications
+        SET source_type = NULL, updated_at = now()
+        WHERE job_application_id = $1 AND source_type IN ('Pursuit_referred', 'staff_sourced')
+        """,
+        app_id,
+    )
+    if result == "UPDATE 0":
+        raise HTTPException(404, "Application not found or not staff-sourced")
+    return {"success": True, "data": {"job_application_id": app_id, "source_type": None}}
 
 
 class MatchConfirm(BaseModel):
@@ -2790,7 +3036,7 @@ PLACEMENT_STATUS_LABELS = {
     "trial_active": "Committed: trial active",
     "committed_open": "Committed: no placement",
     "open_market": "Open market",
-    "cancelled": "Cancelled",
+    "cancelled": "Closed",
 }
 
 

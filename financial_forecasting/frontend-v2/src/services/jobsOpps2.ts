@@ -164,6 +164,9 @@ export function useUpdateRole() {
     },
     onSuccess: (updated, vars) => {
       qc.invalidateQueries({ queryKey: ["jobs", "opp-roles", vars.oppId ?? updated.opportunity_id] });
+      // Also used from the Roles board (e.g. closing a dead role) — its
+      // status-sort depends on a fresh fetch, not just the opp-roles list.
+      qc.invalidateQueries({ queryKey: ["jobs", "roles-board"] });
       invalidateOppDependents(qc);
       toast.success("Role updated");
     },
@@ -239,11 +242,15 @@ export function useOppBuilderActivity(oppId: string | null) {
   });
 }
 
-export type AppStage = "applied" | "interview" | "accepted" | "rejected" | "withdrawn";
+export type AppStage = "prospect" | "applied" | "screen" | "oa" | "interview" | "offer" | "accepted" | "rejected" | "withdrawn";
 
 export const APP_STAGE_OPTIONS: { value: AppStage; label: string }[] = [
+  { value: "prospect",  label: "Prospect" },
   { value: "applied",   label: "Applied" },
+  { value: "screen",    label: "Screen" },
+  { value: "oa",        label: "OA" },
   { value: "interview", label: "Interviewing" },
+  { value: "offer",     label: "Offer" },
   { value: "accepted",  label: "Hired" },
   { value: "rejected",  label: "Rejected" },
   { value: "withdrawn", label: "Withdrawn" },
@@ -285,6 +292,16 @@ export function useUpdateBuilderActivity(oppId: string) {
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["jobs", "opp-builder-activity", oppId] });
+      // Also used from the Roles board (Pursuit-Supported nested applications,
+      // Staff-Sourced, Builder-Sourced) — a stage change there needs those
+      // three queues to refetch too, not just the opportunity's own activity log.
+      qc.invalidateQueries({ queryKey: ["jobs", "roles-board"] });
+      qc.invalidateQueries({ queryKey: ["jobs", "builder-sourced"] });
+      qc.invalidateQueries({ queryKey: ["jobs", "staff-sourced"] });
+      // Same underlying PATCH as useAdvanceBuilderStage (the command-center
+      // pipeline board) — keep its cache in sync too so a stage change made
+      // from either view shows up immediately in the other.
+      qc.invalidateQueries({ queryKey: ["jobs", "interview-pipeline"] });
       invalidateOppDependents(qc, [["jobs", "placements"], ["jobs", "builders"]]);
       toast.success("Status updated");
     },
@@ -337,6 +354,12 @@ export function useAdvanceBuilderStage() {
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["jobs", "interview-pipeline"] });
+      // Same underlying PATCH as useUpdateBuilderActivity (Roles board) — keep
+      // its caches in sync too so a stage change from either view shows up
+      // immediately in the other.
+      qc.invalidateQueries({ queryKey: ["jobs", "roles-board"] });
+      qc.invalidateQueries({ queryKey: ["jobs", "builder-sourced"] });
+      qc.invalidateQueries({ queryKey: ["jobs", "staff-sourced"] });
       invalidateOppDependents(qc, [["jobs", "placements"], ["jobs", "builders"]]);
       toast.success("Stage updated");
     },
@@ -414,6 +437,10 @@ export function useCreateRoleApplication(roleId: string) {
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["jobs", "roles-board"] });
+      // Also used from the Builder-Sourced column (a role flagged builder-sourced
+      // isn't on roles-board at all) — without this, a newly-logged application
+      // against a builder-sourced role never shows up until an unrelated refetch.
+      qc.invalidateQueries({ queryKey: ["jobs", "builder-sourced"] });
       invalidateOppDependents(qc);
       toast.success("Application logged");
     },
@@ -422,38 +449,41 @@ export function useCreateRoleApplication(roleId: string) {
 }
 
 export interface UnmatchedApplication {
-  job_application_id: number;
-  builder: string;
+  /** Null for a builder-sourced role flagged before anyone has applied to it —
+   *  the row still needs to render (with just an Unmark action), it just has
+   *  no application to link a key/dismiss/confirm action to. */
+  job_application_id: number | null;
+  builder: string | null;
   company_name: string | null;
   role_title: string | null;
   date_applied: string | null;
   stage: string | null;
-}
-
-export interface MatchSuggestion extends UnmatchedApplication {
-  suggested_match: {
+  /** Set only for Builder-Sourced rows backed by a role explicitly flagged
+   *  via useMarkRoleBuilderSourced — lets the row offer "Unmark" instead of
+   *  "Create opportunity" (there's already a role, just misclassified). */
+  jobs_role_id?: string | null;
+  /** Set when this application's company already has an open Bedrock role —
+   *  lets the row offer "Confirm match" instead of "Create opportunity",
+   *  avoiding a duplicate opportunity for a company Pursuit already has. */
+  suggested_match?: {
     jobs_role_id: string;
     role_title: string | null;
     account_name: string | null;
     confidence: "exact" | "normalized";
-  };
+  } | null;
 }
 
-export interface MatchSuggestionsResult {
-  matched: MatchSuggestion[];
-  unmatched: UnmatchedApplication[];
-}
-
-/** Backfill helper: suggested role matches for recently-applied, still-unlinked
- *  applications (`matched`, never auto-applied — each needs an explicit confirm),
- *  plus the ones with no bedrock.jobs_opportunity to match against at all
- *  (`unmatched`) — for deciding which need a new opportunity/role created. */
-export function useMatchSuggestions(days = 30) {
-  return useQuery<MatchSuggestionsResult>({
-    queryKey: ["jobs", "match-suggestions", days],
+/** Builder-Sourced column: recent applications not linked to a Bedrock role
+ *  AND not staff/Pursuit-logged (source_type), plus roles explicitly flagged
+ *  via useMarkRoleBuilderSourced. Interview-or-further rows come back first
+ *  (see backend ordering). Replaces the old separate match-suggestions
+ *  banners — matching is now folded directly into this endpoint. */
+export function useBuilderSourcedApplications(days = 30) {
+  return useQuery<UnmatchedApplication[]>({
+    queryKey: ["jobs", "builder-sourced", days],
     queryFn: async () => {
-      const { data } = await api.get<ApiResponse<MatchSuggestionsResult>>(
-        `/api/jobs/job-applications/match-suggestions?days=${days}`,
+      const { data } = await api.get<ApiResponse<UnmatchedApplication[]>>(
+        `/api/jobs/job-applications/builder-sourced?days=${days}`,
       );
       return data.data;
     },
@@ -472,12 +502,77 @@ export function useConfirmMatch() {
       return data.data;
     },
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["jobs", "match-suggestions"] });
+      qc.invalidateQueries({ queryKey: ["jobs", "builder-sourced"] });
+      // Also used to resolve Staff-Sourced rows (confirm match or create-then-
+      // link a role) — without this a resolved row lingers in that queue too.
+      qc.invalidateQueries({ queryKey: ["jobs", "staff-sourced"] });
       qc.invalidateQueries({ queryKey: ["jobs", "roles-board"] });
       invalidateOppDependents(qc);
       toast.success("Match confirmed");
     },
     onError: () => toast.error("Failed to confirm match"),
+  });
+}
+
+export interface StaffSourcedApplicant {
+  job_application_id: number;
+  builder: string | null;
+  stage: string | null;
+  date_applied: string | null;
+  /** True if this builder already has a different application linked to the
+   *  group's suggested_match role — confirming them again would create a
+   *  second linked row for the same builder+role, so exclude from bulk-confirm. */
+  already_linked: boolean;
+}
+
+export interface StaffSourcedGroup {
+  company_name: string | null;
+  role_title: string | null;
+  suggested_match: {
+    jobs_role_id: string;
+    role_title: string | null;
+    account_name: string | null;
+    confidence: "exact" | "normalized";
+  } | null;
+  applications: StaffSourcedApplicant[];
+}
+
+/** Staff-Sourced queue: applications staff logged (source_type
+ *  'Pursuit_referred' or 'staff_sourced') with no Bedrock role linked yet,
+ *  grouped by normalized (company, role_title) — several applicants often
+ *  share the same not-yet-formalized role. Same 30-day working-queue window
+ *  as Builder-Sourced. */
+export function useStaffSourcedApplications(days = 30) {
+  return useQuery<StaffSourcedGroup[]>({
+    queryKey: ["jobs", "staff-sourced", days],
+    queryFn: async () => {
+      const { data } = await api.get<ApiResponse<StaffSourcedGroup[]>>(
+        `/api/jobs/job-applications/staff-sourced?days=${days}`,
+      );
+      return data.data;
+    },
+    staleTime: 30_000,
+  });
+}
+
+/** Reclassify a Staff-Sourced application as builder-sourced (staff assumed
+ *  they'd sourced it, but the builder had actually already applied on their
+ *  own) — moves it into the Builder-Sourced queue. One-way; no unmark. */
+export function useMarkApplicationSelfSourced() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (appId: number) => {
+      const { data } = await api.post<ApiResponse<{ job_application_id: number }>>(
+        `/api/jobs/job-applications/${appId}/mark-self-sourced`,
+      );
+      return data.data;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["jobs", "staff-sourced"] });
+      qc.invalidateQueries({ queryKey: ["jobs", "builder-sourced"] });
+      toast.success("Moved to Builder-Sourced");
+    },
+    onError: () => toast.error("Failed to reclassify"),
   });
 }
 
@@ -498,6 +593,47 @@ export function useReorderRolesBoard() {
       toast.success("Order saved");
     },
     onError: () => toast.error("Couldn't save order"),
+  });
+}
+
+/** Flag a role as builder-sourced (jobs_analytics.role_origin) — for a role
+ *  that only exists because staff logged a self-found builder's progress
+ *  through the app's own UI, with no real Pursuit-company relationship.
+ *  Moves it off the Pursuit-Supported board and into Builder-Sourced. */
+export function useMarkRoleBuilderSourced() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (roleId: string) => {
+      const { data } = await api.post<ApiResponse<{ jobs_role_id: string; origin: string }>>(
+        `/api/jobs/roles/${roleId}/mark-builder-sourced`,
+      );
+      return data.data;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["jobs", "roles-board"] });
+      qc.invalidateQueries({ queryKey: ["jobs", "builder-sourced"] });
+      toast.success("Marked as builder-sourced");
+    },
+    onError: () => toast.error("Failed to mark as builder-sourced"),
+  });
+}
+
+/** Reverse useMarkRoleBuilderSourced — back to the Pursuit-Supported default. */
+export function useUnmarkRoleBuilderSourced() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (roleId: string) => {
+      const { data } = await api.delete<ApiResponse<{ jobs_role_id: string; origin: string }>>(
+        `/api/jobs/roles/${roleId}/mark-builder-sourced`,
+      );
+      return data.data;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["jobs", "roles-board"] });
+      qc.invalidateQueries({ queryKey: ["jobs", "builder-sourced"] });
+      toast.success("Marked as Pursuit-supported");
+    },
+    onError: () => toast.error("Failed to unmark"),
   });
 }
 

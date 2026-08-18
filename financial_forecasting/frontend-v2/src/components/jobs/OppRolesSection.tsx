@@ -27,7 +27,7 @@ const ROLE_STATUS_STYLES: Record<RoleStatus, string> = {
 const ROLE_STATUS_LABELS: Record<RoleStatus, string> = {
   open:      "Open",
   filled:    "Filled",
-  cancelled: "Cancelled",
+  cancelled: "Closed",
 };
 
 // Derived placement status (server-computed) — richer than the raw open/filled
