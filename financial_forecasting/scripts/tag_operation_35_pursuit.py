@@ -69,10 +69,13 @@ CONTACTS: list[tuple[int, str, str, str]] = [
 
     # --- Blackstone -----------------------------------------------------------
     (34624, "John Stecher",          "Blackstone",      "CTO"),
-    # Kwame flagged 36142 as a legacy/duplicate CTO record. Included as supplied;
-    # swap to Paige Ross (45179, Sr. MD Global Head of HR) on request.
-    (36142, "William Murphy",        "Blackstone",      "CTO (legacy/duplicate record)"),
     (33783, "Adam Fletcher",         "Blackstone",      "Senior MD, BXTI, Chief Security Officer"),
+    # Named in Kwame's note: "David Drew indicated that Blackstone will not commit
+    # to a hiring mandate now. Invited us to apply for open positions." Stored
+    # company is "Blackstone BXMA", a separate account string from "Blackstone".
+    # Takes the slot freed by dropping the legacy Murphy CTO record (36142);
+    # displaces Paige Ross (45179), who was the earlier swap candidate.
+    (16605, "David Drew",            "Blackstone",      "Senior Vice President (BXMA)"),
 
     # --- Citi -----------------------------------------------------------------
     (45254, "Mark Mason",            "Citi",            "Chief Financial Officer, Citi"),
@@ -130,9 +133,9 @@ CONTACTS: list[tuple[int, str, str, str]] = [
     (32937, "Emma Cryer",            "OpenRouter",      "(no title stored)"),
 
     # --- Peloton --------------------------------------------------------------
-    # Kwame flagged 45230 as stale — McCarthy has stepped down. Included as
-    # supplied; swap to Paul Bouzakis (35267) or Adam Mattina (34915) on request.
-    (45230, "Barry McCarthy",        "Peloton",         "President and CEO (STALE — has stepped down)"),
+    # Barry McCarthy (45230) dropped — stale record, he has stepped down, and
+    # Kwame's note reads "Filed bankruptcy. Not actively hiring."
+    (35267, "Paul Bouzakis",         "Peloton",         "Senior Director Of Engineering"),
     (35551, "Matt Skavenski",        "Peloton",         "Vice President of Software Engineering, App"),
     (33831, "Francis Shanahan",      "Peloton",         "VP, Cardio Software"),
 
@@ -157,15 +160,19 @@ CONTACTS: list[tuple[int, str, str, str]] = [
     # --- Uber -----------------------------------------------------------------
     (34615, "Dara Khosrowshahi",     "Uber",            "CEO"),                      # has operation_35_lt_nick
     (46985, "Tony West",             "Uber",            "SVP, Chief Legal Officer and Corporate Secretary"),
-    # WHY 34288: two Bo Young Lees. 34288 is "Chief Diversity & Inclusion
-    # Officer" at Uber — exact match. 10910 is "Bo Young Lee 이보영", President
-    # of Research & Advisory at AnitaB.org.
-    (34288, "Bo Young Lee",          "Uber",            "Chief Diversity & Inclusion Officer"),
+    # Named in Kwame's note: "Tried several times to activate Josh Gold. Not
+    # responsive." Displaces Bo Young Lee (34288, Chief D&I Officer), who was the
+    # third pick on title alone.
+    (33899, "Josh Gold",             "Uber",            "Director, Public Policy and Communications"),
 
     # --- Wells Fargo ----------------------------------------------------------
     (34510, "Krissy Moore",          "Wells Fargo",     "SVP & Community Relations Northeast Sr. Manager"),
     (34509, "Wendy Takahisa",        "Wells Fargo",     "(no title stored — CRA Leader)"),
-    (34751, "Catherine Domenech",    "Wells Fargo",     "Community Development Officer"),
+    # Named in Kwame's note: "In conversation with Luisa to kick start jobs
+    # conversation." Stored as "Luisa P Perez" with no title or company — only
+    # the wellsfargo.com email identifies her. Displaces Catherine Domenech
+    # (34751, Community Development Officer).
+    (33470, "Luisa P Perez",         "Wells Fargo",     "(no title stored — named in owner note)"),
 ]
 
 # Stored full_name differs from the batch spelling; the guard compares against
