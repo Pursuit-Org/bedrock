@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 
 import { api } from "@/lib/api";
-import { ChevronDown, ChevronRight, ExternalLink, Info, Mail, Pencil, Phone, Plus, Search, UserPlus, X } from "lucide-react";
+import { ChevronDown, ChevronRight, ExternalLink, Info, Loader2, Mail, Pencil, Phone, Plus, Search, UserPlus, X } from "lucide-react";
 
 import { AccountAvatar } from "@/components/AccountAvatar";
 import { BackLink as SharedBackLink, LinkedProjectsCard } from "@/components/detail";
@@ -287,20 +287,14 @@ export function AccountDetailPage() {
               />
             </DetailRow>
             <DetailRow label="Qualification status">
-              <InlineSelect
-                value={account.Qualification_Status__c ?? null}
-                options={[
-                  { value: "Qualified", label: "Qualified" },
-                  { value: "Not Qualified", label: "Not Qualified" },
-                ]}
-                emptyLabel="—"
-                onSave={(next) =>
+              <QualificationStatusPicker
+                status={account.Qualification_Status__c}
+                explanation={account.Qualification_Explanation__c}
+                onSave={(patch, displayPatch) =>
                   updateAccount.mutateAsync({
                     id: account.Id,
-                    patch: { Qualification_Status__c: next },
-                    displayPatch: next === "Not Qualified"
-                      ? { account_status: "On Hold" }
-                      : { account_status: undefined },
+                    patch,
+                    displayPatch,
                   }).then(() => undefined)
                 }
               />
@@ -1317,6 +1311,130 @@ function SectionCard({
 }
 
 /** Compact one-line label/value row used by the slimmed-down Details panel. */
+/**
+ * Qualification Status picker with a required-explanation dialog.
+ * SF validates: Explanation must be non-empty when Status = "Not Qualified".
+ * So we collect both fields atomically before any API call.
+ */
+function QualificationStatusPicker({
+  status,
+  explanation,
+  onSave,
+}: {
+  status: string | null | undefined;
+  explanation: string | null | undefined;
+  onSave: (patch: Record<string, unknown>, displayPatch?: Record<string, unknown>) => Promise<void>;
+}) {
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [explanationDraft, setExplanationDraft] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [dialogError, setDialogError] = useState<string | null>(null);
+
+  const handleSelectChange = async (next: string) => {
+    if (next === "Not Qualified") {
+      setExplanationDraft(explanation ?? "");
+      setDialogError(null);
+      setDialogOpen(true);
+    } else {
+      await onSave({ Qualification_Status__c: next }, { account_status: undefined });
+    }
+  };
+
+  const handleDialogSave = async () => {
+    if (!explanationDraft.trim()) {
+      setDialogError("Explanation is required when marking as Not Qualified.");
+      return;
+    }
+    setSaving(true);
+    setDialogError(null);
+    try {
+      await onSave(
+        { Qualification_Status__c: "Not Qualified", Qualification_Explanation__c: explanationDraft.trim() },
+        { account_status: "On Hold" },
+      );
+      setDialogOpen(false);
+    } catch (e) {
+      setDialogError(e instanceof Error ? e.message : "Failed to save. Please try again.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const display = status ?? null;
+
+  return (
+    <>
+      {/* Inline select — styled to match InlineSelect */}
+      <div className="group/edit relative flex items-center rounded px-1 py-0.5 hover:bg-surface hover:ring-1 hover:ring-border-strong">
+        <span className="pointer-events-none min-w-0 flex-1 text-[13px] text-ink-2">
+          {display ?? <span className="italic text-ink-4">—</span>}
+        </span>
+        <select
+          value={display ?? ""}
+          onChange={(e) => { void handleSelectChange(e.target.value); }}
+          className="absolute inset-0 cursor-pointer appearance-none border-0 bg-transparent text-transparent opacity-0 outline-none"
+          aria-label="Qualification status"
+        >
+          <option value="" disabled>—</option>
+          <option value="Qualified">Qualified</option>
+          <option value="Not Qualified">Not Qualified</option>
+        </select>
+      </div>
+
+      {/* Dialog — collects explanation before submitting "Not Qualified" */}
+      {dialogOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
+          <div className="relative w-full max-w-md rounded-xl border border-border-strong bg-surface p-6 shadow-xl">
+            <button
+              type="button"
+              onClick={() => setDialogOpen(false)}
+              className="absolute right-4 top-4 text-ink-3 hover:text-ink"
+            >
+              <X size={16} />
+            </button>
+            <h2 className="mb-1 text-[15px] font-semibold text-ink">Mark as Not Qualified</h2>
+            <p className="mb-4 text-[12.5px] text-ink-3">
+              Salesforce requires an explanation when setting status to Not Qualified.
+            </p>
+            <label className="block text-[11px] font-semibold uppercase tracking-wider text-ink-3 mb-1.5">
+              Qualification Explanation <span className="text-red">*</span>
+            </label>
+            <textarea
+              autoFocus
+              rows={3}
+              value={explanationDraft}
+              onChange={(e) => setExplanationDraft(e.target.value)}
+              placeholder="Why does this account not qualify?"
+              className="w-full resize-none rounded-lg border border-border-strong bg-surface-2 px-3 py-2 text-[13px] text-ink outline-none placeholder:text-ink-4 focus:border-accent focus:ring-1 focus:ring-accent"
+            />
+            {dialogError && (
+              <p className="mt-1.5 text-[12px] text-red">{dialogError}</p>
+            )}
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setDialogOpen(false)}
+                className="rounded-lg border border-border-strong px-3 py-1.5 text-[13px] text-ink-2 hover:bg-surface-2"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={saving}
+                onClick={() => { void handleDialogSave(); }}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-[13px] font-medium text-white disabled:opacity-60 hover:bg-accent/90"
+              >
+                {saving && <Loader2 size={13} className="animate-spin" />}
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 function DetailRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex items-start gap-3">
