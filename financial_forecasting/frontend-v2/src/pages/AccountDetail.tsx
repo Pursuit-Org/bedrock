@@ -737,7 +737,7 @@ function HistoryChart({
   const totalLostCount = buckets.reduce((s, b) => s + b.lostCount, 0);
 
   return (
-    <div className="px-5 py-2.5">
+    <div className="flex h-full flex-col justify-center px-5 py-4">
       <div className="flex items-center justify-between text-[11px] text-ink-3">
         <div className="flex items-center gap-2.5">
           <span className="inline-flex items-center gap-1">
@@ -1280,7 +1280,7 @@ function SectionCard({
   );
   const isOpen = collapsible ? open : true;
   return (
-    <section className="mt-6 overflow-hidden rounded-lg border border-border-strong bg-surface shadow-sm">
+    <section className="mt-6 flex flex-col overflow-hidden rounded-lg border border-border-strong bg-surface shadow-sm">
       <div className="flex items-center justify-between border-b border-border-strong bg-surface-2 px-5 py-2.5">
         {collapsible ? (
           <button
@@ -1305,7 +1305,7 @@ function SectionCard({
         )}
         {action ?? null}
       </div>
-      {isOpen ? children : null}
+      {isOpen ? <div className="flex-1 min-h-0">{children}</div> : null}
     </section>
   );
 }
