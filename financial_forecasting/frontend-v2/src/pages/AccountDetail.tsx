@@ -737,7 +737,7 @@ function HistoryChart({
   const totalLostCount = buckets.reduce((s, b) => s + b.lostCount, 0);
 
   return (
-    <div className="flex h-full flex-col justify-center px-5 py-4">
+    <div className="flex h-full flex-col px-5 py-4">
       <div className="flex items-center justify-between text-[11px] text-ink-3">
         <div className="flex items-center gap-2.5">
           <span className="inline-flex items-center gap-1">
@@ -750,7 +750,7 @@ function HistoryChart({
         <span className="text-ink-4">{buckets[0].year}–{buckets[buckets.length - 1].year}</span>
       </div>
 
-      <div className="mt-1.5 flex items-end gap-1 overflow-x-auto pb-0.5">
+      <div className="mt-1.5 flex flex-1 min-h-0 items-end gap-1 overflow-x-auto pb-0.5">
         {buckets.map((b) => {
           const wonPct = (b.wonAmount / maxAmount) * 100;
           const lostPct = (b.lostAmount / maxAmount) * 100;
@@ -767,10 +767,10 @@ function HistoryChart({
           return (
             <div
               key={b.year}
-              className="flex min-w-[22px] flex-1 flex-col items-center gap-0.5"
+              className="flex h-full min-w-[22px] flex-1 flex-col items-center gap-0.5"
               title={tooltip}
             >
-              <div className="flex h-[56px] w-full items-end justify-center gap-px">
+              <div className="flex flex-1 w-full items-end justify-center gap-px">
                 <BarSegment pct={wonPct} className="bg-green-500" />
                 <BarSegment pct={lostPct} className="bg-red" />
               </div>
