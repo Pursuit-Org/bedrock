@@ -9,12 +9,12 @@
  */
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { Briefcase, CheckSquare, ExternalLink, Linkedin, Plus, Search, X, Zap } from "lucide-react";
+import { Briefcase, CheckSquare, ChevronsDownUp, ChevronsUpDown, ExternalLink, Linkedin, Plus, Search, X, Zap } from "lucide-react";
 import { toast } from "sonner";
 
 import { PageHeader } from "@/components/PageHeader";
 import { ContactDetail, initials } from "@/components/jobs/ProspectAccountExpandPanel";
-import { ContactExpandTabs, jobsContactPath } from "@/components/jobs/jobsEntity";
+import { ContactExpandTabs, jobsAccountPath, jobsContactPath } from "@/components/jobs/jobsEntity";
 import { CompanyPicker } from "@/components/jobs/CompanyPicker";
 import { ExportButton } from "@/components/jobs/ExportButton";
 import { withReferrer } from "@/components/detail";
@@ -22,7 +22,9 @@ import { ColumnChooser } from "@/components/ui/ColumnChooser";
 import { InlineSelect } from "@/components/ui/InlineEdit";
 import { SavedViewsPicker } from "@/components/ui/SavedViewsPicker";
 import { SortableHeader } from "@/components/ui/SortableHeader";
+import { Tag } from "@/components/ui/Tag";
 import { Toolbar } from "@/components/ui/Toolbar";
+import { accountStatusVariant } from "@/lib/accountStatus";
 import { RECENCY_OPTIONS, recencyLabel } from "@/lib/recencyFilter";
 import { useColumnVisibility } from "@/lib/columnVisibility";
 import { useContactStageChange } from "@/lib/useContactStageChange";
@@ -36,7 +38,7 @@ import {
 } from "@/pages/cleanup/Filters";
 import { cn } from "@/lib/utils";
 import {
-  useJobsContacts, useAddContactToJobs,
+  useJobsContacts, useAddContactToJobs, useJobsAccounts, type JobsAccount,
   useContactDetail, useCreateContact, STAGE_LABELS,
   useFlagContactsForJobs, useUnflagJobsContact, useUpdateJobsMembership, MEMBERSHIP_STAGE_LABELS, MEMBERSHIP_STAGES,
   useContactTagCatalog, useStaff, useUpdateContact, useBulkContactOwner, useBulkProspect,
@@ -118,17 +120,109 @@ const FILTERABLE: Record<Field, FieldMeta<JobContactWithDeal>> = {
   first_contact_date: { label: "Initial outreach date", type: "date", getValue: (c) => c.first_activity_at ?? "" },
   last_contact_date: { label: "Last contact date", type: "date", getValue: (c) => c.last_activity_at ?? "" },
 };
+// "company" is retained as the stored value so saved views keep resolving; the
+// grouping IS by account, since an account is keyed by normalized company name
+// (same key the /accounts endpoint groups on).
 const GROUP_OPTIONS = [
   { value: "", label: "No grouping" },
-  { value: "company", label: "Group by Company" },
+  { value: "company", label: "Group by Account" },
   { value: "has_deal", label: "Group by Linked deal" },
 ];
+const ACCOUNT_GROUP = "company";
 const YESNO = [{ value: "yes", label: "Yes" }, { value: "no", label: "No" }];
 
 interface JobsContactsView {
   query?: string; rules?: FilterRule<Field>[]; visibleCols?: ColKey[]; groupBy?: string; sort?: SortState<ColKey>;
 }
 const EMPTY: string[] = [];
+
+// ── Account group header ───────────────────────────────────────────────────────
+/** One muted-label / value pair in the header's meta strip. */
+function Meta({ label, children, title }: { label: string; children: React.ReactNode; title?: string }) {
+  return (
+    <span className="inline-flex items-baseline gap-1 whitespace-nowrap text-[11.5px]" title={title}>
+      <span className="text-ink-4">{label}</span>
+      <span className="font-medium text-ink-2">{children}</span>
+    </span>
+  );
+}
+
+/**
+ * The group header when contacts are grouped by account.
+ *
+ * Collapsed, this row IS the view: it has to answer "who owns this account,
+ * where does it stand, and how many of our contacts sit here" without the
+ * reader expanding anything. `shown`/`total` are the contacts in THIS filtered
+ * view vs. everyone flagged at the account, so a filtered subset reads as
+ * "3 of 11" instead of silently under-reporting.
+ */
+function AccountGroupHeader({
+  label, account, shown, collapsed, colSpan, onToggle,
+}: {
+  label: string;
+  account?: JobsAccount;
+  shown: number;
+  collapsed: boolean;
+  colSpan: number;
+  onToggle: () => void;
+}) {
+  const total = account?.prospect_count ?? 0;
+  const opps = account?.opportunities ?? [];
+  const portfolioCount = account?.portfolio_count ?? 0;
+  return (
+    <tr className="cursor-pointer border-y border-border-strong bg-surface-2/70 hover:bg-surface-2" onClick={onToggle}>
+      <td colSpan={colSpan} className="px-3 py-2">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+          <span className="w-3 flex-shrink-0 text-ink-3">{collapsed ? "▸" : "▾"}</span>
+
+          {account ? (
+            <Link to={jobsAccountPath(account.account_key)} onClick={(e) => e.stopPropagation()}
+              className="text-[12.5px] font-semibold text-ink hover:text-accent hover:underline"
+              title={`Open ${account.account}`}>
+              {label}
+            </Link>
+          ) : (
+            <span className="text-[12.5px] font-semibold text-ink">{label}</span>
+          )}
+
+          {/* The contact count is the reason this page groups at all — keep it
+              adjacent to the name rather than buried in the meta strip. */}
+          <span className="rounded-full bg-accent-soft px-2 py-0.5 text-[11px] font-semibold text-accent-ink"
+            title={total > shown ? `${shown} shown by the current filters · ${total} flagged at this account` : undefined}>
+            {total > shown ? `${shown} of ${total}` : shown} contact{shown === 1 ? "" : "s"}
+          </span>
+
+          {account && <Tag variant={accountStatusVariant(account.account_status)}>{account.account_status}</Tag>}
+
+          {/* Investor is a relationship, not a flag: an account either HAS one
+              (portfolio company) or IS one (other accounts point at it). */}
+          {account?.investor_name ? (
+            <span title={`Backed by ${account.investor_name}`}>
+              <Tag variant="default">Investor: {account.investor_name}</Tag>
+            </span>
+          ) : portfolioCount > 0 ? (
+            <span title={`${portfolioCount} portfolio compan${portfolioCount === 1 ? "y" : "ies"}`}>
+              <Tag variant="sky">Investor · {portfolioCount} portfolio</Tag>
+            </span>
+          ) : null}
+
+          {account && (
+            <>
+              <Meta label="Owner">{account.owner_email || <span className="text-ink-4">Unassigned</span>}</Meta>
+              <Meta label="Industry">{account.industry || <span className="text-ink-4">—</span>}</Meta>
+              <Meta
+                label="Opps"
+                title={opps.length ? opps.map((o) => `${o.title || "Untitled"} — ${o.stage}`).join("\n") : "No opportunities at this account"}
+              >
+                {account.opp_count > 0 ? account.opp_count : <span className="text-ink-4">—</span>}
+              </Meta>
+            </>
+          )}
+        </div>
+      </td>
+    </tr>
+  );
+}
 
 // ── New Contact modal (unchanged) ────────────────────────────────────────────────
 interface NewContactForm { fullName: string; email: string; title: string; company: string; linkedIn: string; }
@@ -358,7 +452,12 @@ export function JobsContacts({ initialQuery, initialContactId, initialConnectedO
     ? [{ id: "seed-connected", field: "connected", op: "is_not_empty", values: [] }]
     : []);
   const [groupBy, setGroupBy] = useSessionState<string>("jobs-contacts:groupBy", "");
-  const [collapsedGroups, setCollapsedGroups] = useSessionState<string[]>("jobs-contacts:groupCollapsed", EMPTY);
+  // Collapse state is a MODE plus a list of exceptions to it, not a list of
+  // collapsed keys. That makes "collapse all" a single flip that also covers
+  // groups scrolled out of view or created by a later filter change — an
+  // enumerate-every-key approach goes stale the moment the buckets change.
+  const [groupMode, setGroupMode] = useSessionState<"expanded" | "collapsed">("jobs-contacts:groupMode", "expanded");
+  const [groupExceptions, setGroupExceptions] = useSessionState<string[]>("jobs-contacts:groupToggles", EMPTY);
   const [showNewContact, setShowNewContact] = useState(false);
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
@@ -447,8 +546,19 @@ export function JobsContacts({ initialQuery, initialContactId, initialConnectedO
     owner: staffForFilter.map((s) => ({ value: s.email, label: s.name })),
   }), [tagCatalog, staffForFilter]);
 
-  const collapsedSet = useMemo(() => new Set(collapsedGroups), [collapsedGroups]);
-  const toggleGroup = useCallback((k: string) => setCollapsedGroups((p) => p.includes(k) ? p.filter((x) => x !== k) : [...p, k]), [setCollapsedGroups]);
+  const exceptionSet = useMemo(() => new Set(groupExceptions), [groupExceptions]);
+  const isCollapsed = useCallback(
+    (k: string) => (groupMode === "collapsed" ? !exceptionSet.has(k) : exceptionSet.has(k)),
+    [groupMode, exceptionSet],
+  );
+  const toggleGroup = useCallback(
+    (k: string) => setGroupExceptions((p) => (p.includes(k) ? p.filter((x) => x !== k) : [...p, k])),
+    [setGroupExceptions],
+  );
+  const toggleAllGroups = useCallback(() => {
+    setGroupMode((m) => (m === "collapsed" ? "expanded" : "collapsed"));
+    setGroupExceptions(EMPTY);
+  }, [setGroupMode, setGroupExceptions]);
 
   const q = query.trim().toLowerCase();
   const filtered = useMemo(() => {
@@ -483,20 +593,61 @@ export function JobsContacts({ initialQuery, initialContactId, initialConnectedO
     return k;
   }, [groupBy]);
 
-  type DisplayRow = { kind: "row"; c: JobContactWithDeal } | { kind: "header"; key: string; label: string; count: number; collapsed: boolean };
-  const grouped: DisplayRow[] | null = useMemo(() => {
+  // Account context for the group headers. Only fetched while actually grouping
+  // by account — /api/jobs/accounts is a ~15-query fan-out, too expensive to
+  // pull on every Contacts load for a header that may never render.
+  const groupingByAccount = groupBy === ACCOUNT_GROUP;
+  const { data: accountsData } = useJobsAccounts(undefined, "engaged", { enabled: groupingByAccount });
+  // Keyed by account_key, which the backend derives as lower(trim(name)) — the
+  // same normalization applied to the contact's company below.
+  const accountByKey = useMemo(() => {
+    const m = new Map<string, JobsAccount>();
+    for (const a of accountsData ?? []) m.set(a.account_key, a);
+    return m;
+  }, [accountsData]);
+
+  // Bucketing is independent of collapse state so toggling a group doesn't
+  // re-partition every contact.
+  //
+  // Account grouping buckets on lower(trim(company)) — the same key the
+  // /accounts endpoint groups on. Bucketing on the raw string instead would
+  // split one account into a group per spelling ("Acme" / "acme " / "ACME"),
+  // each with its own partial contact count. The label keeps the first raw
+  // spelling seen, or the account's canonical name once it resolves.
+  type Bucket = { key: string; label: string; list: JobContactWithDeal[]; account?: JobsAccount };
+  const buckets: Bucket[] | null = useMemo(() => {
     if (!groupBy) return null;
     const field = FILTERABLE[groupBy as Field]; if (!field) return null;
-    const buckets = new Map<string, JobContactWithDeal[]>();
-    for (const c of filtered) { const k = String(field.getValue(c) ?? ""); (buckets.get(k) ?? buckets.set(k, []).get(k)!).push(c); }
+    const m = new Map<string, Bucket>();
+    for (const c of filtered) {
+      const raw = String(field.getValue(c) ?? "");
+      const key = groupingByAccount ? raw.trim().toLowerCase() : raw;
+      const b = m.get(key);
+      if (b) b.list.push(c);
+      else m.set(key, { key, label: groupingByAccount ? (raw.trim() || "—") : groupLabel(raw), list: [c] });
+    }
+    if (groupingByAccount) {
+      for (const b of m.values()) {
+        b.account = accountByKey.get(b.key);
+        if (b.account) b.label = b.account.account;
+      }
+    }
+    return [...m.values()].sort((x, y) => x.label.localeCompare(y.label));
+  }, [filtered, groupBy, groupLabel, groupingByAccount, accountByKey]);
+
+  type DisplayRow =
+    | { kind: "row"; c: JobContactWithDeal }
+    | { kind: "header"; key: string; label: string; count: number; collapsed: boolean; account?: JobsAccount };
+  const grouped: DisplayRow[] | null = useMemo(() => {
+    if (!buckets) return null;
     const out: DisplayRow[] = [];
-    for (const k of [...buckets.keys()].sort((x, y) => groupLabel(x).localeCompare(groupLabel(y)))) {
-      const list = buckets.get(k)!; const collapsed = collapsedSet.has(k);
-      out.push({ kind: "header", key: k, label: groupLabel(k), count: list.length, collapsed });
-      if (!collapsed) for (const c of list) out.push({ kind: "row", c });
+    for (const b of buckets) {
+      const collapsed = isCollapsed(b.key);
+      out.push({ kind: "header", key: b.key, label: b.label, count: b.list.length, collapsed, account: b.account });
+      if (!collapsed) for (const c of b.list) out.push({ kind: "row", c });
     }
     return out;
-  }, [filtered, groupBy, collapsedSet, groupLabel]);
+  }, [buckets, isCollapsed]);
 
   const tableMinWidth = visibleCols.reduce((s, k) => s + widths[k], 0);
   const renderRow = (c: JobContactWithDeal) => (
@@ -536,13 +687,36 @@ export function JobsContacts({ initialQuery, initialContactId, initialConnectedO
           <option value="flagged">Has jobs stage</option>
           <option value="unflagged">No jobs stage</option>
         </select>
-        <select value={groupBy} onChange={(e) => { setGroupBy(e.target.value); setCollapsedGroups([]); }} title="Group rows by a field" className="h-7 rounded border border-border-strong bg-surface px-2 text-[12.5px] text-ink-2 outline-none focus:border-accent">
+        <select
+          value={groupBy}
+          onChange={(e) => {
+            const next = e.target.value;
+            setGroupBy(next);
+            setGroupExceptions(EMPTY);
+            // Account grouping opens collapsed: the point of that view is the
+            // account roll-up, and 100+ expanded groups bury it. Other
+            // groupings keep the original expanded default.
+            setGroupMode(next === ACCOUNT_GROUP ? "collapsed" : "expanded");
+          }}
+          title="Group rows by a field"
+          className="h-7 rounded border border-border-strong bg-surface px-2 text-[12.5px] text-ink-2 outline-none focus:border-accent"
+        >
           {GROUP_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
         </select>
+        {groupBy && (
+          <button
+            type="button"
+            onClick={toggleAllGroups}
+            title={groupMode === "collapsed" ? "Expand every group" : "Collapse every group"}
+            className="inline-flex h-7 items-center gap-1.5 whitespace-nowrap rounded border border-border-strong bg-surface px-2 text-[12.5px] text-ink-2 hover:bg-surface-2"
+          >
+            {groupMode === "collapsed" ? <><ChevronsUpDown size={13} /> Expand all</> : <><ChevronsDownUp size={13} /> Collapse all</>}
+          </button>
+        )}
         <span className="whitespace-nowrap font-mono text-[12px] text-ink-4">{isLoading ? "…" : `${filtered.length} contact${filtered.length === 1 ? "" : "s"}`}</span>
         <div className="ml-auto flex items-center gap-2">
           <ColumnChooser allColumns={COLUMN_ORDER} labels={COL_LABELS} visible={visibleCols} required={["name"]} onToggle={toggleCol} />
-          <SavedViewsPicker<JobsContactsView> scopeKey="jobs-contacts" currentFilters={{ query, rules, visibleCols, groupBy, sort }} onLoad={(v) => { setQuery(v.query ?? ""); setRules(v.rules ?? []); setGroupBy(v.groupBy ?? ""); setCollapsedGroups([]); if (v.visibleCols?.length) replaceVisibleCols(v.visibleCols); if (v.sort) setSort(v.sort); }} />
+          <SavedViewsPicker<JobsContactsView> scopeKey="jobs-contacts" currentFilters={{ query, rules, visibleCols, groupBy, sort }} onLoad={(v) => { setQuery(v.query ?? ""); setRules(v.rules ?? []); const g = v.groupBy ?? ""; setGroupBy(g); setGroupExceptions(EMPTY); setGroupMode(g === ACCOUNT_GROUP ? "collapsed" : "expanded"); if (v.visibleCols?.length) replaceVisibleCols(v.visibleCols); if (v.sort) setSort(v.sort); }} />
           <button type="button" onClick={() => setShowNewContact(true)} className="inline-flex h-7 items-center gap-1.5 rounded border border-ink bg-ink px-3 text-[12.5px] font-medium text-surface hover:opacity-90"><Plus size={13} /> New Contact</button>
         </div>
       </Toolbar>
@@ -666,11 +840,21 @@ export function JobsContacts({ initialQuery, initialContactId, initialConnectedO
             ) : filtered.length === 0 ? (
               <tr><td colSpan={visibleCols.length} className="px-6 py-10 text-center text-[13px] text-ink-3">No contacts match.{" "}<button type="button" className="text-accent underline underline-offset-2" onClick={() => { setQuery(""); setRules([]); }}>Clear filters</button></td></tr>
             ) : grouped ? (
-              grouped.map((item) => item.kind === "header" ? (
+              grouped.map((item) => item.kind !== "header" ? renderRow(item.c) : groupingByAccount ? (
+                <AccountGroupHeader
+                  key={`g-${item.key}`}
+                  label={item.label}
+                  account={item.account}
+                  shown={item.count}
+                  collapsed={item.collapsed}
+                  colSpan={visibleCols.length}
+                  onToggle={() => toggleGroup(item.key)}
+                />
+              ) : (
                 <tr key={`g-${item.key}`} className="cursor-pointer border-y border-border-strong bg-surface-2/70 hover:bg-surface-2" onClick={() => toggleGroup(item.key)}>
                   <td colSpan={visibleCols.length} className="px-3 py-1.5 text-[11.5px] font-semibold uppercase tracking-wider text-ink-2"><span className="inline-block w-3 text-ink-3">{item.collapsed ? "▸" : "▾"}</span>{item.label}<span className="ml-2 normal-case tracking-normal text-ink-3">{item.count}</span></td>
                 </tr>
-              ) : renderRow(item.c))
+              ))
             ) : (
               <>
                 {(showAllRows ? filtered : filtered.slice(0, 300)).map(renderRow)}

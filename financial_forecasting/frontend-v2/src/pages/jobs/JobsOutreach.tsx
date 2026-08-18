@@ -1419,12 +1419,10 @@ export function JobsOutreach() {
              is what made it look like it filtered Requiring Attention too. ── */}
       <section
         aria-label="In period"
-        // No /opacity modifiers here on purpose: the palette tokens are bare
-        // `var(--x)` in tailwind.config.ts, so Tailwind can't compose an alpha
-        // channel and drops the class entirely — `bg-accent-soft/[0.22]`
-        // emitted no CSS at all. --accent-soft is already a pale tint, so it
-        // works at full strength. See the note in the review notes.
-        className="flex flex-col gap-6 rounded-2xl border border-border-strong bg-accent-soft p-3 sm:p-4"
+        // Deliberately unfilled: the border + radius carry the zone boundary on
+        // their own. The pale blue fill (bg-accent-soft) that used to sit here
+        // read as a highlight on half the page rather than as a container.
+        className="flex flex-col gap-6 rounded-2xl border border-border-strong p-3 sm:p-4"
       >
         {/* The zone's own header. A caption under a full-width control was too
             weak to read as a boundary — the content has to be visibly INSIDE
