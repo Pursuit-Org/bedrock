@@ -176,7 +176,7 @@ export function JobsAccountDetailPage() {
                 onClick={() => updateSfAccount.mutate({
                   id: account.sf_account_id!,
                   patch: { Active__c: !isActive },
-                  displayPatch: isActive ? { account_status: "Inactive" } : undefined,
+                  displayPatch: isActive ? { account_status: "Deprioritized" } : undefined,
                 })}
                 className={cn(
                   "inline-flex h-[30px] items-center gap-1.5 rounded border px-3 text-[13px] font-medium transition-colors",
@@ -185,7 +185,7 @@ export function JobsAccountDetailPage() {
                     : "border-border-strong bg-surface text-ink-2 hover:border-green/40 hover:bg-green-soft hover:text-green",
                 )}
               >
-                {isActive ? "Mark as inactive" : "Mark as active"}
+                {isActive ? "Deprioritize" : "Reprioritize"}
               </button>
               <Tooltip
                 content="All accounts should default to 'Active'. Uncheck if there has been no recent contact with this account and there is no reason to engage with it in the foreseeable future."

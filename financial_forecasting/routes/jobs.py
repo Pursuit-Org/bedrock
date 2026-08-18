@@ -5316,7 +5316,7 @@ async def jobs_accounts(
     ja = {r["account_key"]: r for r in ja_rows}
 
     # Fetch Active__c from Salesforce for all linked SF accounts so that
-    # explicitly-deactivated accounts show status = "Inactive".
+    # explicitly-deactivated accounts show status = "Deprioritized".
     sf_active_by_id: dict[str, bool] = {}
     sf_ids_to_check = [r["sf_account_id"] for r in ja_rows if r["sf_account_id"]]
     if sf_ids_to_check:
@@ -5430,11 +5430,11 @@ async def jobs_accounts(
         a = acct_act.get(key)
         has_activity = bool(a and (a["last"] or a["recent"]))
         has_flagged = key in flagged_keys
-        # Inactive gate: Active__c == false in Salesforce overrides everything.
+        # Deprioritized gate: Active__c == false in Salesforce overrides everything.
         sf_acct_id = rec["sf_account_id"] if rec else None
         sf_active = sf_active_by_id.get(sf_acct_id, True) if sf_acct_id else True
         if not sf_active:
-            status = "Inactive"
+            status = "Deprioritized"
         elif rec and rec["status_override"]:
             status = rec["status_override"]
         elif has_open:

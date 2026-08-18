@@ -28,7 +28,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional
 
-STATUS_INACTIVE = "Inactive"
+STATUS_INACTIVE = "Deprioritized"
 STATUS_PROSPECT = "Prospect"
 STATUS_PURSUING = "Pursuing"
 STATUS_STEWARDING = "Stewarding"
@@ -122,7 +122,7 @@ def compute_account_status(
         latest_activity_by_account: AccountId → most recent activity_date
             as a tz-aware datetime. Missing accounts mean "no activity".
         now: defaults to datetime.now(tz=UTC). Pass in tests.
-        is_active: if False (SF Active__c unchecked), returns Inactive
+        is_active: if False (SF Active__c unchecked), returns Deprioritized
             immediately, overriding all playbook-derived statuses.
     """
     if not is_active:

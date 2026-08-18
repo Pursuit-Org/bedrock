@@ -17,7 +17,7 @@ export function accountStatusVariant(
   s: AccountStatus,
 ): "default" | "accent" | "green" | "amber" | "red" | "sky" | "zinc" {
   switch (s) {
-    case "Inactive": return "zinc";
+    case "Deprioritized": return "zinc";
     case "Activating": return "sky";
     case "Pursuing": return "accent";
     case "Stewarding": return "green";

@@ -202,7 +202,7 @@ export function AccountDetailPage() {
                   updateAccount.mutate({
                     id: account.Id,
                     patch: { Active__c: !isActive },
-                    displayPatch: isActive ? { account_status: "Inactive" } : undefined,
+                    displayPatch: isActive ? { account_status: "Deprioritized" } : undefined,
                   })
                 }
                 className={cn(
@@ -212,7 +212,7 @@ export function AccountDetailPage() {
                     : "border-border-strong bg-surface text-ink-2 hover:border-green/40 hover:bg-green-soft hover:text-green",
                 )}
               >
-                {isActive ? "Mark as inactive" : "Mark as active"}
+                {isActive ? "Deprioritize" : "Reprioritize"}
               </button>
             );
           })()}
