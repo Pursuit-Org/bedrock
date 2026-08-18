@@ -166,8 +166,8 @@ def test_update_placement_salary_syncs_role():
 def test_update_role_salary_syncs_filled_placement():
     # editing a FILLED role's salary writes through to its employment_record
     conn = FakeConn(rows={
-        "SELECT * FROM bedrock.jobs_role WHERE id": {"id": UUID1, "employment_record_id": 75, "status": "filled"},
-        "UPDATE bedrock.jobs_role SET": {"id": UUID1, "employment_record_id": 75, "approx_salary": 87500},
+        "SELECT * FROM bedrock.jobs_role WHERE id": {"id": UUID1, "employment_record_id": 75, "status": "filled", "job_posting_id": None},
+        "UPDATE bedrock.jobs_role SET": {"id": UUID1, "employment_record_id": 75, "approx_salary": 87500, "job_posting_id": None},
     })
     c = make_jobs_client(conn)
     r = c.patch(f"/api/jobs/roles/{UUID1}", json={"approx_salary": 87500})
@@ -178,8 +178,8 @@ def test_update_role_salary_syncs_filled_placement():
 
 def test_update_role_salary_no_sync_when_unfilled():
     conn = FakeConn(rows={
-        "SELECT * FROM bedrock.jobs_role WHERE id": {"id": UUID1, "employment_record_id": None, "status": "open"},
-        "UPDATE bedrock.jobs_role SET": {"id": UUID1, "employment_record_id": None, "approx_salary": 90000},
+        "SELECT * FROM bedrock.jobs_role WHERE id": {"id": UUID1, "employment_record_id": None, "status": "open", "job_posting_id": None},
+        "UPDATE bedrock.jobs_role SET": {"id": UUID1, "employment_record_id": None, "approx_salary": 90000, "job_posting_id": None},
     })
     c = make_jobs_client(conn)
     r = c.patch(f"/api/jobs/roles/{UUID1}", json={"approx_salary": 90000})
@@ -206,8 +206,8 @@ def test_hire_creates_employment_record_and_fills_role():
             "SELECT * FROM bedrock.jobs_role WHERE id=$1": {
                 "id": UUID1, "opportunity_id": UUID1, "title": "Eng",
                 "employment_type": "full_time", "approx_salary": 90000, "start_date": None},
-            "SELECT id, account_name FROM bedrock.jobs_opportunity": {"id": UUID1, "account_name": "Acme"},
-            "UPDATE bedrock.jobs_role": {"id": UUID1, "status": "filled", "filled_by_user_id": 42},
+            "SELECT id, account_name, deal_type FROM bedrock.jobs_opportunity": {"id": UUID1, "account_name": "Acme", "deal_type": None},
+            "UPDATE bedrock.jobs_role": {"id": UUID1, "status": "filled", "filled_by_user_id": 42, "job_posting_id": None},
         },
         vals={"INSERT INTO public.employment_records": 777},
     )
