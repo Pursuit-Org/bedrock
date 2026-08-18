@@ -2066,9 +2066,19 @@ async def update_account(
         success = await salesforce.update_record("Account", account_id, update_request.updates)
         if not success:
             raise HTTPException(400, "Salesforce rejected the update")
+        # For Active__c writes, read the field back immediately so the frontend
+        # receives the server-authoritative value rather than assuming the write
+        # persisted (Salesforce field-level security can silently ignore writes).
+        confirmed: dict = {"id": account_id, "message": "Account updated"}
+        if "Active__c" in update_request.updates:
+            try:
+                rec = await salesforce.get_record("Account", account_id, ["Active__c"])
+                confirmed["Active__c"] = rec.get("Active__c")
+            except Exception:
+                pass
         cache.invalidate_prefix("accounts:")
         logger.info(f"Account {account_id} updated by {user['user_id']}")
-        return ApiResponse(success=True, data={"id": account_id, "message": "Account updated"})
+        return ApiResponse(success=True, data=confirmed)
     except HTTPException:
         raise
     except Exception as e:
