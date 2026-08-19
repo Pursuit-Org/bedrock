@@ -6,6 +6,7 @@ import { AccountAvatar } from "@/components/AccountAvatar";
 import { ActivityTimeline } from "@/components/ActivityTimeline";
 import { OpportunityDeliverablesSection } from "@/components/OpportunityDeliverablesSection";
 import { OppTasksSection } from "@/components/OppTasksSection";
+import { OpportunityFilesSection, OpportunityFilesUploadAction } from "@/components/OpportunityFilesSection";
 import { PaymentScheduleBuilder } from "@/components/PaymentScheduleBuilder";
 import { AwardSetupDialog } from "@/components/AwardSetupDialog";
 import { StageGateDialog } from "@/components/StageGateDialog";
@@ -479,6 +480,14 @@ export function OpportunityDetailPage() {
 
       {/* Deliverables — SF npsp__Grant_Deadline__c records */}
       <OpportunityDeliverablesSection opportunityId={opp.Id} />
+
+      {/* Files — SF ContentDocumentLink records */}
+      <SectionCard
+        title="Files"
+        action={<OpportunityFilesUploadAction opportunityId={opp.Id} />}
+      >
+        <OpportunityFilesSection opportunityId={opp.Id} />
+      </SectionCard>
 
       {/* Tasks */}
       <OppTasksSection opportunityId={opp.Id} />

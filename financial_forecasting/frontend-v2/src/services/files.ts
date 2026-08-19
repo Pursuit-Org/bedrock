@@ -69,6 +69,21 @@ export function useUploadOpportunityFile(opportunityId: string) {
   });
 }
 
+/** Delete a file linked to an Opportunity. Removes the ContentDocument from Salesforce. */
+export function useDeleteOpportunityFile(opportunityId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (contentDocumentId: string) => {
+      await api.delete(
+        `/api/salesforce/opportunities/${encodeURIComponent(opportunityId)}/files/${encodeURIComponent(contentDocumentId)}`,
+      );
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ["opportunity-files", opportunityId] });
+    },
+  });
+}
+
 /** Convenience: build the SF download URL for a file the user can click. */
 export function fileDownloadUrl(latestVersionId: string | null | undefined): string | null {
   if (!latestVersionId) return null;
