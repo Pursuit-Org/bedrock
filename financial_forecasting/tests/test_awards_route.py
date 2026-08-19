@@ -200,3 +200,23 @@ class TestPatchAward:
         )
         assert r.status_code == 200
         assert r.json()["period_end_date"] == "2027-06-30"
+
+    def test_patch_contract_file_link_rejects_non_http_scheme(self, client):
+        # A stored javascript:/data: URI would be a click-to-execute XSS
+        # vector wherever contract_file_link renders as <a href>.
+        r = client.patch(
+            f"/api/awards/{AWARD_ID}",
+            json={"contract_file_link": "javascript:alert(1)"},
+        )
+        assert r.status_code == 400
+
+    def test_patch_contract_file_link_accepts_https(self, client, mock_db):
+        mock_db.fetchrow.return_value = _award_row(
+            contract_file_link="https://drive.example.com/grant.pdf"
+        )
+        r = client.patch(
+            f"/api/awards/{AWARD_ID}",
+            json={"contract_file_link": "https://drive.example.com/grant.pdf"},
+        )
+        assert r.status_code == 200
+        assert r.json()["contract_file_link"] == "https://drive.example.com/grant.pdf"

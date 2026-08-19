@@ -10,6 +10,7 @@ import {
   UserSearch,
   GitBranch,
   Trophy,
+  ClipboardCheck,
   FolderOpen,
   Users,
   Sparkles,
@@ -41,6 +42,7 @@ const NAV_GROUPS = [
       { to: "/accounts",  label: "Accounts",  icon: Building2 },
       { to: "/pipeline",  label: "Pipeline",  icon: GitBranch },
       { to: "/awards",    label: "Awards",    icon: Trophy },
+      { to: "/commitments", label: "Commitments", icon: ClipboardCheck },
       { to: "/payments",  label: "Payments",  icon: Receipt },
       // Tasks page hidden 2026-05-04 — pending a Salesforce data-hygiene
       // pass to close the years-old open-task backlog. Tasks remain

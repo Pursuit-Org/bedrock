@@ -360,6 +360,78 @@ belong on the SF Opportunity record.
 - **Backfill:** `scripts/backfill_awards.py` — Philanthropy-only, all-time
   for currently-eligible stages.
 - **Plan:** `tasks/bedrock-redesign-data-model.md`
+- **`contract_file_link`** (added 2026-08-12, TEXT nullable): link to the
+  award's signed source document. Validated server-side (`security.validate_http_url`)
+  to require an `http(s)://` scheme — the value renders back as `<a href>`
+  on `AwardDetail`, so an unvalidated scheme (`javascript:`, etc.) would be
+  a stored-XSS vector.
+
+---
+
+#### `bedrock.grant_commitment` (added 2026-08-12)
+
+One-line: One discrete obligation from a signed grant contract (e.g. "50
+Builders enrolled by 2027-06-30"). Many-to-one with `award` — Award is
+the "contract" grain (one funder, one signed document); there is no
+separate Contract entity.
+
+| Column | Type | Constraints |
+|--------|------|-------------|
+| id | UUID | PK, DEFAULT uuid_generate_v4() |
+| award_id | UUID | NOT NULL, FK --> award(id) ON DELETE CASCADE |
+| commitment_type | TEXT | NOT NULL, CHECK IN ('quantitative', 'qualitative') |
+| title | TEXT | NOT NULL |
+| contract_language | TEXT | NOT NULL DEFAULT '' — exact quoted wording from the signed contract |
+| delivery_plan | TEXT | NOT NULL DEFAULT '' — Pursuit's own plan, distinct from contract_language |
+| tracking_tier | TEXT | NOT NULL DEFAULT 'tracked', CHECK IN ('tracked', 'reference') |
+| target_value | NUMERIC | nullable; required when commitment_type = 'quantitative' (CHECK) |
+| target_unit | TEXT | nullable |
+| start_date | DATE | NOT NULL |
+| deadline | DATE | NOT NULL |
+| owner | TEXT | NOT NULL DEFAULT '' |
+| owner_ids | UUID[] | NOT NULL DEFAULT '{}' |
+| notes | TEXT | NOT NULL DEFAULT '' |
+| sort_order | INTEGER | NOT NULL DEFAULT 0 |
+| source | JSONB | nullable — reserved for a future AI-extraction phase, unused today |
+| created_at, updated_at | TIMESTAMPTZ | NOT NULL DEFAULT now() |
+| created_by | TEXT | nullable |
+| deleted_at, deleted_by | TIMESTAMPTZ / TEXT | nullable |
+
+- **Primary key:** `id`
+- **Check:** `grant_commitment_quant_target_check` — `target_value` required when `commitment_type = 'quantitative'`
+- **Indexes:** `idx_grant_commitment_award`, `idx_grant_commitment_deadline`, `idx_grant_commitment_tracking_tier` — all partial `WHERE deleted_at IS NULL`
+- **Triggers:** `trg_grant_commitment_updated_at` BEFORE UPDATE, executes `bedrock.set_updated_at()`
+- **No status column, by design** — on-track/ahead/under/complete is
+  computed at read time (`services/commitment_status.py`) from `deadline`
+  plus the latest `commitment_progress_log` entry, never stored.
+- **Plan:** PR #266
+
+---
+
+#### `bedrock.commitment_progress_log` (added 2026-08-12)
+
+One-line: Append-only progress history for a `grant_commitment` —
+"latest value" is derived via `LATERAL JOIN` at read time, mirroring how
+`award_report` aggregates are computed for `award`. No PATCH endpoint;
+entries are immutable once created (soft-delete only, for correcting a
+mistaken entry).
+
+| Column | Type | Constraints |
+|--------|------|-------------|
+| id | UUID | PK, DEFAULT uuid_generate_v4() |
+| commitment_id | UUID | NOT NULL, FK --> grant_commitment(id) ON DELETE CASCADE |
+| recorded_value | NUMERIC | nullable — quantitative snapshot |
+| recorded_status | TEXT | nullable, CHECK IN ('not-started', 'in-progress', 'met', 'not-met', 'pending-verification') |
+| note | TEXT | NOT NULL DEFAULT '' |
+| recorded_by_email | TEXT | NOT NULL |
+| recorded_at | TIMESTAMPTZ | NOT NULL DEFAULT now() — supports backdating |
+| created_at | TIMESTAMPTZ | NOT NULL DEFAULT now() |
+| deleted_at | TIMESTAMPTZ | nullable |
+
+- **Primary key:** `id`
+- **Check:** `commitment_progress_log_value_or_status_check` — `recorded_value` or `recorded_status` required
+- **Indexes:** `idx_commitment_progress_log_commitment` (partial `WHERE deleted_at IS NULL`), `idx_commitment_progress_log_recorded_at`
+- **Plan:** PR #266
 
 ---
 

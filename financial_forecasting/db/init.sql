@@ -466,7 +466,9 @@ VALUES (
         "trigger_data_sync": true,
         "manage_users_roles": true,
         "edit_permission_profiles": true,
-        "manage_owner_goals": true
+        "manage_owner_goals": true,
+        "view_commitments": true,
+        "manage_commitments": true
     }'::jsonb
 ) ON CONFLICT (name) DO NOTHING;
 
@@ -507,7 +509,9 @@ VALUES (
         "pebble_crm_write": false,
         "trigger_data_sync": false,
         "manage_users_roles": false,
-        "edit_permission_profiles": false
+        "edit_permission_profiles": false,
+        "view_commitments": true,
+        "manage_commitments": true
     }'::jsonb
 ) ON CONFLICT (name) DO NOTHING;
 
@@ -549,7 +553,9 @@ VALUES (
         "trigger_data_sync": false,
         "manage_users_roles": false,
         "edit_permission_profiles": true,
-        "manage_owner_goals": true
+        "manage_owner_goals": true,
+        "view_commitments": true,
+        "manage_commitments": true
     }'::jsonb
 ) ON CONFLICT (name) DO NOTHING;
 
@@ -590,7 +596,8 @@ VALUES (
         "pebble_crm_write": false,
         "trigger_data_sync": false,
         "manage_users_roles": false,
-        "edit_permission_profiles": false
+        "edit_permission_profiles": false,
+        "view_commitments": true
     }'::jsonb
 ) ON CONFLICT (name) DO NOTHING;
 
