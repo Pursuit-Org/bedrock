@@ -9,8 +9,12 @@ This is NOT a test module (no test_ prefix) so pytest imports it as a helper.
 
 from main import app, get_current_user
 from auth import require_auth
+import db as db_module
 from db import get_db
-from dependencies import require_sf_mcp_client as deps_require_sf_mcp_client
+from dependencies import (
+    get_mcp_client as deps_get_mcp_client,
+    require_sf_mcp_client as deps_require_sf_mcp_client,
+)
 from fastapi.testclient import TestClient
 
 
@@ -90,9 +94,43 @@ class FakeSalesforce:
         return {"id": self._ids.get(sobject, f"NEW{sobject}")}
 
 
+class FakePool:
+    """Stands in for the asyncpg pool behind db.get_pool(). Routes that fan
+    out reads with `pool = get_pool(); asyncio.gather(pool.fetch(...))`
+    (e.g. GET /api/jobs/accounts) bypass the get_db dependency entirely, so
+    the FastAPI override can't reach them — the pool itself must be faked.
+    Delegates every call to the same FakeConn so its substring dispatch and
+    .calls recording keep working.
+    """
+    def __init__(self, conn):
+        self._conn = conn
+
+    async def fetch(self, query, *args):
+        return await self._conn.fetch(query, *args)
+
+    async def fetchrow(self, query, *args):
+        return await self._conn.fetchrow(query, *args)
+
+    async def fetchval(self, query, *args):
+        return await self._conn.fetchval(query, *args)
+
+    async def execute(self, query, *args):
+        return await self._conn.execute(query, *args)
+
+    def acquire(self, timeout=None):
+        conn = self._conn
+        class _Acq:
+            async def __aenter__(self): return conn
+            async def __aexit__(self, *a): return False
+        return _Acq()
+
+
 class FakeClient:
     def __init__(self, sf):
         self.salesforce = sf
+        # Routes gate SF write-through on `"salesforce" in client.connected_services`.
+        # Empty set = sync paths are skipped, keeping these tests hermetic.
+        self.connected_services = set()
 
 
 DEFAULT_USER = {"email": "tester@pursuit.org", "user_id": "tester@pursuit.org"}
@@ -105,5 +143,15 @@ def make_jobs_client(conn, sf=None, user=None):
     app.dependency_overrides[require_auth] = lambda: u
     app.dependency_overrides[get_current_user] = lambda: u
     app.dependency_overrides[get_db] = lambda: conn
-    app.dependency_overrides[deps_require_sf_mcp_client] = lambda: FakeClient(sf or FakeSalesforce())
+    fc = FakeClient(sf or FakeSalesforce())
+    # Override BOTH client dependencies. Routes that Depends(get_mcp_client)
+    # otherwise 503 ("MCP client not initialized") unless an earlier test file
+    # happened to run app startup via `with TestClient(...)` — an ordering
+    # accident, not a contract.
+    app.dependency_overrides[deps_get_mcp_client] = lambda: fc
+    app.dependency_overrides[deps_require_sf_mcp_client] = lambda: fc
+    # Routes that read via get_pool() (not the get_db dependency) need the
+    # module-level pool faked too. The autouse fixture in conftest.py
+    # restores the real value after every test.
+    db_module._pool = FakePool(conn)
     return TestClient(app, raise_server_exceptions=False)

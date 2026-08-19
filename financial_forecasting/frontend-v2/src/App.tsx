@@ -12,6 +12,8 @@ import { CleanupPage } from "./pages/Cleanup";
 import { OpportunityDetailPage } from "./pages/OpportunityDetail";
 import { AwardsPage } from "./pages/Awards";
 import { AwardDetailPage } from "./pages/AwardDetail";
+import { CommitmentsPage } from "./pages/Commitments";
+import { CommitmentDetailPage } from "./pages/CommitmentDetail";
 import { ProjectsPage } from "./pages/Projects";
 import { ProjectDetailPage } from "./pages/ProjectDetail";
 import { TasksPage } from "./pages/Tasks";
@@ -61,6 +63,8 @@ export default function App() {
         <Route path="/opportunities/:id" element={<OpportunityDetailPage />} />
         <Route path="/awards" element={<AwardsPage />} />
         <Route path="/awards/:id" element={<AwardDetailPage />} />
+        <Route path="/commitments" element={<CommitmentsPage />} />
+        <Route path="/commitments/:id" element={<CommitmentDetailPage />} />
         <Route path="/projects" element={<ProjectsPage />} />
         <Route path="/projects/:id" element={<ProjectDetailPage />} />
         <Route path="/tasks" element={<TasksPage />} />

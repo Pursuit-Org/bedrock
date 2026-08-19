@@ -33,6 +33,17 @@ def event_loop():
     loop.close()
 
 
+@pytest.fixture(autouse=True)
+def _restore_db_pool():
+    """jobs_fakes.make_jobs_client swaps db._pool for a FakePool so routes
+    that read via get_pool() stay hermetic. Restore the previous value after
+    every test so the fake never leaks into unrelated tests."""
+    import db as _db_module
+    saved = _db_module._pool
+    yield
+    _db_module._pool = saved
+
+
 # ---------------------------------------------------------------------------
 # Salesforce mock data factories
 # ---------------------------------------------------------------------------

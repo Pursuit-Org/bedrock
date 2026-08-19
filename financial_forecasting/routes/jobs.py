@@ -92,15 +92,32 @@ _FT_EXTERNAL = """
 
 def _first_touch_email_cte() -> str:
     """CTE `ext(counterpart, first_touch)`: external recipients of outbound
-    emails sent by the jobs team, with each contact's first-ever touch date."""
+    emails sent by the jobs team, with each contact's first-ever touch date.
+
+    Counts synced mail AND emails logged by hand in the jobs tool, so a send
+    the Gmail sync missed can be entered rather than going uncounted. The two
+    can't double-count a contact: the metric is distinct counterparts, so a
+    manual entry and a later-synced copy of the same send collapse to one row
+    at that contact's earliest date.
+
+    Manual rows skip the team-sender and autoreply gates on purpose. Those
+    exist to sort deliberate outreach out of a synced mailbox; a row someone
+    typed into the jobs tool is deliberate by construction, and the sender
+    gate would otherwise silently drop logs from anyone outside the hardcoded
+    JOBS_TEAM_EMAILS list.
+    """
     sender = " OR ".join(f"a.email_from ILIKE '%{e}%'" for e in JOBS_TEAM_EMAILS)
     return f"""
     WITH outbound AS (
       SELECT lower(e) AS counterpart, a.activity_date
       FROM bedrock.activity a,
            unnest(coalesce(a.email_to,'{{}}') || coalesce(a.email_cc,'{{}}')) e
-      WHERE a.source = 'gmail-sync' AND a.deleted_at IS NULL AND ({sender})
-        AND {_not_autoreply('a')} AND {_jobs_relevant('a')}
+      WHERE a.deleted_at IS NULL
+        AND (
+          (a.source = 'gmail-sync' AND ({sender}) AND {_not_autoreply('a')})
+          OR (a.source = 'manual' AND a.type = 'email')
+        )
+        AND {_jobs_relevant('a')}
     ),
     ext AS (
       SELECT counterpart, min(activity_date) AS first_touch
@@ -1388,6 +1405,142 @@ async def hire_into_role(
     return {"success": True, "data": {"role": _role_dict(updated), "employment_record_id": new_id, "sf_sync": sf_sync}}
 
 
+@router.get("/roles/board")
+async def roles_board(
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Every role across every (non-deleted) opportunity, each with its matched
+    builder applications — the cross-account Placement > Roles board. Builder
+    name is derived from the job_applications.notes prefix (see
+    opp_builder_activity) rather than joined from public.users, which isn't
+    directly readable under every DB role (e.g. avni_dev)."""
+    roles = await conn.fetch(
+        """
+        SELECT r.*, o.account_name, o.stage AS opp_stage, s.sort_position
+        FROM bedrock.jobs_role r
+        JOIN bedrock.jobs_opportunity o ON o.id = r.opportunity_id
+        LEFT JOIN jobs_analytics.role_sort_order s ON s.jobs_role_id = r.id
+        LEFT JOIN jobs_analytics.role_origin ro ON ro.jobs_role_id = r.id
+        WHERE o.deleted_at IS NULL AND ro.jobs_role_id IS NULL
+        ORDER BY (r.status = 'cancelled'), (s.sort_position IS NULL) DESC, s.sort_position, r.updated_at DESC
+        """
+    )
+    apps = await conn.fetch(
+        """
+        SELECT ja.job_application_id, ja.jobs_role_id,
+               COALESCE(
+                   NULLIF(trim(b.full_name), ''),
+                   -- Only trust the notes prefix as a name when it actually
+                   -- follows the app's "Name: ..." convention (has a colon) —
+                   -- some rows have free-text notes with no name at all
+                   -- (e.g. "Applied via Google form through Pursuit"), which
+                   -- would otherwise get displayed as if it were a builder.
+                   CASE WHEN ja.notes LIKE '%:%'
+                        THEN NULLIF(trim(split_part(ja.notes, ':', 1)), '') END,
+                   'Builder #' || ja.builder_id
+               ) AS builder,
+               ja.stage, ja.date_applied
+        FROM public.job_applications ja
+        LEFT JOIN LATERAL bedrock.builder_by_id(ja.builder_id) b ON true
+        WHERE ja.jobs_role_id IS NOT NULL
+        ORDER BY ja.date_applied DESC NULLS LAST
+        """
+    )
+    apps_by_role: dict = {}
+    for a in apps:
+        apps_by_role.setdefault(str(a["jobs_role_id"]), []).append({
+            "job_application_id": a["job_application_id"],
+            "builder": a["builder"],
+            "stage": a["stage"],
+            "date_applied": a["date_applied"].isoformat() if a["date_applied"] else None,
+        })
+
+    out = []
+    for r in roles:
+        d = _role_dict(r)
+        if d["placement_status"] == "ft_placed":
+            continue  # already filled full-time — nothing left to track here
+        d["applications"] = apps_by_role.get(d["id"], [])
+        out.append(d)
+    return {"success": True, "data": out}
+
+
+class RolesBoardOrder(BaseModel):
+    role_ids: list[str]   # full visible-board order, top to bottom
+
+
+@router.put("/roles/board/order")
+async def set_roles_board_order(
+    body: RolesBoardOrder,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Persist a manual drag-order for the Roles board. bedrock.jobs_role has
+    no sort column of its own (no DDL for this role) — this writes into the
+    jobs_analytics scratch schema instead, mirroring the existing tag-campaign
+    priority pattern (bedrock.contact_tag_catalog.sort_order) but without an
+    FK to jobs_role so a role hard-delete is never blocked by this table.
+    SET LOCAL ROLE auto-reverts at transaction end either way, so it can never
+    leak the jobs_team role onto a later request via a reused pooled connection."""
+    who = user.get("email") if isinstance(user, dict) else getattr(user, "email", None)
+    async with conn.transaction():
+        await conn.execute("SET LOCAL ROLE jobs_team")
+        for i, role_id in enumerate(body.role_ids):
+            await conn.execute(
+                """
+                INSERT INTO jobs_analytics.role_sort_order (jobs_role_id, sort_position, updated_by)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (jobs_role_id) DO UPDATE
+                  SET sort_position = EXCLUDED.sort_position,
+                      updated_at = now(),
+                      updated_by = EXCLUDED.updated_by
+                """,
+                UUID(role_id), i, who,
+            )
+    return {"success": True, "data": {"updated": len(body.role_ids)}}
+
+
+@router.post("/roles/{role_id}/mark-builder-sourced")
+async def mark_role_builder_sourced(
+    role_id: UUID,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Flag a role as builder-sourced (see jobs_analytics.role_origin) — for
+    when a role was created through the app's own Opportunities/Placement
+    Roles flow just to track a self-found builder's progress, without
+    Pursuit actually having a relationship with the company. Drops the role
+    out of the Pursuit-Supported board and into Builder-Sourced instead."""
+    who = user.get("email") if isinstance(user, dict) else getattr(user, "email", None)
+    async with conn.transaction():
+        await conn.execute("SET LOCAL ROLE jobs_team")
+        await conn.execute(
+            """
+            INSERT INTO jobs_analytics.role_origin (jobs_role_id, set_by)
+            VALUES ($1, $2)
+            ON CONFLICT (jobs_role_id) DO NOTHING
+            """,
+            role_id, who,
+        )
+    return {"success": True, "data": {"jobs_role_id": str(role_id), "origin": "builder_sourced"}}
+
+
+@router.delete("/roles/{role_id}/mark-builder-sourced")
+async def unmark_role_builder_sourced(
+    role_id: UUID,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Revert a role back to the Pursuit-Supported default."""
+    async with conn.transaction():
+        await conn.execute("SET LOCAL ROLE jobs_team")
+        await conn.execute(
+            "DELETE FROM jobs_analytics.role_origin WHERE jobs_role_id = $1", role_id,
+        )
+    return {"success": True, "data": {"jobs_role_id": str(role_id), "origin": "pursuit_supported"}}
+
+
 class PlacementSyncChoice(BaseModel):
     sf_account_id: Optional[str] = None        # link this existing SF account
     force_create_account: bool = False         # or explicitly create a new one
@@ -1576,8 +1729,11 @@ async def interview_pipeline(
     return {"success": True, "data": out}
 
 
-# public.job_applications.stage vocabulary (builder-side submission funnel).
-VALID_APP_STAGES = {"applied", "interview", "accepted", "rejected", "withdrawn"}
+# public.job_applications.stage vocabulary (builder-side submission funnel) —
+# must mirror the job_applications_stage_check DB constraint exactly. This set
+# used to omit screen/oa/offer, which are real, actively-used stage values
+# (10 existing rows) — a role's stage dropdown silently mislabeled them.
+VALID_APP_STAGES = {"prospect", "applied", "screen", "oa", "interview", "offer", "accepted", "rejected", "withdrawn"}
 
 
 class BuilderActivityCreate(BaseModel):
@@ -1660,6 +1816,433 @@ async def update_builder_activity(
     if result == "UPDATE 0":
         raise HTTPException(404, "Application not found")
     return {"success": True, "data": {"job_application_id": app_id, "stage": body.stage}}
+
+
+class RoleApplicationCreate(BaseModel):
+    user_id:      int                       # builder user_id (from the builder picker)
+    builder_name: Optional[str] = None      # stored in notes prefix for display
+    stage:        str = "applied"
+    date_applied: Optional[date] = None
+
+
+@router.post("/roles/{role_id}/applications")
+async def create_role_application(
+    role_id: UUID,
+    body: RoleApplicationCreate,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Log a builder application directly against a role from the Roles board
+    (rather than needing to open the parent opportunity first). Derives the
+    opportunity + company name from the role, then inserts with the same shape
+    as create_builder_activity so the existing read paths (opp_builder_activity,
+    roles_board) stay consistent."""
+    if body.stage not in VALID_APP_STAGES:
+        raise HTTPException(400, f"Invalid stage: {body.stage}")
+    role = await conn.fetchrow(
+        """
+        SELECT r.title, r.opportunity_id, o.account_name
+        FROM bedrock.jobs_role r
+        JOIN bedrock.jobs_opportunity o ON o.id = r.opportunity_id
+        WHERE r.id=$1 AND o.deleted_at IS NULL
+        """,
+        role_id,
+    )
+    if not role:
+        raise HTTPException(404, "Role not found")
+
+    notes = f"{body.builder_name}: logged via Placement Roles" if body.builder_name else None
+    app_id = await conn.fetchval(
+        """
+        INSERT INTO public.job_applications
+            (builder_id, company_name, role_title, stage, date_applied,
+             source_type, jobs_opportunity_id, jobs_role_id, notes)
+        VALUES ($1, $2, $3, $4, COALESCE($5, CURRENT_DATE),
+                'Pursuit_referred', $6, $7, $8)
+        RETURNING job_application_id
+        """,
+        body.user_id,
+        role["account_name"],
+        role["title"] or "Role",
+        body.stage,
+        body.date_applied,
+        role["opportunity_id"],
+        role_id,
+        notes,
+    )
+    return {"success": True, "data": {"job_application_id": app_id, "stage": body.stage}}
+
+
+def _title_nkey(title: str) -> str:
+    """Normalized role-title key for backfill matching — case/punctuation
+    insensitive, same spirit as _acct_nkey but without the legal-suffix strip
+    (titles don't have those)."""
+    s = (title or "").strip().lower()
+    s = re.sub(r"[,\.\&\'\"()]", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+@router.get("/job-applications/builder-sourced")
+async def builder_sourced_applications(
+    days: int = Query(30, ge=1, le=365),
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """The Builder-Sourced column: replaces the old separate match-suggestions
+    banners (folded in here so there's one place, not a temporary queue plus
+    a permanent column showing overlapping data). Two kinds of rows:
+    1. Applications not linked to a Bedrock role AND not staff/Pursuit-
+       originated. jobs_role_id IS NULL alone isn't enough: plenty of
+       staff-logged applications (source_type 'Pursuit_referred' or
+       'staff_sourced', e.g. logged via the Opportunities page before a
+       formal role existed) also have no role link yet, and those are
+       Pursuit-supported, not builder-sourced. 30-day window — this is a
+       working queue of recent activity, not a permanent historical archive.
+       Each of these gets annotated with `suggested_match` (same matching
+       as the old match-suggestions: exact normalized-name match first,
+       then a looser normalized-title check within the same account) when
+       its company already has an open Bedrock role, so the frontend can
+       offer "Confirm match" instead of "Create opportunity" — avoids
+       spawning a duplicate opportunity for a company Pursuit already has.
+    2. Applications linked to a role explicitly flagged in
+       jobs_analytics.role_origin (see mark_role_builder_sourced) — a role
+       created through the app's own UI just to track a self-found
+       builder's progress, with no real Pursuit-company relationship. No
+       date window here: once explicitly marked, it stays surfaced until
+       someone unmarks it, regardless of how old the application is. Never
+       gets a suggested_match — it already has a role.
+
+    Interview-or-further rows sort first: we only formally track a
+    self-sourced lead as a Bedrock opportunity once it reaches that stage,
+    to avoid cluttering the pipeline with every speculative application a
+    builder happens to log."""
+    rows = await conn.fetch(
+        """
+        WITH combined AS (
+            SELECT ja.job_application_id, ja.builder_id, ja.company_name, ja.role_title,
+                   ja.date_applied, ja.stage,
+                   COALESCE(
+                       NULLIF(trim(b.full_name), ''),
+                       CASE WHEN ja.notes LIKE '%:%'
+                            THEN NULLIF(trim(split_part(ja.notes, ':', 1)), '') END,
+                       'Builder #' || ja.builder_id
+                   ) AS builder,
+                   NULL::uuid AS jobs_role_id
+            FROM public.job_applications ja
+            LEFT JOIN LATERAL bedrock.builder_by_id(ja.builder_id) b ON true
+            WHERE ja.jobs_role_id IS NULL
+              AND ja.date_applied >= (CURRENT_DATE - $1::int * INTERVAL '1 day')
+              AND (ja.source_type IS NULL OR ja.source_type NOT IN ('Pursuit_referred', 'staff_sourced'))
+              -- Exclude known seed/test data: rows explicitly marked as seeded, an
+              -- old ad-hoc smoke-test row, and anything tied to the synthetic
+              -- +auto-testing builder account (regardless of how its notes are
+              -- worded — matching by the test account itself is more reliable
+              -- than pattern-matching note text).
+              -- NULL notes must not exclude a row: `NULL NOT ILIKE x` evaluates to
+              -- NULL (not TRUE), which silently dropped every no-notes application
+              -- out of both queues regardless of source_type until this COALESCE.
+              AND COALESCE(ja.notes, '') NOT ILIKE '%seeded for platform demo%'
+              AND COALESCE(ja.notes, '') NOT ILIKE '%smoke test%'
+              AND (b.email IS NULL OR b.email NOT ILIKE '%+auto-testing%')
+
+            UNION ALL
+
+            -- Starts from role_origin (not job_applications) and LEFT JOINs
+            -- out to applications: a role can be marked builder-sourced
+            -- before any builder has applied to it, and it still needs to
+            -- show up here — otherwise it disappears from the Pursuit-
+            -- Supported board (roles_board excludes flagged roles) without
+            -- appearing anywhere on the Builder-Sourced side either.
+            SELECT ja.job_application_id, ja.builder_id,
+                   COALESCE(o.account_name, ja.company_name) AS company_name,
+                   COALESCE(r.title, ja.role_title) AS role_title,
+                   ja.date_applied, ja.stage,
+                   COALESCE(
+                       NULLIF(trim(b.full_name), ''),
+                       CASE WHEN ja.notes LIKE '%:%'
+                            THEN NULLIF(trim(split_part(ja.notes, ':', 1)), '') END,
+                       CASE WHEN ja.builder_id IS NOT NULL THEN 'Builder #' || ja.builder_id END
+                   ) AS builder,
+                   ro.jobs_role_id
+            FROM jobs_analytics.role_origin ro
+            JOIN bedrock.jobs_role r ON r.id = ro.jobs_role_id
+            JOIN bedrock.jobs_opportunity o ON o.id = r.opportunity_id
+            LEFT JOIN public.job_applications ja ON ja.jobs_role_id = ro.jobs_role_id
+            LEFT JOIN LATERAL bedrock.builder_by_id(ja.builder_id) b ON true
+        )
+        SELECT * FROM combined
+        ORDER BY
+          CASE WHEN stage IN ('interview', 'offer', 'accepted') THEN 0 ELSE 1 END,
+          date_applied DESC
+        """,
+        days,
+    )
+
+    return {"success": True, "data": await _annotate_suggested_matches(conn, rows)}
+
+
+async def _annotate_suggested_matches(conn, rows) -> list[dict]:
+    """Shared by builder-sourced and staff-sourced: given fetched application
+    rows (each with job_application_id, builder_id, company_name, role_title,
+    date_applied, stage, builder, jobs_role_id), annotate the still-unlinked
+    ones with a suggested_match when their company already has an open
+    Bedrock role — same matching as the old match-suggestions endpoint:
+    exact normalized-name match first, then a looser normalized-title check
+    within the same account."""
+    unlinked = [r for r in rows if r["jobs_role_id"] is None]
+    role_index = []
+    linked_pairs = set()
+    if unlinked:
+        roles = await conn.fetch(
+            """
+            SELECT r.id, r.title, o.account_name
+            FROM bedrock.jobs_role r
+            JOIN bedrock.jobs_opportunity o ON o.id = r.opportunity_id
+            WHERE o.deleted_at IS NULL AND r.status = 'open'
+            """
+        )
+        role_index = [
+            {"id": str(r["id"]), "title": r["title"], "account_name": r["account_name"],
+             "account_key": _acct_nkey(r["account_name"]), "title_key": _title_nkey(r["title"])}
+            for r in roles
+        ]
+        # A builder already linked to a role via some OTHER application is not
+        # a fresh match to suggest — confirming it would just recreate the
+        # same duplicate a human already resolved (see unlink_job_application_role).
+        already_linked = await conn.fetch(
+            "SELECT jobs_role_id, builder_id FROM public.job_applications WHERE jobs_role_id IS NOT NULL"
+        )
+        linked_pairs = {(str(r["jobs_role_id"]), r["builder_id"]) for r in already_linked}
+
+    out = []
+    for r in rows:
+        row = {
+            "job_application_id": r["job_application_id"],
+            "builder": r["builder"],
+            "company_name": r["company_name"],
+            "role_title": r["role_title"],
+            "date_applied": r["date_applied"].isoformat() if r["date_applied"] else None,
+            "stage": r["stage"],
+            "jobs_role_id": str(r["jobs_role_id"]) if r["jobs_role_id"] else None,
+            "suggested_match": None,
+        }
+        if r["jobs_role_id"] is None:
+            app_account_key = _acct_nkey(r["company_name"])
+            app_title_key = _title_nkey(r["role_title"])
+            best = None
+            for ri in role_index:
+                if ri["account_key"] != app_account_key:
+                    continue
+                confidence = "exact" if ri["title_key"] == app_title_key else "normalized"
+                if best is None or (confidence == "exact" and best["confidence"] != "exact"):
+                    best = {
+                        "jobs_role_id": ri["id"], "role_title": ri["title"],
+                        "account_name": ri["account_name"], "confidence": confidence,
+                    }
+                if confidence == "exact":
+                    break
+            if best and (best["jobs_role_id"], r["builder_id"]) not in linked_pairs:
+                row["suggested_match"] = best
+        out.append(row)
+    return out
+
+
+@router.get("/job-applications/staff-sourced")
+async def staff_sourced_applications(
+    days: int = Query(30, ge=1, le=365),
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """The Staff-Sourced queue: applications logged by staff (source_type
+    'Pursuit_referred' or 'staff_sourced', e.g. via the Opportunities/Activity
+    flow) that have no Bedrock role linked yet. These are real Pursuit-
+    relationship leads, just not yet formalized into a role/opportunity
+    record. Same 30-day working-queue window as Builder-Sourced — someone
+    owes each of these a decision: confirm a suggested_match, create the
+    opportunity/role from scratch, or — if it turns out staff misattributed
+    it and the builder actually found this one on their own — send it to
+    Builder-Sourced via mark_application_self_sourced.
+
+    Split out on 2026-08-18: builder-sourced's WHERE clause explicitly
+    excludes these source_types (they're not builder-sourced), but nothing
+    else was surfacing them, so a staff-logged application with no role
+    fell through the cracks entirely. This is the other half of that
+    same "jobs_role_id IS NULL" population, not a new concept.
+
+    Grouped by normalized (company, role_title), also 2026-08-18: several
+    applicants often share the same not-yet-formalized role (e.g. two
+    builders both applying to "Silna — AI Deployment Analyst"), and showing
+    each as its own disconnected row obscured that — mirrors the Pursuit-
+    Supported board's role-with-nested-applicants shape instead."""
+    rows = await conn.fetch(
+        """
+        SELECT ja.job_application_id, ja.builder_id, ja.company_name, ja.role_title,
+               ja.date_applied, ja.stage,
+               COALESCE(
+                   NULLIF(trim(b.full_name), ''),
+                   CASE WHEN ja.notes LIKE '%:%'
+                        THEN NULLIF(trim(split_part(ja.notes, ':', 1)), '') END,
+                   'Builder #' || ja.builder_id
+               ) AS builder
+        FROM public.job_applications ja
+        LEFT JOIN LATERAL bedrock.builder_by_id(ja.builder_id) b ON true
+        WHERE ja.jobs_role_id IS NULL
+          AND ja.source_type IN ('Pursuit_referred', 'staff_sourced')
+          AND ja.date_applied >= (CURRENT_DATE - $1::int * INTERVAL '1 day')
+          AND COALESCE(ja.notes, '') NOT ILIKE '%seeded for platform demo%'
+          AND COALESCE(ja.notes, '') NOT ILIKE '%smoke test%'
+          AND (b.email IS NULL OR b.email NOT ILIKE '%+auto-testing%')
+        ORDER BY date_applied DESC
+        """,
+        days,
+    )
+
+    groups: dict = {}
+    order = []
+    for r in rows:
+        key = (_acct_nkey(r["company_name"]), _title_nkey(r["role_title"]))
+        if key not in groups:
+            groups[key] = {"company_name": r["company_name"], "role_title": r["role_title"], "applications": []}
+            order.append(key)
+        groups[key]["applications"].append({
+            "job_application_id": r["job_application_id"],
+            "builder_id": r["builder_id"],
+            "builder": r["builder"],
+            "stage": r["stage"],
+            "date_applied": r["date_applied"].isoformat() if r["date_applied"] else None,
+        })
+
+    roles = await conn.fetch(
+        """
+        SELECT r.id, r.title, o.account_name
+        FROM bedrock.jobs_role r
+        JOIN bedrock.jobs_opportunity o ON o.id = r.opportunity_id
+        WHERE o.deleted_at IS NULL AND r.status = 'open'
+        """
+    )
+    role_index = [
+        {"id": str(r["id"]), "title": r["title"], "account_name": r["account_name"],
+         "account_key": _acct_nkey(r["account_name"]), "title_key": _title_nkey(r["title"])}
+        for r in roles
+    ]
+    # A builder already linked to the candidate role via some OTHER application
+    # shouldn't get re-confirmed onto it — same guard as _annotate_suggested_matches,
+    # otherwise "Confirm match (N)" would create a second linked row for them.
+    already_linked = await conn.fetch(
+        "SELECT jobs_role_id, builder_id FROM public.job_applications WHERE jobs_role_id IS NOT NULL"
+    )
+    linked_pairs = {(str(r["jobs_role_id"]), r["builder_id"]) for r in already_linked}
+
+    out = []
+    for account_key, title_key in order:
+        g = groups[(account_key, title_key)]
+        # Interview-or-further applicants sort first within the group; stable
+        # sort preserves the original date_applied DESC order within each tier.
+        g["applications"].sort(key=lambda a: 0 if a["stage"] in ("interview", "offer", "accepted") else 1)
+        best = None
+        for ri in role_index:
+            if ri["account_key"] != account_key:
+                continue
+            confidence = "exact" if ri["title_key"] == title_key else "normalized"
+            if best is None or (confidence == "exact" and best["confidence"] != "exact"):
+                best = {"jobs_role_id": ri["id"], "role_title": ri["title"],
+                        "account_name": ri["account_name"], "confidence": confidence}
+            if confidence == "exact":
+                break
+        applications = [
+            {**{k: v for k, v in a.items() if k != "builder_id"},
+             "already_linked": bool(best) and (best["jobs_role_id"], a["builder_id"]) in linked_pairs}
+            for a in g["applications"]
+        ]
+        out.append({
+            "company_name": g["company_name"],
+            "role_title": g["role_title"],
+            "suggested_match": best,
+            "applications": applications,
+        })
+    return {"success": True, "data": out}
+
+
+@router.post("/job-applications/{app_id}/mark-self-sourced")
+async def mark_application_self_sourced(
+    app_id: int,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Reclassify a Staff-Sourced application as builder-sourced: clears
+    source_type so it falls out of the Staff-Sourced queue and into
+    Builder-Sourced on next fetch. One-way — this is a rare correction
+    (staff assumed they'd sourced it, but the builder had actually already
+    applied on their own), not a routine toggle, so there's no unmark
+    endpoint; revert by hand if it's ever wrong."""
+    result = await conn.execute(
+        """
+        UPDATE public.job_applications
+        SET source_type = NULL, updated_at = now()
+        WHERE job_application_id = $1 AND source_type IN ('Pursuit_referred', 'staff_sourced')
+        """,
+        app_id,
+    )
+    if result == "UPDATE 0":
+        raise HTTPException(404, "Application not found or not staff-sourced")
+    return {"success": True, "data": {"job_application_id": app_id, "source_type": None}}
+
+
+class MatchConfirm(BaseModel):
+    jobs_role_id: str
+
+
+@router.post("/job-applications/{app_id}/confirm-match")
+async def confirm_job_application_match(
+    app_id: int,
+    body: MatchConfirm,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Link an application to a role. Only fires on an explicit staff confirm
+    click in the UI — matches from match-suggestions are suggested, never
+    auto-applied."""
+    role_id = UUID(body.jobs_role_id)
+    role = await conn.fetchrow("SELECT opportunity_id FROM bedrock.jobs_role WHERE id=$1", role_id)
+    if not role:
+        raise HTTPException(404, "Role not found")
+    result = await conn.execute(
+        """
+        UPDATE public.job_applications
+        SET jobs_role_id=$1, jobs_opportunity_id=$2, updated_at=now()
+        WHERE job_application_id=$3
+        """,
+        role_id, role["opportunity_id"], app_id,
+    )
+    if result == "UPDATE 0":
+        raise HTTPException(404, "Application not found")
+    return {"success": True, "data": {"job_application_id": app_id, "jobs_role_id": str(role_id)}}
+
+
+@router.post("/job-applications/{app_id}/unlink-role")
+async def unlink_job_application_role(
+    app_id: int,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Remove an application from whatever role/opportunity it's linked to,
+    without deleting the row. avni_dev (and jobs_team) has no DELETE grant on
+    public.job_applications, so this is the reversible alternative for
+    cleaning up a duplicate — e.g. the same builder logged both via the
+    Opportunities page and via the Roles board, then a match-suggestion
+    confirm linked a third, pre-existing row to the same role."""
+    result = await conn.execute(
+        """
+        UPDATE public.job_applications
+        SET jobs_role_id=NULL, jobs_opportunity_id=NULL, updated_at=now()
+        WHERE job_application_id=$1
+        """,
+        app_id,
+    )
+    if result == "UPDATE 0":
+        raise HTTPException(404, "Application not found")
+    return {"success": True, "data": {"job_application_id": app_id, "unlinked": True}}
 
 
 # ── Job-ready (L3+) pool ───────────────────────────────────────────────────────
@@ -3141,7 +3724,7 @@ PLACEMENT_STATUS_LABELS = {
     "trial_active": "Committed: trial active",
     "committed_open": "Committed: no placement",
     "open_market": "Open market",
-    "cancelled": "Cancelled",
+    "cancelled": "Closed",
 }
 
 
@@ -6995,6 +7578,33 @@ async def list_opportunities(
     return {"success": True, "data": [_norm_opp(dict(r)) for r in rows], "total": total}
 
 
+@router.get("/opportunities/search")
+async def search_opportunities(
+    q: str = Query(..., min_length=1),
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Lightweight opportunity picker (by employer/account name or deal title) —
+    used by the Roles board's Add Role flow to attach a new role to an existing
+    opportunity instead of always creating one from scratch."""
+    like = f"%{q.strip().lower()}%"
+    rows = await conn.fetch(
+        """
+        SELECT id, account_name, title, stage
+        FROM bedrock.jobs_opportunity
+        WHERE deleted_at IS NULL
+          AND (lower(trim(account_name)) LIKE $1 OR lower(trim(title)) LIKE $1)
+        ORDER BY updated_at DESC
+        LIMIT 20
+        """,
+        like,
+    )
+    return {"success": True, "data": [
+        {"id": str(r["id"]), "account_name": r["account_name"], "title": r["title"], "stage": r["stage"]}
+        for r in rows
+    ]}
+
+
 @router.post("/opportunities")
 async def create_opportunity(
     body: OpportunityCreate,
@@ -8855,7 +9465,7 @@ async def match_builder_candidates(
 class ActivityCreate(BaseModel):
     jobs_opportunity_id: Optional[str] = None
     contact_id:          Optional[int] = None   # log against a prospect instead of a deal
-    type:                str                     # call | text | linkedin
+    type:                str                     # call | text | linkedin | email
     description:         str
     activity_date:       Optional[datetime] = None
     subject:             Optional[str] = None
@@ -8868,20 +9478,34 @@ async def log_activity(
     conn=Depends(get_db),
 ):
     user_email = user.get("email") if isinstance(user, dict) else getattr(user, "email", None)
-    if body.type not in ("call", "text", "linkedin"):
+    if body.type not in ("call", "text", "linkedin", "email"):
         raise HTTPException(400, f"Invalid type: {body.type}")
     if not body.jobs_opportunity_id and not body.contact_id:
         raise HTTPException(400, "Provide jobs_opportunity_id or contact_id")
 
     import uuid as _uuid
 
+    # A manually logged EMAIL has to be shaped like a synced one or it silently
+    # falls out of the outreach numbers, in two separate ways:
+    #   1. _jobs_relevant() gates email/meeting rows on the content
+    #      classifier's verdict, and the classifier only ever runs over synced
+    #      mail. A manual email would carry a NULL verdict and be dropped from
+    #      every jobs metric. Whoever typed it into the jobs tool has asserted
+    #      it IS jobs outreach, so record that as the override.
+    #   2. The first-touch email CTE reads sender/recipients, not the contact
+    #      link, so email_from / email_to must be populated for the contact to
+    #      register as emailed.
+    is_email = body.type == "email"
+    relevance = "jobs" if is_email else None
+
     if body.jobs_opportunity_id:
         opp_id = _uuid.UUID(body.jobs_opportunity_id)
         row_id = await conn.fetchval(
             """
             INSERT INTO bedrock.activity
-                (type, subject, description, activity_date, source, jobs_opportunity_id, logged_by)
-            VALUES ($1, $2, $3, COALESCE($4, now()), 'manual', $5, $6)
+                (type, subject, description, activity_date, source, jobs_opportunity_id, logged_by,
+                 email_from, jobs_relevance_override)
+            VALUES ($1, $2, $3, COALESCE($4, now()), 'manual', $5, $6, $7, $8)
             RETURNING id
             """,
             body.type,
@@ -8890,15 +9514,24 @@ async def log_activity(
             body.activity_date,
             opp_id,
             user_email,
+            user_email if is_email else None,
+            relevance,
         )
     else:
         # Prospect-scoped log: tie to the public.contacts row, leave the deal null.
+        # The contact's own address becomes the recipient so the first-touch CTE
+        # (which counts distinct counterparts) can see this touch.
+        contact_email = None
+        if is_email:
+            contact_email = await conn.fetchval(
+                "SELECT lower(email) FROM public.contacts WHERE contact_id = $1", body.contact_id)
         row_id = await conn.fetchval(
             """
             INSERT INTO bedrock.activity
                 (type, subject, description, activity_date, source,
-                 participant_public_contact_id, logged_by)
-            VALUES ($1, $2, $3, COALESCE($4, now()), 'manual', $5, $6)
+                 participant_public_contact_id, logged_by,
+                 email_from, email_to, jobs_relevance_override)
+            VALUES ($1, $2, $3, COALESCE($4, now()), 'manual', $5, $6, $7, $8, $9)
             RETURNING id
             """,
             body.type,
@@ -8907,6 +9540,9 @@ async def log_activity(
             body.activity_date,
             body.contact_id,
             user_email,
+            user_email if is_email else None,
+            [contact_email] if contact_email else None,
+            relevance,
         )
         # A logged touch IS outreach — a still-flagged contact advances to
         # initial_outreach immediately (the nightly pass covers synced email).

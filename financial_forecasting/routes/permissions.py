@@ -25,6 +25,7 @@ PERMISSION_KEYS = [
     "edit_contacts", "create_contacts",
     "edit_payments", "create_payments",
     "view_projects", "edit_projects",
+    "view_commitments", "manage_commitments",
     "view_revenue_dashboard", "view_cashflow_forecasts",
     "view_sage_invoices_payments", "create_sage_invoices",
     "match_invoices", "manage_payment_schedules", "generate_financial_reports",

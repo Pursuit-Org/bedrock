@@ -109,14 +109,14 @@ interface PortfolioTasksProps {
  * into a separate bucket — an overdue task is, by definition, on this
  * week's plate whether or not its deadline lands inside it.
  */
-type Scope = "focus" | "all";
+type Scope = "focus" | "this-month" | "next-90" | "all";
 
 const SCOPE_STORAGE_KEY = "bedrock-v2:portfolio:tasks:scope";
 
 function readStoredScope(): Scope {
   try {
     const v = localStorage.getItem(SCOPE_STORAGE_KEY);
-    if (v === "all" || v === "focus") return v;
+    if (v === "all" || v === "focus" || v === "this-month" || v === "next-90") return v;
   } catch {}
   return "focus";
 }
@@ -127,6 +127,26 @@ function isInFocusWindow(deadline: string | null, done: boolean): boolean {
   if (done) return false;
   const risk = riskForTask(deadline, done);
   return risk === "overdue" || risk === "due-soon";
+}
+
+function isInThisMonth(deadline: string | null, done: boolean): boolean {
+  if (done || !deadline) return false;
+  const due = new Date(deadline);
+  if (isNaN(due.getTime())) return false;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const endOfMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0, 23, 59, 59, 999);
+  return due <= endOfMonth;
+}
+
+function isInNext90(deadline: string | null, done: boolean): boolean {
+  if (done || !deadline) return false;
+  const due = new Date(deadline);
+  if (isNaN(due.getTime())) return false;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const cutoff = new Date(today.getTime() + 90 * 86_400_000);
+  return due <= cutoff;
 }
 
 export function PortfolioTasks({
@@ -205,18 +225,20 @@ export function PortfolioTasks({
   // Done filter applies first, then scope. "Show done" only makes sense
   // in the "All" view (no point in seeing a completed task during focus).
   const openTasks = showDone ? unifiedTasks : unifiedTasks.filter((t) => !t.done);
-  const filtered = scope === "focus"
-    ? openTasks.filter((t) => isInFocusWindow(t.deadline, t.done))
+  const filtered =
+    scope === "focus"      ? openTasks.filter((t) => isInFocusWindow(t.deadline, t.done))
+    : scope === "this-month" ? openTasks.filter((t) => isInThisMonth(t.deadline, t.done))
+    : scope === "next-90"    ? openTasks.filter((t) => isInNext90(t.deadline, t.done))
     : openTasks;
 
   const groups = useMemo(() => groupByParent(filtered), [filtered]);
 
   const overdueCount = openTasks.filter((t) => riskForTask(t.deadline, t.done) === "overdue").length;
   const dueSoonCount = openTasks.filter((t) => riskForTask(t.deadline, t.done) === "due-soon").length;
-  // For the "All" toggle we surface the total it'd expand to, so the
-  // user can see the cost before clicking.
-  const allCount = openTasks.length;
-  const focusCount = openTasks.filter((t) => isInFocusWindow(t.deadline, t.done)).length;
+  const focusCount      = openTasks.filter((t) => isInFocusWindow(t.deadline, t.done)).length;
+  const thisMonthCount  = openTasks.filter((t) => isInThisMonth(t.deadline, t.done)).length;
+  const next90Count     = openTasks.filter((t) => isInNext90(t.deadline, t.done)).length;
+  const allCount        = openTasks.length;
 
   const isLoading = sfTasksQ.isLoading || projectsLoading;
 
@@ -237,6 +259,8 @@ export function PortfolioTasks({
             value={scope}
             onChange={changeScope}
             focusCount={focusCount}
+            thisMonthCount={thisMonthCount}
+            next90Count={next90Count}
             allCount={allCount}
           />
           {scope === "all" ? (
@@ -261,7 +285,11 @@ export function PortfolioTasks({
       ) : groups.length === 0 ? (
         <EmptyState>
           {scope === "focus"
-            ? "Nothing overdue or due this week. Switch to All to see what's further out."
+            ? "Nothing overdue or due this week. Switch to This month to see what's further out."
+            : scope === "this-month"
+            ? "Nothing due this month. Try Next 90 days or All."
+            : scope === "next-90"
+            ? "Nothing due in the next 90 days. Switch to All to see everything."
             : "No open tasks. Nice — go enjoy yourself."}
         </EmptyState>
       ) : (
@@ -690,7 +718,7 @@ function EmptyState({ children }: { children: React.ReactNode }) {
   );
 }
 
-/** Segmented control for the tasks scope. Two pills, persistent state
+/** Segmented control for the tasks scope. Four pills, persistent state
  *  lifted to the parent so we can re-derive counts off the same array.
  *  Pinned counts on each pill let the user know what's behind the click
  *  without having to switch and switch back. */
@@ -698,11 +726,15 @@ function ScopeToggle({
   value,
   onChange,
   focusCount,
+  thisMonthCount,
+  next90Count,
   allCount,
 }: {
   value: Scope;
   onChange: (next: Scope) => void;
   focusCount: number;
+  thisMonthCount: number;
+  next90Count: number;
   allCount: number;
 }) {
   return (
@@ -716,6 +748,18 @@ function ScopeToggle({
         onClick={() => onChange("focus")}
         label="This week"
         count={focusCount}
+      />
+      <ScopeButton
+        active={value === "this-month"}
+        onClick={() => onChange("this-month")}
+        label="This month"
+        count={thisMonthCount}
+      />
+      <ScopeButton
+        active={value === "next-90"}
+        onClick={() => onChange("next-90")}
+        label="Next 90 days"
+        count={next90Count}
       />
       <ScopeButton
         active={value === "all"}
