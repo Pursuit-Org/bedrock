@@ -28,10 +28,12 @@ import { cn } from "@/lib/utils";
 import { useAccounts } from "@/services/accounts";
 import { useAwards } from "@/services/awards";
 import { useCurrentUser } from "@/services/auth";
+import { usePortfolioUpcomingDeliverables } from "@/services/deliverables";
 import { useOpportunities } from "@/services/opportunities";
 import { usePerm } from "@/services/permissions";
 import { useProjects } from "@/services/projects";
 import { useUsers } from "@/services/users";
+import { UpcomingDeliverablesPanel } from "@/components/UpcomingDeliverablesPanel";
 import type { SfUser } from "@/types/salesforce";
 
 import { PortfolioTasks } from "./portfolio/PortfolioTasks";
@@ -152,6 +154,8 @@ function PortfolioBody({ user, isSelf }: { user: ResolvedUser; isSelf: boolean }
   const canEditAccounts = usePerm("edit_accounts");
   const canEditAwards = usePerm("edit_awards");
 
+  const { data: upcomingDeliverables = [] } = usePortfolioUpcomingDeliverables(user.sfUserId);
+
   // Slices owned by this user.
   const myAccounts = useMemo(
     () => filterByOwnerSfId(accountsQ.data ?? [], user.sfUserId),
@@ -202,6 +206,8 @@ function PortfolioBody({ user, isSelf }: { user: ResolvedUser; isSelf: boolean }
         projects={projectsQ.data ?? []}
         projectsLoading={projectsQ.isLoading}
       />
+
+      <UpcomingDeliverablesPanel deliverables={upcomingDeliverables} context="portfolio" />
 
       <PortfolioOpportunities
         opps={myOpps}
