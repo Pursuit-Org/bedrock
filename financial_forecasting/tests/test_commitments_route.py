@@ -106,6 +106,80 @@ def client(mock_db):
     _perms_mod.get_user_permissions = _original_get_user_permissions
 
 
+async def _fake_no_perms(email, db):
+    return {"permissions": {"view_commitments": False, "manage_commitments": False}}
+
+
+@pytest.fixture
+def forbidden_client(mock_db):
+    """Authenticated, but the resolved profile grants neither commitment
+    permission — every route should 403, not silently succeed."""
+    _perms_mod.get_user_permissions = _fake_no_perms
+    app.dependency_overrides[require_auth] = lambda: USER
+    app.dependency_overrides[get_db] = lambda: mock_db
+    app.dependency_overrides[get_mcp_client] = lambda: None
+    with TestClient(app, raise_server_exceptions=False) as c:
+        yield c
+    app.dependency_overrides.clear()
+    _perms_mod.get_user_permissions = _original_get_user_permissions
+
+
+@pytest.fixture
+def unauthed_client(mock_db):
+    """No auth override at all — tests 401 enforcement."""
+    app.dependency_overrides[get_db] = lambda: mock_db
+    with TestClient(app, raise_server_exceptions=False) as c:
+        yield c
+    app.dependency_overrides.clear()
+
+
+# ---------------------------------------------------------------------------
+# Auth enforcement — every endpoint requires auth, and manage_commitments
+# for writes / view_commitments for reads
+# ---------------------------------------------------------------------------
+
+class TestAuthEnforcement:
+
+    def test_list_requires_auth(self, unauthed_client):
+        assert unauthed_client.get("/api/commitments").status_code == 401
+
+    def test_get_requires_auth(self, unauthed_client):
+        assert unauthed_client.get(f"/api/commitments/{COMMITMENT_ID}").status_code == 401
+
+    def test_create_requires_auth(self, unauthed_client):
+        assert unauthed_client.post("/api/commitments", json={}).status_code == 401
+
+    def test_list_forbidden_without_view_permission(self, forbidden_client):
+        assert forbidden_client.get("/api/commitments").status_code == 403
+
+    def test_get_by_award_forbidden_without_view_permission(self, forbidden_client):
+        assert forbidden_client.get(f"/api/commitments/by-award/{AWARD_ID}").status_code == 403
+
+    def test_create_forbidden_without_manage_permission(self, forbidden_client):
+        r = forbidden_client.post(
+            "/api/commitments",
+            json={
+                "award_id": AWARD_ID,
+                "commitment_type": "qualitative",
+                "title": "x",
+                "start_date": "2026-01-01",
+                "deadline": "2027-01-01",
+            },
+        )
+        assert r.status_code == 403
+
+    def test_patch_forbidden_without_manage_permission(self, forbidden_client):
+        r = forbidden_client.patch(f"/api/commitments/{COMMITMENT_ID}", json={"notes": "x"})
+        assert r.status_code == 403
+
+    def test_delete_forbidden_without_manage_permission(self, forbidden_client):
+        assert forbidden_client.delete(f"/api/commitments/{COMMITMENT_ID}").status_code == 403
+
+    def test_create_log_forbidden_without_manage_permission(self, forbidden_client):
+        r = forbidden_client.post(f"/api/commitments/{COMMITMENT_ID}/log", json={"recorded_value": 1})
+        assert r.status_code == 403
+
+
 # ---------------------------------------------------------------------------
 # GET /api/commitments
 # ---------------------------------------------------------------------------
@@ -222,6 +296,49 @@ class TestCreateCommitment:
         assert r.status_code == 200
         assert r.json()["title"] == "50 Builders enrolled"
 
+    def test_create_empty_title_400(self, client, mock_db):
+        mock_db.fetchval.return_value = 1
+        r = client.post(
+            "/api/commitments",
+            json={
+                "award_id": AWARD_ID,
+                "commitment_type": "qualitative",
+                "title": "   ",
+                "start_date": "2026-01-01",
+                "deadline": "2027-01-01",
+            },
+        )
+        assert r.status_code == 400
+
+    def test_create_deadline_before_start_date_400(self, client, mock_db):
+        mock_db.fetchval.return_value = 1
+        r = client.post(
+            "/api/commitments",
+            json={
+                "award_id": AWARD_ID,
+                "commitment_type": "qualitative",
+                "title": "x",
+                "start_date": "2027-01-01",
+                "deadline": "2026-01-01",
+            },
+        )
+        assert r.status_code == 400
+
+    def test_create_malformed_owner_id_400(self, client, mock_db):
+        mock_db.fetchval.return_value = 1
+        r = client.post(
+            "/api/commitments",
+            json={
+                "award_id": AWARD_ID,
+                "commitment_type": "qualitative",
+                "title": "x",
+                "start_date": "2026-01-01",
+                "deadline": "2027-01-01",
+                "owner_ids": ["not-a-uuid"],
+            },
+        )
+        assert r.status_code == 400
+
 
 # ---------------------------------------------------------------------------
 # PATCH /api/commitments/{id}
@@ -250,8 +367,9 @@ class TestPatchCommitment:
 
     def test_patch_success(self, client, mock_db):
         mock_db.fetchrow.side_effect = [
+            MockDBRow(commitment_type="quantitative", start_date=date(2026, 1, 1), deadline=date(2027, 1, 1)),  # existing
             MockDBRow(id=COMMITMENT_ID),  # UPDATE ... RETURNING id
-            _commitment_row(tracking_tier="reference"),
+            _commitment_row(tracking_tier="reference"),  # re-fetch via _SELECT
         ]
         r = client.patch(
             f"/api/commitments/{COMMITMENT_ID}",
@@ -259,6 +377,36 @@ class TestPatchCommitment:
         )
         assert r.status_code == 200
         assert r.json()["tracking_tier"] == "reference"
+
+    def test_patch_empty_title_400(self, client, mock_db):
+        mock_db.fetchrow.return_value = MockDBRow(
+            commitment_type="quantitative", start_date=date(2026, 1, 1), deadline=date(2027, 1, 1)
+        )
+        r = client.patch(f"/api/commitments/{COMMITMENT_ID}", json={"title": "   "})
+        assert r.status_code == 400
+
+    def test_patch_cannot_clear_target_value_on_quantitative_400(self, client, mock_db):
+        mock_db.fetchrow.return_value = MockDBRow(
+            commitment_type="quantitative", start_date=date(2026, 1, 1), deadline=date(2027, 1, 1)
+        )
+        r = client.patch(f"/api/commitments/{COMMITMENT_ID}", json={"target_value": None})
+        assert r.status_code == 400
+
+    def test_patch_deadline_before_effective_start_date_400(self, client, mock_db):
+        # Existing start_date is 2026-01-01; patching deadline earlier than
+        # that (without also moving start_date) must be rejected.
+        mock_db.fetchrow.return_value = MockDBRow(
+            commitment_type="quantitative", start_date=date(2026, 1, 1), deadline=date(2027, 1, 1)
+        )
+        r = client.patch(f"/api/commitments/{COMMITMENT_ID}", json={"deadline": "2025-06-01"})
+        assert r.status_code == 400
+
+    def test_patch_malformed_owner_id_400(self, client, mock_db):
+        mock_db.fetchrow.return_value = MockDBRow(
+            commitment_type="quantitative", start_date=date(2026, 1, 1), deadline=date(2027, 1, 1)
+        )
+        r = client.patch(f"/api/commitments/{COMMITMENT_ID}", json={"owner_ids": ["not-a-uuid"]})
+        assert r.status_code == 400
 
 
 # ---------------------------------------------------------------------------
@@ -316,3 +464,28 @@ class TestProgressLog:
         )
         assert r.status_code == 200
         assert r.json()["recorded_value"] == 10
+
+    def test_create_log_naive_recorded_at_treated_as_utc(self, client, mock_db):
+        # No offset in the payload — must not be silently interpreted
+        # under the DB session's local timezone.
+        mock_db.fetchrow.side_effect = [
+            MockDBRow(commitment_type="quantitative"),
+            MockDBRow(
+                id="33333333-3333-3333-3333-333333333333",
+                commitment_id=COMMITMENT_ID,
+                recorded_value=10,
+                recorded_status=None,
+                note="",
+                recorded_by_email="user@pursuit.org",
+                recorded_at=datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
+                created_at=datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
+            ),
+        ]
+        client.post(
+            f"/api/commitments/{COMMITMENT_ID}/log",
+            json={"recorded_value": 10, "recorded_at": "2026-01-01T12:00:00"},
+        )
+        insert_call = mock_db.fetchrow.call_args_list[-1]
+        recorded_at_arg = insert_call.args[-1]
+        assert recorded_at_arg.tzinfo is not None
+        assert recorded_at_arg.utcoffset().total_seconds() == 0

@@ -126,6 +126,13 @@ def _parse_date(raw: str, field: str) -> date:
         raise HTTPException(status_code=400, detail=f"Invalid {field}: expected YYYY-MM-DD, got {raw!r}")
 
 
+def _parse_owner_ids(raw: List[str]) -> List[uuid.UUID]:
+    try:
+        return [uuid.UUID(x) for x in raw]
+    except ValueError:
+        raise HTTPException(status_code=400, detail="owner_ids must be valid UUIDs")
+
+
 def _serialize(row: Dict[str, Any]) -> Dict[str, Any]:
     out = dict(row)
     out["id"] = str(out["id"])
@@ -259,6 +266,8 @@ async def create_commitment(
         )
     if body.commitment_type == "quantitative" and body.target_value is None:
         raise HTTPException(status_code=400, detail="target_value is required for quantitative commitments")
+    if not body.title.strip():
+        raise HTTPException(status_code=400, detail="title is required")
 
     try:
         aid = uuid.UUID(body.award_id)
@@ -273,7 +282,9 @@ async def create_commitment(
 
     start_date_val = _parse_date(body.start_date, "start_date")
     deadline_val = _parse_date(body.deadline, "deadline")
-    owner_ids = [uuid.UUID(x) for x in body.owner_ids]
+    if deadline_val < start_date_val:
+        raise HTTPException(status_code=400, detail="deadline cannot be before start_date")
+    owner_ids = _parse_owner_ids(body.owner_ids)
 
     row = await conn.fetchrow(
         """
@@ -314,12 +325,34 @@ async def update_commitment(
     if not fields:
         raise HTTPException(status_code=400, detail="No fields to update")
 
+    existing = await conn.fetchrow(
+        "SELECT commitment_type, start_date, deadline FROM bedrock.grant_commitment "
+        "WHERE id = $1 AND deleted_at IS NULL",
+        cid,
+    )
+    if not existing:
+        raise HTTPException(status_code=404, detail="Commitment not found")
+
+    if "title" in fields and fields["title"] is not None and not fields["title"].strip():
+        raise HTTPException(status_code=400, detail="title cannot be empty")
+    if (
+        "target_value" in fields
+        and fields["target_value"] is None
+        and existing["commitment_type"] == "quantitative"
+    ):
+        raise HTTPException(status_code=400, detail="target_value cannot be cleared on a quantitative commitment")
+
     if "owner_ids" in fields and fields["owner_ids"] is not None:
-        fields["owner_ids"] = [uuid.UUID(x) for x in fields["owner_ids"]]
+        fields["owner_ids"] = _parse_owner_ids(fields["owner_ids"])
     if "start_date" in fields and fields["start_date"] is not None:
         fields["start_date"] = _parse_date(fields["start_date"], "start_date")
     if "deadline" in fields and fields["deadline"] is not None:
         fields["deadline"] = _parse_date(fields["deadline"], "deadline")
+
+    effective_start = fields.get("start_date", existing["start_date"])
+    effective_deadline = fields.get("deadline", existing["deadline"])
+    if effective_deadline < effective_start:
+        raise HTTPException(status_code=400, detail="deadline cannot be before start_date")
 
     sets = ", ".join(f"{k} = ${i + 2}" for i, k in enumerate(fields))
     vals = [cid] + list(fields.values())
@@ -418,6 +451,11 @@ async def create_progress_log(
             recorded_at = datetime.fromisoformat(body.recorded_at.replace("Z", "+00:00"))
         except ValueError:
             raise HTTPException(status_code=400, detail="recorded_at must be an ISO datetime")
+        if recorded_at.tzinfo is None:
+            # A bare "YYYY-MM-DDTHH:MM:SS" with no offset — treat as UTC
+            # explicitly rather than letting asyncpg/Postgres silently
+            # interpret it under the session's local timezone.
+            recorded_at = recorded_at.replace(tzinfo=timezone.utc)
 
     row = await conn.fetchrow(
         """

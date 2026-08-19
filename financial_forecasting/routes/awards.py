@@ -25,7 +25,7 @@ from auth import require_auth
 from db import get_db
 from dependencies import get_mcp_client
 from routes.projects import _enrich_opp_ids_with_sf
-from security import validate_salesforce_id
+from security import validate_http_url, validate_salesforce_id
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/awards", tags=["awards"])
@@ -278,6 +278,8 @@ async def update_award(
             status_code=400,
             detail=f"Invalid award_status. Must be one of: {sorted(_ALLOWED_STATUS)}",
         )
+    if payload.contract_file_link:
+        validate_http_url(payload.contract_file_link, "contract_file_link")
 
     sets: List[str] = []
     vals: List[Any] = []

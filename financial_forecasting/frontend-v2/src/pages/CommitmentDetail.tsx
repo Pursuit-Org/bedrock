@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useParams } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 import { Trash2 } from "lucide-react";
 
 import { BackLink as SharedBackLink } from "@/components/detail";
@@ -100,13 +100,13 @@ export function CommitmentDetailPage() {
         </h1>
 
         {commitment.opportunity_name || commitment.account_name ? (
-          <a
-            href={`/awards/${commitment.award_id}`}
+          <Link
+            to={`/awards/${commitment.award_id}`}
             className="mt-1 inline-block text-[12.5px] text-ink-3 underline-offset-4 hover:underline"
           >
             {commitment.opportunity_name}
             {commitment.account_name ? ` · ${commitment.account_name}` : ""}
-          </a>
+          </Link>
         ) : null}
       </div>
 
@@ -123,6 +123,7 @@ export function CommitmentDetailPage() {
           <Section title="Delivery plan">
             {canManage ? (
               <textarea
+                key={commitment.id}
                 defaultValue={commitment.delivery_plan}
                 onBlur={(e) => {
                   if (e.target.value !== commitment.delivery_plan) {
@@ -182,6 +183,7 @@ export function CommitmentDetailPage() {
           <Section title="Notes">
             {canManage ? (
               <textarea
+                key={commitment.id}
                 defaultValue={commitment.notes ?? ""}
                 onBlur={(e) => {
                   if (e.target.value !== (commitment.notes ?? "")) {
