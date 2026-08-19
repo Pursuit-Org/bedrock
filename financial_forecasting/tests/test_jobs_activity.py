@@ -32,11 +32,14 @@ OPP_FUNNEL = "account_name AS name"
 HIST = "jobs_stage_history h"
 
 
-def test_funnel_opportunities_starts_with_initial_outreach():
+def test_funnel_opportunities_starts_with_in_discussions():
+    # Initial Outreach was retired by the 2026-08-05 stage simplification: the
+    # funnel now starts at In Discussions, and a legacy initial_outreach row is
+    # canonicalized into it rather than dropped.
     conn = FakeConn(lists={
         OPP_FUNNEL: [
-            {"stage": "initial_outreach", "name": "Acme", "deal_type": "ft", "owner": "a@p.org"},
-            {"stage": "active_in_discussions", "name": "Beta", "deal_type": "ft", "owner": "a@p.org"},
+            {"stage": "initial_outreach", "name": "Acme", "deal_type": "ft", "owner": "a@p.org", "roles": None},
+            {"stage": "active_in_discussions", "name": "Beta", "deal_type": "ft", "owner": "a@p.org", "roles": None},
         ],
         HIST: [],
     })
@@ -44,12 +47,12 @@ def test_funnel_opportunities_starts_with_initial_outreach():
     r = c.get("/api/jobs/funnel/opportunities")
     assert r.status_code == 200, r.text
     stages = r.json()["data"]["stages"]
-    assert stages[0]["key"] == "initial_outreach" and stages[0]["label"] == "Initial Outreach"
-    assert stages[0]["count"] == 1
+    assert stages[0]["key"] == "active_in_discussions" and stages[0]["label"] == "In Discussions"
+    assert stages[0]["count"] == 2   # legacy initial_outreach folded in
     # full ordered pipeline present
     assert [s["key"] for s in stages] == [
-        "initial_outreach", "active_in_discussions", "active_opportunity_confirmed",
-        "active_builder_interview", "closed_won"]
+        "active_in_discussions", "active_opportunity_confirmed",
+        "reviewing_builders", "closed_won", "closed_lost"]
 
 
 def test_funnel_unknown_type_404():

@@ -347,8 +347,14 @@ function RepliedZone({ owner }: { owner: string | null }) {
   const { data = [], isLoading } = useRespondedContacts(owner ?? undefined);
   const update = useUpdateJobsMembership();
   const [showAll, setShowAll] = useState(false);
-  if (isLoading || data.length === 0) return null;
+  // MUST stay above the early return. useContactStageChange() calls hooks of
+  // its own, so skipping it on the empty/loading render changed this
+  // component's hook count between renders — React then throws "rendered
+  // fewer hooks than expected", which is unrecoverable and blanks the page.
+  // Switching the person picker changes this query's key, so it re-enters
+  // isLoading and took that early-return path on every switch.
   const stageChange = useContactStageChange();
+  if (isLoading || data.length === 0) return null;
   const move = (c: { contact_id: number; full_name: string | null }, stage: MembershipStage) => {
     // Revisit needs its date, so it goes through the shared handler; the rest
     // are one-click decisions and write immediately.

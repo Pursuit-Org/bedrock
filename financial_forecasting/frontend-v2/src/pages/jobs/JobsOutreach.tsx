@@ -1419,29 +1419,11 @@ export function JobsOutreach() {
              is what made it look like it filtered Requiring Attention too. ── */}
       <section
         aria-label="In period"
-        // No /opacity modifiers here on purpose: the palette tokens are bare
-        // `var(--x)` in tailwind.config.ts, so Tailwind can't compose an alpha
-        // channel and drops the class entirely — `bg-accent-soft/[0.22]`
-        // emitted no CSS at all. --accent-soft is already a pale tint, so it
-        // works at full strength. See the note in the review notes.
-        className="flex flex-col gap-6 rounded-2xl border border-border-strong bg-accent-soft p-3 sm:p-4"
+        // Deliberately unfilled: the border + radius carry the zone boundary on
+        // their own. The pale blue fill (bg-accent-soft) that used to sit here
+        // read as a highlight on half the page rather than as a container.
+        className="flex flex-col gap-6 rounded-2xl border border-border-strong p-3 sm:p-4"
       >
-        {/* The zone's own header. A caption under a full-width control was too
-            weak to read as a boundary — the content has to be visibly INSIDE
-            something the period bar heads, or the bar still looks page-level. */}
-        <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
-          <span className="text-[11px] font-bold uppercase tracking-[.12em] text-accent">
-            In period
-          </span>
-          {sc && (
-            <span className="text-[11.5px] text-ink-3">
-              <span className="font-medium text-ink-2">{rangeLabel}</span>
-              {" · trends compare with "}
-              <span className="font-medium text-ink-2">{fmtRange(sc.period.last_start, sc.period.last_end)}</span>
-            </span>
-          )}
-        </div>
-
         <PeriodBar
           from={from} to={to}
           onChange={(f, t) => { setFrom(f); setTo(t); }}
@@ -1459,6 +1441,20 @@ export function JobsOutreach() {
 
       {/* ── Daily digest (the morning Slack) ── */}
       <DailyDigestBlock periodEnd={to} />
+
+      {/* The window these numbers cover, right-aligned just above the first
+          chart that uses it. At the top of the zone it read as a heading for
+          the whole page; here it reads as the footing for the charts below,
+          which is what it actually is. */}
+      {sc && (
+        <div className="-mb-3 flex justify-end">
+          <span className="text-[11.5px] text-ink-3">
+            {rangeLabel}
+            {" · trends compare with "}
+            {fmtRange(sc.period.last_start, sc.period.last_end)}
+          </span>
+        </div>
+      )}
 
       {/* ── Monday agenda: contacts funnel → this week (+ activity pipeline)
              → requiring attention → campaigns → scorecard → targeting.
@@ -1510,7 +1506,7 @@ export function JobsOutreach() {
              The divider is deliberately heavier than the "Segments & activity"
              rule above, which separates two period-scoped panels — this one
              separates two different notions of time. ── */}
-      <ZoneBoundary senderLabel={owner ? nameOf(owner) : undefined} />
+      <ZoneBoundary />
 
       <TouchDepthPanel scope={scope} owner={owner || undefined} nameOf={nameOf} />
 
@@ -1533,18 +1529,15 @@ export function JobsOutreach() {
  *  correct an expectation the period bar sets. Note the precision: scope and
  *  sender DO still apply below this line — only the period stops. Saying "the
  *  filters above don't apply" would trade one wrong belief for another. */
-function ZoneBoundary({ senderLabel }: { senderLabel?: string }) {
+/** The divider between the period-scoped zone above and the live zone below.
+ *  The rule and label carry the boundary on their own — the explanatory caption
+ *  that used to sit under it was permanent chrome for a one-time explanation. */
+function ZoneBoundary() {
   return (
-    <div className="mt-8 flex flex-col gap-1.5">
-      <div className="flex items-center gap-3">
-        <div className="h-px flex-1 bg-ink-4/40" />
-        <span className="text-[11px] font-bold uppercase tracking-[.12em] text-ink-2">Current state</span>
-        <div className="h-px flex-1 bg-ink-4/40" />
-      </div>
-      <p className="text-center text-[11.5px] text-ink-4">
-        Live as of today — the period above doesn't apply here
-        {senderLabel ? <>, but {senderLabel} does</> : <>, though scope and sender still do</>}.
-      </p>
+    <div className="mt-8 flex items-center gap-3">
+      <div className="h-px flex-1 bg-ink-4/40" />
+      <span className="text-[11px] font-bold uppercase tracking-[.12em] text-ink-2">Current state</span>
+      <div className="h-px flex-1 bg-ink-4/40" />
     </div>
   );
 }

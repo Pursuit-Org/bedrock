@@ -610,12 +610,20 @@ export interface JobsAccount {
   sf_account_ids?: string[];
 }
 
-export function useJobsAccounts(dealType?: string, scope: "engaged" | "all" = "engaged") {
+/** `enabled: false` skips the fetch entirely — this endpoint fans out ~15
+ *  reads across the pool, so pages that only need accounts in one mode (e.g.
+ *  Contacts, when grouped by account) shouldn't pay for it on every load. */
+export function useJobsAccounts(
+  dealType?: string,
+  scope: "engaged" | "all" = "engaged",
+  options?: { enabled?: boolean },
+) {
   const params = new URLSearchParams();
   if (dealType && dealType !== "all") params.set("deal_type", dealType);
   params.set("scope", scope);
   return useQuery<JobsAccount[]>({
     queryKey: ["jobs", "accounts", dealType ?? "all", scope],
+    enabled: options?.enabled ?? true,
     placeholderData: keepPreviousData,
     queryFn: async () => {
       const { data } = await api.get<ApiResponse<JobsAccount[]>>(`/api/jobs/accounts?${params}`);
