@@ -264,9 +264,11 @@ function Sidebar({
           collapsed && "flex-col gap-2 px-0",
         )}
       >
-        <div className="grid h-6 w-6 flex-shrink-0 place-items-center rounded-md bg-ink text-[13px] font-bold tracking-tight text-surface">
-          B
-        </div>
+        <img
+          src="/bedrock-logo.png"
+          alt="Bedrock"
+          className="h-8 w-8 flex-shrink-0 rounded-md"
+        />
         {!collapsed && (
           <div className="flex flex-col leading-tight">
             <span className="text-[15px] font-semibold tracking-tight">Bedrock</span>

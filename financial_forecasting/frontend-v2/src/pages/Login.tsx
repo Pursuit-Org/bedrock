@@ -20,9 +20,11 @@ export function LoginPage() {
     <div className="grid min-h-screen place-items-center bg-bg p-6">
       <div className="w-full max-w-[400px] rounded-lg border border-border-strong bg-surface p-7 shadow-lg">
         <div className="mb-6 flex items-center gap-2.5">
-          <div className="grid h-8 w-8 place-items-center rounded-md bg-ink text-[16px] font-bold tracking-tight text-surface">
-            B
-          </div>
+          <img
+            src="/bedrock-logo.png"
+            alt="Bedrock"
+            className="h-11 w-11 flex-shrink-0 rounded-xl"
+          />
           <div className="flex flex-col leading-tight">
             <span className="text-[18px] font-semibold tracking-tight">
               Bedrock
