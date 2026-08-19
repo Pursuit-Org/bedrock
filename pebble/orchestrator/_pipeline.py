@@ -24,10 +24,10 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Callable
 
-from .model_client import ModelClient
-from .harness import WorkerHarness, HarnessConfig, AgentOutcome, TaskSpec, harness_config_for_agent
-from .storage.db import log_harness_outcome, get_source_reliability, save_profile, save_source_scores, save_session
-from .data_sources import (
+from ..model_client import ModelClient
+from ..harness import WorkerHarness, HarnessConfig, AgentOutcome, TaskSpec, harness_config_for_agent
+from ..storage.db import log_harness_outcome, get_source_reliability, save_profile, save_source_scores, save_session
+from ..data_sources import (
     fetch_organization,
     search_organizations,
     fetch_company,
@@ -37,8 +37,8 @@ from .data_sources import (
     fetch_full_profile,
     search_officers,
 )
-from .data_sources.sec import search_cik
-from .claim_templates import (
+from ..data_sources.sec import search_cik
+from ..claim_templates import (
     claims_from_fec,
     claims_from_usaspending,
     claims_from_opencorporates,
