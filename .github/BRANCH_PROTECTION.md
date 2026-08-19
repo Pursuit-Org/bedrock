@@ -11,7 +11,7 @@ file — it's a Settings-page click-through. Follow the steps below for
 
 ## Steps
 
-1. Go to https://github.com/Pursuit-Assets/bedrock/settings/branches
+1. Go to https://github.com/Pursuit-Org/bedrock/settings/branches
 2. Click **Add branch ruleset** (or **Add rule** in the legacy UI).
 3. **Ruleset name**: `protect-main` (or `protect-dev`).
 4. **Enforcement status**: Active.

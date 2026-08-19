@@ -20,9 +20,9 @@ Original target Wed 2026-04-22 is deferred. JP: *"We have time to do this correc
 
 | Bug / Item | Priority | Status | Ref | Pending Jac action? |
 |---|---|---|---|---|
-| **Objects production-readiness plan** | P0 | ✅ Merged to dev ([PR #147](https://github.com/Pursuit-Assets/bedrock/pull/147)) | [plan](objects-production-readiness-plan.md) | — |
-| **B1** targets not saving to shared DB | P0 | ✅ Merged to dev | [#142](https://github.com/Pursuit-Assets/bedrock/pull/142) | ⏳ Run migration + confirm deployed `DATABASE_URL` (see below) |
-| **B2** opp `Type` field missing on view | P0 | ✅ Merged to dev | [#144](https://github.com/Pursuit-Assets/bedrock/pull/144) | — |
+| **Objects production-readiness plan** | P0 | ✅ Merged to dev ([PR #147](https://github.com/Pursuit-Org/bedrock/pull/147)) | [plan](objects-production-readiness-plan.md) | — |
+| **B1** targets not saving to shared DB | P0 | ✅ Merged to dev | [#142](https://github.com/Pursuit-Org/bedrock/pull/142) | ⏳ Run migration + confirm deployed `DATABASE_URL` (see below) |
+| **B2** opp `Type` field missing on view | P0 | ✅ Merged to dev | [#144](https://github.com/Pursuit-Org/bedrock/pull/144) | — |
 | **B3** Reports + Contacts 500-row cap | P1 | 📘 Absorbed — PRs #149-#151 | [plan](objects-production-readiness-plan.md) | — |
 | **B4** task create/edit/delete bugs | P1 | 📘 Absorbed — PRs #161-#165 | [plan](objects-production-readiness-plan.md) | — |
 | **B5** inline-edit lock too strict on Amount + Probability | P1 | 📘 Absorbed — PR #166 | [plan](objects-production-readiness-plan.md) | — |
