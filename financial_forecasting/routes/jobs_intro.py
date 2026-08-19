@@ -6,6 +6,14 @@ Two sources feed a staff member's inbox:
                                  read/respond-only so the old workflow isn't lost;
                                  that table is builder-owned, we never insert)
 
+Builder identity must come from bedrock.builder_by_id (SECURITY DEFINER):
+public.users has RLS enabled and the app role has no policy on it, so a direct
+join returns zero rows without erroring.
+
+New Sputnik asks are fanned out to the connector staff member's bell + Slack DM
+by services/intro_notification_poller.py, so both kinds of ask arrive through
+the one Bedrock bot.
+
   GET    /api/jobs/contacts/{contact_id}/connectors  — staff connected to a contact
   GET    /api/jobs/intro-requests?box=inbox|sent      — my inbox / my sent asks
   POST   /api/jobs/intro-requests                     — create a staff→staff ask
@@ -30,12 +38,27 @@ from services.notifications import (
 
 logger = logging.getLogger(__name__)
 
-ASK_LABELS = {"hiring_intro": "Hiring intro", "industry_advice": "Industry advice", "job_referral": "Job referral"}
+# Union of both vocabularies: the first four are what Bedrock's own
+# staff→staff dialog offers; the rest are values allowed by the CHECK
+# constraint on public.intro_requests (Sputnik). Unlabelled values used to
+# fall through to the raw enum, so Slack DMs read "introductory_call".
+ASK_LABELS = {
+    "hiring_intro": "Hiring intro",
+    "industry_advice": "Industry advice",
+    "job_referral": "Job referral",
+    "mock_interview": "Mock interview",
+    "informational_interview": "Informational interview",
+    "introductory_call": "Intro call",
+    "demo_feedback": "Demo feedback",
+    "other": "Other",
+}
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 
 STAFF_STATUSES = {"pending", "accepted", "declined", "completed", "withdrawn"}
-# public.intro_requests (Sputnik) vocabulary for the same actions
-BUILDER_STATUS_MAP = {"accepted": "approved", "declined": "declined", "completed": "approved", "pending": "pending"}
+# public.intro_requests (Sputnik) vocabulary for the same actions. Its CHECK
+# constraint allows 'completed' natively, so accept and done stay distinct —
+# mapping both onto 'approved' silently lost "I did it".
+BUILDER_STATUS_MAP = {"accepted": "approved", "declined": "declined", "completed": "completed", "pending": "pending"}
 
 
 def _email(user) -> str:
@@ -85,6 +108,21 @@ class IntroRequestRespond(BaseModel):
     source: str = "staff"                  # staff (bedrock) | builder (Sputnik)
 
 
+def _builder_display(r) -> str:
+    """Human label for the builder behind a Sputnik ask.
+
+    Never returns empty: a blank name would render as a bare "—" on the card,
+    which is exactly the bug this replaced. Falls back name → email → id.
+    """
+    name = (r["builder_name"] or "").strip()
+    if name:
+        return name
+    email = (r["builder_email"] or "").strip()
+    if email:
+        return email
+    return f"Builder #{r['builder_id']}"
+
+
 def _staff_row(r) -> dict:
     return {
         "id": str(r["id"]), "source": "staff",
@@ -92,7 +130,10 @@ def _staff_row(r) -> dict:
         "contact_company": r["contact_company"], "contact_title": r["contact_title"],
         "connector_staff_id": r["connector_staff_id"], "connector_name": r["connector_name"],
         "connector_email": r["connector_email"],
+        "builder_id": None, "builder_cohort": None,
         "requested_by": r["requested_by_email"],
+        # Staff asks showed a raw email because this key was simply absent.
+        "requested_by_name": r["requested_by_name"] or r["requested_by_email"],
         "specific_ask": r["specific_ask"], "context": r["context"],
         "status": r["status"], "response_note": r["response_note"],
         "responded_at": r["responded_at"].isoformat() if r["responded_at"] else None,
@@ -106,10 +147,12 @@ _STAFF_SELECT = """
            ir.responded_at, ir.created_at,
            c.full_name AS contact_name, c.current_company AS contact_company,
            c.current_title AS contact_title,
-           m.display_name AS connector_name, m.email AS connector_email
+           m.display_name AS connector_name, m.email AS connector_email,
+           rm.display_name AS requested_by_name
     FROM bedrock.intro_request ir
     LEFT JOIN public.contacts c ON c.contact_id = ir.contact_id
     LEFT JOIN bedrock.staff_user_id_map m ON m.staff_user_id = ir.connector_staff_id
+    LEFT JOIN bedrock.staff_user_id_map rm ON lower(rm.email) = lower(ir.requested_by_email)
 """
 
 
@@ -135,11 +178,24 @@ async def list_intro_requests(
             f"""
             SELECT ir.intro_request_id, ir.contact_id, ir.contact_name, ir.contact_company,
                    ir.contact_title, ir.specific_ask, ir.request_context, ir.status,
-                   ir.staff_response_notes, ir.responded_at, ir.created_at,
-                   trim(coalesce(u.first_name,'') || ' ' || coalesce(u.last_name,'')) AS builder_name,
-                   u.email AS builder_email
+                   -- These are `timestamp` (naive) here but `timestamptz` on
+                   -- bedrock.intro_request, so without the cast the two sources
+                   -- serialise differently and the browser reads builder dates
+                   -- as local time. The DB runs in UTC.
+                   ir.staff_response_notes,
+                   ir.responded_at AT TIME ZONE 'UTC' AS responded_at,
+                   ir.created_at   AT TIME ZONE 'UTC' AS created_at,
+                   ir.builder_id,
+                   b.full_name AS builder_name, b.email AS builder_email,
+                   b.cohort AS builder_cohort
             FROM public.intro_requests ir
-            LEFT JOIN public.users u ON u.user_id = ir.builder_id
+            -- public.users is RLS-scoped away from the app role (bedrock_user
+            -- has SELECT but no policy), so joining it directly returned zero
+            -- rows *silently* — a LEFT JOIN, so no error, and trim() over
+            -- coalesce'd NULLs yields '' rather than NULL. Every builder ask
+            -- rendered as "from —". bedrock.builder_by_id is SECURITY DEFINER
+            -- and already granted to bedrock_user; jobs.py uses the same shape.
+            LEFT JOIN LATERAL bedrock.builder_by_id(ir.builder_id) b ON true
             WHERE ir.staff_user_id = $1{open_builder}
             ORDER BY ir.created_at DESC
             """, sid)
@@ -148,8 +204,9 @@ async def list_intro_requests(
             "contact_id": r["contact_id"], "contact_name": r["contact_name"],
             "contact_company": r["contact_company"], "contact_title": r["contact_title"],
             "connector_staff_id": sid, "connector_name": None, "connector_email": email,
-            "requested_by": r["builder_email"] or r["builder_name"],
-            "requested_by_name": r["builder_name"],
+            "builder_id": r["builder_id"], "builder_cohort": r["builder_cohort"],
+            "requested_by": r["builder_email"] or _builder_display(r),
+            "requested_by_name": _builder_display(r),
             "specific_ask": r["specific_ask"], "context": r["request_context"],
             "status": r["status"], "response_note": r["staff_response_notes"],
             "responded_at": r["responded_at"].isoformat() if r["responded_at"] else None,
@@ -204,6 +261,7 @@ async def create_intro_request(
                 actor_email=email,
                 payload={
                     "title": "Intro request",
+                    "requester_kind": "staff",
                     "subtitle": f"{contact['full_name'] if contact else 'a contact'}",
                     "contact_name": contact["full_name"] if contact else None,
                     "contact_company": contact["current_company"] if contact else None,

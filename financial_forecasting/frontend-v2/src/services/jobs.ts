@@ -2097,6 +2097,7 @@ export interface IntroRequest {
   contact_id: number; contact_name: string | null;
   contact_company: string | null; contact_title: string | null;
   connector_staff_id: number; connector_name: string | null; connector_email: string | null;
+  builder_id: number | null; builder_cohort: string | null;
   requested_by: string | null; requested_by_name?: string | null;
   specific_ask: string | null; context: string | null;
   status: string; response_note: string | null;

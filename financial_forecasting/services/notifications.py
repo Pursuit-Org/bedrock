@@ -310,7 +310,15 @@ def _format_slack_message(
             if opp_name:
                 section_lines.append(f"*{opp_name}*")
     elif type == TYPE_INTRO_REQUEST:
-        headline = f":wave: *{actor}* asked you for an intro"
+        # Builder asks originate in Sputnik and are surfaced by
+        # intro_notification_poller; staff→staff asks are created in Bedrock.
+        # Say which, so one bot can carry both without ambiguity.
+        if payload.get("requester_kind") == "builder":
+            headline = f":raising_hand: *{actor}* (builder) asked you for an intro"
+            if payload.get("builder_cohort"):
+                section_lines.append(f"*Cohort:* {payload['builder_cohort']}")
+        else:
+            headline = f":wave: *{actor}* asked you for an intro"
         if payload.get("contact_name"):
             who = payload["contact_name"]
             if payload.get("contact_company"):
