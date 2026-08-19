@@ -246,6 +246,7 @@ export interface BedrockActivity {
   subject?: string | null;
   description?: string | null;
   email_snippet?: string | null;
+  email_body_text?: string | null;
   occurred_at?: string | null;
   activity_date?: string | null;
   created_at?: string | null;

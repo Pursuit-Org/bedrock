@@ -99,6 +99,9 @@ def _row_to_dict(row) -> dict:
     # Strip internal fields not in the response model
     d.pop("search_vector", None)
     d.pop("deleted_at", None)
+    # Cap full body to prevent large payloads on account-level feeds (matches jobs.py pattern)
+    if d.get("email_body_text") and len(d["email_body_text"]) > 4000:
+        d["email_body_text"] = d["email_body_text"][:4000]
     return d
 
 
