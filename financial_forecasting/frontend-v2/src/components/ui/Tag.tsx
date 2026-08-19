@@ -2,7 +2,7 @@ import { type ReactNode } from "react";
 
 import { cn } from "@/lib/utils";
 
-type Variant = "default" | "accent" | "green" | "amber" | "red" | "sky";
+type Variant = "default" | "accent" | "green" | "amber" | "red" | "sky" | "zinc";
 
 const VARIANTS: Record<Variant, string> = {
   default: "bg-surface-2 text-ink-2 border border-border-strong",
@@ -11,6 +11,7 @@ const VARIANTS: Record<Variant, string> = {
   amber: "bg-amber-soft text-amber border border-transparent",
   red: "bg-red-soft text-red border border-transparent",
   sky: "bg-sky-soft text-sky border border-transparent",
+  zinc: "bg-zinc-100 text-zinc-500 border border-transparent dark:bg-zinc-800 dark:text-zinc-400",
 };
 
 export function Tag({

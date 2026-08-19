@@ -817,7 +817,7 @@ async def get_accounts(
             query = """
             SELECT Id, Name, Type, Industry, Website, Description,
                    BillingCity, BillingState, OwnerId, Owner.Name,
-                   Account_Tier__c,
+                   Account_Tier__c, Active__c, Qualification_Status__c,
                    npo02__TotalOppAmount__c, npo02__NumberOfClosedOpps__c,
                    Total_Revenue_Generated__c,
                    Last_Activity_Date__c, LastActivityDate,
@@ -851,6 +851,8 @@ async def get_accounts(
                    npsp__Matching_Gift_Info_Updated__c, npsp__Matching_Gift_Request_Deadline__c,
                    Total_Revenue_Generated__c,
                    Last_Activity_Date__c, Date_of_First_Pursuit_Hire__c,
+                   Qualification_Status__c, Qualification_Date_Updated__c,
+                   Qualification_Explanation__c,
                    Drive_Strategy_Folder_URL__c
             FROM Account
             ORDER BY Name ASC
@@ -961,6 +963,8 @@ async def _attach_account_status(accounts: list, salesforce) -> None:
             opps_by_account,
             awards_by_opp,
             latest_activity_by_account,
+            is_active=bool(a.get("Active__c", True)),
+            qualification_status=a.get("Qualification_Status__c"),
         )
 
 
@@ -2260,9 +2264,19 @@ async def update_account(
         success = await salesforce.update_record("Account", account_id, update_request.updates)
         if not success:
             raise HTTPException(400, "Salesforce rejected the update")
+        # For Active__c writes, read the field back immediately so the frontend
+        # receives the server-authoritative value rather than assuming the write
+        # persisted (Salesforce field-level security can silently ignore writes).
+        confirmed: dict = {"id": account_id, "message": "Account updated"}
+        if "Active__c" in update_request.updates:
+            try:
+                rec = await salesforce.get_record("Account", account_id, ["Active__c"])
+                confirmed["Active__c"] = rec.get("Active__c")
+            except Exception:
+                pass
         cache.invalidate_prefix("accounts:")
         logger.info(f"Account {account_id} updated by {user['user_id']}")
-        return ApiResponse(success=True, data={"id": account_id, "message": "Account updated"})
+        return ApiResponse(success=True, data=confirmed)
     except HTTPException:
         raise
     except Exception as e:

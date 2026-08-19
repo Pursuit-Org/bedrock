@@ -24,6 +24,8 @@ export interface SfUser {
 /** Playbook-defined Account Status, derived server-side. Values come
  *  from services/account_status.py — kept in sync there. */
 export type AccountStatus =
+  | "Deprioritized"
+  | "On Hold"
   | "Prospect"
   | "Activating"
   | "Pursuing"
@@ -59,6 +61,9 @@ export interface SfAccount {
   // Pursuit custom fields (from main.py:535 query)
   Account_Tier__c?: string | null;
   Active__c?: boolean | null;
+  Qualification_Status__c?: string | null;
+  Qualification_Date_Updated__c?: string | null;
+  Qualification_Explanation__c?: string | null;
   Company_Size__c?: string | null;
   Philanthropy__c?: boolean | null;
   Fee_For_Service__c?: boolean | null;

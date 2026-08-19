@@ -218,26 +218,32 @@ export function useUpdateAccount() {
       patch: Record<string, unknown>;
       displayPatch?: Record<string, unknown>;
     }) => {
-      const { data } = await api.put<SfAccount>(
+      await api.put(
         `/api/salesforce/accounts/${encodeURIComponent(id)}`,
         { updates: patch, reason: "Updated via Bedrock" },
       );
-      return data;
     },
     onSuccess: (_data, { id, patch, displayPatch }) => {
       const merged = { ...patch, ...(displayPatch ?? {}) };
-      qc.setQueryData<SfAccount[]>(["accounts"], (old) => {
+      const patchCache = (old: SfAccount[] | undefined) => {
         if (!old) return old;
-        return old.map((a) =>
-          a.Id === id ? ({ ...a, ...merged } as SfAccount) : a,
-        );
-      });
+        return old.map((a) => (a.Id === id ? ({ ...a, ...merged } as SfAccount) : a));
+      };
+      qc.setQueryData<SfAccount[]>(["accounts"], patchCache);
+      qc.setQueryData<SfAccount[]>(["accounts", "active-only"], patchCache);
     },
-    onSettled: () => {
-      setTimeout(
-        () => qc.invalidateQueries({ queryKey: ["accounts"] }),
-        2000,
-      );
+    onSettled: (_data, error, { id, patch }) => {
+      if (error) return;
+      // Use refetchQueries (awaitable) instead of invalidateQueries so we can
+      // re-apply the patch AFTER the server round-trip completes. This prevents
+      // a slow SF propagation from overwriting Active__c with the stale value.
+      setTimeout(async () => {
+        await qc.refetchQueries({ queryKey: ["accounts"] });
+        const reapply = (old: SfAccount[] | undefined) =>
+          old?.map((a) => (a.Id === id ? ({ ...a, ...patch } as SfAccount) : a));
+        qc.setQueryData<SfAccount[]>(["accounts"], reapply);
+        qc.setQueryData<SfAccount[]>(["accounts", "active-only"], reapply);
+      }, 2000);
     },
   });
 }

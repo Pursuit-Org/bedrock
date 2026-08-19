@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 
 import { api } from "@/lib/api";
-import { ChevronDown, ChevronRight, ExternalLink, Mail, Pencil, Phone, Plus, Search, UserPlus, X } from "lucide-react";
+import { ChevronDown, ChevronRight, ExternalLink, Info, Loader2, Mail, Pencil, Phone, Plus, Search, UserPlus, X } from "lucide-react";
 
 import { AccountAvatar } from "@/components/AccountAvatar";
 import { AccountFilesSection } from "@/components/AccountFilesSection";
@@ -12,9 +12,10 @@ import { BackLink as SharedBackLink, LinkedProjectsCard } from "@/components/det
 import { EntityComments } from "@/components/EntityComments";
 import { AccountTasksSection } from "@/components/AccountTasksSection";
 import { ActivityTimeline } from "@/components/ActivityTimeline";
-import { InlineSelect, InlineText } from "@/components/ui/InlineEdit";
+import { InlineDate, InlineSelect, InlineText } from "@/components/ui/InlineEdit";
 import { StageChip } from "@/components/ui/StageChip";
 import { Tag } from "@/components/ui/Tag";
+import { Tooltip } from "@/components/ui/Tooltip";
 import { accountStatusVariant } from "@/lib/accountStatus";
 import { fmtDate, fmtMoney, fmtMoneyFull, initials } from "@/lib/format";
 import { useCollapsible } from "@/lib/collapsible";
@@ -195,18 +196,50 @@ export function AccountDetailPage() {
             {account.Type ? <Tag>{account.Type}</Tag> : null}
           </div>
         </div>
-        {account.Website ? (
-          <a
-            href={
-              account.Website.startsWith("http") ? account.Website : `https://${account.Website}`
-            }
-            target="_blank"
-            rel="noreferrer"
-            className="inline-flex h-[30px] items-center gap-1.5 rounded border border-border-strong bg-surface px-3 text-[13px] font-medium text-ink-2 hover:bg-surface-2"
+        <div className="flex items-center gap-2">
+          {account.Website ? (
+            <a
+              href={
+                account.Website.startsWith("http") ? account.Website : `https://${account.Website}`
+              }
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex h-[30px] items-center gap-1.5 rounded border border-border-strong bg-surface px-3 text-[13px] font-medium text-ink-2 hover:bg-surface-2"
+            >
+              <ExternalLink size={14} /> Website
+            </a>
+          ) : null}
+          {(() => {
+            const isActive = account.Active__c !== false;
+            return (
+              <button
+                type="button"
+                disabled={updateAccount.isPending}
+                onClick={() =>
+                  updateAccount.mutate({
+                    id: account.Id,
+                    patch: { Active__c: !isActive },
+                    displayPatch: isActive ? { account_status: "Deprioritized" } : undefined,
+                  })
+                }
+                className={cn(
+                  "inline-flex h-[30px] items-center gap-1.5 rounded border px-3 text-[13px] font-medium transition-colors disabled:opacity-50",
+                  isActive
+                    ? "border-border-strong bg-surface text-ink-2 hover:border-red/40 hover:bg-red-soft hover:text-red"
+                    : "border-border-strong bg-surface text-ink-2 hover:border-green/40 hover:bg-green-soft hover:text-green",
+                )}
+              >
+                {isActive ? "Deprioritize" : "Reprioritize"}
+              </button>
+            );
+          })()}
+          <Tooltip
+            content="All accounts are a 'priority' by default. Hit deprioritize if there has been no recent contact with this account and there is no reason to engage with it in the foreseeable future. This reverts account status to 'Deprioritized.'"
+            side="bottom"
           >
-            <ExternalLink size={14} /> Website
-          </a>
-        ) : null}
+            <Info size={14} className="cursor-help text-ink-3" />
+          </Tooltip>
+        </div>
       </div>
 
       {/* Upcoming deliverables alert — only when open opps have deliverables due within 30 days */}
@@ -275,6 +308,32 @@ export function AccountDetailPage() {
                 accountName={account.Name}
                 accountContacts={contacts}
                 primary={primaryContact}
+              />
+            </DetailRow>
+            <DetailRow label="Qualification status">
+              <QualificationStatusPicker
+                status={account.Qualification_Status__c}
+                explanation={account.Qualification_Explanation__c}
+                onSave={(patch, displayPatch) =>
+                  updateAccount.mutateAsync({
+                    id: account.Id,
+                    patch,
+                    displayPatch,
+                  }).then(() => undefined)
+                }
+              />
+            </DetailRow>
+            <DetailRow label="Qualification date">
+              <InlineDate
+                value={account.Qualification_Date_Updated__c ?? null}
+                onSave={(next) => patch("Qualification_Date_Updated__c", next)}
+              />
+            </DetailRow>
+            <DetailRow label="Qualification explanation">
+              <InlineText
+                value={account.Qualification_Explanation__c ?? null}
+                placeholder="—"
+                onSave={(next) => patch("Qualification_Explanation__c", next || null)}
               />
             </DetailRow>
             <DetailRow label="Drive folder">
@@ -792,7 +851,7 @@ function HistoryChart({
   const totalLostCount = buckets.reduce((s, b) => s + b.lostCount, 0);
 
   return (
-    <div className="px-5 py-2.5">
+    <div className="flex h-full flex-col px-5 py-4">
       <div className="flex items-center justify-between text-[11px] text-ink-3">
         <div className="flex items-center gap-2.5">
           <span className="inline-flex items-center gap-1">
@@ -805,7 +864,7 @@ function HistoryChart({
         <span className="text-ink-4">{buckets[0].year}–{buckets[buckets.length - 1].year}</span>
       </div>
 
-      <div className="mt-1.5 flex items-end gap-1 overflow-x-auto pb-0.5">
+      <div className="mt-1.5 flex flex-1 min-h-0 items-end gap-1 overflow-x-auto pb-0.5">
         {buckets.map((b) => {
           const wonPct = (b.wonAmount / maxAmount) * 100;
           const lostPct = (b.lostAmount / maxAmount) * 100;
@@ -822,10 +881,10 @@ function HistoryChart({
           return (
             <div
               key={b.year}
-              className="flex min-w-[22px] flex-1 flex-col items-center gap-0.5"
+              className="flex h-full min-w-[22px] flex-1 flex-col items-center gap-0.5"
               title={tooltip}
             >
-              <div className="flex h-[56px] w-full items-end justify-center gap-px">
+              <div className="flex flex-1 w-full items-end justify-center gap-px">
                 <BarSegment pct={wonPct} className="bg-green-500" />
                 <BarSegment pct={lostPct} className="bg-red" />
               </div>
@@ -1335,7 +1394,7 @@ function SectionCard({
   );
   const isOpen = collapsible ? open : true;
   return (
-    <section className="mt-6 overflow-hidden rounded-lg border border-border-strong bg-surface shadow-sm">
+    <section className="mt-6 flex flex-col overflow-hidden rounded-lg border border-border-strong bg-surface shadow-sm">
       <div className="flex items-center justify-between border-b border-border-strong bg-surface-2 px-5 py-2.5">
         {collapsible ? (
           <button
@@ -1360,12 +1419,136 @@ function SectionCard({
         )}
         {action ?? null}
       </div>
-      {isOpen ? children : null}
+      {isOpen ? <div className="flex-1 min-h-0">{children}</div> : null}
     </section>
   );
 }
 
 /** Compact one-line label/value row used by the slimmed-down Details panel. */
+/**
+ * Qualification Status picker with a required-explanation dialog.
+ * SF validates: Explanation must be non-empty when Status = "Not Qualified".
+ * So we collect both fields atomically before any API call.
+ */
+function QualificationStatusPicker({
+  status,
+  explanation,
+  onSave,
+}: {
+  status: string | null | undefined;
+  explanation: string | null | undefined;
+  onSave: (patch: Record<string, unknown>, displayPatch?: Record<string, unknown>) => Promise<void>;
+}) {
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [explanationDraft, setExplanationDraft] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [dialogError, setDialogError] = useState<string | null>(null);
+
+  const handleSelectChange = async (next: string) => {
+    if (next === "Not Qualified") {
+      setExplanationDraft(explanation ?? "");
+      setDialogError(null);
+      setDialogOpen(true);
+    } else {
+      await onSave({ Qualification_Status__c: next }, { account_status: undefined });
+    }
+  };
+
+  const handleDialogSave = async () => {
+    if (!explanationDraft.trim()) {
+      setDialogError("Explanation is required when marking as Not Qualified.");
+      return;
+    }
+    setSaving(true);
+    setDialogError(null);
+    try {
+      await onSave(
+        { Qualification_Status__c: "Not Qualified", Qualification_Explanation__c: explanationDraft.trim() },
+        { account_status: "On Hold" },
+      );
+      setDialogOpen(false);
+    } catch (e) {
+      setDialogError(e instanceof Error ? e.message : "Failed to save. Please try again.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const display = status ?? null;
+
+  return (
+    <>
+      {/* Inline select — styled to match InlineSelect */}
+      <div className="group/edit relative flex items-center rounded px-1 py-0.5 hover:bg-surface hover:ring-1 hover:ring-border-strong">
+        <span className="pointer-events-none min-w-0 flex-1 text-[13px] text-ink-2">
+          {display ?? <span className="italic text-ink-4">—</span>}
+        </span>
+        <select
+          value={display ?? ""}
+          onChange={(e) => { void handleSelectChange(e.target.value); }}
+          className="absolute inset-0 cursor-pointer appearance-none border-0 bg-transparent text-transparent opacity-0 outline-none"
+          aria-label="Qualification status"
+        >
+          <option value="" disabled>—</option>
+          <option value="Qualified">Qualified</option>
+          <option value="Not Qualified">Not Qualified</option>
+        </select>
+      </div>
+
+      {/* Dialog — collects explanation before submitting "Not Qualified" */}
+      {dialogOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
+          <div className="relative w-full max-w-md rounded-xl border border-border-strong bg-surface p-6 shadow-xl">
+            <button
+              type="button"
+              onClick={() => setDialogOpen(false)}
+              className="absolute right-4 top-4 text-ink-3 hover:text-ink"
+            >
+              <X size={16} />
+            </button>
+            <h2 className="mb-1 text-[15px] font-semibold text-ink">Mark as Not Qualified</h2>
+            <p className="mb-4 text-[12.5px] text-ink-3">
+              Salesforce requires an explanation when setting status to Not Qualified.
+            </p>
+            <label className="block text-[11px] font-semibold uppercase tracking-wider text-ink-3 mb-1.5">
+              Qualification Explanation <span className="text-red">*</span>
+            </label>
+            <textarea
+              autoFocus
+              rows={3}
+              value={explanationDraft}
+              onChange={(e) => setExplanationDraft(e.target.value)}
+              placeholder="Why does this account not qualify?"
+              className="w-full resize-none rounded-lg border border-border-strong bg-surface-2 px-3 py-2 text-[13px] text-ink outline-none placeholder:text-ink-4 focus:border-accent focus:ring-1 focus:ring-accent"
+            />
+            {dialogError && (
+              <p className="mt-1.5 text-[12px] text-red">{dialogError}</p>
+            )}
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setDialogOpen(false)}
+                className="rounded-lg border border-border-strong px-3 py-1.5 text-[13px] text-ink-2 hover:bg-surface-2"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={saving}
+                onClick={() => { void handleDialogSave(); }}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-[13px] font-medium text-white disabled:opacity-60 hover:bg-accent/90"
+              >
+                {saving && <Loader2 size={13} className="animate-spin" />}
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 function DetailRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex items-start gap-3">

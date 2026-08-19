@@ -608,6 +608,8 @@ export interface JobsAccount {
   fellows_hired?: number | null;
   /** All SF account ids this account resolves to (for joining SF fellow counts). */
   sf_account_ids?: string[];
+  /** Mirrors Salesforce Active__c — false means the account has been deprioritised. */
+  sf_active?: boolean | null;
 }
 
 /** `enabled: false` skips the fetch entirely — this endpoint fans out ~15
