@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Pursuit · Jobs Team Wiki</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/10.9.1/mermaid.min.js"></script>
+<style>
+  :root {
+    --bg: #FAFAF9;
+    --panel: #FFFFFF;
+    --border: #E5E3DE;
+    --text: #1E1E1E;
+    --text-muted: #6B6862;
+    --accent: #4242EA;
+    --accent-soft: #EDEDFD;
+    --sidebar-w: 280px;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  .shell { display: flex; min-height: 100vh; }
+  .sidebar {
+    width: var(--sidebar-w);
+    flex-shrink: 0;
+    background: var(--panel);
+    border-right: 1px solid var(--border);
+    padding: 20px 0;
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    overflow-y: auto;
+  }
+  .sidebar .brand { padding: 0 20px 16px; border-bottom: 1px solid var(--border); margin-bottom: 8px; }
+  .sidebar .brand .eyebrow { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); }
+  .sidebar .brand h1 { font-size: 17px; font-weight: 500; margin: 4px 0 6px; line-height: 1.3; }
+  .sidebar .brand .sub { font-size: 12px; color: var(--text-muted); line-height: 1.5; }
+  nav.tabs { display: flex; flex-direction: column; padding: 10px 10px; gap: 4px; }
+  nav.tabs button {
+    display: flex; align-items: flex-start; gap: 12px; text-align: left;
+    border: none; background: transparent; padding: 10px 10px; border-radius: 10px;
+    font-size: 13.5px; color: var(--text); cursor: pointer; font-family: inherit;
+  }
+  nav.tabs button:hover { background: #F1F0EC; }
+  nav.tabs button.active { background: var(--accent-soft); color: var(--accent); }
+  nav.tabs button .num {
+    flex-shrink: 0; width: 24px; height: 24px; border-radius: 7px; background: #F1F0EC;
+    color: var(--text-muted); display: flex; align-items: center; justify-content: center;
+    font-size: 12px; font-weight: 500; margin-top: 1px;
+  }
+  nav.tabs button.active .num { background: var(--accent); color: #fff; }
+  nav.tabs button .label-block { display: flex; flex-direction: column; gap: 2px; }
+  nav.tabs button .label { font-weight: 500; }
+  nav.tabs button.active .label { color: var(--accent); }
+  nav.tabs button .tagline { font-size: 11.5px; color: var(--text-muted); line-height: 1.4; font-weight: 400; }
+  main { flex: 1; min-width: 0; padding: 40px 48px 80px; max-width: 900px; }
+  .panel { display: none; }
+  .panel.active { display: block; animation: fade .18s ease; }
+  @keyframes fade { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+  .panel h2 { font-size: 23px; font-weight: 500; margin: 0 0 6px; }
+  .panel .tab-desc { font-size: 14.5px; color: var(--text-muted); line-height: 1.6; margin: 0 0 24px; max-width: 620px; }
+  .panel h3 { font-size: 16.5px; font-weight: 500; margin: 32px 0 10px; }
+  .panel h3:first-of-type { margin-top: 8px; }
+  .panel p { line-height: 1.7; font-size: 15px; }
+  .panel ul, .panel ol { line-height: 1.75; font-size: 15px; padding-left: 22px; }
+  .panel li { margin-bottom: 6px; }
+  table { width: 100%; border-collapse: collapse; margin: 14px 0 22px; font-size: 14px; }
+  th, td { border: 1px solid var(--border); padding: 9px 12px; text-align: left; vertical-align: top; line-height: 1.5; }
+  th { background: #F5F5F4; font-weight: 500; }
+  .callout {
+    background: var(--accent-soft); border: 1px solid #D6D6FB; border-radius: 10px;
+    padding: 14px 16px; font-size: 14px; line-height: 1.6; margin: 16px 0;
+  }
+  .diagram-wrap {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+    padding: 16px; margin: 16px 0 20px; overflow-x: auto;
+  }
+  .diagram-wrap svg { max-width: 100%; height: auto; }
+  .glossary { display: flex; flex-direction: column; gap: 0; margin: 8px 0 24px; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+  .glossary-group-label {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 500;
+    padding: 10px 16px; background: #F5F5F4; color: var(--text-muted); border-top: 1px solid var(--border);
+  }
+  .glossary-group-label:first-child { border-top: none; }
+  .g-item { display: flex; gap: 14px; padding: 12px 16px; border-top: 1px solid var(--border); background: var(--panel); }
+  .g-item .g-term {
+    flex: 0 0 170px; font-weight: 500; font-size: 13.5px; display: flex; align-items: flex-start; gap: 8px;
+  }
+  .g-item .g-def { font-size: 14px; line-height: 1.6; color: var(--text); }
+  .dot { width: 9px; height: 9px; border-radius: 3px; margin-top: 4px; flex-shrink: 0; }
+  .dot.blue { background: #1F5C7A; }
+  .dot.orange { background: #E0791E; }
+  .dot.green { background: #1E5B34; }
+  .footer-line { margin-top: 40px; padding-top: 16px; border-top: 1px solid var(--border); font-size: 12.5px; color: var(--text-muted); }
+  @media (max-width: 760px) {
+    .shell { flex-direction: column; }
+    .sidebar { width: 100%; height: auto; position: relative; }
+    main { padding: 24px 20px 60px; }
+    .g-item { flex-direction: column; gap: 4px; }
+    .g-item .g-term { flex: none; }
+  }
+</style>
+</head>
+<body>
+
+<div class="shell">
+  <div class="sidebar">
+    <div class="brand">
+      <div class="eyebrow">Pursuit</div>
+      <h1>Jobs Team Wiki</h1>
+      <div class="sub">The single source of truth for how the Jobs team works — process, terminology, and the systems behind Bedrock.</div>
+    </div>
+    <nav class="tabs" id="tabnav"></nav>
+  </div>
+  <main id="main"></main>
+</div>
+
+<script>
+mermaid.initialize({ startOnLoad: false, theme: 'base', securityLevel: 'loose' });
+
+const sections = [
+  {
+    id: 's1',
+    num: '1',
+    label: 'Team Overview',
+    tagline: 'Expectations and how the team is measured',
+    desc: 'What every team member is expected to keep current in Bedrock, and the metrics leadership actually looks at each week.',
+    html: `
+      <h2>Team Overview</h2>
+      <p class="tab-desc">What every team member is expected to keep current in Bedrock, and the metrics leadership actually looks at each week.</p>
+
+      <h3>Team expectations</h3>
+      <ul>
+        <li>Keep opportunities current: <strong>Stage, Roles, Salary, Owner, Target close date</strong>.</li>
+        <li><strong>Log manual touches within 24 hours</strong> — texts, LinkedIn DMs, ad-hoc calls. Email and meetings are captured automatically (see Placements &amp; Systems — you never log those).</li>
+        <li>Create a <strong>Task</strong> for every pending follow-up; update task status daily.</li>
+        <li>Every active account has an <strong>Account Owner</strong> who owns the full employer lifecycle.</li>
+        <li>Raise blockers early: contract delays, trial-conversion risk, builder-readiness gaps, anything that threatens a committed role.</li>
+      </ul>
+
+      <h3>How we're measured</h3>
+      <ul>
+        <li><strong>FT Roles Secured</strong> = builders placed full-time + committed open roles. Trials show but count on conversion. Cohort views count only that cohort's placements — committed roles display separately (they belong to no cohort).</li>
+        <li><strong>Builders w/ Paid Work</strong> = distinct builders with any paid engagement; the drill shows every paid role each builder has held.</li>
+        <li><strong>Funnels</strong> — Opportunities (by stage, each opp's roles and commitments visible), Contacts (by pipeline stage), Builders (L3+ pool → paid → FT).</li>
+        <li><strong>Outreach &amp; Activation</strong> — accounts reached over time by the core jobs team, new vs existing, with a staff-mobilization view for everyone else's network activation.</li>
+      </ul>
+
+      <p><strong>The Outreach tab</strong> (the Monday scorecard — reports on the last completed Sun–Sat week vs the one before):</p>
+      <ul>
+        <li><strong>User Pipeline</strong> — contacts entering each stage this period vs last (Assigned → Initial Outreach → Converted to Opportunity / Revisit / Not a Fit), split Warm vs Cold. Initial Outreach counts contacts actually emailed; the resolution stages count when you move the contact's stage — so keeping stages current is what makes this scorecard true.</li>
+        <li><strong>Activity Pipeline</strong> — sends by channel (direct email / LinkedIn / facilitated intros), engagements (meetings + calls + replies), and direct email response rates.</li>
+        <li><strong>Deep dive</strong> — per-sender breakdown, warm/cold origin comparison, targeting mix (industry, company size, lead source), and the account working list.</li>
+        <li>Every row drills down to the underlying contacts and emails. Warm = the company had a Bedrock presence before that contact's first touch.</li>
+      </ul>
+
+      <div class="footer-line">
+        Clean data is everyone's job. Keep Stage, Roles, Salary, Owner, and Target close date current. Log manual touches within 24 hours — the system captures the rest. If it isn't in Bedrock, it didn't happen.
+      </div>
+    `
+  },
+  {
+    id: 's2',
+    num: '2',
+    label: 'Reference & Terminology',
+    tagline: 'Objects, statuses, and lookup tables',
+    desc: "The factual reference layer — the four objects the whole system is built on, account statuses, role statuses, and other terms you'll need to look up.",
+    html: `
+      <h2>Reference &amp; Terminology</h2>
+      <p class="tab-desc">The factual reference layer — the four objects the whole system is built on, account statuses, and role statuses. For how these connect and flow (and where leads come from), see Data &amp; Process Flow.</p>
+
+      <h3>The four objects</h3>
+      <table>
+        <tr><th>Object</th><th>What it is</th><th>Where you manage it</th><th>How it's measured</th></tr>
+        <tr><td><strong>Contact</strong></td><td>A person at an employer (or who can open doors to one)</td><td>Contacts page — flag into the pipeline, set stage, request intros</td><td>Contacts funnel + the Outreach scorecard</td></tr>
+        <tr><td><strong>Account</strong></td><td>The employer company</td><td>Accounts page — owner, warmth, roles, contacts, activity</td><td>Account status (auto-derived), warmth</td></tr>
+        <tr><td><strong>Opportunity</strong></td><td>A hiring conversation with an employer — named freely ("JPMC Early-Career Q3")</td><td>Opportunities page — stage, owner, target close date, activity, tasks</td><td>Opportunities funnel</td></tr>
+        <tr><td><strong>Role</strong></td><td>A specific seat under an opportunity. One opportunity can hold one or many roles — a single conversation can carry several.</td><td>The opportunity's Roles tab</td><td>Placement status → FT Roles Secured</td></tr>
+      </table>
+
+      <h3>Account statuses</h3>
+      <p>Auto-assigned — these drive the activity, not the label.</p>
+      <table>
+        <tr><th>Status</th><th>Meaning</th></tr>
+        <tr><td><strong>Prospect</strong></td><td>Target employer. No business or jobs activity yet.</td></tr>
+        <tr><td><strong>Activating</strong></td><td>Contacts flagged / outreach underway; no opportunity yet.</td></tr>
+        <tr><td><strong>Pursuing</strong></td><td>An open, active opportunity exists at this account.</td></tr>
+        <tr><td><strong>Stewarding</strong></td><td>Builders placed or committed roles in effect; no open opportunity.</td></tr>
+        <tr><td><strong>Re-activating</strong></td><td>Past business, recent re-engagement (activity in the last 3 months).</td></tr>
+        <tr><td><strong>Dormant</strong></td><td>Past business, no open opps, no activity in the last 3 months.</td></tr>
+      </table>
+      <p>Status updates automatically from activity in Bedrock. Your job is to move accounts rightward.</p>
+
+      <h3>Role status reference</h3>
+      <table>
+        <tr><th>Role status</th><th>Meaning</th></tr>
+        <tr><td><strong>Open market</strong></td><td>CVs welcome; no hiring commitment yet.</td></tr>
+        <tr><td><strong>Pledged</strong></td><td>Employer formally committed to the role; unfilled. Counts in FT Roles Secured.</td></tr>
+        <tr><td><strong>Trial</strong></td><td>A builder is in a committed paid trial. Shown, but counts only on conversion (the FT number never walks back).</td></tr>
+        <tr><td><strong>Builders allocated</strong></td><td>Builders directed toward the role.</td></tr>
+        <tr><td><strong>Builders interview</strong></td><td>Ongoing interview process with the builder.</td></tr>
+        <tr><td><strong>Role placed</strong></td><td>Builder filled the FT role. Counts.</td></tr>
+        <tr><td><strong>Role lost</strong></td><td>Role withdrawn. Auto-unpublishes from Pathfinder.</td></tr>
+      </table>
+
+      <h3>Contacts pipeline — additional terminology</h3>
+      <ul>
+        <li>Anyone can live in the contact base; <strong>flagging</strong> a contact makes them a lead — they enter the funnel.</li>
+        <li>A <strong>lead</strong> is a contact someone deliberately flagged (or requested an intro to). <strong>Outreach</strong> starts when the first real touch happens — being in the database alone is neither.</li>
+        <li><strong>Intro requests</strong> are how the network gets activated: request an intro from the connected staffer → they're notified in Slack and on their Home page → they accept/decline/make the intro → the contact moves through the funnel.</li>
+        <li>Every staffer has a <strong>My Network</strong> view to pre-mark their own connections ("would reach out" / "not a fit") — do this once and the team's lead list builds itself.</li>
+      </ul>
+
+      <h3>Stage exit criteria</h3>
+      <ul>
+        <li><strong>Assigned</strong> — prioritized for outreach in under a week.</li>
+        <li><strong>Initial Outreach</strong> — a note, LinkedIn message, or email has gone out; first outreach to the contact in the last 12 weeks.</li>
+        <li><strong>Converted to Opportunity</strong> — any indication of interest; moves the contact into the conversion journey and creates the opportunity.</li>
+        <li><strong>Revisit</strong> — reach out at a later date; requires a date to be set.</li>
+        <li><strong>Not a Fit</strong> — not a fit, or no response after 5+ touches. <em>(Initial working hypothesis was removal after 3+ touches; the definition table uses 5+. Confirm the final threshold before this goes hard.)</em></li>
+        <li><strong>In Discussion</strong> — active conversation with a contact at the account where an opportunity has been created.</li>
+        <li><strong>Opportunity Confirmed</strong> — some formal indication of interest; role(s) created. Roles are opened (seats opened) at this stage.</li>
+        <li><strong>Role(s) Confirmed / Seat Committed</strong> — formal confirmation of a role and agreement to either place or consider builders for a defined role. Role is pushed to Pathfinder at this stage.</li>
+        <li><strong>Closed Lost (opportunity)</strong> — the opportunity is removed. Capture a lost-reason (form) and, where relevant, a revisit date so it can re-enter the pool later.</li>
+      </ul>
+
+      <p><strong>Every opportunity carries a Target close date</strong> — keep it honest; pipeline reviews trend against it.</p>
+    `
+  },
+  {
+    id: 's3',
+    num: '3',
+    label: 'Data & Process Flow',
+    tagline: 'The end-to-end pipeline, diagrammed and defined',
+    desc: 'How a contact becomes a placement, visualized end to end — plus a plain-language definition for every stage and status shown in the diagrams below.',
+    html: `
+      <h2>Data &amp; Process Flow</h2>
+      <p class="tab-desc">How a contact becomes a placement, visualized end to end — plus a plain-language definition for every stage and status shown in the diagrams below.</p>
+
+      <h3>The chain</h3>
+      <p>Activate a <em>contact</em> → that warms an <em>account</em> → the conversation becomes an <em>opportunity</em> → the commitment becomes <em>roles</em> (one or many) → a hire becomes a <em>placement</em>.</p>
+
+      <h3>The full picture</h3>
+      <p>Everything lives on the account page (contacts, opportunities, roles, activity, tasks), so the account is where you manage the whole story at once:</p>
+
+      <div class="diagram-wrap"><div class="mermaid" id="dia1">
+flowchart TB
+  subgraph CT["1 · OUTREACH"]
+    f["Assigned"] --> io["Initial Outreach"]
+    io --> conv["Converted<br/>(to Oppty)"]
+    io --> rev["Revisit"]
+    io --> naf["Not a Fit"]
+  end
+  subgraph OP["2 · CONVERSION"]
+    disc["In Discussion"] --> lost["Lost"]
+    disc --> oc["Opportunity Confirmed<br/>(seats opened)"]
+    oc --> om["Open Market"]
+    oc --> pledged["Pledged"]
+    oc --> trial["Trial"]
+    om --> bint["Reviewing Builders"]
+    pledged --> bint
+    trial --> bint
+    bint --> cw["Closed - Won"]
+    bint --> cl["Closed - Lost"]
+  end
+  subgraph RL["3 · PLACEMENT"]
+    rc["Role(s) Confirmed"] --> ba["Builders Allocated"]
+    ba --> bi["Builders Interview"]
+    bi --> sp["Role Placed"]
+    bi --> sl["Role Lost"]
+  end
+  conv --> disc
+  oc --> rc
+  bi --> bint
+
+  classDef outreachN fill:#1F5C7A,stroke:#123A4D,color:#FFFFFF,fill-opacity:0.9
+  classDef conversionN fill:#E0791E,stroke:#A85A16,color:#FFFFFF,fill-opacity:0.9
+  classDef openmarketN fill:#C9C9C9,stroke:#9A9A9A,color:#FFFFFF,fill-opacity:0.95
+  classDef placementN fill:#1E5B34,stroke:#123A20,color:#FFFFFF,fill-opacity:0.95
+
+  class f,io,conv,rev,naf outreachN
+  class disc,lost,oc,pledged,trial,bint,cw,cl conversionN
+  class om openmarketN
+  class rc,ba,bi,sp,sl placementN
+
+  style CT fill:none,stroke:#1F5C7A,stroke-width:2px,stroke-dasharray:6 4
+  style OP fill:none,stroke:#E0791E,stroke-width:2px,stroke-dasharray:6 4
+  style RL fill:none,stroke:#1E5B34,stroke-width:2px,stroke-dasharray:6 4
+      </div></div>
+
+      <p>Open Market is shown in grey because its conversion rate is materially lower than Pledged or Trial — it's tracked, but leadership looks at it separately when reading how the funnel is performing, so committed roles aren't inflated by open-market interest.</p>
+
+      <p>A role is <strong>open market, pledged, or trial</strong> — once builders are allocated and clear interviewing, any of the three resolves to a <strong>placement</strong>; only pledged and trial roles (and placements) count in FT Roles Secured, with trials counting on conversion. The <strong>opportunity</strong> stays the unit tracked end to end: it closes <strong>Won</strong> once at least one role is placed, or <strong>Lost</strong> if it's removed.</p>
+
+      <h3>Box-by-box definitions</h3>
+      <p>Every stage and status shown in the diagram above, defined in plain language:</p>
+
+      <div class="glossary">
+        <div class="glossary-group-label">1 · Outreach</div>
+        <div class="g-item"><div class="g-term"><span class="dot blue"></span>Assigned</div><div class="g-def">Prioritized for outreach in under a week — the entry point to the funnel.</div></div>
+        <div class="g-item"><div class="g-term"><span class="dot blue"></span>Initial Outreach</div><div class="g-def">A note, LinkedIn message, or email has gone out — first outreach to the contact in the last 12 weeks. Advances automatically from synced or logged activity; you never set it by hand.</div></div>
+        <div class="g-item"><div class="g-term"><span class="dot blue"></span>Converted (to Oppty)</div><div class="g-def">Your call — set the moment the contact gives any real signal of hiring interest. This is what creates the Opportunity and starts Conversion.</div></div>
+        <div class="g-item"><div class="g-term"><span class="dot blue"></span>Revisit</div><div class="g-def">Your call — the timing's wrong right now, but the door isn't closed. Requires a follow-up date so it resurfaces.</div></div>
+        <div class="g-item"><div class="g-term"><span class="dot blue"></span>Not a Fit</div><div class="g-def">Your call — not a fit, or no response after 5+ touches (declined, changed jobs, asked not to be contacted, bounced). This is the contact-level terminal — the higher bar of "Closed Lost" is reserved for opportunities.</div></div>
+
+        <div class="glossary-group-label">2 · Conversion</div>
+        <div class="g-item"><div class="g-term"><span class="dot orange"></span>In Discussion</div><div class="g-def">Active conversation with a contact at the account where an opportunity has been created.</div></div>
+        <div class="g-item"><div class="g-term"><span class="dot orange"></span>Lost</div><div class="g-def">The conversation didn't develop into a confirmed opportunity.</div></div>
+        <div class="g-item"><div class="g-term"><span class="dot orange"></span>Opportunity Confirmed (seats opened)</div><div class="g-def">Some formal indication of interest — role(s) created. Roles are opened here, feeding both the placement track and the seat types below.</div></div>
+        <div class="g-item"><div class="g-term"><span class="dot orange"></span>Open Market</div><div class="g-def">CVs welcome; no hiring commitment yet. Tracked but reported separately given its lower conversion rate.</div></div>
+        <div class="g-item"><div class="g-term"><span class="dot orange"></span>Pledged</div><div class="g-def">Employer formally committed to the role; unfilled. Counts in FT Roles Secured.</div></div>
+        <div class="g-item"><div class="g-term"><span class="dot orange"></span>Trial</div><div class="g-def">A builder is in a committed paid trial. Counts only once it converts.</div></div>
+        <div class="g-item"><div class="g-term"><span class="dot orange"></span>Reviewing Builders</div><div class="g-def">The employer's interview process is underway for the role.</div></div>
+        <div class="g-item"><div class="g-term"><span class="dot orange"></span>Closed - Won</div><div class="g-def">The opportunity resolved successfully — at least one role placed.</div></div>
+        <div class="g-item"><div class="g-term"><span class="dot orange"></span>Closed - Lost</div><div class="g-def">The opportunity was removed. Capture a lost-reason and, where relevant, a revisit date.</div></div>
+
+        <div class="glossary-group-label">3 · Placement</div>
+        <div class="g-item"><div class="g-term"><span class="dot green"></span>Role(s) Confirmed</div><div class="g-def">Formal confirmation of a role and agreement to place or consider builders for it. Role is pushed to Pathfinder at this stage.</div></div>
+        <div class="g-item"><div class="g-term"><span class="dot green"></span>Builders Allocated</div><div class="g-def">Builders directed toward the role.</div></div>
+        <div class="g-item"><div class="g-term"><span class="dot green"></span>Builders Interview</div><div class="g-def">Ongoing interview process with the builder for the role.</div></div>
+        <div class="g-item"><div class="g-term"><span class="dot green"></span>Role Placed</div><div class="g-def">The builder filled the FT role — this is a placement. Counts.</div></div>
+        <div class="g-item"><div class="g-term"><span class="dot green"></span>Role Lost</div><div class="g-def">The role's builder attempt fell through — didn't clear interviewing, declined, or was pulled. The role can be reopened as a new attempt.</div></div>
+      </div>
+
+      <h3>Account status flow</h3>
+      <p>The account's status follows this progression on its own — your job is to move it rightward:</p>
+
+      <div class="diagram-wrap"><div class="mermaid" id="dia2">
+flowchart LR
+  P["Prospect<br/><i>target · no activity</i>"] -->|"flag contacts,<br/>start outreach"| A["Activating"] -->|"opportunity<br/>opened"| Pu["Pursuing"] -->|"builders placed /<br/>seats committed"| St["Stewarding"]
+  classDef s0 fill:#FAFAF9,stroke:#A8A29E,color:#1E1E1E
+  classDef s1c fill:#EDEDFD,stroke:#4242EA,color:#1E1E1E
+  classDef s2c fill:#D6D6FB,stroke:#4242EA,color:#1E1E1E
+  classDef s3c fill:#4242EA,stroke:#2E2EB8,color:#FFFFFF
+  class P s0
+  class A s1c
+  class Pu s2c
+  class St s3c
+      </div></div>
+      <p>Full definitions for each account status (Prospect, Activating, Pursuing, Stewarding, Re-activating, Dormant) are in <strong>Reference &amp; Terminology</strong>.</p>
+
+      <h3>Leads — where they come from</h3>
+      <p>Every lead falls into one of three categories, ranked by how we prioritize working them. Pursuit relationships come first, staff relationships second, and no-relationship contacts are deprioritized.</p>
+      <table>
+        <tr><th>Category</th><th>What it is</th></tr>
+        <tr><td><strong>1 · Pursuit Relationships</strong> <em>(primary focus)</em></td><td>A contact or account with an existing relationship to Pursuit — ordered by presumed warmth: Hiring Partner → Prior Commit Partner → Board / Op Board → Volunteer → Bash Attendee → CISO Council → Alumni → late-stage companies that almost hired but didn't. This includes funders and program partners who meet our builders at demo days, grants, and workshops and get interested in hiring — they arrive warm through the fundraising side.</td></tr>
+        <tr><td><strong>2 · Staff Relationships</strong></td><td>Pursuit staff's combined LinkedIn networks, scraped into the contact base and segmentable by degree of closeness (intro vs. not). The team filters by industry/role, flags targets, and requests warm intros from the connected staffer.</td></tr>
+        <tr><td><strong>3 · No Relationship</strong> <em>(deprioritized)</em></td><td>Scraped contacts with no relationship to Pursuit.</td></tr>
+      </table>
+      <div class="callout"><strong>Two axes, don't conflate them.</strong> The three categories above measure <strong>relationship strength</strong> (org-level and individual-level). That's separate from <strong>warmth</strong>, which is purely <em>how recent the last touch was</em> for a specific contact. Warmth uses the actual last-touch date, not a category — so there's no definition to memorize later.</div>
+
+      <h3>When to move levels</h3>
+      <p>Work at the <strong>contact</strong> level until there's a real conversation. Once an employer is genuinely engaged, manage at the <strong>account</strong> level; on any signal of hiring interest, create the <strong>opportunity</strong>; when they commit to specific roles, create the <strong>roles</strong>. Don't keep working a contact's stage after the account has a live opportunity — mark them Converted to Opportunity and manage the opportunity.</p>
+    `
+  },
+  {
+    id: 's4',
+    num: '4',
+    label: 'Placements & Systems',
+    tagline: 'How Bedrock automates the work behind the scenes',
+    desc: "What fires automatically when a builder is hired, what Bedrock captures for you vs. what you log by hand, and how the Jobs side of Bedrock relates to the Fundraising side.",
+    html: `
+      <h2>Placements &amp; Systems</h2>
+      <p class="tab-desc">What fires automatically when a builder is hired, what Bedrock captures for you vs. what you log by hand, and how the Jobs side of Bedrock relates to the Fundraising side.</p>
+
+      <h3>Placements &amp; the systems behind them</h3>
+      <ul>
+        <li><strong>Hiring a builder into a role</strong> does three things automatically: creates the placement record (the source of truth for all metrics), closes the role, and pushes a Fellow Affiliation to Salesforce (contact + employer account + start date) — which is where Bond and post-placement management run.</li>
+        <li><strong>Trials:</strong> hire the builder into the trial role. When it converts, hire them into the conversion seat — that's when they count as FT placed. (Fowler and JPMC are the reference setups.)</li>
+        <li><strong>Contracts:</strong> upload the contract on the placement when the hire lands.</li>
+        <li><strong>Pathfinder:</strong> a role is pushed to the builder-facing feed once it's confirmed. Filling or cancelling the role pulls the posting automatically — never leave a stale ad.</li>
+        <li><strong>Start dates are required at hire.</strong> Record pay amounts too: typed contract work counts as paid work even without an amount, but salary metrics need the number.</li>
+      </ul>
+
+      <h3>Activity capture — what's automatic, what you log</h3>
+      <p><strong>You never log emails or meetings.</strong> Bedrock syncs every staff member's Gmail and Calendar daily (external messages and meetings only), then an AI classifier reads each item and decides whether it's jobs work — judging the intent of the message (offering builders, probing hiring needs, coordinating interviews) rather than who it's with, since the same company can be a funder one week and an employer the next.</p>
+      <ul>
+        <li><strong>Automatic:</strong> all email, all calendar meetings — captured, linked to the right contact and account, and classified. Out-of-office and auto-replies are excluded. Fundraising and program mail never inflates jobs numbers.</li>
+        <li><strong>You log manually (within 24h):</strong> texts, LinkedIn DMs, ad-hoc phone calls — these always count as jobs outreach, and the form lets you backdate to the day it happened.</li>
+        <li><strong>Intro requests</strong> automatically mark that contact's activity as jobs-relevant.</li>
+        <li><strong>Tasks move opportunities forward; Activities reveal relationship history.</strong> Check tasks daily; keep due dates honest.</li>
+      </ul>
+
+      <h3>One Bedrock, two pipelines</h3>
+      <p>Bedrock started as the fundraising team's layer over Salesforce; the jobs layer shares its foundation. What's shared and what differs:</p>
+      <table>
+        <tr><th></th><th>Fundraising side</th><th>Jobs side</th></tr>
+        <tr><td><strong>Contacts</strong></td><td>Salesforce contacts (funders)</td><td>The full universe — Salesforce plus the staff-network import. Only contacts tied to real revenue ever need to reach Salesforce.</td></tr>
+        <tr><td><strong>Accounts</strong></td><td>Funder organizations</td><td>The same company records — one account can be funder and employer</td></tr>
+        <tr><td><strong>Opportunities</strong></td><td>Revenue opps, live in Salesforce (Stage, Close Date, Amount, Probability)</td><td>Hiring opps, live in Bedrock only — most jobs work isn't revenue, so it stays out of SF</td></tr>
+        <tr><td><strong>The close</strong></td><td>Award record, payment schedule, reporting</td><td>Placement record → pushed to Salesforce as a Fellow Affiliation for Bond and post-placement management</td></tr>
+        <tr><td><strong>Where you work</strong></td><td>Portfolio nav (Accounts / Contacts / Pipeline)</td><td>The Jobs tab (Home / Performance / Accounts / Opportunities / Contacts / Builders)</td></tr>
+      </table>
+      <p>Rules of the road: the same person or company can appear on both sides — the activity classifier judges each interaction's purpose, so working an employer angle at a funder account never distorts either team's numbers. Leads flow both directions: philanthropy meetings surface hiring interest (hand it to jobs), and jobs conversations surface funding interest (hand it to PBD).</p>
+    `
+  }
+];
+
+const nav = document.getElementById('tabnav');
+const main = document.getElementById('main');
+
+sections.forEach((s, i) => {
+  const btn = document.createElement('button');
+  btn.dataset.target = s.id;
+  btn.innerHTML = `<span class="num">${s.num}</span><span class="label-block"><span class="label">${s.label}</span><span class="tagline">${s.tagline}</span></span>`;
+  if (i === 0) btn.classList.add('active');
+  btn.addEventListener('click', () => activate(s.id));
+  nav.appendChild(btn);
+
+  const panel = document.createElement('div');
+  panel.className = 'panel' + (i === 0 ? ' active' : '');
+  panel.id = s.id;
+  panel.innerHTML = s.html;
+  main.appendChild(panel);
+});
+
+function activate(id) {
+  document.querySelectorAll('.panel').forEach(p => p.classList.toggle('active', p.id === id));
+  document.querySelectorAll('nav.tabs button').forEach(b => b.classList.toggle('active', b.dataset.target === id));
+  window.scrollTo({ top: 0, behavior: 'instant' });
+  renderMermaidIn(document.getElementById(id));
+}
+
+async function renderMermaidIn(container) {
+  const nodes = container.querySelectorAll('.mermaid');
+  for (const node of nodes) {
+    if (node.dataset.rendered) continue;
+    const src = node.textContent;
+    try {
+      const { svg } = await mermaid.render('m_' + node.id, src);
+      node.innerHTML = svg;
+      node.dataset.rendered = '1';
+    } catch (e) {
+      node.innerHTML = '<div style="color:#B91C1C;font-size:13px;">Diagram render error: ' + e.message + '</div>';
+    }
+  }
+}
+
+renderMermaidIn(document.getElementById('s1'));
+</script>
+
+</body>
+</html>
