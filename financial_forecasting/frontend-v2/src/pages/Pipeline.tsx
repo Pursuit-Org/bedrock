@@ -1,6 +1,6 @@
 import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ChevronDown, ChevronRight, Plus, Search, X } from "lucide-react";
+import { ChevronDown, ChevronRight, ExternalLink, Plus, Search, X } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 
 import { AccountAvatar } from "@/components/AccountAvatar";
@@ -9,6 +9,12 @@ import { PageHeader } from "@/components/PageHeader";
 import { AwardSetupDialog } from "@/components/AwardSetupDialog";
 import { PaymentScheduleBuilder } from "@/components/PaymentScheduleBuilder";
 import { StageGateDialog } from "@/components/StageGateDialog";
+import {
+  usePipelineReviewFlags,
+  ruleLabels,
+  salesforceOpportunityUrl,
+  type OpportunityFlags,
+} from "@/services/pipelineReview";
 import { useProbabilityScheduleGate } from "@/lib/useProbabilityScheduleGate";
 import { useStageChangeGate } from "@/lib/useStageChangeGate";
 import { ColumnChooser } from "@/components/ui/ColumnChooser";
@@ -236,6 +242,11 @@ export function PipelinePage() {
   const { data, isLoading, isError, error } = useOpportunities({
     recordType: recordType === "All" ? undefined : recordType,
   });
+  // Advisory hygiene flags. Deliberately not awaited alongside the grid: the
+  // rows render immediately and the tint arrives when it arrives. A failed
+  // flags call must never keep the pipeline off screen.
+  const { data: reviewFlags } = usePipelineReviewFlags();
+  const reviewRuleLabels = useMemo(() => ruleLabels(reviewFlags), [reviewFlags]);
   const accountsQ = useAccounts();
   const usersQ = useActiveUsers();
   // `allUsersQ` includes inactive users — only used by the chip facet
@@ -765,6 +776,8 @@ export function PipelinePage() {
                         onToggleExpand={() => setExpandedId(isExpanded ? null : o.Id)}
                         canEdit={canEdit}
                         visibleCols={visibleCols}
+                        flags={reviewFlags?.opportunities[o.Id]}
+                        ruleLabel={reviewRuleLabels}
                       />
                       {isExpanded ? (
                         <tr>
@@ -1146,6 +1159,10 @@ interface RowProps {
   onToggleExpand: () => void;
   canEdit: boolean;
   visibleCols: ColKey[];
+  /** Advisory hygiene flags for this row, absent when it's clean. */
+  flags?: OpportunityFlags;
+  /** Rule key → sentence, for the hover text. */
+  ruleLabel: Record<string, string>;
 }
 
 /** Resting-state formatters for the row's inline-edit fields. Defined
@@ -1207,8 +1224,33 @@ const OpportunityRow = memo(function OpportunityRow({
   onToggleExpand,
   canEdit,
   visibleCols,
+  flags,
+  ruleLabel,
 }: RowProps) {
   const account = o.Account?.Name ?? "—";
+
+  // Advisory tint. `bg-amber-soft` at full strength on purpose: the palette is
+  // declared as bare `var(--x)` in tailwind.config.ts, so Tailwind can't
+  // compose an alpha channel and any `/opacity` modifier is silently dropped.
+  // --amber-soft is already a pale wash, which is the weight we want.
+  const flagCls = (key: ColKey) =>
+    flags?.cells[key] ? "bg-amber-soft" : undefined;
+
+  /** Why this cell is tinted — one sentence per rule, for the title tooltip. */
+  const flagWhy = (key: ColKey): string | undefined => {
+    const rules = flags?.cells[key];
+    if (!rules?.length) return undefined;
+    const lines = rules.map((r) => `• ${ruleLabel[r] ?? r}`);
+    // Payment-level rules are about a specific payment, and "which one" is the
+    // first thing you need in order to fix it.
+    if (key === "paymentDate" && flags?.payments.length) {
+      for (const p of flags.payments) {
+        const when = p.scheduled_date ? ` scheduled ${p.scheduled_date}` : "";
+        lines.push(`— ${p.name ?? "Payment"}${when}`);
+      }
+    }
+    return lines.join("\n");
+  };
 
   const cells: Partial<Record<ColKey, React.ReactNode>> = {
     name: (
@@ -1225,6 +1267,27 @@ const OpportunityRow = memo(function OpportunityRow({
           <span className="truncate font-medium hover:underline" title={o.Name}>{o.Name}</span>
           <span className="truncate text-[11px] text-ink-3" title={account}>{account}</span>
         </div>
+        {/* Open in Salesforce — a new tab, so the review keeps its filters and
+            scroll position. Angie works the pipeline with SF alongside for the
+            fields Bedrock doesn't surface (secondary owner, closed-lost
+            reason); losing the filtered list on every hop was the actual
+            complaint.
+
+            Always visible, not revealed on hover. The first version faded in on
+            row hover to keep the chrome down, and the first person to use it
+            couldn't find it — which is the whole story of a hover-only
+            affordance. */}
+        <a
+          href={salesforceOpportunityUrl(o.Id)}
+          target="_blank"
+          rel="noopener noreferrer"
+          onClick={(e) => e.stopPropagation()}
+          title="Open this opportunity in Salesforce (new tab)"
+          aria-label={`Open ${o.Name ?? "opportunity"} in Salesforce`}
+          className="flex-shrink-0 rounded p-0.5 text-ink-4 hover:bg-surface-2 hover:text-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+        >
+          <ExternalLink size={12} />
+        </a>
       </div>
     ),
     owner: canEdit ? (
@@ -1324,7 +1387,7 @@ const OpportunityRow = memo(function OpportunityRow({
       style={{ height: ROW_HEIGHT }}
     >
       {visibleCols.map((key) => (
-        <td key={key} className={cellCls[key]}>
+        <td key={key} className={cn(cellCls[key], flagCls(key))} title={flagWhy(key)}>
           {cells[key]}
         </td>
       ))}

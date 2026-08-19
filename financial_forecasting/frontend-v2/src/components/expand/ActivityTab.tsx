@@ -10,6 +10,20 @@ import { fmtDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { BedrockActivity } from "@/types/salesforce";
 
+const EMAIL_PREVIEW_LENGTH = 800;
+
+/** Strip HTML tags and decode common entities so raw email body text renders cleanly. */
+function cleanEmailText(s: string | null | undefined): string {
+  if (!s) return "";
+  return s
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&nbsp;/g, " ")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 function isEmailOrMeeting(a: BedrockActivity): boolean {
   const t = (a.type ?? "").toLowerCase();
   const s = (a.source ?? "").toLowerCase();
@@ -73,8 +87,9 @@ export function ActivityTab({
         (a.account_id ? accountNames.get(a.account_id) ?? null : null) ??
         "";
       const fields: string[] = [
-        a.subject ?? "",
-        a.email_snippet ?? "",
+        cleanEmailText(a.subject),
+        cleanEmailText(a.email_snippet),
+        cleanEmailText(a.email_body_text),
         a.description ?? "",
         ctx,
         a.owner_name ?? "",
@@ -165,9 +180,10 @@ function ActivityRow({
   accountNames: Map<string, string>;
 }) {
   const [open, setOpen] = useState(false);
+  const [showFull, setShowFull] = useState(false);
 
   const dateStr = fmtDate(a.occurred_at ?? a.activity_date ?? a.created_at ?? null);
-  const subject = a.subject ?? a.email_snippet ?? "(no subject)";
+  const subject = cleanEmailText(a.subject ?? a.email_snippet) || "(no subject)";
 
   const contextName =
     a._context_name ??
@@ -181,9 +197,13 @@ function ActivityRow({
     ) || (a.source ?? "").toLowerCase().includes("calendar") || (a.source ?? "").toLowerCase().includes("fireflies");
 
   // Detail content — what to show when expanded
+  const cleanedBody = cleanEmailText(a.email_body_text);
+  const cleanedSnippet = cleanEmailText(a.email_snippet);
+
   const hasDetail =
     !!(a.description && a.description !== a.subject) ||
-    !!a.email_snippet ||
+    !!cleanedBody ||
+    !!cleanedSnippet ||
     !!a.meeting_duration_minutes ||
     !!a.meeting_location;
 
@@ -237,9 +257,26 @@ function ActivityRow({
             <p className="whitespace-pre-wrap text-[12px] text-ink-2">
               {a.description}
             </p>
-          ) : a.email_snippet && a.email_snippet !== a.subject ? (
+          ) : cleanedBody && cleanedBody !== subject ? (
+            <>
+              <p className="whitespace-pre-wrap text-[12px] text-ink-2">
+                {showFull || cleanedBody.length <= EMAIL_PREVIEW_LENGTH
+                  ? cleanedBody
+                  : cleanedBody.slice(0, EMAIL_PREVIEW_LENGTH) + "…"}
+              </p>
+              {cleanedBody.length > EMAIL_PREVIEW_LENGTH ? (
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); setShowFull((v) => !v); }}
+                  className="mt-1 text-[11px] text-accent hover:underline"
+                >
+                  {showFull ? "Show less" : "Show more"}
+                </button>
+              ) : null}
+            </>
+          ) : cleanedSnippet && cleanedSnippet !== subject ? (
             <p className="whitespace-pre-wrap text-[12px] italic text-ink-2">
-              {a.email_snippet}
+              {cleanedSnippet}
             </p>
           ) : null}
         </div>

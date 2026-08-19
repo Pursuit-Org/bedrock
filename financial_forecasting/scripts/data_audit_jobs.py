@@ -2,7 +2,7 @@ import asyncio, os, sys
 sys.path.insert(0, '/Users/jacquelinereverand/dev/build/bedrock/financial_forecasting')
 from dotenv import load_dotenv
 load_dotenv('/Users/jacquelinereverand/dev/build/bedrock/financial_forecasting/.env')
-load_dotenv('/Users/jacquelinereverand/dev/build/test-pilot-server/.env', override=False)
+load_dotenv('/Users/jacquelinereverand/dev/build/platform/server/.env', override=False)
 import asyncpg
 
 def _su_url():

@@ -46,7 +46,14 @@ export interface SfPayment {
 }
 
 async function fetchPayments(): Promise<SfPayment[]> {
-  const { data } = await api.get<SfPayment[]>("/api/salesforce/payments?limit=2000");
+  // `include_open_opps` guarantees every payment on a still-open opportunity is
+  // present, on top of the recency window. Without it the page silently misses
+  // most of what needs reviewing: the hygiene flags are about OVERDUE payments,
+  // which have old scheduled dates and so sort out of a `scheduled DESC` window.
+  // Measured 2026-08-12: only 36 of 103 flagged payments were inside the 2,000.
+  const { data } = await api.get<SfPayment[]>(
+    "/api/salesforce/payments?limit=2000&include_open_opps=true",
+  );
   return data;
 }
 

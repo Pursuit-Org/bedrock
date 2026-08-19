@@ -10,13 +10,22 @@ import { JobsOpportunitiesOverview } from "./JobsOpportunitiesOverview";
 type TabKey = "exec" | "outreach" | "pipeline" | "placement";
 
 const TABS: { key: TabKey; label: string; icon: typeof BarChart3 }[] = [
-  { key: "exec", label: "Exec view", icon: BarChart3 },
+  { key: "exec", label: "Overview", icon: BarChart3 },
   { key: "outreach", label: "Outreach", icon: Send },
   { key: "pipeline", label: "Pipeline", icon: Kanban },
   { key: "placement", label: "Placement", icon: GraduationCap },
 ];
 
 const VALID_TABS = new Set<string>(TABS.map((t) => t.key));
+
+/** One page, four views — the header names the one you're looking at. */
+const TAB_META: Record<TabKey, { title: string; subtitle: string }> = {
+  // The URL keeps ?tab=exec so existing links and bookmarks still resolve.
+  exec: { title: "Overview", subtitle: "The outcomes the leadership team tracks." },
+  outreach: { title: "Outreach", subtitle: "The contacts funnel, the week's queue, and what needs a decision." },
+  pipeline: { title: "Pipeline", subtitle: "The employer-deal pipeline — volume, conversion and where it's stuck." },
+  placement: { title: "Placement", subtitle: "Placement performance reporting." },
+};
 
 export function JobsPerformancePage() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -33,8 +42,8 @@ export function JobsPerformancePage() {
   return (
     <div className="flex flex-col gap-0 px-7 py-4 pb-12">
       <PageHeader
-        title="Performance"
-        subtitle="Pipeline health, outreach, and placement metrics."
+        title={TAB_META[activeTab].title}
+        subtitle={TAB_META[activeTab].subtitle}
         actions={
           <div className="flex items-center gap-1 rounded-lg border border-border-strong bg-surface-2 p-1">
             {TABS.map((t) => {

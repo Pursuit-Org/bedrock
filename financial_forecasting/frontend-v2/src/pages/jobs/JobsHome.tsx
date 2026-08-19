@@ -24,13 +24,14 @@ import { toast } from "sonner";
 
 import { Tag } from "@/components/ui/Tag";
 import { InlineDate, InlineSelect } from "@/components/ui/InlineEdit";
+import { useContactStageChange } from "@/lib/useContactStageChange";
 import { RowExpandPanel } from "@/components/RowExpandPanel";
 import { SortableHeader } from "@/components/ui/SortableHeader";
 import { ContactExpandTabs, OwnerSelect } from "@/components/jobs/jobsEntity";
 import { OppRolesSection } from "@/components/jobs/OppRolesSection";
 import { OppBuilderActivity } from "@/components/jobs/OppBuilderActivity";
 import { CommittedRolesModal } from "@/components/jobs/CommittedRolesModal";
-import { DealExpandPanel, PlacementsModal, ClosedLostModal, stageOptionsFor } from "./JobsTeam";
+import { DealExpandPanel, PlacementsModal, ClosedLostModal, useOppStageOptions } from "./JobsTeam";
 import { cn } from "@/lib/utils";
 import { relDay } from "@/lib/format";
 import { useSort, sortBy } from "@/lib/sort";
@@ -42,7 +43,7 @@ import {
   useOpportunitiesOverview, useStaffNameResolver, useUpdateJobsMembership,
   useUpdateContact, useUpdateOpportunity, useRespondedContacts,
   useIntroRequests, useRespondIntroRequest,
-  STAGE_LABELS, STAGES_ORDERED, MEMBERSHIP_STAGES, MEMBERSHIP_STAGE_LABELS,
+  STAGE_LABELS, STAGES_ORDERED, MEMBERSHIP_STAGE_LABELS,
   type ContactFilters, type DealType, type IntroRequest, type JobStage, type JobsOpportunity,
   type JobsStaff, type MembershipStage, type OppNeedsRow,
 } from "@/services/jobs";
@@ -54,7 +55,6 @@ import {
   type JobsTaskEnriched,
 } from "@/services/jobsTasks";
 
-const MEMBERSHIP_STAGE_OPTIONS = MEMBERSHIP_STAGES.map((s) => ({ value: s, label: MEMBERSHIP_STAGE_LABELS[s] }));
 
 // LOCAL date, not UTC — task deadlines are date-only strings compared against
 // this; toISOString() would misbucket evenings for US users (due-today → overdue).
@@ -120,6 +120,7 @@ function AssignedRow({ c, staff, expanded, onToggle }: {
 }) {
   const update = useUpdateJobsMembership();
   const updateContact = useUpdateContact();
+  const stageChange = useContactStageChange();
   const [inFlight, setInFlight] = useState(false);
   const markContacted = () => {
     setInFlight(true);
@@ -136,6 +137,9 @@ function AssignedRow({ c, staff, expanded, onToggle }: {
   const moveStage = (v: string) =>
     new Promise<void>((resolve, reject) => {
       if (!v || v === "assigned") return resolve();
+      // Revisit routes through the shared hook so it asks for a date; every
+      // other stage writes straight through.
+      if (v === "revisit") return stageChange.change(c.contact_id, c.full_name ?? "contact", v).then(resolve, reject);
       update.mutate(
         { contact_id: c.contact_id, stage: v },
         {
@@ -175,13 +179,14 @@ function AssignedRow({ c, staff, expanded, onToggle }: {
         <span onClick={(e) => e.stopPropagation()} className="shrink-0">
           <InlineSelect<string>
             value="assigned"
-            options={MEMBERSHIP_STAGE_OPTIONS}
+            options={stageChange.options}
             onSave={moveStage}
             renderValue={() => (
               <span className="rounded-full bg-accent-soft px-1.5 py-0.5 text-[10.5px] font-medium text-accent-ink">Assigned</span>
             )}
           />
         </span>
+        {stageChange.dialog}
         <OwnerSelect className="w-[130px] shrink-0" owner={c.owner_email ?? null} staff={staff}
           onSave={(email) => new Promise<void>((resolve, reject) =>
             updateContact.mutate({ id: c.contact_id, owner_email: email || null },
@@ -343,13 +348,25 @@ function RepliedZone({ owner }: { owner: string | null }) {
   const update = useUpdateJobsMembership();
   const [showAll, setShowAll] = useState(false);
   if (isLoading || data.length === 0) return null;
-  const move = (c: { contact_id: number; full_name: string | null }, stage: MembershipStage) =>
+  const stageChange = useContactStageChange();
+  const move = (c: { contact_id: number; full_name: string | null }, stage: MembershipStage) => {
+    // Revisit needs its date, so it goes through the shared handler; the rest
+    // are one-click decisions and write immediately.
+    if (stage === "revisit") {
+      // change() now rejects when the dialog is cancelled, and this path
+      // has no InlineSelect to roll back — swallow it rather than emit an
+      // unhandled rejection every time someone changes their mind.
+      stageChange.change(c.contact_id, c.full_name ?? "Contact", stage).catch(() => {});
+      return;
+    }
     update.mutate({ contact_id: c.contact_id, stage }, {
       onSuccess: () => toast.success(`${c.full_name ?? "Contact"} → ${MEMBERSHIP_STAGE_LABELS[stage]}`),
     });
+  };
   const shown = showAll ? data : data.slice(0, 6);
   return (
     <Section title="Replied — needs a decision" count={data.length}>
+      {stageChange.dialog}
       <div className="flex flex-col overflow-hidden rounded-lg border border-border-strong bg-surface">
         {shown.map((c) => (
           <div key={c.contact_id} className="flex flex-wrap items-start gap-x-3 gap-y-1 border-t border-border-strong px-3 py-2 first:border-t-0">
@@ -366,8 +383,9 @@ function RepliedZone({ owner }: { owner: string | null }) {
             <div className="flex shrink-0 items-center gap-1">
               <button type="button" onClick={() => move(c, "converted_to_opportunity")}
                 className="rounded-full border border-green/40 bg-green-soft px-2 py-0.5 text-[10.5px] font-semibold text-green hover:brightness-95">Converted</button>
-              <button type="button" onClick={() => move(c, "on_hold")}
-                className="rounded-full border border-amber/40 bg-amber-soft px-2 py-0.5 text-[10.5px] font-semibold text-amber hover:brightness-95">On hold</button>
+              <button type="button" onClick={() => move(c, "revisit")}
+                title="Park this contact with a date — files a task for the owner"
+                className="rounded-full border border-amber/40 bg-amber-soft px-2 py-0.5 text-[10.5px] font-semibold text-amber hover:brightness-95">Revisit</button>
               <button type="button" onClick={() => move(c, "not_a_fit")}
                 className="rounded-full border border-border-strong bg-surface-2 px-2 py-0.5 text-[10.5px] font-semibold text-ink-3 hover:text-ink-2">Not a fit</button>
             </div>
@@ -397,6 +415,10 @@ function OppTableRow({ o, needs, expanded, onToggle, showOwner, resolveName, onR
   onCommittedRoles: (deal: { id: string; account_name: string }) => void;
 }) {
   const updateOpp = useUpdateOpportunity();
+  // Gated on what the database accepts: Reviewing Builders is rejected
+  // until the 2026-08-05 migration lands, so it shows disabled here
+  // rather than failing the save.
+  const oppStageOptions = useOppStageOptions(o.stage);
   // Keep in sync with DealRow.saveStage (JobsTeam.tsx) — same modal gating.
   function saveStage(stage: JobStage) {
     if (stage === o.stage) return Promise.resolve();
@@ -435,7 +457,7 @@ function OppTableRow({ o, needs, expanded, onToggle, showOwner, resolveName, onR
         <td className="px-2 py-1.5" onClick={(e) => e.stopPropagation()}>
           <InlineSelect<JobStage>
             value={o.stage}
-            options={stageOptionsFor(o.stage)}
+            options={oppStageOptions}
             onSave={saveStage}
             renderValue={(v) => (
               <span className="flex items-center gap-1 text-[12.5px] text-ink-2">

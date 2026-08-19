@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -7,7 +7,9 @@ import { api } from "@/lib/api";
 import { ChevronDown, ChevronRight, ExternalLink, Mail, Pencil, Phone, Plus, Search, UserPlus, X } from "lucide-react";
 
 import { AccountAvatar } from "@/components/AccountAvatar";
+import { AccountFilesSection } from "@/components/AccountFilesSection";
 import { BackLink as SharedBackLink, LinkedProjectsCard } from "@/components/detail";
+import { EntityComments } from "@/components/EntityComments";
 import { AccountTasksSection } from "@/components/AccountTasksSection";
 import { ActivityTimeline } from "@/components/ActivityTimeline";
 import { InlineSelect, InlineText } from "@/components/ui/InlineEdit";
@@ -22,8 +24,10 @@ import { useAccountEnrichment, useAccounts, useUpdateAccount } from "@/services/
 import { useAccountFullActivities } from "@/services/activities";
 import { useContacts, useCreateContact, useUpdateContact } from "@/services/contacts";
 import { useAwards, type Award, type AwardStatus } from "@/services/awards";
+import { useAccountUpcomingDeliverables } from "@/services/deliverables";
 import { useCreateOpportunity, useOppRecordTypes, useOpportunities, useOpportunityPriorStages, type PriorStage } from "@/services/opportunities";
 import { useActiveUsers } from "@/services/users";
+import { UpcomingDeliverablesPanel } from "@/components/UpcomingDeliverablesPanel";
 import type { SfContact, SfOpportunity } from "@/types/salesforce";
 
 export function AccountDetailPage() {
@@ -36,6 +40,7 @@ export function AccountDetailPage() {
   );
 
   const { data: contacts = [] } = useContacts(id);
+  const { data: upcomingDeliverables = [] } = useAccountUpcomingDeliverables(id || null);
   const { data: allOpps = [] } = useOpportunities();
   const opps = useMemo(
     () => allOpps.filter((o) => o.AccountId === id),
@@ -52,7 +57,19 @@ export function AccountDetailPage() {
 
   const [showAddContact, setShowAddContact] = useState(false);
   const [showAddOpp, setShowAddOpp] = useState(false);
+  const [folderEditing, setFolderEditing] = useState(false);
+  const [folderDraft, setFolderDraft] = useState("");
   const navigate = useNavigate();
+  const commentInputRef = useRef<HTMLTextAreaElement>(null);
+
+  function scrollToComment() {
+    commentInputRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    setTimeout(() => commentInputRef.current?.focus(), 400);
+  }
+
+  useEffect(() => {
+    if (!folderEditing) setFolderDraft(account?.Drive_Strategy_Folder_URL__c ?? "");
+  }, [account?.Drive_Strategy_Folder_URL__c, folderEditing]);
 
   // ── All useMemo / useQuery hooks below MUST be declared before the
   //   `if (!account) return ...` block below them — React's Rules of
@@ -192,6 +209,13 @@ export function AccountDetailPage() {
         ) : null}
       </div>
 
+      {/* Upcoming deliverables alert — only when open opps have deliverables due within 30 days */}
+      {upcomingDeliverables.length > 0 && (
+        <div className="mt-5">
+          <UpcomingDeliverablesPanel deliverables={upcomingDeliverables} context="account" />
+        </div>
+      )}
+
       {/* Stats row */}
       <div className="mt-6 grid grid-cols-2 gap-3 md:grid-cols-4">
         <Stat label="Lifetime" value={lifetime > 0 ? fmtMoneyFull(lifetime) : "—"} />
@@ -253,6 +277,72 @@ export function AccountDetailPage() {
                 primary={primaryContact}
               />
             </DetailRow>
+            <DetailRow label="Drive folder">
+              {folderEditing ? (
+                <div className="flex items-center gap-1 w-full">
+                  <input
+                    autoFocus
+                    type="url"
+                    value={folderDraft}
+                    onChange={(e) => setFolderDraft(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        void patch("Drive_Strategy_Folder_URL__c", folderDraft.trim() || null).then(() =>
+                          setFolderEditing(false),
+                        );
+                      } else if (e.key === "Escape") {
+                        setFolderDraft(account.Drive_Strategy_Folder_URL__c ?? "");
+                        setFolderEditing(false);
+                      }
+                    }}
+                    onBlur={() => {
+                      void patch("Drive_Strategy_Folder_URL__c", folderDraft.trim() || null).then(() =>
+                        setFolderEditing(false),
+                      );
+                    }}
+                    placeholder="https://drive.google.com/..."
+                    className="min-w-0 flex-1 rounded px-1.5 py-1 text-[13px] text-ink outline-none ring-2 ring-accent placeholder:text-ink-4"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFolderDraft(account.Drive_Strategy_Folder_URL__c ?? "");
+                      setFolderEditing(false);
+                    }}
+                    className="shrink-0 rounded p-1 text-ink-4 hover:text-ink-2"
+                  >
+                    <X size={13} />
+                  </button>
+                </div>
+              ) : account.Drive_Strategy_Folder_URL__c ? (
+                <div className="flex items-center gap-1 min-w-0">
+                  <a
+                    href={account.Drive_Strategy_Folder_URL__c}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1 rounded px-1.5 py-1 text-[13px] text-ink-2 hover:bg-surface hover:ring-1 hover:ring-border-strong truncate"
+                  >
+                    <ExternalLink size={12} className="shrink-0" />
+                    <span className="truncate">Open Drive folder</span>
+                  </a>
+                  <button
+                    type="button"
+                    onClick={() => setFolderEditing(true)}
+                    className="shrink-0 rounded p-1 text-ink-4 hover:text-ink-2 hover:bg-surface-2"
+                  >
+                    <Pencil size={12} />
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setFolderEditing(true)}
+                  className="rounded px-1.5 py-1 text-[13px] italic text-ink-4 hover:bg-surface hover:ring-1 hover:ring-border-strong"
+                >
+                  Add folder URL
+                </button>
+              )}
+            </DetailRow>
           </div>
         </SectionCard>
 
@@ -265,6 +355,23 @@ export function AccountDetailPage() {
 
       {/* Tasks — full width */}
       <AccountTasksSection accountId={account.Id} />
+
+      {/* Comments — full width, scrollable */}
+      <SectionCard
+        title="Comments"
+        action={
+          <button
+            onClick={scrollToComment}
+            className="inline-flex items-center gap-1 rounded border border-border-strong bg-surface px-2 py-0.5 text-[11px] font-medium text-ink-2 hover:bg-surface-2"
+          >
+            <Plus size={11} /> New
+          </button>
+        }
+      >
+        <div className="max-h-[400px] overflow-y-auto">
+          <EntityComments entityType="account" entityId={account.Id} hideHeader composerRef={commentInputRef} />
+        </div>
+      </SectionCard>
 
       {/* Opportunities — always visible; pill toggles Open / Won / Lost. */}
       <SectionCard
@@ -358,7 +465,8 @@ export function AccountDetailPage() {
               {contacts.map((c) => (
                 <tr
                   key={c.Id}
-                  className="border-b border-border-strong last:border-b-0"
+                  className="cursor-pointer border-b border-border-strong last:border-b-0 hover:bg-surface-2"
+                  onClick={() => navigate(`/contacts/${c.Id}`)}
                 >
                   <td className="px-5 py-2.5 text-[13px]">
                     <div className="flex items-center gap-2.5">
@@ -380,6 +488,7 @@ export function AccountDetailPage() {
                       <a
                         href={`mailto:${c.Email}`}
                         className="inline-flex items-center gap-1 hover:text-accent-ink"
+                        onClick={(e) => e.stopPropagation()}
                       >
                         <Mail size={12} /> {c.Email}
                       </a>
@@ -400,6 +509,11 @@ export function AccountDetailPage() {
             </tbody>
           </table>
         )}
+      </SectionCard>
+
+      {/* Files */}
+      <SectionCard title={`Files`}>
+        <AccountFilesSection accountId={id} />
       </SectionCard>
 
       <div className="h-3" />

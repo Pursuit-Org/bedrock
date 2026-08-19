@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import { Link } from "react-router-dom";
 
 import { ActivityTab } from "@/components/expand/ActivityTab";
+import { AccountFilesSection } from "@/components/AccountFilesSection";
 import { TaskListTab } from "@/components/expand/TaskListTab";
 import { RowExpandPanel, ROW_EXPAND_HEIGHT } from "@/components/RowExpandPanel";
 import { EntityComments } from "@/components/EntityComments";
@@ -73,6 +74,11 @@ export function AccountExpandPanel({ accountId }: { accountId: string }) {
           id: "comments",
           label: "Comments",
           render: () => <EntityComments entityType="account" entityId={accountId} />,
+        },
+        {
+          id: "files",
+          label: "Files",
+          render: () => <AccountFilesSection accountId={accountId} />,
         },
       ]}
     />
