@@ -568,9 +568,13 @@ function ContactRow({ contact, expanded, onOpen, visibleCols, selected, onToggle
           /40 and /20 alphas that used to be here emitted no CSS at all —
           bare var(--x) tokens can't take an alpha channel — so the hover and
           expanded states were invisible. */}
-      <tr id={`contact-${contact.contact_id}`} className={cn("cursor-pointer border-t border-border hover:bg-surface-2", expanded && "bg-surface-2")} onClick={onOpen}>
+      <tr id={`contact-${contact.contact_id}`} className={cn("group cursor-pointer border-t border-border hover:bg-surface-2", expanded && "bg-surface-2")} onClick={onOpen}>
+        {/* The sticky name column needs an opaque fill or rows scroll under it
+            — but a fixed bg-surface painted OVER the row's hover colour, so the
+            name cell stayed white while every other column greyed. It now
+            tracks the row via group-hover and the expanded state. */}
         {visibleCols.map((key, i) => (
-          <td key={key} className={cn("overflow-hidden px-3 py-1.5 align-middle", i === 0 && "sticky left-0 z-10 bg-surface")} onClick={["flag", "prospect", "owner", "tags"].includes(key) ? (e) => e.stopPropagation() : undefined}>{cells[key]}</td>
+          <td key={key} className={cn("overflow-hidden px-3 py-1.5 align-middle", i === 0 && cn("sticky left-0 z-10 group-hover:bg-surface-2", expanded ? "bg-surface-2" : "bg-surface"))} onClick={["flag", "prospect", "owner", "tags"].includes(key) ? (e) => e.stopPropagation() : undefined}>{cells[key]}</td>
         ))}
       </tr>
       {expanded && <tr className="bg-surface-2"><td colSpan={visibleCols.length} className="p-0"><ContactExpandTabs contactId={contact.contact_id} /></td></tr>}

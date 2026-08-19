@@ -1424,24 +1424,19 @@ export function JobsOutreach() {
         // read as a highlight on half the page rather than as a container.
         className="flex flex-col gap-6 rounded-2xl border border-border-strong p-3 sm:p-4"
       >
-        {/* The zone's own header. A caption under a full-width control was too
-            weak to read as a boundary — the content has to be visibly INSIDE
-            something the period bar heads, or the bar still looks page-level. */}
-        <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
-          <span className="text-[11px] font-bold uppercase tracking-[.12em] text-accent">
-            In period
-          </span>
-          {/* Reference detail, not a headline — same muted weight as a page
-              subtitle. The dates used to carry text-ink-2 + font-medium, which
-              made them compete with the zone label they sit beside. */}
-          {sc && (
+        {/* The blue "In period" label is gone — the bordered zone and the
+            period bar inside it already say what this is. The date range
+            stays as the caption, at subtitle weight. The section keeps its
+            aria-label so the boundary is still announced to screen readers. */}
+        {sc && (
+          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
             <span className="text-[11.5px] text-ink-3">
               {rangeLabel}
               {" · trends compare with "}
               {fmtRange(sc.period.last_start, sc.period.last_end)}
             </span>
-          )}
-        </div>
+          </div>
+        )}
 
         <PeriodBar
           from={from} to={to}

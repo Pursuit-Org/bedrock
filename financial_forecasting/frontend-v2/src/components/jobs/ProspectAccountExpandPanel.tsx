@@ -105,8 +105,12 @@ function accountKey(account: string) {
 
 // ── Activity log form ────────────────────────────────────────────────────────
 
+// Email is here to catch sends the Gmail sync missed — it lands in the same
+// emailed-contacts numbers as synced mail, and can't double-count a contact
+// who also has a synced copy (the metric counts distinct people).
 const ACTIVITY_TYPE_OPTIONS = [
   { value: "call",     label: "Call" },
+  { value: "email",    label: "Email" },
   { value: "text",     label: "Text" },
   { value: "linkedin", label: "LinkedIn" },
 ] as const;
