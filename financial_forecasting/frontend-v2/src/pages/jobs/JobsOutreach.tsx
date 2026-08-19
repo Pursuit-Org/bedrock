@@ -1424,20 +1424,6 @@ export function JobsOutreach() {
         // read as a highlight on half the page rather than as a container.
         className="flex flex-col gap-6 rounded-2xl border border-border-strong p-3 sm:p-4"
       >
-        {/* The blue "In period" label is gone — the bordered zone and the
-            period bar inside it already say what this is. The date range
-            stays as the caption, at subtitle weight. The section keeps its
-            aria-label so the boundary is still announced to screen readers. */}
-        {sc && (
-          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-            <span className="text-[11.5px] text-ink-3">
-              {rangeLabel}
-              {" · trends compare with "}
-              {fmtRange(sc.period.last_start, sc.period.last_end)}
-            </span>
-          </div>
-        )}
-
         <PeriodBar
           from={from} to={to}
           onChange={(f, t) => { setFrom(f); setTo(t); }}
@@ -1455,6 +1441,20 @@ export function JobsOutreach() {
 
       {/* ── Daily digest (the morning Slack) ── */}
       <DailyDigestBlock periodEnd={to} />
+
+      {/* The window these numbers cover, right-aligned just above the first
+          chart that uses it. At the top of the zone it read as a heading for
+          the whole page; here it reads as the footing for the charts below,
+          which is what it actually is. */}
+      {sc && (
+        <div className="-mb-3 flex justify-end">
+          <span className="text-[11.5px] text-ink-3">
+            {rangeLabel}
+            {" · trends compare with "}
+            {fmtRange(sc.period.last_start, sc.period.last_end)}
+          </span>
+        </div>
+      )}
 
       {/* ── Monday agenda: contacts funnel → this week (+ activity pipeline)
              → requiring attention → campaigns → scorecard → targeting.

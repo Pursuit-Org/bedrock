@@ -277,13 +277,14 @@ function FunnelCard({
           {collapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
         </span>
         <span className="min-w-0 flex-1">
-          {/* In period mode the rows are ENTRIES INTO each stage during the
-              window, not the standing population — "Pipeline" read as the
-              latter and made a small number look like a small pipeline. The
-              snapshot view on the Pipeline page keeps the entity name, since
-              there it really is the standing count. */}
+          {/* One title in both modes, so the chart is recognisable as the same
+              thing wherever it appears (Overview, Outreach, Pipeline). Period
+              mode used to say "Pipeline changes" to stress that the rows are
+              ENTRIES INTO each stage rather than the standing population —
+              that distinction now rides on the subtitle below, which spells it
+              out ("… that entered each stage · <period>"). */}
           <span className="block text-[12px] font-semibold uppercase tracking-wider text-[#4f3fe0]">
-            {isPeriod ? "Pipeline changes" : `${FUNNEL_TITLE[funnel]} Pipeline`}
+            {`${FUNNEL_TITLE[funnel]} Pipeline`}
           </span>
           <span className="mt-0.5 block text-[11.5px] text-ink-3">{subtitle}</span>
         </span>
