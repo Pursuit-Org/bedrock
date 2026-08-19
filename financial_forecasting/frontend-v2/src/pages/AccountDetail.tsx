@@ -53,6 +53,8 @@ export function AccountDetailPage() {
 
   const [showAddContact, setShowAddContact] = useState(false);
   const [showAddOpp, setShowAddOpp] = useState(false);
+  const [folderEditing, setFolderEditing] = useState(false);
+  const [folderDraft, setFolderDraft] = useState("");
   const navigate = useNavigate();
   const commentInputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -60,6 +62,10 @@ export function AccountDetailPage() {
     commentInputRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
     setTimeout(() => commentInputRef.current?.focus(), 400);
   }
+
+  useEffect(() => {
+    if (!folderEditing) setFolderDraft(account?.Drive_Strategy_Folder_URL__c ?? "");
+  }, [account?.Drive_Strategy_Folder_URL__c, folderEditing]);
 
   // ── All useMemo / useQuery hooks below MUST be declared before the
   //   `if (!account) return ...` block below them — React's Rules of
@@ -259,6 +265,72 @@ export function AccountDetailPage() {
                 accountContacts={contacts}
                 primary={primaryContact}
               />
+            </DetailRow>
+            <DetailRow label="Drive folder">
+              {folderEditing ? (
+                <div className="flex items-center gap-1 w-full">
+                  <input
+                    autoFocus
+                    type="url"
+                    value={folderDraft}
+                    onChange={(e) => setFolderDraft(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        void patch("Drive_Strategy_Folder_URL__c", folderDraft.trim() || null).then(() =>
+                          setFolderEditing(false),
+                        );
+                      } else if (e.key === "Escape") {
+                        setFolderDraft(account.Drive_Strategy_Folder_URL__c ?? "");
+                        setFolderEditing(false);
+                      }
+                    }}
+                    onBlur={() => {
+                      void patch("Drive_Strategy_Folder_URL__c", folderDraft.trim() || null).then(() =>
+                        setFolderEditing(false),
+                      );
+                    }}
+                    placeholder="https://drive.google.com/..."
+                    className="min-w-0 flex-1 rounded px-1.5 py-1 text-[13px] text-ink outline-none ring-2 ring-accent placeholder:text-ink-4"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFolderDraft(account.Drive_Strategy_Folder_URL__c ?? "");
+                      setFolderEditing(false);
+                    }}
+                    className="shrink-0 rounded p-1 text-ink-4 hover:text-ink-2"
+                  >
+                    <X size={13} />
+                  </button>
+                </div>
+              ) : account.Drive_Strategy_Folder_URL__c ? (
+                <div className="flex items-center gap-1 min-w-0">
+                  <a
+                    href={account.Drive_Strategy_Folder_URL__c}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1 rounded px-1.5 py-1 text-[13px] text-ink-2 hover:bg-surface hover:ring-1 hover:ring-border-strong truncate"
+                  >
+                    <ExternalLink size={12} className="shrink-0" />
+                    <span className="truncate">Open Drive folder</span>
+                  </a>
+                  <button
+                    type="button"
+                    onClick={() => setFolderEditing(true)}
+                    className="shrink-0 rounded p-1 text-ink-4 hover:text-ink-2 hover:bg-surface-2"
+                  >
+                    <Pencil size={12} />
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setFolderEditing(true)}
+                  className="rounded px-1.5 py-1 text-[13px] italic text-ink-4 hover:bg-surface hover:ring-1 hover:ring-border-strong"
+                >
+                  Add folder URL
+                </button>
+              )}
             </DetailRow>
           </div>
         </SectionCard>

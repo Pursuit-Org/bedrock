@@ -84,6 +84,7 @@ export interface SfAccount {
 
   Total_Revenue_Generated__c?: number | null;
   Last_Activity_Date__c?: string | null;
+  Drive_Strategy_Folder_URL__c?: string | null;
 }
 
 /**
