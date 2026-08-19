@@ -47,8 +47,8 @@ render because they come from `bedrock.staff_user_id_map`. Only the builder
 identity is lost — exactly the reported symptom.
 
 **The data is fine.** Every pending row resolves correctly when queried as a role
-that bypasses RLS (e.g. `intro_request_id` 15 → builder 428 → *Adedoyin Ahoton*,
-`adedoyin.ahoton@pursuit.org`). Nothing needs backfilling.
+that bypasses RLS (spot-checked `intro_request_id` 15: the builder id resolves to
+the expected full name and email). Nothing needs backfilling.
 
 ### The fix already exists in this repo
 
@@ -239,13 +239,13 @@ This is live in prod today for staff→staff asks.
 Checked directly against the workspace the Bedrock bot lives in. Four builders,
 searched by email *and* by display name:
 
-| looked up | result |
+| looked up (names/emails redacted) | result |
 |---|---|
-| `adedoyin.ahoton@pursuit.org` | no match |
-| `francis.rutledge@pursuit.org` | no match |
-| `michelle.brooks@pursuit.org` | no match |
-| `Adedoyin Ahoton`, `Jimmy Ong` (by name) | no match |
-| `avni@pursuit.org` (control) | **U0AKQFH36CW** — resolves |
+| builder A (email) | no match |
+| builder B (email) | no match |
+| builder C (email) | no match |
+| builders A and D (by display name) | no match |
+| a current staff email (control) | **resolves** to a Slack user id |
 
 The control proves lookup works, so builders genuinely are not in this
 workspace. `bedrock.slack_user_cache` corroborates: 17 cached users, **0 with

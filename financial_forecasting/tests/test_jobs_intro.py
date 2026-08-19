@@ -28,15 +28,16 @@ def _clear():
 
 def _builder_row(**ov):
     row = {
-        "intro_request_id": 15, "contact_id": 8577, "contact_name": "Paul de Lucena",
-        "contact_company": "Unlocked Labs", "contact_title": "CTO",
-        "specific_ask": "industry_advice", "request_context": "his background…",
+        # Fictitious people throughout — real rows must never be committed.
+        "intro_request_id": 15, "contact_id": 8577, "contact_name": "Jordan Rivera",
+        "contact_company": "Acme Robotics", "contact_title": "CTO",
+        "specific_ask": "industry_advice", "request_context": "their background…",
         "status": "pending", "staff_response_notes": None, "responded_at": None,
         "created_at": CREATED, "builder_id": 428,
-        "builder_name": "Adedoyin Ahoton", "builder_email": "adedoyin.ahoton@pursuit.org",
+        "builder_name": "Alex Mensah", "builder_email": "alex.mensah@pursuit.org",
         "builder_cohort": "March 2025",
         # Only selected by the poller, ignored by the route.
-        "staff_user_id": STAFF_ID, "staff_email": "joanna@pursuit.org",
+        "staff_user_id": STAFF_ID, "staff_email": "connector.staff@pursuit.org",
     }
     row.update(ov)
     return row
@@ -60,7 +61,7 @@ def test_builder_ask_surfaces_the_builder_name():
     r = make_jobs_client(conn).get("/api/jobs/intro-requests?box=inbox")
     assert r.status_code == 200, r.text
     row = next(d for d in r.json()["data"] if d["source"] == "builder")
-    assert row["requested_by_name"] == "Adedoyin Ahoton"
+    assert row["requested_by_name"] == "Alex Mensah"
     assert row["builder_id"] == 428
     assert row["builder_cohort"] == "March 2025"
 
@@ -76,10 +77,10 @@ def test_builder_lookup_goes_through_the_security_definer_function():
 
 
 @pytest.mark.parametrize("overrides,expected", [
-    ({}, "Adedoyin Ahoton"),
+    ({}, "Alex Mensah"),
     # builder_by_id concatenates first||' '||last, so a NULL half yields NULL.
-    ({"builder_name": None}, "adedoyin.ahoton@pursuit.org"),
-    ({"builder_name": "  "}, "adedoyin.ahoton@pursuit.org"),
+    ({"builder_name": None}, "alex.mensah@pursuit.org"),
+    ({"builder_name": "  "}, "alex.mensah@pursuit.org"),
     ({"builder_name": None, "builder_email": None}, "Builder #428"),
 ])
 def test_builder_display_never_falls_through_to_a_dash(overrides, expected):
@@ -154,7 +155,7 @@ def test_first_run_seeds_the_watermark_and_skips_the_backlog(monkeypatch, _captu
     from dependencies import _services
     import services.intro_notification_poller as poller
 
-    conn = _poller_conn(watermark=None, rows=[_builder_row(staff_email="joanna@pursuit.org")])
+    conn = _poller_conn(watermark=None, rows=[_builder_row(staff_email="connector.staff@pursuit.org")])
     monkeypatch.setitem(_services, "db_pool", FakePool(conn))
 
     result = asyncio.run(poller.poll_once())
@@ -168,7 +169,7 @@ def test_new_ask_notifies_the_connector_staff_once(monkeypatch, _captured):
     from dependencies import _services
     import services.intro_notification_poller as poller
 
-    row = _builder_row(staff_user_id=STAFF_ID, staff_email="joanna@pursuit.org")
+    row = _builder_row(staff_user_id=STAFF_ID, staff_email="connector.staff@pursuit.org")
     conn = _poller_conn(watermark=datetime(2026, 6, 1, tzinfo=timezone.utc), rows=[row])
     monkeypatch.setitem(_services, "db_pool", FakePool(conn))
 
@@ -176,9 +177,9 @@ def test_new_ask_notifies_the_connector_staff_once(monkeypatch, _captured):
     assert result[poller.SOURCE_BUILDER_INTRO] == 1
     assert len(_captured) == 1
     sent = _captured[0]
-    assert sent["to"] == "joanna@pursuit.org"
+    assert sent["to"] == "connector.staff@pursuit.org"
     assert sent["payload"]["requester_kind"] == "builder"
-    assert sent["payload"]["actor_display_name"] == "Adedoyin Ahoton"
+    assert sent["payload"]["actor_display_name"] == "Alex Mensah"
     assert sent["payload"]["ask"] == "Industry advice"      # not "industry_advice"
     # Watermark advanced to the newest row so the next poll won't resend.
     bumps = conn.executed("UPDATE bedrock.notification_watermark")
@@ -259,7 +260,7 @@ def test_poller_reads_builder_identity_via_security_definer(monkeypatch, _captur
     import services.intro_notification_poller as poller
 
     conn = _poller_conn(watermark=datetime(2026, 6, 1, tzinfo=timezone.utc),
-                        rows=[_builder_row(staff_email="joanna@pursuit.org")])
+                        rows=[_builder_row(staff_email="connector.staff@pursuit.org")])
     monkeypatch.setitem(_services, "db_pool", FakePool(conn))
     asyncio.run(poller.poll_once())
 
