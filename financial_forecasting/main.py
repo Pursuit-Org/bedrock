@@ -17,7 +17,7 @@ from decimal import Decimal
 from difflib import SequenceMatcher
 import logging
 
-from fastapi import FastAPI, File, Form, HTTPException, Depends, BackgroundTasks, Query, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Depends, BackgroundTasks, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from starlette.middleware.sessions import SessionMiddleware
@@ -1443,6 +1443,148 @@ async def upload_opportunity_file(
         raise
     except Exception as e:
         logger.error(f"Error uploading file to opp {opportunity_id}: {e}", exc_info=True)
+        raise sf_http_error(e, "file")
+
+
+# ---------------------------------------------------------------------------
+# Salesforce Files (ContentDocument / ContentDocumentLink) on Account
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/salesforce/accounts/{account_id}/files")
+async def list_account_files(
+    account_id: str,
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
+    user=Depends(require_auth),
+):
+    """List SF Files attached to an Account via ContentDocumentLink."""
+    validate_salesforce_id(account_id, "account_id")
+    try:
+        salesforce = client.salesforce
+        soql = (
+            "SELECT ContentDocumentId, ContentDocument.Title, "
+            "ContentDocument.FileExtension, ContentDocument.ContentSize, "
+            "ContentDocument.LatestPublishedVersionId, "
+            "ContentDocument.CreatedDate, ContentDocument.CreatedBy.Name "
+            "FROM ContentDocumentLink "
+            f"WHERE LinkedEntityId = '{escape_soql_string(account_id)}' "
+            "ORDER BY ContentDocument.CreatedDate DESC"
+        )
+        result = await salesforce.query(soql)
+        records = result.get("records", []) or []
+        return [
+            {
+                "content_document_id": r.get("ContentDocumentId"),
+                "title": (r.get("ContentDocument") or {}).get("Title"),
+                "extension": (r.get("ContentDocument") or {}).get("FileExtension"),
+                "size_bytes": (r.get("ContentDocument") or {}).get("ContentSize"),
+                "latest_version_id": (r.get("ContentDocument") or {}).get("LatestPublishedVersionId"),
+                "created_date": (r.get("ContentDocument") or {}).get("CreatedDate"),
+                "created_by": ((r.get("ContentDocument") or {}).get("CreatedBy") or {}).get("Name"),
+            }
+            for r in records
+        ]
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error listing files for account {account_id}: {e}")
+        raise sf_http_error(e, "files")
+
+
+@app.post("/api/salesforce/accounts/{account_id}/files")
+async def upload_account_file(
+    account_id: str,
+    file: UploadFile = File(...),
+    title: Optional[str] = Form(None),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
+    user=Depends(require_auth),
+):
+    """Upload a file and attach it to an Account.
+
+    Creates a ContentVersion with FirstPublishLocationId = account_id.
+    SF handles the ContentDocument + ContentDocumentLink creation
+    server-side, so this is a single API call.
+    """
+    import base64
+    validate_salesforce_id(account_id, "account_id")
+    try:
+        body = await file.read()
+        if len(body) > _MAX_FILE_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"File too large ({len(body)} bytes; max {_MAX_FILE_BYTES})",
+            )
+        if len(body) == 0:
+            raise HTTPException(status_code=400, detail="Empty file")
+
+        path_on_client = file.filename or "file"
+        display_title = title or (path_on_client.rsplit(".", 1)[0] if "." in path_on_client else path_on_client)
+
+        salesforce = client.salesforce
+        result = await salesforce.create_record(
+            "ContentVersion",
+            {
+                "Title": display_title,
+                "PathOnClient": path_on_client,
+                "VersionData": base64.b64encode(body).decode("ascii"),
+                "FirstPublishLocationId": account_id,
+            },
+        )
+        content_version_id = result.get("id") or result.get("Id")
+
+        version_q = await salesforce.query(
+            f"SELECT ContentDocumentId FROM ContentVersion WHERE Id = '{escape_soql_string(content_version_id)}'"
+        )
+        records = version_q.get("records", []) or []
+        content_document_id = records[0].get("ContentDocumentId") if records else None
+
+        return ApiResponse(
+            success=True,
+            data={
+                "content_version_id": content_version_id,
+                "content_document_id": content_document_id,
+                "title": display_title,
+                "size_bytes": len(body),
+                "filename": path_on_client,
+            },
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error uploading file to account {account_id}: {e}", exc_info=True)
+        raise sf_http_error(e, "file")
+
+
+@app.delete("/api/salesforce/accounts/{account_id}/files/{content_document_id}")
+async def delete_account_file(
+    account_id: str,
+    content_document_id: str,
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
+    user=Depends(require_auth),
+):
+    """Delete a file from Salesforce (removes ContentDocument + all linked ContentDocumentLinks)."""
+    validate_salesforce_id(account_id, "account_id")
+    validate_salesforce_id(content_document_id, "content_document_id")
+    try:
+        salesforce = client.salesforce
+        # Verify the file is actually linked to this account before deleting —
+        # prevents an authenticated user from deleting arbitrary ContentDocuments
+        # by guessing IDs.
+        link_check = await salesforce.query(
+            f"SELECT Id FROM ContentDocumentLink "
+            f"WHERE ContentDocumentId = '{escape_soql_string(content_document_id)}' "
+            f"AND LinkedEntityId = '{escape_soql_string(account_id)}'"
+        )
+        if not (link_check.get("records") or []):
+            raise HTTPException(status_code=404, detail="File not found on this account")
+        success = await salesforce.delete_record("ContentDocument", content_document_id)
+        if not success:
+            raise HTTPException(status_code=400, detail="Salesforce rejected the delete request")
+        return Response(status_code=204)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting file {content_document_id} from account {account_id}: {e}")
         raise sf_http_error(e, "file")
 
 

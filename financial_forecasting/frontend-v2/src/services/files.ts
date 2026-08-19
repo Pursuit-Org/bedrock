@@ -76,3 +76,55 @@ export function fileDownloadUrl(latestVersionId: string | null | undefined): str
   // access on the parent record. Opens in a new tab in our UI.
   return `https://joinpursuit.lightning.force.com/sfc/servlet.shepherd/version/download/${encodeURIComponent(latestVersionId)}`;
 }
+
+/** SF Lightning Files attached to an Account via ContentDocumentLink. */
+export function useAccountFiles(accountId: string | null | undefined) {
+  return useQuery({
+    queryKey: ["account-files", accountId],
+    queryFn: async (): Promise<SfFile[]> => {
+      if (!accountId) return [];
+      const { data } = await api.get<SfFile[]>(
+        `/api/salesforce/accounts/${encodeURIComponent(accountId)}/files`,
+      );
+      return data ?? [];
+    },
+    enabled: !!accountId,
+    staleTime: 60_000,
+  });
+}
+
+/** Upload a file to an Account. */
+export function useUploadAccountFile(accountId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ file, title }: { file: File; title?: string }) => {
+      const fd = new FormData();
+      fd.append("file", file);
+      if (title) fd.append("title", title);
+      const { data } = await api.post<UploadResult>(
+        `/api/salesforce/accounts/${encodeURIComponent(accountId)}/files`,
+        fd,
+        { headers: { "Content-Type": undefined } as never },
+      );
+      return data;
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ["account-files", accountId] });
+    },
+  });
+}
+
+/** Delete a file from an Account (removes the ContentDocument from Salesforce). */
+export function useDeleteAccountFile(accountId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (contentDocumentId: string) => {
+      await api.delete(
+        `/api/salesforce/accounts/${encodeURIComponent(accountId)}/files/${encodeURIComponent(contentDocumentId)}`,
+      );
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ["account-files", accountId] });
+    },
+  });
+}
