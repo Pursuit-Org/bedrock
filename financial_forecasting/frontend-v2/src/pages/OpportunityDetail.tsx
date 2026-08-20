@@ -156,8 +156,7 @@ export function OpportunityDetailPage() {
     // Contracting → Collecting asks for the signed contract.
     const spec = opp ? getStageGate(opp.StageName, newStage) : null;
     if (spec) {
-      stageGate.request(opp!, newStage);
-      return;
+      return stageGate.request(opp!, newStage);
     }
 
     // Legacy fallback: Collecting / In Effect from anywhere *other
