@@ -513,6 +513,9 @@ export function AccountDetailPage() {
       <ActivityTimeline
         activities={activities}
         scopeKey={`account:${account.Id}`}
+        accountId={account.Id}
+        contacts={contacts}
+        opportunities={opps}
       />
 
       {/* Contacts */}
