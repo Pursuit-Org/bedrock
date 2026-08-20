@@ -2328,6 +2328,42 @@ async def update_account(
                     confirmed["Active__c"] = records[0].get("Active__c")
             except Exception:
                 logger.warning("Active__c read-back failed for %s", account_id)
+        # Auto-create a reminder task when the account is deprioritized or put on hold
+        _deprioritizing = update_request.updates.get("Active__c") is False
+        _on_hold = update_request.updates.get("Qualification_Status__c") == "Not Qualified"
+        if _deprioritizing or _on_hold:
+            try:
+                owner_result = await salesforce.query(
+                    f"SELECT OwnerId FROM Account WHERE Id = '{escape_soql_string(account_id)}' LIMIT 1"
+                )
+                owner_records = owner_result.get("records") or []
+                if owner_records:
+                    owner_id = owner_records[0]["OwnerId"]
+                    today = date.today()
+                    future_month = today.month + 6
+                    due_year = today.year + (future_month - 1) // 12
+                    due_month = (future_month - 1) % 12 + 1
+                    due_day = min(today.day, calendar.monthrange(due_year, due_month)[1])
+                    due_date = date(due_year, due_month, due_day)
+                    date_str = f"{today.month}/{today.day}/{str(today.year)[2:]}"
+                    task_fields = {
+                        "Subject": (
+                            f"Account was deprioritized or put on hold on {date_str}. "
+                            "Please reevaluate if account status is still accurate."
+                        ),
+                        "ActivityDate": due_date.isoformat(),
+                        "OwnerId": owner_id,
+                        "WhatId": account_id,
+                        "Status": "Not Started",
+                        "Priority": "Normal",
+                    }
+                    task_result = await salesforce.create_record("Task", task_fields)
+                    task_id = task_result.get("id") or task_result.get("Id")
+                    if task_id:
+                        await _verify_and_recover_task_fields(salesforce, task_id, task_fields)
+                    cache.invalidate_prefix("account-tasks:")
+            except Exception as e:
+                logger.warning("Auto-task creation failed for account %s: %s", account_id, e)
         cache.invalidate_prefix("accounts:")
         logger.info(f"Account {account_id} updated by {user['user_id']}")
         return ApiResponse(success=True, data=confirmed)
