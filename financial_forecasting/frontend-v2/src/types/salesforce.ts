@@ -285,4 +285,6 @@ export interface BedrockActivity {
   /** Enriched by /account/{id}/full endpoint */
   _context_type?: "account" | "opportunity" | "contact" | null;
   _context_name?: string | null;
+  /** Sync status with Salesforce — 'pending' means the SF write hasn't landed yet */
+  sf_sync_status?: "synced" | "pending" | "failed" | null;
 }

@@ -21,7 +21,7 @@ from mcp_client import UnifiedMCPClient
 from data_sync import DataSyncService
 from models import (
     Activity, ActivityCreate, ActivityInsightsResponse, ActivityUpdate,
-    ApiResponse,
+    ApiResponse, LogCallCreate,
 )
 from routes.permissions import check_permission
 from security import escape_soql_string
@@ -797,7 +797,96 @@ async def create_activity(
 
 
 # ---------------------------------------------------------------------------
-# 9. GET /{id} — Get single activity
+# 9. POST /log-call — Log a call with immediate SF write-through
+# ---------------------------------------------------------------------------
+
+@router.post("/log-call")
+async def log_call(
+    body: LogCallCreate,
+    conn=Depends(get_db),
+    user=Depends(require_auth),
+    mcp=Depends(get_mcp_client),
+):
+    """Log a call for a fundraising account.
+
+    Writes to bedrock.activity first (sf_sync_status='pending'), then
+    immediately attempts to create a Salesforce Task. On SF success,
+    stamps sf_id and flips status to 'synced'. On SF failure, leaves
+    status as 'pending' for the background retry in sync_pending_call_activities().
+    """
+    try:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO bedrock.activity (
+                type, subject, activity_date, source, description,
+                account_id, opportunity_id, contact_ids,
+                logged_by, sf_sync_status
+            ) VALUES (
+                'call', $1, $2, 'manual', $3,
+                $4, $5, $6,
+                $7, 'pending'
+            ) RETURNING *
+            """,
+            body.subject,
+            body.activity_date,
+            body.description,
+            body.account_id,
+            body.opportunity_id,
+            [body.contact_id] if body.contact_id else [],
+            user.get("email") or user.get("user_id"),
+        )
+        activity_id = row["id"]
+        sf_synced = False
+
+        # Attempt immediate SF write-through
+        try:
+            salesforce = mcp.salesforce
+            sf_fields = {
+                "Subject": body.subject,
+                "Status": "Completed",
+                "TaskSubtype": "Call",
+                "WhatId": body.opportunity_id or body.account_id,
+                "ActivityDate": body.activity_date.date().isoformat() if hasattr(body.activity_date, "date") else str(body.activity_date)[:10],
+            }
+            if body.description:
+                sf_fields["Description"] = body.description
+            if body.contact_id:
+                sf_fields["WhoId"] = body.contact_id
+
+            result = await salesforce.create_record("Task", sf_fields)
+            sf_id = result.get("id") or result.get("Id")
+            if sf_id:
+                await conn.execute(
+                    """
+                    UPDATE bedrock.activity
+                    SET sf_id=$1, sf_task_id=$1, sf_sync_status='synced', synced_at=now()
+                    WHERE id=$2
+                    """,
+                    sf_id,
+                    activity_id,
+                )
+                sf_synced = True
+        except Exception as sf_err:
+            logger.warning(
+                "SF write-through failed for log-call activity %s: %s",
+                activity_id, sf_err,
+            )
+
+        final_row = await conn.fetchrow(
+            "SELECT * FROM bedrock.activity WHERE id=$1", activity_id
+        )
+        return ApiResponse(
+            success=True,
+            data={**_row_to_dict(final_row), "sf_synced": sf_synced},
+        )
+
+    except Exception as e:
+        logger.error(f"Error logging call: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# 10. GET /{id} — Get single activity
 # ---------------------------------------------------------------------------
 
 @router.get("/{activity_id}")

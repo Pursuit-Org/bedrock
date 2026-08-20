@@ -141,6 +141,16 @@ class ActivityCreate(BaseModel):
     owner_id: Optional[str] = None
 
 
+class LogCallCreate(BaseModel):
+    """POST /api/activities/log-call request body."""
+    account_id: str
+    subject: str
+    activity_date: datetime
+    description: Optional[str] = None
+    contact_id: Optional[str] = None      # SF Contact Id (003…) → WhoId
+    opportunity_id: Optional[str] = None  # SF Opportunity Id (006…) → WhatId
+
+
 class ActivityUpdate(BaseModel):
     """PUT /api/activities/{id} request body. All fields optional (partial update)."""
     type: Optional[ActivityType] = None
