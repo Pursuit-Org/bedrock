@@ -231,18 +231,28 @@ export function useUpdateAccount() {
       };
       qc.setQueryData<SfAccount[]>(["accounts"], patchCache);
       qc.setQueryData<SfAccount[]>(["accounts", "active-only"], patchCache);
+      // The jobs pages render from the ["jobs","accounts",...] caches, whose
+      // rows carry `sf_active` (not Active__c). Patch every variant so the
+      // Deprioritize toggle is visible immediately on the jobs side too.
+      if ("Active__c" in patch) {
+        qc.setQueriesData<Array<{ sf_account_id?: string | null; sf_active?: boolean | null }>>(
+          { queryKey: ["jobs", "accounts"] },
+          (old) =>
+            old?.map((a) =>
+              a.sf_account_id === id ? { ...a, sf_active: patch.Active__c as boolean } : a,
+            ),
+        );
+      }
     },
-    onSettled: (_data, error, { id, patch }) => {
+    onSettled: (_data, error) => {
       if (error) return;
-      // Use refetchQueries (awaitable) instead of invalidateQueries so we can
-      // re-apply the patch AFTER the server round-trip completes. This prevents
-      // a slow SF propagation from overwriting Active__c with the stale value.
-      setTimeout(async () => {
-        await qc.refetchQueries({ queryKey: ["accounts"] });
-        const reapply = (old: SfAccount[] | undefined) =>
-          old?.map((a) => (a.Id === id ? ({ ...a, ...patch } as SfAccount) : a));
-        qc.setQueryData<SfAccount[]>(["accounts"], reapply);
-        qc.setQueryData<SfAccount[]>(["accounts", "active-only"], reapply);
+      // Delayed refetch: give Salesforce a moment to propagate, then take the
+      // server's answer as truth. (The previous version re-applied the client
+      // patch over the refetched data, which hid silently-ignored SF writes —
+      // exactly the failure the read-back exists to surface.)
+      setTimeout(() => {
+        void qc.refetchQueries({ queryKey: ["accounts"] });
+        void qc.invalidateQueries({ queryKey: ["jobs", "accounts"] });
       }, 2000);
     },
   });

@@ -540,7 +540,7 @@ export function useContactsByAccount(dealType?: string) {
 // Account-level hub: every company (keyed by normalized name) with its
 // opportunities + prospects nested and a derived status (same vocabulary as the
 // portfolio Accounts tab). Backed by GET /api/jobs/accounts.
-export type JobsAccountStatus = "Prospect" | "Activating" | "Pursuing" | "Stewarding" | "Re-activating" | "Dormant";
+export type JobsAccountStatus = "Prospect" | "Activating" | "Pursuing" | "Stewarding" | "Re-activating" | "Dormant" | "Deprioritized" | "On Hold";
 
 export interface JobsAccountOpp {
   id: string;

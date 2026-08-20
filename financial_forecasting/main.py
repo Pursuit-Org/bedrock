@@ -80,7 +80,7 @@ from routes.jobs_intro import router as jobs_intro_router
 from routes.jobs_sf import router as jobs_sf_router
 from routes.entity_comments import router as entity_comments_router
 from auth import get_current_user_dep, require_auth, IS_PRODUCTION, JWT_SECRET_KEY
-from security import validate_salesforce_id, escape_soql_string
+from security import validate_salesforce_id, escape_soql_string, validate_http_url
 from sf_errors import sf_http_error
 from services import pipeline_review
 from services.crm_parser import refresh_opp_cache as _refresh_opp_cache
@@ -1495,29 +1495,35 @@ async def delete_opportunity_file(
     client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user=Depends(require_auth),
 ):
-    """Delete a file from Salesforce (removes ContentDocument + all linked ContentDocumentLinks)."""
+    """Unlink a file from this opportunity.
+
+    Deletes the ContentDocumentLink only — never the ContentDocument. The same
+    document can be linked to other records (an Account, a Contact, another
+    Opportunity); removing it here must not make it vanish everywhere. The
+    document itself lives on in Salesforce Files, owned by its uploader.
+    """
     validate_salesforce_id(opportunity_id, "opportunity_id")
     validate_salesforce_id(content_document_id, "content_document_id")
     try:
         salesforce = client.salesforce
-        # Verify the file is actually linked to this opportunity before deleting —
-        # prevents an authenticated user from deleting arbitrary ContentDocuments
-        # by guessing IDs.
+        # Resolve the link row for THIS record — doubles as the guard that the
+        # file actually belongs here (no unlinking arbitrary documents by id).
         link_check = await salesforce.query(
             f"SELECT Id FROM ContentDocumentLink "
             f"WHERE ContentDocumentId = '{escape_soql_string(content_document_id)}' "
             f"AND LinkedEntityId = '{escape_soql_string(opportunity_id)}'"
         )
-        if not (link_check.get("records") or []):
+        links = link_check.get("records") or []
+        if not links:
             raise HTTPException(status_code=404, detail="File not found on this opportunity")
-        success = await salesforce.delete_record("ContentDocument", content_document_id)
+        success = await salesforce.delete_record("ContentDocumentLink", links[0]["Id"])
         if not success:
-            raise HTTPException(status_code=400, detail="Salesforce rejected the delete request")
+            raise HTTPException(status_code=400, detail="Salesforce rejected the unlink request")
         return Response(status_code=204)
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error deleting file {content_document_id} from opportunity {opportunity_id}: {e}")
+        logger.error(f"Error unlinking file {content_document_id} from opportunity {opportunity_id}: {e}")
         raise sf_http_error(e, "file")
 
 
@@ -1639,29 +1645,34 @@ async def delete_account_file(
     client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user=Depends(require_auth),
 ):
-    """Delete a file from Salesforce (removes ContentDocument + all linked ContentDocumentLinks)."""
+    """Unlink a file from this account.
+
+    Deletes the ContentDocumentLink only — never the ContentDocument. The same
+    document can be linked to other records; removing it here must not make it
+    vanish everywhere. The document lives on in Salesforce Files.
+    """
     validate_salesforce_id(account_id, "account_id")
     validate_salesforce_id(content_document_id, "content_document_id")
     try:
         salesforce = client.salesforce
-        # Verify the file is actually linked to this account before deleting —
-        # prevents an authenticated user from deleting arbitrary ContentDocuments
-        # by guessing IDs.
+        # Resolve the link row for THIS record — doubles as the guard that the
+        # file actually belongs here (no unlinking arbitrary documents by id).
         link_check = await salesforce.query(
             f"SELECT Id FROM ContentDocumentLink "
             f"WHERE ContentDocumentId = '{escape_soql_string(content_document_id)}' "
             f"AND LinkedEntityId = '{escape_soql_string(account_id)}'"
         )
-        if not (link_check.get("records") or []):
+        links = link_check.get("records") or []
+        if not links:
             raise HTTPException(status_code=404, detail="File not found on this account")
-        success = await salesforce.delete_record("ContentDocument", content_document_id)
+        success = await salesforce.delete_record("ContentDocumentLink", links[0]["Id"])
         if not success:
-            raise HTTPException(status_code=400, detail="Salesforce rejected the delete request")
+            raise HTTPException(status_code=400, detail="Salesforce rejected the unlink request")
         return Response(status_code=204)
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error deleting file {content_document_id} from account {account_id}: {e}")
+        logger.error(f"Error unlinking file {content_document_id} from account {account_id}: {e}")
         raise sf_http_error(e, "file")
 
 
@@ -2288,6 +2299,14 @@ async def update_account(
             perms = user.get("_permissions", {})
             if not perms.get("manage_users_roles", False) and not perms.get("reassign_accounts", False):
                 raise HTTPException(status_code=403, detail="You don't have permission to reassign accounts")
+        # Drive_Strategy_Folder_URL__c renders back as an <a href> on the
+        # account detail page — reject non-http(s) schemes (stored XSS vector).
+        # Empty/None clears the field and is allowed.
+        if update_request.updates.get("Drive_Strategy_Folder_URL__c"):
+            validate_http_url(
+                update_request.updates["Drive_Strategy_Folder_URL__c"],
+                "Drive_Strategy_Folder_URL__c",
+            )
         success = await salesforce.update_record("Account", account_id, update_request.updates)
         if not success:
             raise HTTPException(400, "Salesforce rejected the update")
@@ -2297,10 +2316,18 @@ async def update_account(
         confirmed: dict = {"id": account_id, "message": "Account updated"}
         if "Active__c" in update_request.updates:
             try:
-                rec = await salesforce.get_record("Account", account_id, ["Active__c"])
-                confirmed["Active__c"] = rec.get("Active__c")
+                # get_record fetches by id only (no field list) — a SOQL select
+                # is the cheap way to read one field back. The previous
+                # three-arg get_record call raised TypeError on every request
+                # and the bare except made the read-back silently dead.
+                rec = await salesforce.query(
+                    f"SELECT Active__c FROM Account WHERE Id = '{escape_soql_string(account_id)}' LIMIT 1"
+                )
+                records = rec.get("records") or []
+                if records:
+                    confirmed["Active__c"] = records[0].get("Active__c")
             except Exception:
-                pass
+                logger.warning("Active__c read-back failed for %s", account_id)
         cache.invalidate_prefix("accounts:")
         logger.info(f"Account {account_id} updated by {user['user_id']}")
         return ApiResponse(success=True, data=confirmed)

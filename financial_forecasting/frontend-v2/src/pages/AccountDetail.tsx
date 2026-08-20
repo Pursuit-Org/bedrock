@@ -151,6 +151,18 @@ export function AccountDetailPage() {
   const patch = (field: string, val: unknown) =>
     updateAccount.mutateAsync({ id: account.Id, patch: { [field]: val } }).then(() => undefined);
 
+  // Save the Drive folder draft only when it actually changed — blur fires on
+  // every focus loss, and an unchanged save burns a pointless SF PUT against
+  // the 30/min-limited endpoint.
+  const saveFolderDraft = async () => {
+    const next = folderDraft.trim() || null;
+    const current = account.Drive_Strategy_Folder_URL__c ?? null;
+    if (next !== current) {
+      await patch("Drive_Strategy_Folder_URL__c", next);
+    }
+    setFolderEditing(false);
+  };
+
   const saveOwner = async (ownerId: string) => {
     const ownerName = (usersQ.data ?? []).find((u) => u.Id === ownerId)?.Name ?? null;
     await updateAccount.mutateAsync({
@@ -346,24 +358,23 @@ export function AccountDetailPage() {
                     onChange={(e) => setFolderDraft(e.target.value)}
                     onKeyDown={(e) => {
                       if (e.key === "Enter") {
-                        void patch("Drive_Strategy_Folder_URL__c", folderDraft.trim() || null).then(() =>
-                          setFolderEditing(false),
-                        );
+                        void saveFolderDraft();
                       } else if (e.key === "Escape") {
                         setFolderDraft(account.Drive_Strategy_Folder_URL__c ?? "");
                         setFolderEditing(false);
                       }
                     }}
                     onBlur={() => {
-                      void patch("Drive_Strategy_Folder_URL__c", folderDraft.trim() || null).then(() =>
-                        setFolderEditing(false),
-                      );
+                      void saveFolderDraft();
                     }}
                     placeholder="https://drive.google.com/..."
                     className="min-w-0 flex-1 rounded px-1.5 py-1 text-[13px] text-ink outline-none ring-2 ring-accent placeholder:text-ink-4"
                   />
                   <button
                     type="button"
+                    // preventDefault on mousedown so the input's onBlur (which
+                    // saves) never fires before this cancel click lands.
+                    onMouseDown={(e) => e.preventDefault()}
                     onClick={() => {
                       setFolderDraft(account.Drive_Strategy_Folder_URL__c ?? "");
                       setFolderEditing(false);

@@ -68,7 +68,7 @@ export function AccountFilesSection({ accountId }: { accountId: string }) {
   };
 
   const handleDelete = async (contentDocumentId: string, title: string | null) => {
-    if (!window.confirm(`Delete "${title ?? "this file"}"? This will remove it from Salesforce.`)) return;
+    if (!window.confirm(`Remove "${title ?? "this file"}" from this record? The file itself stays in Salesforce.`)) return;
     setDeletingId(contentDocumentId);
     try {
       await deleteFile.mutateAsync(contentDocumentId);

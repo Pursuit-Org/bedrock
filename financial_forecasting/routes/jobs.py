@@ -5905,7 +5905,8 @@ async def jobs_accounts(
     sf_ids_to_check = [r["sf_account_id"] for r in ja_rows if r["sf_account_id"]]
     if sf_ids_to_check:
         try:
-            id_list = ", ".join(f"'{i}'" for i in sf_ids_to_check)
+            from security import escape_soql_string
+            id_list = ", ".join(f"'{escape_soql_string(i)}'" for i in sf_ids_to_check)
             result = await client.salesforce.query_all(
                 f"SELECT Id, Active__c, Qualification_Status__c FROM Account WHERE Id IN ({id_list})"
             )

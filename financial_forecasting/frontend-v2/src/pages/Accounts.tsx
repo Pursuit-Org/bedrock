@@ -416,15 +416,18 @@ export function AccountsPage() {
       { value: "No", label: "No" },
     ];
     // Account status is a fixed enum from the playbook — surface all
-    // five values regardless of whether the current view has any of
-    // each, so users can filter to e.g. "Re-activating" even when the
-    // panel doesn't currently show any.
+    // values regardless of whether the current view has any of each,
+    // so users can filter to e.g. "Re-activating" even when the panel
+    // doesn't currently show any. Deprioritized (Active__c=false) and
+    // On Hold (Qualification_Status__c="Not Qualified") joined in #279.
     const status = [
       { value: "Prospect", label: "Prospect" },
       { value: "Pursuing", label: "Pursuing" },
       { value: "Stewarding", label: "Stewarding" },
       { value: "Re-activating", label: "Re-activating" },
       { value: "Dormant", label: "Dormant" },
+      { value: "Deprioritized", label: "Deprioritized" },
+      { value: "On Hold", label: "On Hold" },
     ];
 
     return {
