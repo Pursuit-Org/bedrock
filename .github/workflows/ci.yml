@@ -6,6 +6,10 @@ on:
   push:
     branches: [main, dev]
 
+# Checkout-and-test only — scope the default token down from write.
+permissions:
+  contents: read
+
 jobs:
   frontend:
     name: Frontend — typecheck & build
