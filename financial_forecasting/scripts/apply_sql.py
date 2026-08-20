@@ -7,7 +7,7 @@ them. This connects with the PG_* superuser creds and runs the given file.
 Reads PG_USER/PG_PASSWORD/PG_HOST/PG_PORT/PG_DATABASE from the environment or a
 .env. If they live in another service's .env, point at it:
 
-    python -m scripts.apply_sql db/migrations/2026-06-18-jobs-parent-account.sql --env ../test-pilot-server/.env
+    python -m scripts.apply_sql db/migrations/2026-06-18-jobs-parent-account.sql --env ../platform/server/.env
 """
 import argparse
 import asyncio

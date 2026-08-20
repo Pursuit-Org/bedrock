@@ -9,7 +9,8 @@ import pytest
 from tests.jobs_fakes import FakeConn, make_jobs_client
 
 SECURED = "FROM bedrock.secured_jobs()"
-COMMITTED = "FROM bedrock.jobs_role r"
+TRIALS = "r.is_trial = true"       # committed active trials (shown, not counted)
+COMMITTED = "r.is_trial = false"   # committed FT roles still open
 
 
 @pytest.fixture(autouse=True)
@@ -23,30 +24,35 @@ def _placement(uid, builder, **ov):
     row = {"id": f"er{uid}", "user_id": uid, "builder": builder, "role_title": "Engineer",
            "company_name": "Acme", "employment_type": "full_time", "payment_amount": 90000,
            "influenced": True, "source": "staff", "engagement_stage": None,
-           "opportunity_id": None, "start_date": None, "job_application_id": None}
+           "opportunity_id": None, "start_date": None, "job_application_id": None,
+           "opp_id": None}
     row.update(ov)
     return row
 
 
 def test_placements_drill_is_ft_placed_plus_committed():
     conn = FakeConn(lists={
-        # two FT placements for the same builder + one for another
+        # two FT placements for the same builder + one for another — the drill
+        # is flat (one row per placement/role), no per-builder grouping
         SECURED: [_placement(1, "Ana"), _placement(1, "Ana", company_name="Beta"), _placement(2, "Ben")],
-        COMMITTED: [{"account_name": "Acme", "title": "AI Analyst"}],
+        TRIALS: [],
+        COMMITTED: [{"id": "r9", "approx_salary": 85000, "opp_id": None,
+                     "account_name": "Acme", "title": "AI Analyst"}],
     })
     c = make_jobs_client(conn)
     r = c.get("/api/jobs/metrics/placements")
     assert r.status_code == 200, r.text
     d = r.json()["data"]
     assert d["title"] == "FT Roles Secured"
-    # 2 placed builders + 1 committed req = 3 rows
-    assert d["count"] == 3
-    placed = [row for row in d["rows"] if row["status"] == "FT placed"]
-    committed = [row for row in d["rows"] if row["status"] == "Committed (open req)"]
-    assert len(placed) == 2 and len(committed) == 1
-    ana = next(row for row in placed if row["name"] == "Ana")
-    assert ana["detail"] == "2 FT placements"          # grouped by builder
-    assert committed[0]["name"] == "Acme" and committed[0]["detail"] == "AI Analyst"
+    # 3 placement rows + 1 committed open req = 4 rows
+    assert d["count"] == 4
+    placed = [row for row in d["rows"] if row["status"] == "Full-time placed"]
+    committed = [row for row in d["rows"] if row["status"] == "Committed – open req"]
+    assert len(placed) == 3 and len(committed) == 1
+    assert {row["builder"] for row in placed} == {"Ana", "Ben"}
+    assert all(row["counted"] == "✓" for row in placed + committed)
+    assert committed[0]["company"] == "Acme" and committed[0]["role"] == "AI Analyst"
+    assert committed[0]["builder"] == "—"   # seat locked in, nobody placed yet
 
 
 def test_placements_drill_query_filters_full_time_only():

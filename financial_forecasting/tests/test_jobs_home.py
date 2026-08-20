@@ -68,6 +68,7 @@ def test_interview_pipeline_groups_roles_and_builders():
         "FROM bedrock.jobs_role r": [
             {"id": "r1", "opportunity_id": UUID1, "title": "FT Eng", "status": "open",
              "employment_type": "full_time", "approx_salary": 90000, "filled_by_user_id": None,
+             "commitment": None, "is_trial": False,
              "account_name": "Acme", "opp_stage": "active_builder_interview", "owner_email": "a@p.org"}],
         "FROM public.job_applications ja": [
             {"job_application_id": 1, "jobs_opportunity_id": UUID1, "jobs_role_id": "r1",

@@ -17,13 +17,21 @@ import type { BedrockActivity } from "@/types/salesforce";
 
 // ── Body normalization ─────────────────────────────────────────────────────
 
-function normalizeBody(raw: string): string {
+const EMAIL_PREVIEW_LENGTH = 800;
+
+/** Strip HTML tags, decode entities, and normalize whitespace. */
+function cleanEmailText(raw: string): string {
   return raw
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&#39;/g, "'").replace(/&quot;/g, '"')
+    .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&nbsp;/g, " ")
     .replace(/\r\n/g, "\n")
     .split("\n")
     .map((line) => line.replace(/\s+$/, ""))
     .join("\n")
     .replace(/\n{3,}/g, "\n\n")
+    .replace(/[ \t]+/g, " ")
     .trim();
 }
 
@@ -174,7 +182,8 @@ export function ActivityTimeline({
           const hay = (
             (a.subject ?? "") +
             "\n" + (a.description ?? "") +
-            "\n" + (a.email_snippet ?? "")
+            "\n" + (a.email_snippet ?? "") +
+            "\n" + (a.email_body_text ?? "")
           ).toLowerCase();
           if (!hay.includes(myEmail)) return false;
         }
@@ -520,9 +529,10 @@ function ActivityRow({
 }) {
   // Manual expand only — search no longer auto-opens rows.
   const [expanded, setExpanded] = useState(false);
-  const rawBody = a.email_snippet ?? a.description ?? "";
+  const [showFull, setShowFull] = useState(false);
+  const rawBody = a.email_body_text ?? a.email_snippet ?? a.description ?? "";
   const hasBody = rawBody.trim().length > 0;
-  const body = hasBody ? normalizeBody(rawBody) : "";
+  const body = hasBody ? cleanEmailText(rawBody) : "";
   const date = fmtDate(activityTimestamp(a));
   // Meetings often have no body but still carry useful detail (location,
   // duration, Fireflies notes if logged on the SF Event description).
@@ -610,9 +620,25 @@ function ActivityRow({
             </div>
           ) : null}
           {hasBody ? (
-            <div className="whitespace-pre-wrap break-words">
-              {highlightMatches(body, needle)}
-            </div>
+            <>
+              <div className="whitespace-pre-wrap break-words">
+                {highlightMatches(
+                  showFull || body.length <= EMAIL_PREVIEW_LENGTH
+                    ? body
+                    : body.slice(0, EMAIL_PREVIEW_LENGTH) + "…",
+                  needle,
+                )}
+              </div>
+              {body.length > EMAIL_PREVIEW_LENGTH ? (
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); setShowFull((v) => !v); }}
+                  className="mt-1.5 text-[11.5px] text-accent hover:underline"
+                >
+                  {showFull ? "Show less" : "Show more"}
+                </button>
+              ) : null}
+            </>
           ) : (
             <div className="text-ink-4 italic">No notes logged.</div>
           )}

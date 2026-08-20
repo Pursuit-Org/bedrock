@@ -117,7 +117,7 @@ This table is the source of truth for per-PR status. Each PR that ships updates 
 
 | # | Slug | Ships what | Size | Status |
 |---|---|---|---|---|
-| [#147](https://github.com/Pursuit-Assets/bedrock/pull/147) | `pr-planning` | This plan doc + doc updates across existing task files | docs-only | ✅ merged |
+| [#147](https://github.com/Pursuit-Org/bedrock/pull/147) | `pr-planning` | This plan doc + doc updates across existing task files | docs-only | ✅ merged |
 | #148 | `pr-page-rename-cleanup` | Rename `MyDashboard.tsx` → `Priorities.tsx` and `Overview.tsx` → `Progress.tsx` to align file/component names with sidebar labels | S | 👀 in review |
 | #149 (= actual #155) | `pr-contacts-accounts-pagination` | Backend: Contacts + Accounts + opp-tasks → `query_all()`; my-tasks default+cap bumped; defensive test suite; FE comment trim | S-M | 👀 in review |
 | #150 | `pr-rowcount-caption-reports-tabs` | `<RowCountCaption>` component + apply to Opportunities (migrate) / Accounts / Contacts / Tasks | M | ⏳ Queued |

@@ -218,26 +218,42 @@ export function useUpdateAccount() {
       patch: Record<string, unknown>;
       displayPatch?: Record<string, unknown>;
     }) => {
-      const { data } = await api.put<SfAccount>(
+      await api.put(
         `/api/salesforce/accounts/${encodeURIComponent(id)}`,
         { updates: patch, reason: "Updated via Bedrock" },
       );
-      return data;
     },
     onSuccess: (_data, { id, patch, displayPatch }) => {
       const merged = { ...patch, ...(displayPatch ?? {}) };
-      qc.setQueryData<SfAccount[]>(["accounts"], (old) => {
+      const patchCache = (old: SfAccount[] | undefined) => {
         if (!old) return old;
-        return old.map((a) =>
-          a.Id === id ? ({ ...a, ...merged } as SfAccount) : a,
+        return old.map((a) => (a.Id === id ? ({ ...a, ...merged } as SfAccount) : a));
+      };
+      qc.setQueryData<SfAccount[]>(["accounts"], patchCache);
+      qc.setQueryData<SfAccount[]>(["accounts", "active-only"], patchCache);
+      // The jobs pages render from the ["jobs","accounts",...] caches, whose
+      // rows carry `sf_active` (not Active__c). Patch every variant so the
+      // Deprioritize toggle is visible immediately on the jobs side too.
+      if ("Active__c" in patch) {
+        qc.setQueriesData<Array<{ sf_account_id?: string | null; sf_active?: boolean | null }>>(
+          { queryKey: ["jobs", "accounts"] },
+          (old) =>
+            old?.map((a) =>
+              a.sf_account_id === id ? { ...a, sf_active: patch.Active__c as boolean } : a,
+            ),
         );
-      });
+      }
     },
-    onSettled: () => {
-      setTimeout(
-        () => qc.invalidateQueries({ queryKey: ["accounts"] }),
-        2000,
-      );
+    onSettled: (_data, error) => {
+      if (error) return;
+      // Delayed refetch: give Salesforce a moment to propagate, then take the
+      // server's answer as truth. (The previous version re-applied the client
+      // patch over the refetched data, which hid silently-ignored SF writes —
+      // exactly the failure the read-back exists to surface.)
+      setTimeout(() => {
+        void qc.refetchQueries({ queryKey: ["accounts"] });
+        void qc.invalidateQueries({ queryKey: ["jobs", "accounts"] });
+      }, 2000);
     },
   });
 }

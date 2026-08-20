@@ -1,7 +1,7 @@
 import { useSearchParams } from "react-router-dom";
 import { ClipboardList, GraduationCap } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
-import { ComingSoon } from "@/components/jobs/ComingSoon";
+import { RolesBoard } from "@/components/jobs/RolesBoard";
 import { cn } from "@/lib/utils";
 import { JobsBuilders } from "./JobsBuilders";
 
@@ -17,9 +17,8 @@ const VALID_TABS = new Set<string>(TABS.map((t) => t.key));
 export function JobsPlacementPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const tabFromUrl = searchParams.get("tab");
-  // Default to Builders (real content) until the Roles page is built.
   const activeTab: TabKey =
-    tabFromUrl && VALID_TABS.has(tabFromUrl) ? (tabFromUrl as TabKey) : "builders";
+    tabFromUrl && VALID_TABS.has(tabFromUrl) ? (tabFromUrl as TabKey) : "roles";
 
   const setTab = (key: TabKey) => {
     const next = new URLSearchParams(searchParams);
@@ -57,12 +56,7 @@ export function JobsPlacementPage() {
       />
 
       <div className="mt-1">
-        {activeTab === "roles" && (
-          <ComingSoon
-            title="Roles"
-            description="A dedicated roles board is coming soon — until then, manage roles from the Roles section on Jobs Home or an opportunity's Roles tab."
-          />
-        )}
+        {activeTab === "roles" && <RolesBoard />}
         {activeTab === "builders" && <JobsBuilders />}
       </div>
     </div>

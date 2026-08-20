@@ -160,19 +160,48 @@ async def ensure_for_opp(
         NULL DO NOTHING` (via the partial unique index from the migration).
         Safe to call on every stage-change write or sync poll.
     """
-    # 1. Fetch stage + record type if not provided
+    # asyncpg expects datetime.date, not a string. SF returns "YYYY-MM-DD".
+    def _to_date(v):
+        if isinstance(v, date_type):
+            return v
+        if isinstance(v, str):
+            try:
+                return date_type.fromisoformat(v)
+            except ValueError:
+                return None
+        return None
+
+    # 1. Fetch stage + record type if not provided. The same SOQL also pulls
+    # CloseDate and the grant period fields — the Opportunity is the source of
+    # truth for the grant period, seeding award_date / period_end_date below.
     stage_name = stage_name_hint
     record_type_name = record_type_hint
+    close_date = None
+    grant_start = None
+    grant_end = None
 
+    _SOQL = (
+        f"SELECT StageName, RecordType.Name, CloseDate, "
+        f"Grant_Start_Date__c, Grant_End_Date__c "
+        f"FROM Opportunity WHERE Id = '{opp_id}' LIMIT 1"
+    )
+
+    def _absorb(rec: Dict[str, Any]) -> None:
+        nonlocal stage_name, record_type_name, close_date, grant_start, grant_end
+        stage_name = stage_name or rec.get("StageName")
+        rt = rec.get("RecordType") or {}
+        record_type_name = record_type_name or rt.get("Name")
+        close_date = _to_date(rec.get("CloseDate"))
+        grant_start = _to_date(rec.get("Grant_Start_Date__c"))
+        grant_end = _to_date(rec.get("Grant_End_Date__c"))
+
+    fetched = False
     if stage_name is None or record_type_name is None:
         try:
             # `sf_client.query` is async on the unified MCP client wrapper —
             # the prior synchronous-style call returned a coroutine that then
             # blew up on `.get("records")`. Await it.
-            result = await sf_client.query(
-                f"SELECT StageName, RecordType.Name, CloseDate "
-                f"FROM Opportunity WHERE Id = '{opp_id}' LIMIT 1"
-            )
+            result = await sf_client.query(_SOQL)
         except Exception:
             logger.exception("awards.ensure_for_opp: SF query failed for %s", opp_id)
             return None
@@ -180,22 +209,8 @@ async def ensure_for_opp(
         if not records:
             logger.info("awards.ensure_for_opp: opp %s not found in SF", opp_id)
             return None
-        rec = records[0]
-        stage_name = stage_name or rec.get("StageName")
-        rt = rec.get("RecordType") or {}
-        record_type_name = record_type_name or rt.get("Name")
-        close_date = rec.get("CloseDate")
-    else:
-        # Caller supplied both — still need CloseDate for award_date proxy.
-        # If they don't have it, we'll set None and the user can edit later.
-        close_date = None
-
-    # asyncpg expects datetime.date, not a string. SF returns "YYYY-MM-DD".
-    if isinstance(close_date, str):
-        try:
-            close_date = date_type.fromisoformat(close_date)
-        except (ValueError, TypeError):
-            close_date = None
+        _absorb(records[0])
+        fetched = True
 
     # 2. Eligibility gate
     if not is_award_eligible(stage_name, record_type_name):
@@ -210,19 +225,37 @@ async def ensure_for_opp(
     if existing:
         return existing
 
-    # 4. Insert
+    # 4. Insert. Grant period flows down from the Opportunity when present:
+    # award_date is the grant start (falling back to CloseDate as a proxy),
+    # period_end_date is the grant end. Both editable on the award later.
+    # Hinted callers skipped the SOQL above (their fast path — and the common
+    # case of an already-existing award never needs SF at all); fetch the
+    # dates now, best-effort, only because we're actually creating the row.
+    if not fetched:
+        try:
+            result = await sf_client.query(_SOQL)
+            records = result.get("records") or []
+            if records:
+                _absorb(records[0])
+        except Exception:
+            logger.warning(
+                "awards.ensure_for_opp: date fetch failed for %s; "
+                "creating award without grant dates.", opp_id)
+
     initial_status = initial_award_status(stage_name)
     row = await conn.fetchrow(
         """
-        INSERT INTO bedrock.award (opportunity_id, award_status, award_date, notes)
-        VALUES ($1, $2, $3, $4)
+        INSERT INTO bedrock.award (opportunity_id, award_status, award_date,
+                                   period_end_date, notes)
+        VALUES ($1, $2, $3, $4, $5)
         ON CONFLICT (opportunity_id) WHERE deleted_at IS NULL DO NOTHING
         RETURNING id, opportunity_id, award_status, award_date, period_end_date,
                   notes, created_at, updated_at
         """,
         opp_id,
         initial_status,
-        close_date,  # may be None — fine; user can edit later
+        grant_start or close_date,  # may be None — fine; user can edit later
+        grant_end,
         f"Auto-created on stage transition to {stage_name}",
     )
 

@@ -24,6 +24,8 @@ export interface SfUser {
 /** Playbook-defined Account Status, derived server-side. Values come
  *  from services/account_status.py — kept in sync there. */
 export type AccountStatus =
+  | "Deprioritized"
+  | "On Hold"
   | "Prospect"
   | "Activating"
   | "Pursuing"
@@ -59,6 +61,9 @@ export interface SfAccount {
   // Pursuit custom fields (from main.py:535 query)
   Account_Tier__c?: string | null;
   Active__c?: boolean | null;
+  Qualification_Status__c?: string | null;
+  Qualification_Date_Updated__c?: string | null;
+  Qualification_Explanation__c?: string | null;
   Company_Size__c?: string | null;
   Philanthropy__c?: boolean | null;
   Fee_For_Service__c?: boolean | null;
@@ -84,6 +89,7 @@ export interface SfAccount {
 
   Total_Revenue_Generated__c?: number | null;
   Last_Activity_Date__c?: string | null;
+  Drive_Strategy_Folder_URL__c?: string | null;
 }
 
 /**
@@ -152,6 +158,22 @@ export interface SfOpportunity {
   // Reporting
   Reporting_Method__c?: string | null;
   npsp__Next_Grant_Deadline_Due_Date__c?: string | null;
+}
+
+/** Mirrors `npsp__Grant_Deadline__c` — deliverable attached to an Opportunity. */
+export interface SfDeliverable {
+  id: string;
+  name: string | null;
+  opportunity_id: string;
+  type: "LOI" | "Application" | "Interim Report" | "Final Report" | null;
+  due_date: string | null;
+  close_date: string | null;
+  requirements: string | null;
+}
+
+/** Returned by the /upcoming endpoints — includes the parent opportunity name. */
+export interface SfDeliverableWithOppName extends SfDeliverable {
+  opportunity_name: string | null;
 }
 
 /**
@@ -246,6 +268,7 @@ export interface BedrockActivity {
   subject?: string | null;
   description?: string | null;
   email_snippet?: string | null;
+  email_body_text?: string | null;
   occurred_at?: string | null;
   activity_date?: string | null;
   created_at?: string | null;

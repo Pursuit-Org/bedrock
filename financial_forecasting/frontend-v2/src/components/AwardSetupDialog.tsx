@@ -7,7 +7,7 @@ import {
   useAwardReports,
   useCreateAwardReport,
 } from "@/services/awards";
-import { useCreateTask, useUpdateOpportunity } from "@/services/opportunities";
+import { useCreateTask, useOpportunities, useUpdateOpportunity } from "@/services/opportunities";
 import {
   useCreateProject,
   useLinkProjectToOpportunity,
@@ -57,6 +57,21 @@ export function AwardSetupDialog({
   const [startDate, setStartDate] = useState<string>("");
   const [endDate, setEndDate] = useState<string>("");
   const [datesSaved, setDatesSaved] = useState(false);
+
+  // Prefill from the opportunity's grant period fields when they were set
+  // ahead of the award (e.g. via the Grant Period section on the opp page),
+  // so the user confirms instead of re-typing. Seed once, never clobber input.
+  const { data: seedOpps } = useOpportunities();
+  const [datesSeeded, setDatesSeeded] = useState(false);
+  useEffect(() => {
+    if (datesSeeded || !seedOpps) return;
+    const opp = seedOpps.find((o) => o.Id === opportunityId);
+    if (!opp) return;
+    if (!startDate && opp.Grant_Start_Date__c) setStartDate(opp.Grant_Start_Date__c.slice(0, 10));
+    if (!endDate && opp.Grant_End_Date__c) setEndDate(opp.Grant_End_Date__c.slice(0, 10));
+    setDatesSeeded(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seedOpps, datesSeeded]);
 
   const saveDates = () => {
     if (!startDate && !endDate) {

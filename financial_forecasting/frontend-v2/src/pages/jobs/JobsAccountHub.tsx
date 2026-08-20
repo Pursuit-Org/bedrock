@@ -130,7 +130,7 @@ const GROUP_OPTIONS = [
   { value: "owner", label: "Group by Owner" },
   { value: "has_opps", label: "Group by Has opportunities" },
 ];
-const STATUSES: JobsAccountStatus[] = ["Pursuing", "Stewarding", "Re-activating", "Activating", "Prospect", "Dormant"];
+const STATUSES: JobsAccountStatus[] = ["Pursuing", "Stewarding", "Re-activating", "Activating", "Prospect", "Dormant", "Deprioritized", "On Hold"];
 const YESNO = [{ value: "yes", label: "Yes" }, { value: "no", label: "No" }];
 
 interface JobsAccountsView {

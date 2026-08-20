@@ -42,7 +42,10 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
         // during hydrate.
         // v3 — 2026-05-05: Exclude permissions from persisted cache so
         // manage_users_roles never comes from a stale localStorage snapshot.
-        buster: "v3",
+        // v4 — 2026-08-18: jobs/staff-sourced changed from a flat application
+        // array to grouped {company_name, role_title, applications: [...]} —
+        // old cached shape has no .applications, crashing render on hydrate.
+        buster: "v4",
         dehydrateOptions: {
           // Only persist queries that finished successfully — pending /
           // error states carry a state.promise field that doesn't survive

@@ -9,20 +9,24 @@
  */
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { Briefcase, CheckSquare, ExternalLink, Linkedin, Plus, Search, X, Zap } from "lucide-react";
+import { Briefcase, Building2, CheckSquare, ChevronsDownUp, ChevronsUpDown, ExternalLink, Linkedin, MessageSquare, Plus, Search, X, Zap } from "lucide-react";
 import { toast } from "sonner";
 
 import { PageHeader } from "@/components/PageHeader";
 import { ContactDetail, initials } from "@/components/jobs/ProspectAccountExpandPanel";
-import { ContactExpandTabs, jobsContactPath } from "@/components/jobs/jobsEntity";
+import { ContactExpandTabs, jobsAccountPath, jobsContactPath } from "@/components/jobs/jobsEntity";
 import { CompanyPicker } from "@/components/jobs/CompanyPicker";
+import { JobsComments } from "@/components/jobs/JobsComments";
+import { JobsTasks } from "@/components/jobs/JobsTasks";
 import { ExportButton } from "@/components/jobs/ExportButton";
 import { withReferrer } from "@/components/detail";
 import { ColumnChooser } from "@/components/ui/ColumnChooser";
 import { InlineSelect } from "@/components/ui/InlineEdit";
 import { SavedViewsPicker } from "@/components/ui/SavedViewsPicker";
 import { SortableHeader } from "@/components/ui/SortableHeader";
+import { Tag } from "@/components/ui/Tag";
 import { Toolbar } from "@/components/ui/Toolbar";
+import { accountStatusVariant } from "@/lib/accountStatus";
 import { RECENCY_OPTIONS, recencyLabel } from "@/lib/recencyFilter";
 import { useColumnVisibility } from "@/lib/columnVisibility";
 import { useContactStageChange } from "@/lib/useContactStageChange";
@@ -36,10 +40,10 @@ import {
 } from "@/pages/cleanup/Filters";
 import { cn } from "@/lib/utils";
 import {
-  useJobsContacts, useAddContactToJobs,
+  useJobsContacts, useAddContactToJobs, useJobsAccounts, type JobsAccount,
   useContactDetail, useCreateContact, STAGE_LABELS,
   useFlagContactsForJobs, useUnflagJobsContact, useUpdateJobsMembership, MEMBERSHIP_STAGE_LABELS, MEMBERSHIP_STAGES,
-  useContactTagCatalog, useStaff, useUpdateContact, useBulkContactOwner, useBulkProspect,
+  useContactTagCatalog, useStaff, useStaffNameResolver, useUpdateContact, useBulkContactOwner, useBulkProspect,
   type JobStage, type JobContactWithDeal, type ContactSearchResult, type ContactCreateBody, type MembershipStage,
   exportJobsRows,
 } from "@/services/jobs";
@@ -118,11 +122,15 @@ const FILTERABLE: Record<Field, FieldMeta<JobContactWithDeal>> = {
   first_contact_date: { label: "Initial outreach date", type: "date", getValue: (c) => c.first_activity_at ?? "" },
   last_contact_date: { label: "Last contact date", type: "date", getValue: (c) => c.last_activity_at ?? "" },
 };
+// "company" is retained as the stored value so saved views keep resolving; the
+// grouping IS by account, since an account is keyed by normalized company name
+// (same key the /accounts endpoint groups on).
 const GROUP_OPTIONS = [
   { value: "", label: "No grouping" },
-  { value: "company", label: "Group by Company" },
+  { value: "company", label: "Group by Account" },
   { value: "has_deal", label: "Group by Linked deal" },
 ];
+const ACCOUNT_GROUP = "company";
 const YESNO = [{ value: "yes", label: "Yes" }, { value: "no", label: "No" }];
 
 interface JobsContactsView {
@@ -130,15 +138,234 @@ interface JobsContactsView {
 }
 const EMPTY: string[] = [];
 
+// ── Account group header ───────────────────────────────────────────────────────
+/** The account header is two lines: the name (plus its actions) on top, the
+ *  facts underneath. Both rows are grids with fixed tracks, so the name
+ *  column, the action buttons and every meta value land on the same x-offset
+ *  on every account — the whole point of the account cut is scanning a column
+ *  straight down, which a wrapped flex strip can't do.
+ *
+ *  Row 1: chevron · name · actions · filler
+ *  Row 2: indent · contacts · status · investor · owner · filler */
+/** Which pane of an account's panel is showing. */
+type AccountPanelTab = "tasks" | "comments";
+
+const ACCOUNT_TITLE_GRID = "14px 18px minmax(0, 320px) auto 1fr";
+/** Leading track indents the facts under the title rather than aligning to
+ *  the chevron — they're subordinate to the account name. */
+const ACCOUNT_META_GRID =
+  "32px 108px 104px minmax(0, 1.3fr) minmax(0, 260px) 1fr";
+
+/**
+ * The group header when contacts are grouped by account.
+ *
+ * Collapsed, this row IS the view: it has to answer "who owns this account,
+ * where does it stand, and how many of our contacts sit here" without the
+ * reader expanding anything. `shown`/`total` are the contacts in THIS filtered
+ * view vs. everyone flagged at the account, so a filtered subset reads as
+ * "3 of 11" instead of silently under-reporting.
+ */
+function AccountGroupHeader({
+  label, account, ownerName, shown, collapsed, colSpan, onToggle, panelTab, onSelectTab, onAddContact,
+}: {
+  label: string;
+  account?: JobsAccount;
+  /** Resolved display name for the account owner — null when unassigned. */
+  ownerName: string | null;
+  shown: number;
+  collapsed: boolean;
+  colSpan: number;
+  onToggle: () => void;
+  /** Which pane is open for THIS account, or null when its panel is closed.
+   *  One value drives both the panel and which button reads as selected —
+   *  a shared open/closed boolean lit up the wrong button. */
+  panelTab: AccountPanelTab | null;
+  onSelectTab: (tab: AccountPanelTab) => void;
+  onAddContact: () => void;
+}) {
+  const total = account?.prospect_count ?? 0;
+  const portfolioCount = account?.portfolio_count ?? 0;
+  const openTasks = account?.open_tasks ?? 0;
+  return (
+    <>
+      {/* Delineation: a 2px top rule plus the grey band marks where one account
+          ends and the next begins. Contacts below carry a hairline
+          (border-border), so the two never read alike — with both at
+          border-t border-border-strong there was nothing to tell them apart.
+          NB: plain tokens only. bg-surface-2/70 (the old value) compiled to
+          nothing, since bare var(--x) tokens can't take an alpha channel. */}
+      <tr className="cursor-pointer border-t-2 border-b border-border-strong bg-surface-2" onClick={onToggle}>
+        <td colSpan={colSpan} className="px-3 py-2.5">
+          {/* ── Line 1 · who this is, and what you can do to it ── */}
+          <div className="grid items-center gap-x-3" style={{ gridTemplateColumns: ACCOUNT_TITLE_GRID }}>
+            <span className="text-ink-3">{collapsed ? "▸" : "▾"}</span>
+
+            {/* Account mark — gives the title row an anchor the contact rows
+                below don't have, so the eye catches where each account starts.
+                Muted further when the company has no account record. */}
+            <Building2 size={14} className={account ? "text-ink-3" : "text-ink-4"} aria-hidden />
+
+            <span className="min-w-0">
+              {account ? (
+                <Link to={jobsAccountPath(account.account_key)} onClick={(e) => e.stopPropagation()}
+                  className="block truncate text-[13px] font-semibold text-ink hover:text-accent hover:underline"
+                  title={`Open ${account.account}`}>
+                  {label}
+                </Link>
+              ) : (
+                <span className="block truncate text-[13px] font-semibold text-ink" title={label}>{label}</span>
+              )}
+            </span>
+
+            <span className="flex items-center gap-1.5">
+              {/* Adding a contact only needs a company name, so it works even
+                  for a company with no account record behind it. */}
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); onAddContact(); }}
+                title={`Add a contact at ${label}`}
+                className="inline-flex h-6 items-center gap-1 whitespace-nowrap rounded border border-border-strong bg-surface px-2 text-[11.5px] text-ink-3 hover:text-ink"
+              >
+                <Plus size={11} /> Contact
+              </button>
+
+              {/* Tasks and comments hang off the ACCOUNT record, so they're only
+                  offered where the company resolved to one. Each button opens
+                  its OWN pane and lights up on its own — previously both read
+                  from one open/closed flag, so pressing Task selected Notes. */}
+              {account ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); onSelectTab("tasks"); }}
+                    title={`Tasks for ${account.account}`}
+                    className={cn(
+                      "inline-flex h-6 items-center gap-1 whitespace-nowrap rounded border px-2 text-[11.5px]",
+                      panelTab === "tasks"
+                        ? "border-accent bg-accent-soft text-accent-ink"
+                        : "border-border-strong bg-surface text-ink-3 hover:text-ink",
+                    )}
+                  >
+                    <Plus size={11} />
+                    Task
+                    {openTasks > 0 && (
+                      <span className="rounded-full bg-amber-soft px-1 text-[10px] font-semibold text-amber">{openTasks}</span>
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); onSelectTab("comments"); }}
+                    title={`Comments for ${account.account}`}
+                    className={cn(
+                      "inline-flex h-6 items-center gap-1 whitespace-nowrap rounded border px-2 text-[11.5px]",
+                      panelTab === "comments"
+                        ? "border-accent bg-accent-soft text-accent-ink"
+                        : "border-border-strong bg-surface text-ink-3 hover:text-ink",
+                    )}
+                  >
+                    <MessageSquare size={11} /> Comments
+                  </button>
+                </>
+              ) : (
+                <span className="text-[11px] text-ink-4" title="This company isn't linked to an account yet, so there's nothing to attach tasks or comments to.">
+                  No account link
+                </span>
+              )}
+            </span>
+          </div>
+
+          {/* ── Line 2 · the facts, on fixed tracks so they scan down ──
+                 Outline only, no fill: the filled box read as crowded against
+                 the title above it. A hairline (border-border, the lightest
+                 token) is enough to bound the strip. */}
+          <div className="mt-1.5 grid items-center gap-x-3 rounded-md border border-border py-1 pr-2"
+            style={{ gridTemplateColumns: ACCOUNT_META_GRID }}>
+            <span aria-hidden />
+
+            {/* Neutral rather than accent-blue: on this strip the blue fought
+                both the status tag and the selected-button state. */}
+            <span className="justify-self-start rounded-full border border-border-strong bg-surface px-2 py-0.5 text-[11px] font-semibold text-ink-2"
+              title={total > shown ? `${shown} shown by the current filters · ${total} flagged at this account` : undefined}>
+              {total > shown ? `${shown} of ${total}` : shown} contact{shown === 1 ? "" : "s"}
+            </span>
+
+            <span className="min-w-0">
+              {account ? <Tag variant={accountStatusVariant(account.account_status)}>{account.account_status}</Tag> : null}
+            </span>
+
+            {/* Investor is a relationship, not a flag: an account either HAS one
+                (portfolio company) or IS one (other accounts point at it). */}
+            <span className="min-w-0 truncate">
+              {account?.investor_name ? (
+                <span title={`Backed by ${account.investor_name}`}>
+                  <Tag variant="default">Investor: {account.investor_name}</Tag>
+                </span>
+              ) : portfolioCount > 0 ? (
+                <span title={`${portfolioCount} portfolio compan${portfolioCount === 1 ? "y" : "ies"}`}>
+                  <Tag variant="sky">Investor · {portfolioCount} portfolio</Tag>
+                </span>
+              ) : null}
+            </span>
+
+            {/* The owner reads as a person, not a field: full name, no label,
+                and muted so it sits apart from the account's own facts. The
+                email stays in the tooltip. */}
+            <span className="min-w-0 truncate text-[11.5px] text-ink-3" title={account?.owner_email || undefined}>
+              {ownerName || "—"}
+            </span>
+          </div>
+        </td>
+      </tr>
+
+      {/* Mounted only while open, and only the selected pane — each fetches its
+          own data, so showing both would double the requests for a pane you
+          may not be looking at. The other stays one click away in the toggle. */}
+      {account && panelTab && (
+        <tr className="border-b border-border-strong bg-surface">
+          <td colSpan={colSpan} className="px-3 py-3">
+            <div className="inline-flex rounded-md border border-border-strong bg-surface-2 p-0.5">
+              {(["tasks", "comments"] as const).map((t) => (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => onSelectTab(t)}
+                  className={cn(
+                    "inline-flex items-center gap-1 rounded px-2.5 py-1 text-[12px] font-medium capitalize",
+                    panelTab === t ? "bg-surface text-ink shadow-sm" : "text-ink-3 hover:text-ink-2",
+                  )}
+                >
+                  {t}
+                  {t === "tasks" && openTasks > 0 && (
+                    <span className="rounded-full bg-amber-soft px-1 text-[10px] font-semibold text-amber">{openTasks}</span>
+                  )}
+                </button>
+              ))}
+            </div>
+            <div className="mt-3">
+              {panelTab === "tasks"
+                ? <JobsTasks parentType="account" parentId={account.account_key} />
+                : <JobsComments parentType="account" parentId={account.account_key} />}
+            </div>
+          </td>
+        </tr>
+      )}
+    </>
+  );
+}
+
 // ── New Contact modal (unchanged) ────────────────────────────────────────────────
 interface NewContactForm { fullName: string; email: string; title: string; company: string; linkedIn: string; }
 const DEFAULT_NEW_CONTACT_FORM: NewContactForm = { fullName: "", email: "", title: "", company: "", linkedIn: "" };
 function Spinner() {
   return <svg className="h-3 w-3 animate-spin" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" /></svg>;
 }
-function NewContactModal({ onClose }: { onClose: () => void }) {
+function NewContactModal({ onClose, initialCompany }: { onClose: () => void; initialCompany?: string }) {
   const nav = useNavigate();
-  const [form, setForm] = useState<NewContactForm>(DEFAULT_NEW_CONTACT_FORM);
+  // Opened from an account row, the company is already known — prefill it so
+  // the new contact lands in that account's group rather than its own.
+  const [form, setForm] = useState<NewContactForm>(
+    initialCompany ? { ...DEFAULT_NEW_CONTACT_FORM, company: initialCompany } : DEFAULT_NEW_CONTACT_FORM,
+  );
   const createContact = useCreateContact();
   const set = <K extends keyof NewContactForm>(k: K, v: NewContactForm[K]) => setForm((p) => ({ ...p, [k]: v }));
   async function handleSubmit(e: React.FormEvent) {
@@ -336,12 +563,21 @@ function ContactRow({ contact, expanded, onOpen, visibleCols, selected, onToggle
   };
   return (
     <Fragment>
-      <tr id={`contact-${contact.contact_id}`} className={cn("cursor-pointer border-t border-border-strong hover:bg-surface-2/40", expanded && "bg-surface-2/40")} onClick={onOpen}>
+      {/* Hairline between contacts (border-border), so the heavier rule on an
+          account header reads as "new account" rather than "next row". The
+          /40 and /20 alphas that used to be here emitted no CSS at all —
+          bare var(--x) tokens can't take an alpha channel — so the hover and
+          expanded states were invisible. */}
+      <tr id={`contact-${contact.contact_id}`} className={cn("group cursor-pointer border-t border-border hover:bg-surface-2", expanded && "bg-surface-2")} onClick={onOpen}>
+        {/* The sticky name column needs an opaque fill or rows scroll under it
+            — but a fixed bg-surface painted OVER the row's hover colour, so the
+            name cell stayed white while every other column greyed. It now
+            tracks the row via group-hover and the expanded state. */}
         {visibleCols.map((key, i) => (
-          <td key={key} className={cn("overflow-hidden px-3 py-1.5 align-middle", i === 0 && "sticky left-0 z-10 bg-surface")} onClick={["flag", "prospect", "owner", "tags"].includes(key) ? (e) => e.stopPropagation() : undefined}>{cells[key]}</td>
+          <td key={key} className={cn("overflow-hidden px-3 py-1.5 align-middle", i === 0 && cn("sticky left-0 z-10 group-hover:bg-surface-2", expanded ? "bg-surface-2" : "bg-surface"))} onClick={["flag", "prospect", "owner", "tags"].includes(key) ? (e) => e.stopPropagation() : undefined}>{cells[key]}</td>
         ))}
       </tr>
-      {expanded && <tr className="bg-surface-2/20"><td colSpan={visibleCols.length} className="p-0"><ContactExpandTabs contactId={contact.contact_id} /></td></tr>}
+      {expanded && <tr className="bg-surface-2"><td colSpan={visibleCols.length} className="p-0"><ContactExpandTabs contactId={contact.contact_id} /></td></tr>}
       {/* Rendered outside the cells: a modal can't live inside a <td> in a
           ternary, and only the row you clicked has a pending revisit. */}
       {stageChange.dialog}
@@ -358,8 +594,23 @@ export function JobsContacts({ initialQuery, initialContactId, initialConnectedO
     ? [{ id: "seed-connected", field: "connected", op: "is_not_empty", values: [] }]
     : []);
   const [groupBy, setGroupBy] = useSessionState<string>("jobs-contacts:groupBy", "");
-  const [collapsedGroups, setCollapsedGroups] = useSessionState<string[]>("jobs-contacts:groupCollapsed", EMPTY);
-  const [showNewContact, setShowNewContact] = useState(false);
+  // Collapse state is a MODE plus a list of exceptions to it, not a list of
+  // collapsed keys. That makes "collapse all" a single flip that also covers
+  // groups scrolled out of view or created by a later filter change — an
+  // enumerate-every-key approach goes stale the moment the buckets change.
+  // Which account's panel is open and which pane it's showing. One at a time:
+  // the panel is a working surface, not something to read across accounts.
+  const [panel, setPanel] = useState<{ key: string; tab: AccountPanelTab } | null>(null);
+  /** Clicking the pane you're already on closes the panel; clicking the other
+   *  switches to it without closing. */
+  const selectPanelTab = useCallback((key: string, tab: AccountPanelTab) => {
+    setPanel((p) => (p && p.key === key && p.tab === tab ? null : { key, tab }));
+  }, []);
+  const [groupMode, setGroupMode] = useSessionState<"expanded" | "collapsed">("jobs-contacts:groupMode", "expanded");
+  const [groupExceptions, setGroupExceptions] = useSessionState<string[]>("jobs-contacts:groupToggles", EMPTY);
+  // null = closed. `company` is set when opened from an account row so the
+  // modal can prefill it; the toolbar button opens it with an empty string.
+  const [newContact, setNewContact] = useState<{ company: string } | null>(null);
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [exporting, setExporting] = useState(false);
@@ -376,8 +627,12 @@ export function JobsContacts({ initialQuery, initialContactId, initialConnectedO
   const unflag = useUnflagJobsContact();
   const toggleSelect = useCallback((id: number) => setSelected((p) => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; }), []);
   const { sort, toggle, setSort } = useSort<ColKey>({ key: "name", direction: "asc" });
-  const { visible: visibleCols, toggle: toggleCol, replaceAll: replaceVisibleCols } =
+  const { visible: visibleCols, toggle: toggleCol, replaceAll: replaceVisibleCols, move: moveCol } =
     useColumnVisibility<ColKey>("bedrock-v2:vis:jobs-contacts-v2", COLUMN_ORDER, DEFAULT_VISIBLE);
+  // Column drag-reorder (spreadsheet-style: grab a header, drop it where you
+  // want it). `dragCol` is what's moving, `dropCol` is what it's hovering.
+  const [dragCol, setDragCol] = useState<ColKey | null>(null);
+  const [dropCol, setDropCol] = useState<ColKey | null>(null);
   const { widths, startResize } = useColumnWidths<ColKey>("bedrock-v2:cols:jobs-contacts", DEFAULT_WIDTHS);
   const [showAllRows, setShowAllRows] = useState(false);
 
@@ -433,6 +688,7 @@ export function JobsContacts({ initialQuery, initialContactId, initialConnectedO
 
   const { data: tagCatalog = [] } = useContactTagCatalog();
   const { data: staffForFilter = [] } = useStaff();
+  const staffName = useStaffNameResolver();
   // slug → campaign priority (lower = higher priority); a contact's priority is
   // its best (lowest) tag order. Untagged contacts sort last.
   const tagOrder = useMemo(() => Object.fromEntries(tagCatalog.map((t) => [t.slug, t.sort_order])), [tagCatalog]);
@@ -447,8 +703,19 @@ export function JobsContacts({ initialQuery, initialContactId, initialConnectedO
     owner: staffForFilter.map((s) => ({ value: s.email, label: s.name })),
   }), [tagCatalog, staffForFilter]);
 
-  const collapsedSet = useMemo(() => new Set(collapsedGroups), [collapsedGroups]);
-  const toggleGroup = useCallback((k: string) => setCollapsedGroups((p) => p.includes(k) ? p.filter((x) => x !== k) : [...p, k]), [setCollapsedGroups]);
+  const exceptionSet = useMemo(() => new Set(groupExceptions), [groupExceptions]);
+  const isCollapsed = useCallback(
+    (k: string) => (groupMode === "collapsed" ? !exceptionSet.has(k) : exceptionSet.has(k)),
+    [groupMode, exceptionSet],
+  );
+  const toggleGroup = useCallback(
+    (k: string) => setGroupExceptions((p) => (p.includes(k) ? p.filter((x) => x !== k) : [...p, k])),
+    [setGroupExceptions],
+  );
+  const toggleAllGroups = useCallback(() => {
+    setGroupMode((m) => (m === "collapsed" ? "expanded" : "collapsed"));
+    setGroupExceptions(EMPTY);
+  }, [setGroupMode, setGroupExceptions]);
 
   const q = query.trim().toLowerCase();
   const filtered = useMemo(() => {
@@ -483,20 +750,61 @@ export function JobsContacts({ initialQuery, initialContactId, initialConnectedO
     return k;
   }, [groupBy]);
 
-  type DisplayRow = { kind: "row"; c: JobContactWithDeal } | { kind: "header"; key: string; label: string; count: number; collapsed: boolean };
-  const grouped: DisplayRow[] | null = useMemo(() => {
+  // Account context for the group headers. Only fetched while actually grouping
+  // by account — /api/jobs/accounts is a ~15-query fan-out, too expensive to
+  // pull on every Contacts load for a header that may never render.
+  const groupingByAccount = groupBy === ACCOUNT_GROUP;
+  const { data: accountsData } = useJobsAccounts(undefined, "engaged", { enabled: groupingByAccount });
+  // Keyed by account_key, which the backend derives as lower(trim(name)) — the
+  // same normalization applied to the contact's company below.
+  const accountByKey = useMemo(() => {
+    const m = new Map<string, JobsAccount>();
+    for (const a of accountsData ?? []) m.set(a.account_key, a);
+    return m;
+  }, [accountsData]);
+
+  // Bucketing is independent of collapse state so toggling a group doesn't
+  // re-partition every contact.
+  //
+  // Account grouping buckets on lower(trim(company)) — the same key the
+  // /accounts endpoint groups on. Bucketing on the raw string instead would
+  // split one account into a group per spelling ("Acme" / "acme " / "ACME"),
+  // each with its own partial contact count. The label keeps the first raw
+  // spelling seen, or the account's canonical name once it resolves.
+  type Bucket = { key: string; label: string; list: JobContactWithDeal[]; account?: JobsAccount };
+  const buckets: Bucket[] | null = useMemo(() => {
     if (!groupBy) return null;
     const field = FILTERABLE[groupBy as Field]; if (!field) return null;
-    const buckets = new Map<string, JobContactWithDeal[]>();
-    for (const c of filtered) { const k = String(field.getValue(c) ?? ""); (buckets.get(k) ?? buckets.set(k, []).get(k)!).push(c); }
+    const m = new Map<string, Bucket>();
+    for (const c of filtered) {
+      const raw = String(field.getValue(c) ?? "");
+      const key = groupingByAccount ? raw.trim().toLowerCase() : raw;
+      const b = m.get(key);
+      if (b) b.list.push(c);
+      else m.set(key, { key, label: groupingByAccount ? (raw.trim() || "—") : groupLabel(raw), list: [c] });
+    }
+    if (groupingByAccount) {
+      for (const b of m.values()) {
+        b.account = accountByKey.get(b.key);
+        if (b.account) b.label = b.account.account;
+      }
+    }
+    return [...m.values()].sort((x, y) => x.label.localeCompare(y.label));
+  }, [filtered, groupBy, groupLabel, groupingByAccount, accountByKey]);
+
+  type DisplayRow =
+    | { kind: "row"; c: JobContactWithDeal }
+    | { kind: "header"; key: string; label: string; count: number; collapsed: boolean; account?: JobsAccount };
+  const grouped: DisplayRow[] | null = useMemo(() => {
+    if (!buckets) return null;
     const out: DisplayRow[] = [];
-    for (const k of [...buckets.keys()].sort((x, y) => groupLabel(x).localeCompare(groupLabel(y)))) {
-      const list = buckets.get(k)!; const collapsed = collapsedSet.has(k);
-      out.push({ kind: "header", key: k, label: groupLabel(k), count: list.length, collapsed });
-      if (!collapsed) for (const c of list) out.push({ kind: "row", c });
+    for (const b of buckets) {
+      const collapsed = isCollapsed(b.key);
+      out.push({ kind: "header", key: b.key, label: b.label, count: b.list.length, collapsed, account: b.account });
+      if (!collapsed) for (const c of b.list) out.push({ kind: "row", c });
     }
     return out;
-  }, [filtered, groupBy, collapsedSet, groupLabel]);
+  }, [buckets, isCollapsed]);
 
   const tableMinWidth = visibleCols.reduce((s, k) => s + widths[k], 0);
   const renderRow = (c: JobContactWithDeal) => (
@@ -506,7 +814,7 @@ export function JobsContacts({ initialQuery, initialContactId, initialConnectedO
 
   return (
     <div className="flex flex-col px-5 py-2">
-      {showNewContact && <NewContactModal onClose={() => setShowNewContact(false)} />}
+      {newContact && <NewContactModal onClose={() => setNewContact(null)} initialCompany={newContact.company || undefined} />}
 
       {/* Preview */}
       {previewContact && (
@@ -536,14 +844,37 @@ export function JobsContacts({ initialQuery, initialContactId, initialConnectedO
           <option value="flagged">Has jobs stage</option>
           <option value="unflagged">No jobs stage</option>
         </select>
-        <select value={groupBy} onChange={(e) => { setGroupBy(e.target.value); setCollapsedGroups([]); }} title="Group rows by a field" className="h-7 rounded border border-border-strong bg-surface px-2 text-[12.5px] text-ink-2 outline-none focus:border-accent">
+        <select
+          value={groupBy}
+          onChange={(e) => {
+            const next = e.target.value;
+            setGroupBy(next);
+            setGroupExceptions(EMPTY);
+            // Account grouping opens collapsed: the point of that view is the
+            // account roll-up, and 100+ expanded groups bury it. Other
+            // groupings keep the original expanded default.
+            setGroupMode(next === ACCOUNT_GROUP ? "collapsed" : "expanded");
+          }}
+          title="Group rows by a field"
+          className="h-7 rounded border border-border-strong bg-surface px-2 text-[12.5px] text-ink-2 outline-none focus:border-accent"
+        >
           {GROUP_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
         </select>
+        {groupBy && (
+          <button
+            type="button"
+            onClick={toggleAllGroups}
+            title={groupMode === "collapsed" ? "Expand every group" : "Collapse every group"}
+            className="inline-flex h-7 items-center gap-1.5 whitespace-nowrap rounded border border-border-strong bg-surface px-2 text-[12.5px] text-ink-2 hover:bg-surface-2"
+          >
+            {groupMode === "collapsed" ? <><ChevronsUpDown size={13} /> Expand all</> : <><ChevronsDownUp size={13} /> Collapse all</>}
+          </button>
+        )}
         <span className="whitespace-nowrap font-mono text-[12px] text-ink-4">{isLoading ? "…" : `${filtered.length} contact${filtered.length === 1 ? "" : "s"}`}</span>
         <div className="ml-auto flex items-center gap-2">
           <ColumnChooser allColumns={COLUMN_ORDER} labels={COL_LABELS} visible={visibleCols} required={["name"]} onToggle={toggleCol} />
-          <SavedViewsPicker<JobsContactsView> scopeKey="jobs-contacts" currentFilters={{ query, rules, visibleCols, groupBy, sort }} onLoad={(v) => { setQuery(v.query ?? ""); setRules(v.rules ?? []); setGroupBy(v.groupBy ?? ""); setCollapsedGroups([]); if (v.visibleCols?.length) replaceVisibleCols(v.visibleCols); if (v.sort) setSort(v.sort); }} />
-          <button type="button" onClick={() => setShowNewContact(true)} className="inline-flex h-7 items-center gap-1.5 rounded border border-ink bg-ink px-3 text-[12.5px] font-medium text-surface hover:opacity-90"><Plus size={13} /> New Contact</button>
+          <SavedViewsPicker<JobsContactsView> scopeKey="jobs-contacts" currentFilters={{ query, rules, visibleCols, groupBy, sort }} onLoad={(v) => { setQuery(v.query ?? ""); setRules(v.rules ?? []); const g = v.groupBy ?? ""; setGroupBy(g); setGroupExceptions(EMPTY); setGroupMode(g === ACCOUNT_GROUP ? "collapsed" : "expanded"); if (v.visibleCols?.length) replaceVisibleCols(v.visibleCols); if (v.sort) setSort(v.sort); }} />
+          <button type="button" onClick={() => setNewContact({ company: "" })} className="inline-flex h-7 items-center gap-1.5 rounded border border-ink bg-ink px-3 text-[12.5px] font-medium text-surface hover:opacity-90"><Plus size={13} /> New Contact</button>
         </div>
       </Toolbar>
 
@@ -647,6 +978,18 @@ export function JobsContacts({ initialQuery, initialContactId, initialConnectedO
                 width={widths[key]}
                 onStartResize={(e) => startResize(key, e)}
                 isLast={idx === visibleCols.length - 1}
+                drag={{
+                  onDragStart: () => setDragCol(key),
+                  onDragEnter: () => setDropCol(key),
+                  onDrop: () => { if (dragCol) moveCol(dragCol, key); setDragCol(null); setDropCol(null); },
+                  onDragEnd: () => { setDragCol(null); setDropCol(null); },
+                  dragging: dragCol === key,
+                  // The line marks where the column will land: to the right of
+                  // the target when dragging rightwards, left when leftwards.
+                  dropEdge: dragCol && dropCol === key && dragCol !== key
+                    ? (visibleCols.indexOf(dragCol) < idx ? "right" : "left")
+                    : null,
+                }}
                 className={cn("py-1.5 font-semibold", idx === 0 && "sticky left-0 z-30")}
               >
                 {key === "name" ? (
@@ -666,11 +1009,25 @@ export function JobsContacts({ initialQuery, initialContactId, initialConnectedO
             ) : filtered.length === 0 ? (
               <tr><td colSpan={visibleCols.length} className="px-6 py-10 text-center text-[13px] text-ink-3">No contacts match.{" "}<button type="button" className="text-accent underline underline-offset-2" onClick={() => { setQuery(""); setRules([]); }}>Clear filters</button></td></tr>
             ) : grouped ? (
-              grouped.map((item) => item.kind === "header" ? (
-                <tr key={`g-${item.key}`} className="cursor-pointer border-y border-border-strong bg-surface-2/70 hover:bg-surface-2" onClick={() => toggleGroup(item.key)}>
+              grouped.map((item) => item.kind !== "header" ? renderRow(item.c) : groupingByAccount ? (
+                <AccountGroupHeader
+                  key={`g-${item.key}`}
+                  label={item.label}
+                  account={item.account}
+                  ownerName={item.account?.owner_email ? staffName(item.account.owner_email) : null}
+                  shown={item.count}
+                  collapsed={item.collapsed}
+                  colSpan={visibleCols.length}
+                  onToggle={() => toggleGroup(item.key)}
+                  panelTab={panel?.key === item.key ? panel.tab : null}
+                  onSelectTab={(tab) => selectPanelTab(item.key, tab)}
+                  onAddContact={() => setNewContact({ company: item.account?.account ?? item.label })}
+                />
+              ) : (
+                <tr key={`g-${item.key}`} className="cursor-pointer border-y border-border-strong bg-surface-2 hover:bg-surface" onClick={() => toggleGroup(item.key)}>
                   <td colSpan={visibleCols.length} className="px-3 py-1.5 text-[11.5px] font-semibold uppercase tracking-wider text-ink-2"><span className="inline-block w-3 text-ink-3">{item.collapsed ? "▸" : "▾"}</span>{item.label}<span className="ml-2 normal-case tracking-normal text-ink-3">{item.count}</span></td>
                 </tr>
-              ) : renderRow(item.c))
+              ))
             ) : (
               <>
                 {(showAllRows ? filtered : filtered.slice(0, 300)).map(renderRow)}

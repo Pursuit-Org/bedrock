@@ -15,6 +15,7 @@ export interface Award {
   notes: string;
   reporting_frequency: string | null;
   next_report_due: string | null;
+  contract_file_link: string | null;
   created_at: string;
   updated_at: string;
 
@@ -89,6 +90,7 @@ export interface AwardPatch {
   notes?: string;
   reporting_frequency?: string | null;
   next_report_due?: string | null;
+  contract_file_link?: string | null;
 }
 
 export function useUpdateAward() {

@@ -12,8 +12,8 @@ import pytest
 from tests.jobs_fakes import FakeConn, make_jobs_client
 
 OPP_SQL = "FROM bedrock.jobs_opportunity"
-PROSPECT_SQL = "coalesce(trim(current_company)"
-JA_SQL = "account_key, owner_email, status_override, sf_account_id"  # the override-record SELECT (not jobs_account_task)
+PROSPECT_SQL = "c.is_jobs_contact = true"  # the per-company prospect COUNT aggregate
+JA_SQL = "account_key, display_name, owner_email, status_override, sf_account_id"  # the override-record SELECT (not jobs_account_task)
 ACT_SQL = "c.contact_id = a.participant_public_contact_id"  # the per-account warmth/actor aggregate
 HIRES_SQL = "count(DISTINCT user_id) AS n FROM ("           # builders-hired-per-account aggregate
 
@@ -42,7 +42,7 @@ def _conn(opps=None, prospects=None, ja=None, activity=None, hires=None):
 
 
 def _act(company, recent=1, responded=False, actors=None, last=RECENT):
-    return {"company": company, "last_act": last, "recent": recent,
+    return {"company": company, "last_act": last, "first_act": last, "recent": recent,
             "responded": responded, "actors": actors or []}
 
 
@@ -79,9 +79,8 @@ def test_status_dormant_when_old_stale():
 
 
 def test_status_prospect_when_only_contacts():
-    prospects = [{"contact_id": 1, "full_name": "Jo", "email": "j@x.com", "current_title": "PM",
-                  "current_company": "Acme", "contact_stage": "lead", "linkedin_url": None,
-                  "updated_at": RECENT}]
+    # Prospects arrive pre-aggregated per company since the #260 payload trim.
+    prospects = [{"key": "acme", "display": "Acme", "n": 1, "last_updated": RECENT}]
     data = _accounts(_conn(prospects=prospects))
     acc = _find(data, "Acme")
     assert acc["account_status"] == "Prospect"
@@ -91,9 +90,7 @@ def test_status_prospect_when_only_contacts():
 def test_status_activated_when_contact_touched_no_opp():
     # A prospect we've done outreach to (activity exists) but with no opportunity
     # is "Activating" — between untouched Prospect and active Pursuing.
-    prospects = [{"contact_id": 1, "full_name": "Jo", "email": "j@x.com", "current_title": "PM",
-                  "current_company": "Acme", "contact_stage": "lead", "linkedin_url": None,
-                  "updated_at": RECENT}]
+    prospects = [{"key": "acme", "display": "Acme", "n": 1, "last_updated": RECENT}]
     data = _accounts(_conn(prospects=prospects,
                            activity=[_act("acme", recent=2, actors=["avni@pursuit.org"])]))
     acc = _find(data, "Acme")
@@ -122,13 +119,13 @@ def test_builders_hired_defaults_zero():
 
 
 def test_status_override_wins():
-    ja = [{"account_key": "acme", "owner_email": None, "status_override": "Dormant", "sf_account_id": None}]
+    ja = [{"account_key": "acme", "display_name": None, "owner_email": None, "status_override": "Dormant", "sf_account_id": None}]
     data = _accounts(_conn(opps=[_opp("Acme", "active_in_discussions")], ja=ja))
     assert _find(data, "Acme")["account_status"] == "Dormant"   # override beats derived "Pursuing"
 
 
 def test_owner_and_sf_account_overrides():
-    ja = [{"account_key": "acme", "owner_email": "boss@p.org", "status_override": None, "sf_account_id": "001PIN"}]
+    ja = [{"account_key": "acme", "display_name": None, "owner_email": "boss@p.org", "status_override": None, "sf_account_id": "001PIN"}]
     data = _accounts(_conn(opps=[_opp("Acme", "active_in_discussions", owner_email="a@p.org")], ja=ja))
     acc = _find(data, "Acme")
     assert acc["owner_email"] == "boss@p.org"     # stored owner wins over derived

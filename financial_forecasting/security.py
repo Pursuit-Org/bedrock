@@ -1,6 +1,8 @@
 """Security utilities — SOQL injection prevention and input validation."""
 
 import re
+from urllib.parse import urlparse
+
 from fastapi import HTTPException
 
 
@@ -35,6 +37,24 @@ def escape_sosl_string(value: str) -> str:
     if not value:
         return value
     return _SOSL_RESERVED.sub(r'\\\1', value)
+
+
+def validate_http_url(value: str, field_name: str = "url") -> str:
+    """Validate that a user-supplied link is an http(s) URL.
+
+    Fields like `award.contract_file_link` get rendered back as
+    `<a href>` on detail pages. Without a scheme check here, a stored
+    `javascript:`/`data:` URI becomes a click-to-execute XSS vector for
+    every viewer of that page. Raises HTTPException(400) on anything
+    else; returns the validated value for convenience.
+    """
+    parsed = urlparse(value)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid {field_name}: must be an http:// or https:// URL",
+        )
+    return value
 
 
 def escape_soql_string(value: str) -> str:

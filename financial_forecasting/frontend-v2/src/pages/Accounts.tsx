@@ -20,7 +20,7 @@ import {
 import { useColumnVisibility } from "@/lib/columnVisibility";
 import { totalWidth, useColumnWidths } from "@/lib/columnWidths";
 import { fmtMoney } from "@/lib/format";
-import { sortBy, useSort } from "@/lib/sort";
+import { sortBy, type SortState } from "@/lib/sort";
 import { cn } from "@/lib/utils";
 import { useSessionState } from "@/lib/useSessionState";
 import { AccountAvatar } from "@/components/AccountAvatar";
@@ -47,9 +47,10 @@ import { toast } from "sonner";
 
 const TYPE_FILTERS = ["All", "Foundation", "Corporate", "Government", "Individual"] as const;
 // Stable empty-array reference for the default of the
-// collapsedGroups useSessionState. See note on useSessionState
+// collapsedGroups / rules useSessionState. See note on useSessionState
 // dep-stability where this is used.
 const EMPTY_COLLAPSED: string[] = [];
+const EMPTY_RULES: FilterRule<AccountField>[] = [];
 type TypeFilter = (typeof TYPE_FILTERS)[number];
 
 function matchesType(account: SfAccount, filter: TypeFilter): boolean {
@@ -237,9 +238,9 @@ export function AccountsPage() {
   const updateAccount = useUpdateAccount();
   const canEdit = usePerm("edit_accounts");
 
-  const [filter, setFilter] = useState<TypeFilter>("All");
-  const [q, setQ] = useState("");
-  const [rules, setRules] = useState<FilterRule<AccountField>[]>([]);
+  const [filter, setFilter] = useSessionState<TypeFilter>("accounts:filter", "All");
+  const [q, setQ] = useSessionState<string>("accounts:q", "");
+  const [rules, setRules] = useSessionState<FilterRule<AccountField>[]>("accounts:rules", EMPTY_RULES);
   const [showCreate, setShowCreate] = useState(false);
   const [expandedId, setExpandedId] = useSessionState<string | null>("accounts:expandedId", null);
   // Optional group-by — when non-empty, the visible rows are bucketed
@@ -265,10 +266,19 @@ export function AccountsPage() {
   const { visible: visibleCols, toggle: toggleCol, replaceAll: replaceVisibleCols } =
     useColumnVisibility("bedrock-v2:vis:accounts", COLUMN_ORDER, DEFAULT_VISIBLE);
 
-  const { sort, toggle } = useSort<ColKey>({
+  const [sort, setSort] = useSessionState<SortState<ColKey>>("accounts:sort", {
     key: "openPipeline",
     direction: "desc",
   });
+  const toggle = useCallback(
+    (key: ColKey) =>
+      setSort((prev) => {
+        if (prev.key !== key) return { key, direction: "asc" };
+        if (prev.direction === "asc") return { key, direction: "desc" };
+        return { key: null, direction: "asc" };
+      }),
+    [setSort],
+  );
   const { widths, startResize, replaceAll: replaceWidths } = useColumnWidths<ColKey>(
     "bedrock-v2:cols:accounts",
     DEFAULT_WIDTHS,
@@ -406,15 +416,18 @@ export function AccountsPage() {
       { value: "No", label: "No" },
     ];
     // Account status is a fixed enum from the playbook — surface all
-    // five values regardless of whether the current view has any of
-    // each, so users can filter to e.g. "Re-activating" even when the
-    // panel doesn't currently show any.
+    // values regardless of whether the current view has any of each,
+    // so users can filter to e.g. "Re-activating" even when the panel
+    // doesn't currently show any. Deprioritized (Active__c=false) and
+    // On Hold (Qualification_Status__c="Not Qualified") joined in #279.
     const status = [
       { value: "Prospect", label: "Prospect" },
       { value: "Pursuing", label: "Pursuing" },
       { value: "Stewarding", label: "Stewarding" },
       { value: "Re-activating", label: "Re-activating" },
       { value: "Dormant", label: "Dormant" },
+      { value: "Deprioritized", label: "Deprioritized" },
+      { value: "On Hold", label: "On Hold" },
     ];
 
     return {

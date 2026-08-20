@@ -22,6 +22,7 @@ import {
   type AwardReportStatus,
   type AwardStatus,
 } from "@/services/awards";
+import { useCommitmentsByAward, type Commitment, type CommitmentStatus } from "@/services/commitments";
 import { TaskListTab } from "@/components/expand/TaskListTab";
 import { useCreateTask, useOpportunities, useOpportunityTasks, useUpdateOpportunity } from "@/services/opportunities";
 import { useOpportunityPayments, useUpdatePayment, type SfPayment } from "@/services/payments";
@@ -219,6 +220,10 @@ function Loaded({ award, opp }: { award: Award; opp: SfOpportunity | undefined }
       {/* Body — two-column layout */}
       <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-3">
         <div className="lg:col-span-2 space-y-6">
+          <Section title="Commitments" flush>
+            <CommitmentsDetail awardId={award.id} />
+          </Section>
+
           <Section title="Reporting requirements">
             <ReportingDetail award={award} canEdit={canEdit} onPatch={patchAward} />
           </Section>
@@ -368,6 +373,26 @@ function AwardMetaDetail({
           />
         ) : (
           <span className="mono text-ink-2">{fmtDate(award.period_end_date)}</span>
+        )}
+      </Row>
+      <Row label="Contract file">
+        {canEdit ? (
+          <InlineText
+            value={award.contract_file_link ?? ""}
+            placeholder="Add a link"
+            onSave={(v) => onPatch({ contract_file_link: v || null })}
+          />
+        ) : award.contract_file_link ? (
+          <a
+            href={award.contract_file_link}
+            target="_blank"
+            rel="noreferrer"
+            className="text-ink-2 underline-offset-4 hover:underline"
+          >
+            View document
+          </a>
+        ) : (
+          <span className="text-ink-4">—</span>
         )}
       </Row>
     </dl>
@@ -760,6 +785,73 @@ function TasksDetail({ opportunityId }: { opportunityId: string }) {
         });
       }}
     />
+  );
+}
+
+// ── Commitments section ───────────────────────────────────────────────────
+//
+// Grant owners work from here directly — the award is already the page's
+// context, so unlike the standalone /commitments dashboard's create flow
+// there's no award picker; new commitments are created against this award.
+
+function commitmentStatusVariant(s: CommitmentStatus): "green" | "sky" | "amber" | "red" {
+  if (s === "complete") return "green";
+  if (s === "ahead") return "sky";
+  if (s === "under") return "red";
+  return "amber";
+}
+
+function CommitmentsDetail({ awardId }: { awardId: string }) {
+  const { data: commitments = [], isLoading } = useCommitmentsByAward(awardId);
+
+  if (isLoading) {
+    return <div className="px-4 py-4 text-[12px] text-ink-3">Loading commitments…</div>;
+  }
+
+  if (commitments.length === 0) {
+    return (
+      <div className="px-4 py-6 text-center text-[12px] text-ink-3">
+        No commitments logged for this award yet.{" "}
+        <Link to={`/commitments?award=${awardId}`} className="underline-offset-4 hover:underline">
+          Log the first one →
+        </Link>
+      </div>
+    );
+  }
+
+  const tracked = commitments.filter((c: Commitment) => c.tracking_tier === "tracked");
+  const reference = commitments.length - tracked.length;
+
+  return (
+    <div>
+      <div className="flex items-center justify-between border-b border-border-strong px-4 py-2 text-[11.5px] text-ink-3">
+        <span>
+          {commitments.length} commitment{commitments.length === 1 ? "" : "s"}
+          {reference > 0 ? ` — ${tracked.length} tracked · ${reference} reference` : ""}
+        </span>
+        <Link
+          to={`/commitments?award=${awardId}`}
+          className="text-ink-2 underline-offset-4 hover:underline"
+        >
+          + Add commitment
+        </Link>
+      </div>
+      <div className="divide-y divide-border-strong">
+        {commitments.map((c: Commitment) => (
+          <Link
+            key={c.id}
+            to={`/commitments/${c.id}`}
+            className="flex items-center gap-2 px-4 py-2 hover:bg-surface-2"
+          >
+            <Tag variant={commitmentStatusVariant(c.status)}>{c.status}</Tag>
+            <span className="min-w-0 flex-1 truncate text-[12.5px] text-ink" title={c.title}>
+              {c.title}
+            </span>
+            <span className="mono flex-shrink-0 text-[11px] text-ink-3">{fmtDate(c.deadline)}</span>
+          </Link>
+        ))}
+      </div>
+    </div>
   );
 }
 
