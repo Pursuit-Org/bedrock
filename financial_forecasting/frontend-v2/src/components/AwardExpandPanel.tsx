@@ -60,7 +60,7 @@ export function AwardExpandPanel({ award }: { award: Award }) {
 
   return (
     <div className="overflow-hidden border-t border-b border-border-strong bg-surface-2/40" style={{ height: AWARD_PANEL_HEIGHT }}>
-      <div className="flex items-center gap-1 border-b border-border-strong bg-surface px-4 pt-2">
+      <div className="flex flex-wrap items-center gap-1 border-b border-border-strong bg-surface px-4 pt-2">
         <TabButton active={tab === "reports"} onClick={() => setTab("reports")}>
           Reports {award.report_total > 0 ? `· ${award.report_done}/${award.report_total}` : ""}
         </TabButton>
@@ -452,7 +452,9 @@ function ProjectsTab({
             autoFocus
             value={linkPick}
             onChange={(e) => setLinkPick(e.target.value)}
-            className="h-7 flex-1 rounded border border-border-strong bg-surface px-2 text-[12.5px] text-ink outline-none focus:border-accent"
+            // min-w-0 lets the select shrink below its widest <option> —
+            // a long project name must not widen the panel.
+            className="h-7 min-w-0 flex-1 rounded border border-border-strong bg-surface px-2 text-[12.5px] text-ink outline-none focus:border-accent"
           >
             <option value="">Choose a project to link…</option>
             {linkableProjects.map((p) => (

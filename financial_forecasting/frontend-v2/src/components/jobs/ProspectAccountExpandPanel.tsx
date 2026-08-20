@@ -282,9 +282,10 @@ export function ContactDetail({ contactId }: { contactId: number }) {
 
   return (
     <div className="border-t border-border-strong bg-surface-2">
-      <div className="flex gap-6 p-5">
-        {/* ── Left: contact info ── */}
-        <div className="flex w-64 flex-shrink-0 flex-col gap-4">
+      <div className="flex flex-col gap-6 p-5 lg:flex-row">
+        {/* ── Left: contact info (stacks above the timeline when the
+            panel is too narrow for side-by-side) ── */}
+        <div className="flex flex-col gap-4 lg:w-64 lg:flex-shrink-0">
           <div className="flex items-center gap-3">
             <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full bg-accent-soft text-[13px] font-bold text-accent-ink">
               {initials(data.full_name)}
@@ -445,21 +446,21 @@ export function ContactDetail({ contactId }: { contactId: number }) {
                           )}
                         </div>
                         {!isExpanded && preview && (
-                          <p className="whitespace-pre-wrap text-[12px] leading-relaxed text-ink-2">{preview}</p>
+                          <p className="whitespace-pre-wrap break-words text-[12px] leading-relaxed text-ink-2">{preview}</p>
                         )}
                         {isExpanded && (
                           <div className="flex flex-col gap-1.5">
                             {act.description && (
-                              <p className="whitespace-pre-wrap text-[12px] leading-relaxed text-ink-2">{act.description}</p>
+                              <p className="whitespace-pre-wrap break-words text-[12px] leading-relaxed text-ink-2">{act.description}</p>
                             )}
                             {act.subject && (
-                              <div className="text-[11px] text-ink-3">
+                              <div className="break-words text-[11px] text-ink-3">
                                 <span className="text-[10px] font-semibold uppercase tracking-wide text-ink-4">Subject: </span>
                                 {act.subject}
                               </div>
                             )}
                             {act.email_from && (
-                              <div className="text-[11px] text-ink-3">
+                              <div className="break-words text-[11px] text-ink-3">
                                 <span className="text-[10px] font-semibold uppercase tracking-wide text-ink-4">From: </span>
                                 {act.email_from}
                               </div>

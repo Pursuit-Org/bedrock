@@ -111,3 +111,39 @@ PRs 2, 4✓, 8✓, 9, 10✓ ship independently.
 ## Future Considerations
 
 - **Pipeline Cleanup Tool**: Build a dedicated cleanup/hygiene feature for stale opportunities (past close date or no updates in 30+ days). Removed from Overview dashboard — belongs as its own tool, not on the main dashboard.
+
+## No Horizontal Scrolling Inside Expanded Rows (2026-08-20)
+
+> Rule: content inside an expanded table row must fit the visible width — no
+> horizontal scrolling required to read an expand panel, even when the outer
+> table itself scrolls horizontally.
+
+- [x] Audit panel internals for fixed widths / wide grids / overflow-x
+- [x] Audit every expansion embedding site + scroll container (16 sites)
+- [x] Shared `components/ui/ExpandRow.tsx` — sticky-left cell capped to the
+      scroll container's measured clientWidth (generalizes the pattern Awards
+      had locally); `w-0 min-w-full` fallback stops wide panels from
+      stretching auto-layout tables in SectionCard hosts
+- [x] Converted all 15 table expansion sites (Accounts, Contacts, Pipeline,
+      Payments, Awards, Dashboard, JobsTeam, JobsAccountHub, JobsContacts,
+      JobsAccounts, JobsHome ×2, Portfolio ×3) to ExpandRow
+- [x] TaskListTab + OpportunityExpandPanel inner tables: 978px/970px fixed
+      colgroups → `w-full table-fixed` with a flexible lead column
+- [x] `break-words` on raw email/comment/description text (ActivityTab,
+      JobsTeam DealExpandPanel, accountTabs CommentRollupRow,
+      ProspectAccountExpandPanel)
+- [x] ProspectAccountExpandPanel ContactDetail: fixed side-by-side `w-64`
+      layout now stacks below `lg`
+- [x] AwardExpandPanel: tab bar wraps; project-link select gets `min-w-0`
+- [x] Verified: tsc + vite build green; sticky/width mechanics confirmed in
+      browser harness at 1280 and 1100 widths, scrolled and unscrolled
+
+### Review
+
+Deliberately left alone: accountTabs "adding" row `overflow-hidden` gap (no
+live overflow — selects clip internally), jobsEntity absolute action cluster
+(vertical overlap concern, not width), `ProspectAccountExpandPanel` outer
+component + `NestedContactRow` (dead code, no callers), `grid-cols-3` forms in
+OppRolesSection/OppBuilderActivity (compress instead of overflow). ExpandRow's
+ResizeObserver only matters when the window resizes while a row is open —
+same reliance the shipped Awards implementation already had.

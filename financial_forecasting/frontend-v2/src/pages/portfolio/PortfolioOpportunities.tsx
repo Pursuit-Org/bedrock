@@ -15,6 +15,7 @@ import { ChevronDown, ChevronRight, ExternalLink } from "lucide-react";
 
 import { AwardSetupDialog } from "@/components/AwardSetupDialog";
 import { OpportunityExpandPanel } from "@/components/OpportunityExpandPanel";
+import { ExpandRow } from "@/components/ui/ExpandRow";
 import { PaymentScheduleBuilder } from "@/components/PaymentScheduleBuilder";
 import { StageGateDialog } from "@/components/StageGateDialog";
 import { SectionCard, withReferrer } from "@/components/detail";
@@ -369,15 +370,13 @@ export function PortfolioOpportunities({
                     <td className="px-3 py-1.5 align-middle text-right text-ink-4"></td>
                   </tr>
                   {isExpanded ? (
-                    <tr>
-                      <td colSpan={7} className="p-0">
-                        <OpportunityExpandPanel
-                          opportunityId={o.Id}
-                          oppAmount={o.Amount ?? null}
-                          oppCloseDate={o.CloseDate ?? null}
-                        />
-                      </td>
-                    </tr>
+                    <ExpandRow colSpan={7}>
+                      <OpportunityExpandPanel
+                        opportunityId={o.Id}
+                        oppAmount={o.Amount ?? null}
+                        oppCloseDate={o.CloseDate ?? null}
+                      />
+                    </ExpandRow>
                   ) : null}
                 </Fragment>
               );

@@ -33,6 +33,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { ColumnChooser } from "@/components/ui/ColumnChooser";
 import { InlineDate, InlineSelect, InlineText } from "@/components/ui/InlineEdit";
 import { ColGroup, ResizableTh } from "@/components/ui/ResizableTable";
+import { ExpandRow } from "@/components/ui/ExpandRow";
 import { SavedViewsPicker } from "@/components/ui/SavedViewsPicker";
 import { SortableHeader } from "@/components/ui/SortableHeader";
 import { StageChip } from "@/components/ui/StageChip";
@@ -801,15 +802,13 @@ export function PaymentsPage() {
                         ruleLabel={reviewRuleLabels}
                       />
                       {isExpanded && oppId ? (
-                        <tr>
-                          <td colSpan={visibleCols.length} className="p-0">
-                            <OpportunityExpandPanel
-                              opportunityId={oppId}
-                              oppAmount={p.npe01__Opportunity__r?.Amount ?? null}
-                              oppCloseDate={p.npe01__Opportunity__r?.CloseDate ?? null}
-                            />
-                          </td>
-                        </tr>
+                        <ExpandRow colSpan={visibleCols.length}>
+                          <OpportunityExpandPanel
+                            opportunityId={oppId}
+                            oppAmount={p.npe01__Opportunity__r?.Amount ?? null}
+                            oppCloseDate={p.npe01__Opportunity__r?.CloseDate ?? null}
+                          />
+                        </ExpandRow>
                       ) : null}
                     </Fragment>
                   );

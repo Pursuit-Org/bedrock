@@ -189,15 +189,19 @@ function OppPayments({
           No payments tied to this opportunity.
         </div>
       ) : (
-        <div className="inline-block max-w-full overflow-hidden rounded border border-border-strong bg-surface align-top">
-          <table className="table-fixed text-[12px]">
+        <div className="max-w-full overflow-hidden rounded border border-border-strong bg-surface">
+          {/* w-full + table-fixed with an unsized Payment # column: the
+              fixed columns keep their widths and Payment # absorbs the
+              rest, so the table tracks the panel width instead of forcing
+              horizontal scrolling inside an expanded row. */}
+          <table className="w-full table-fixed text-[12px]">
             <colgroup>
-              <col style={{ width: 140 }} />
+              <col />
               <col style={{ width: 180 }} />
               <col style={{ width: 130 }} />
               <col style={{ width: 130 }} />
-              <col style={{ width: 195 }} />
-              <col style={{ width: 195 }} />
+              <col style={{ width: 150 }} />
+              <col style={{ width: 150 }} />
             </colgroup>
             <thead className="bg-surface-2 text-[10.5px] uppercase tracking-wider text-ink-3">
               <tr>

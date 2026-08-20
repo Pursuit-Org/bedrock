@@ -254,12 +254,12 @@ function ActivityRow({
             </div>
           ) : null}
           {a.description && a.description !== a.subject ? (
-            <p className="whitespace-pre-wrap text-[12px] text-ink-2">
+            <p className="whitespace-pre-wrap break-words text-[12px] text-ink-2">
               {a.description}
             </p>
           ) : cleanedBody && cleanedBody !== subject ? (
             <>
-              <p className="whitespace-pre-wrap text-[12px] text-ink-2">
+              <p className="whitespace-pre-wrap break-words text-[12px] text-ink-2">
                 {showFull || cleanedBody.length <= EMAIL_PREVIEW_LENGTH
                   ? cleanedBody
                   : cleanedBody.slice(0, EMAIL_PREVIEW_LENGTH) + "…"}
@@ -275,7 +275,7 @@ function ActivityRow({
               ) : null}
             </>
           ) : cleanedSnippet && cleanedSnippet !== subject ? (
-            <p className="whitespace-pre-wrap text-[12px] italic text-ink-2">
+            <p className="whitespace-pre-wrap break-words text-[12px] italic text-ink-2">
               {cleanedSnippet}
             </p>
           ) : null}
