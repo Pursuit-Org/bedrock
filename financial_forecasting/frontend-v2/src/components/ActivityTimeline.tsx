@@ -10,30 +10,13 @@ import {
 
 import { ActivitySourceIcon } from "@/components/ActivitySourceIcon";
 import { useCollapsible } from "@/lib/collapsible";
+import { activityBodyText, decodeEntities } from "@/lib/emailText";
 import { fmtDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { useCurrentUser } from "@/services/auth";
 import type { BedrockActivity } from "@/types/salesforce";
 
-// ── Body normalization ─────────────────────────────────────────────────────
-
 const EMAIL_PREVIEW_LENGTH = 800;
-
-/** Strip HTML tags, decode entities, and normalize whitespace. */
-function cleanEmailText(raw: string): string {
-  return raw
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&#39;/g, "'").replace(/&quot;/g, '"')
-    .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&nbsp;/g, " ")
-    .replace(/\r\n/g, "\n")
-    .split("\n")
-    .map((line) => line.replace(/\s+$/, ""))
-    .join("\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .replace(/[ \t]+/g, " ")
-    .trim();
-}
 
 function activityTimestamp(a: BedrockActivity): string | null {
   return a.activity_date ?? a.occurred_at ?? a.created_at ?? null;
@@ -151,6 +134,27 @@ export function ActivityTimeline({
 
   const needle = q.trim().toLowerCase();
 
+  // Search the CLEANED text — the same text the rows display — so matches
+  // never come from invisible HTML markup, and never miss text that entity
+  // decoding reveals.
+  const searchText = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const a of visibleActivities) {
+      m.set(
+        a.id,
+        [
+          decodeEntities(a.subject),
+          activityBodyText(a),
+          a.owner_email ?? "",
+          a._context_name ?? "",
+        ]
+          .join("\n")
+          .toLowerCase(),
+      );
+    }
+    return m;
+  }, [visibleActivities]);
+
   const filtered = useMemo(() => {
     const now = Date.now();
     const dayMs = 86_400_000;
@@ -179,29 +183,13 @@ export function ActivityTimeline({
         }
         if (quick === "mentions-me") {
           if (!myEmail) return false;
-          const hay = (
-            (a.subject ?? "") +
-            "\n" + (a.description ?? "") +
-            "\n" + (a.email_snippet ?? "") +
-            "\n" + (a.email_body_text ?? "")
-          ).toLowerCase();
-          if (!hay.includes(myEmail)) return false;
+          if (!(searchText.get(a.id) ?? "").includes(myEmail)) return false;
         }
       }
       if (!needle) return true;
-      const hay = [
-        a.subject,
-        a.description,
-        a.email_snippet,
-        a.owner_email,
-        a._context_name,
-      ]
-        .filter(Boolean)
-        .join("\n")
-        .toLowerCase();
-      return hay.includes(needle);
+      return (searchText.get(a.id) ?? "").includes(needle);
     });
-  }, [visibleActivities, typeFilter, sourceFilter, quick, needle, myEmail]);
+  }, [visibleActivities, searchText, typeFilter, sourceFilter, quick, needle, myEmail]);
 
   // Pinned + non-pinned split.
   const pinnedRows = useMemo(
@@ -530,9 +518,10 @@ function ActivityRow({
   // Manual expand only — search no longer auto-opens rows.
   const [expanded, setExpanded] = useState(false);
   const [showFull, setShowFull] = useState(false);
-  const rawBody = a.email_body_text ?? a.email_snippet ?? a.description ?? "";
-  const hasBody = rawBody.trim().length > 0;
-  const body = hasBody ? cleanEmailText(rawBody) : "";
+  // Tag-strips email fields only — plain meeting/call notes keep text in
+  // angle brackets like "Sarah <sarah@x.org>".
+  const body = activityBodyText(a);
+  const hasBody = body.length > 0;
   const date = fmtDate(activityTimestamp(a));
   // Meetings often have no body but still carry useful detail (location,
   // duration, Fireflies notes if logged on the SF Event description).
@@ -568,7 +557,7 @@ function ActivityRow({
           </span>
           <div className="min-w-0 flex-1">
             <div className="truncate text-[13px] font-medium text-ink">
-              {highlightMatches(a.subject ?? "(no subject)", needle)}
+              {highlightMatches(decodeEntities(a.subject) || "(no subject)", needle)}
             </div>
             {hasBody && !expanded ? (
               <div className="line-clamp-1 text-[12px] text-ink-3">
