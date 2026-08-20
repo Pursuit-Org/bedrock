@@ -40,3 +40,9 @@
 - **Dev bypass**: REMOVED 2026-04-08. The `REACT_APP_DEV_BYPASS` branch in `AuthContext.tsx` was stripped entirely. Multi-layer guards (REACT_APP env var + localhost runtime check + NODE_ENV !== 'production') were structurally safe but added attack surface for no real benefit. All environments now require real Google OAuth — local dev included.
 - **Calendar**: Restrict to PBD server-side; reject `primary` and arbitrary calendar IDs. Surface re-auth UX when tokens expire.
 
+
+## tasks/todo.md is the PR roadmap, not a scratch pad (2026-08-20)
+
+**Mistake:** Nearly clobbered `tasks/todo.md` (the master PR roadmap tracker) by writing a per-task plan into it, following the generic "write plan to tasks/todo.md" workflow rule.
+
+**Rule:** Per-task plans go in their own file — `tasks/<topic>-plan.md` — matching the existing convention (`tasks/*.md` one file per effort). Read a file before overwriting it; if it has unrelated content, pick a new filename.

@@ -60,6 +60,12 @@ import {
   type FilterRule,
 } from "@/pages/cleanup/Filters";
 import { ChevronDown, ChevronRight, Mail, Linkedin, Trash2, X, Plus, Check, CheckSquare, Search } from "lucide-react";
+import {
+  activityBodyText,
+  cleanEmailText,
+  cleanPlainText,
+  decodeEntities,
+} from "@/lib/emailText";
 import { cn } from "@/lib/utils";
 import { format, formatDistanceToNow } from "date-fns";
 
@@ -171,16 +177,7 @@ function fmtShortDate(iso: string | null): string {
   }
 }
 
-// Synced email bodies arrive with raw HTML entities (e.g. "you&#39;re").
-// Decode them for display via a detached textarea (no DOM injection).
-let _entityDecoder: HTMLTextAreaElement | null = null;
-function decodeEntities(s: string | null | undefined): string {
-  if (!s) return "";
-  if (typeof document === "undefined") return s;
-  _entityDecoder = _entityDecoder ?? document.createElement("textarea");
-  _entityDecoder.innerHTML = s;
-  return _entityDecoder.value;
-}
+const EMAIL_PREVIEW_LENGTH = 800;
 
 // ── Sub-components ────────────────────────────────────────────────────────────
 
@@ -996,8 +993,12 @@ function ActivityRow({
   onDelete: () => void;
 }) {
   const icon = activityIconProps(e);
-  const preview = decodeEntities(e.description || e.email_snippet);
-  const body = decodeEntities(e.email_body_text || e.description || e.email_snippet);
+  const [showFull, setShowFull] = useState(false);
+  // Descriptions are plain text (never tag-stripped); email fields are HTML.
+  const preview = e.description
+    ? cleanPlainText(e.description)
+    : cleanEmailText(e.email_snippet);
+  const body = activityBodyText(e);
   return (
     <li
       className="cursor-pointer px-4 py-2.5 hover:bg-surface-2/40 transition-colors"
@@ -1021,12 +1022,12 @@ function ActivityRow({
             <div className="mt-1.5 flex flex-col gap-1">
               {e.email_from ? (
                 <span className="text-[11px] text-ink-3">
-                  <span className="font-medium">From:</span> {e.email_from}
+                  <span className="font-medium">From:</span> {decodeEntities(e.email_from)}
                 </span>
               ) : null}
               {e.email_to && e.email_to.length > 0 ? (
                 <span className="text-[11px] text-ink-3">
-                  <span className="font-medium">To:</span> {e.email_to.join(", ")}
+                  <span className="font-medium">To:</span> {e.email_to.map(decodeEntities).join(", ")}
                 </span>
               ) : null}
               {e.meeting_duration_minutes != null ? (
@@ -1035,9 +1036,22 @@ function ActivityRow({
                 </span>
               ) : null}
               {body ? (
-                <p className="mt-0.5 max-h-72 overflow-y-auto whitespace-pre-wrap rounded bg-surface-2/40 p-2 text-[11.5px] leading-relaxed text-ink-2">
-                  {body}
-                </p>
+                <div className="mt-0.5 rounded bg-surface-2/40 p-2">
+                  <p className="whitespace-pre-wrap text-[11.5px] leading-relaxed text-ink-2">
+                    {showFull || body.length <= EMAIL_PREVIEW_LENGTH
+                      ? body
+                      : body.slice(0, EMAIL_PREVIEW_LENGTH) + "…"}
+                  </p>
+                  {body.length > EMAIL_PREVIEW_LENGTH ? (
+                    <button
+                      type="button"
+                      onClick={(ev) => { ev.stopPropagation(); setShowFull((v) => !v); }}
+                      className="mt-1 text-[11px] text-accent hover:underline"
+                    >
+                      {showFull ? "Show less" : "Show more"}
+                    </button>
+                  ) : null}
+                </div>
               ) : null}
             </div>
           )}

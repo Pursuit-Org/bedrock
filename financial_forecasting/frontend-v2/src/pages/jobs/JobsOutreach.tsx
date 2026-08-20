@@ -26,6 +26,7 @@ import {
   type TouchDepthBucket,
   type JobContactWithDeal,
   type MembershipStage,
+  type ActivityEntry,
 } from "@/services/jobs";
 import { InlineSelect } from "@/components/ui/InlineEdit";
 import { TagCampaigns } from "@/components/jobs/TagCampaigns";
@@ -34,12 +35,14 @@ import { JobsFunnels } from "@/components/jobs/JobsFunnels";
 import { Panel, BreakdownBars } from "./JobsOpportunitiesOverview";
 import { ActivityTrends } from "@/components/jobs/ActivityTrends";
 import { PeriodBar, ScopeButtons, defaultPeriod } from "@/components/jobs/PeriodBar";
+import { activityBodyText, decodeEntities } from "@/lib/emailText";
 import { relDay } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 const DRILL_PAGE = 25;
 /** Touches shown before "Show n older" in a contact's inline touch log. */
 const TOUCH_LOG_CAP = 5;
+const TOUCH_BODY_PREVIEW = 800;
 /** Contacts shown per touch-depth bucket before "Show n more". */
 const TOUCH_DRILL_PAGE = 5;
 /** Fallback only — the live list comes from useStageVocabulary(), so the picker
@@ -582,37 +585,70 @@ function TouchLog({ contactId }: { contactId: number }) {
   const shown = showAll ? acts : acts.slice(0, TOUCH_LOG_CAP);
   return (
     <div className="flex flex-col gap-1.5">
-      {shown.map((a) => {
-        const inbound = a.email_from ? !a.email_from.toLowerCase().includes("@pursuit.org") : false;
-        return (
-          <div key={a.id} className="flex items-start gap-2 text-[12px]">
-            <span className={cn("mt-[1px] w-[52px] shrink-0 rounded px-1 py-0.5 text-center text-[10px] font-semibold uppercase",
-              inbound ? "bg-green-soft text-green" : "bg-surface-2 text-ink-3")}>
-              {inbound ? "reply" : a.type}
-            </span>
-            <span className="min-w-0 flex-1">
-              <span className="font-medium text-ink">{a.subject || "(no subject)"}</span>
-              {a.email_snippet || a.description ? (
-                <span className="mt-0.5 block line-clamp-2 text-[11.5px] leading-snug text-ink-3">
-                  {a.email_snippet || a.description}
-                </span>
-              ) : null}
-            </span>
-            <span className="w-[112px] shrink-0 truncate text-right text-[11px] text-ink-4"
-              title={a.email_from || a.logged_by || undefined}>
-              {a.email_from || a.logged_by || "—"}
-            </span>
-            <span className="w-[54px] shrink-0 text-right text-[11px] tabular-nums text-ink-4">
-              {relDay(a.activity_date) ?? "—"}
-            </span>
-          </div>
-        );
-      })}
+      {shown.map((a) => <TouchRow key={a.id} a={a} />)}
       {!showAll && acts.length > TOUCH_LOG_CAP ? (
         <button type="button" onClick={() => setShowAll(true)}
           className="self-start text-[11.5px] font-medium text-accent hover:underline">
           Show {acts.length - TOUCH_LOG_CAP} older
         </button>
+      ) : null}
+    </div>
+  );
+}
+
+/** One touch — a two-line snippet that expands to the full cleaned email
+ *  body, with a show more/less toggle for long ones. */
+function TouchRow({ a }: { a: ActivityEntry }) {
+  const [open, setOpen] = useState(false);
+  const [showFull, setShowFull] = useState(false);
+  const inbound = a.email_from ? !a.email_from.toLowerCase().includes("@pursuit.org") : false;
+  const body = activityBodyText(a);
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => body && setOpen((v) => !v)}
+        disabled={!body}
+        aria-expanded={body ? open : undefined}
+        className={cn("flex w-full items-start gap-2 text-left text-[12px]", body ? "cursor-pointer" : "cursor-default")}
+      >
+        <span className={cn("mt-[1px] w-[52px] shrink-0 rounded px-1 py-0.5 text-center text-[10px] font-semibold uppercase",
+          inbound ? "bg-green-soft text-green" : "bg-surface-2 text-ink-3")}>
+          {inbound ? "reply" : a.type}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="font-medium text-ink">{decodeEntities(a.subject) || "(no subject)"}</span>
+          {!open && body ? (
+            <span className="mt-0.5 block line-clamp-2 text-[11.5px] leading-snug text-ink-3">
+              {body}
+            </span>
+          ) : null}
+        </span>
+        <span className="w-[112px] shrink-0 truncate text-right text-[11px] text-ink-4"
+          title={a.email_from || a.logged_by || undefined}>
+          {a.email_from || a.logged_by || "—"}
+        </span>
+        <span className="w-[54px] shrink-0 text-right text-[11px] tabular-nums text-ink-4">
+          {relDay(a.activity_date) ?? "—"}
+        </span>
+      </button>
+      {open && body ? (
+        <div className="ml-[60px] mt-1 rounded bg-surface-2/50 p-2">
+          <p className="whitespace-pre-wrap break-words text-[11.5px] leading-relaxed text-ink-2">
+            {showFull || body.length <= TOUCH_BODY_PREVIEW
+              ? body
+              : body.slice(0, TOUCH_BODY_PREVIEW) + "…"}
+          </p>
+          {body.length > TOUCH_BODY_PREVIEW ? (
+            <button
+              type="button"
+              onClick={() => setShowFull((v) => !v)}
+              className="mt-1 text-[11px] text-accent hover:underline"
+            >
+              {showFull ? "Show less" : "Show more"}
+            </button>
+          ) : null}
+        </div>
       ) : null}
     </div>
   );
