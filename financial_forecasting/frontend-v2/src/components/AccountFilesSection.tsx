@@ -37,23 +37,11 @@ function uploadErrorMessage(err: unknown): string {
   return e.response?.data?.detail ?? e.message ?? "try again";
 }
 
-/**
- * Self-contained files table for an Account record. Shows all SF Files
- * linked to the account via ContentDocumentLink, with upload + delete.
- * Designed to render inside a SectionCard (AccountDetail) or a tab panel
- * (AccountExpandPanel) — no card wrapper of its own.
- */
-export function AccountFilesSection({ accountId }: { accountId: string }) {
-  const filesQ = useAccountFiles(accountId);
+/** Upload button intended for the SectionCard `action` slot. */
+export function AccountFileUploadButton({ accountId }: { accountId: string }) {
   const upload = useUploadAccountFile(accountId);
-  const deleteFile = useDeleteAccountFile(accountId);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [pendingName, setPendingName] = useState<string | null>(null);
-  const [deletingId, setDeletingId] = useState<string | null>(null);
-
-  const files = filesQ.data ?? [];
-
-  const handlePick = () => fileInputRef.current?.click();
 
   const handleFiles = async (fileList: FileList | null) => {
     if (!fileList || fileList.length === 0) return;
@@ -67,6 +55,55 @@ export function AccountFilesSection({ accountId }: { accountId: string }) {
     }
   };
 
+  return (
+    <span className="flex items-center gap-2">
+      {upload.isError ? (
+        <span className="text-[11px] text-red-600" title={uploadErrorMessage(upload.error)}>
+          Upload failed
+        </span>
+      ) : null}
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        className="hidden"
+        onChange={(e) => void handleFiles(e.target.files)}
+      />
+      <button
+        type="button"
+        onClick={() => fileInputRef.current?.click()}
+        disabled={upload.isPending}
+        className="inline-flex items-center gap-1 rounded border border-border-strong bg-surface px-2 py-0.5 text-[11px] font-medium text-ink-2 hover:bg-surface-2 disabled:opacity-50"
+      >
+        {upload.isPending ? (
+          <>
+            <Loader2 size={11} className="animate-spin" />
+            Uploading {pendingName ?? "…"}
+          </>
+        ) : (
+          <>
+            <Upload size={11} /> Upload file
+          </>
+        )}
+      </button>
+    </span>
+  );
+}
+
+/**
+ * Self-contained files table for an Account record. Shows all SF Files
+ * linked to the account via ContentDocumentLink, with delete.
+ * Designed to render inside a SectionCard (AccountDetail) or a tab panel
+ * (AccountExpandPanel) — no card wrapper of its own. The upload button
+ * lives in the SectionCard header via AccountFileUploadButton.
+ */
+export function AccountFilesSection({ accountId }: { accountId: string }) {
+  const filesQ = useAccountFiles(accountId);
+  const deleteFile = useDeleteAccountFile(accountId);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+
+  const files = filesQ.data ?? [];
+
   const handleDelete = async (contentDocumentId: string, title: string | null) => {
     if (!window.confirm(`Remove "${title ?? "this file"}" from this record? The file itself stays in Salesforce.`)) return;
     setDeletingId(contentDocumentId);
@@ -79,39 +116,6 @@ export function AccountFilesSection({ accountId }: { accountId: string }) {
 
   return (
     <div className="flex flex-col">
-      {/* Upload toolbar */}
-      <div className="flex items-center justify-end border-b border-border-strong px-4 py-2">
-        <input
-          ref={fileInputRef}
-          type="file"
-          multiple
-          className="hidden"
-          onChange={(e) => void handleFiles(e.target.files)}
-        />
-        <button
-          type="button"
-          onClick={handlePick}
-          disabled={upload.isPending}
-          className="inline-flex h-7 items-center gap-1.5 rounded border border-border-strong bg-surface px-2.5 text-[12px] font-medium text-ink-2 hover:bg-surface-2 disabled:opacity-50"
-        >
-          {upload.isPending ? (
-            <>
-              <Loader2 size={12} className="animate-spin" />
-              Uploading {pendingName ?? "…"}
-            </>
-          ) : (
-            <>
-              <Upload size={12} /> Upload file
-            </>
-          )}
-        </button>
-        {upload.isError ? (
-          <span className="ml-3 text-[11px] text-red-600" title={uploadErrorMessage(upload.error)}>
-            Upload failed — {uploadErrorMessage(upload.error)}
-          </span>
-        ) : null}
-      </div>
-
       {/* File table */}
       {filesQ.isLoading ? (
         <div className="px-4 py-6 text-center text-[12px] text-ink-3">
