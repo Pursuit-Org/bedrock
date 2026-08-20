@@ -701,6 +701,33 @@ async def update_opportunity(
             # the account between Prospect/Pursuing/Stewarding —
             # bust the accounts cache so the derived status refreshes.
             cache.invalidate_prefix("accounts:")
+
+            # Grant period lives on the Opportunity (source of truth) but the
+            # Awards views read bedrock.award.award_date / period_end_date.
+            # Mirror one-way, opp → award, whenever the grant fields change so
+            # the two never disagree. Best-effort: the SF write already
+            # succeeded, so a mirror failure must not fail the request.
+            updates = update_request.updates
+            if "Grant_Start_Date__c" in updates or "Grant_End_Date__c" in updates:
+                try:
+                    sets, args, n = [], [], 1
+                    for sf_field, col in (("Grant_Start_Date__c", "award_date"),
+                                          ("Grant_End_Date__c", "period_end_date")):
+                        if sf_field in updates:
+                            v = updates[sf_field]
+                            sets.append(f"{col} = ${n}")
+                            args.append(date.fromisoformat(v) if isinstance(v, str) and v else None)
+                            n += 1
+                    await db.execute(
+                        f"UPDATE bedrock.award SET {', '.join(sets)}, updated_at = now() "
+                        f"WHERE opportunity_id = ${n} AND deleted_at IS NULL",
+                        *args, opportunity_id,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Grant date mirror to bedrock.award failed for opp=%s; "
+                        "SF write succeeded, award dates may be stale.", opportunity_id)
+
             logger.info(f"Opportunity {opportunity_id} updated by {user['user_id']}")
             return ApiResponse(success=True, data={"id": opportunity_id, "message": "Opportunity updated successfully"})
         else:
