@@ -1,4 +1,10 @@
-import { classifyTransition, WON_STAGES, LOST_STAGES } from './pipelineFunnelTransitions';
+import {
+  ACTIVE_FUNNEL_STAGES,
+  CLOSED_FUNNEL_STAGES,
+  classifyTransition,
+  WON_STAGES,
+  LOST_STAGES,
+} from './pipelineFunnelTransitions';
 
 // Pipeline stage transition classifier — exercises the logic that was
 // previously misbucketing wins as setbacks because terminal stages aren't
@@ -131,6 +137,60 @@ describe('classifyTransition', () => {
     it('does not warn when target is a known terminal (lost)', () => {
       classifyTransition('Qualifying', 'Closed Lost');
       expect(warnSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  // A5 Progress funnel split (mega-B, 2026-04-22): Collecting / In Effect was
+  // removed from ACTIVE_FUNNEL_STAGES and lives in CLOSED_FUNNEL_STAGES. The
+  // classifier still treats INTO-Collecting as 'won' (WON_STAGES unchanged),
+  // and adds an "unclose" guard so FROM-terminal BACK TO active reads as
+  // 'backward' (would otherwise misclassify as 'forward' because terminal
+  // stages aren't in STAGE_IDX → fi=-1).
+  describe('A5 funnel split — terminal unclose regressions', () => {
+    it('classifies Collecting / In Effect → Proposal Negotiation as backward (post-split)', () => {
+      // Was backward when Collecting was in STAGE_IDX (fi=7, ti=4). After the
+      // split, fi=-1 and the new guard catches this as a known-terminal
+      // regression.
+      expect(classifyTransition('Collecting / In Effect', 'Proposal Negotiation')).toBe('backward');
+    });
+
+    it('classifies Closed / Completed → Qualifying as backward (win regression)', () => {
+      expect(classifyTransition('Closed / Completed', 'Qualifying')).toBe('backward');
+    });
+
+    it('classifies Closed Lost → Proposal Negotiation as backward (loss regression)', () => {
+      expect(classifyTransition('Closed Lost', 'Proposal Negotiation')).toBe('backward');
+    });
+
+    it('classifies Withdrawn → Contract Creation as backward (loss regression)', () => {
+      expect(classifyTransition('Withdrawn', 'Contract Creation')).toBe('backward');
+    });
+  });
+
+  describe('A5 funnel split — exports', () => {
+    it('ACTIVE_FUNNEL_STAGES has 7 stages and excludes Collecting / In Effect', () => {
+      expect(ACTIVE_FUNNEL_STAGES.length).toBe(7);
+      expect(ACTIVE_FUNNEL_STAGES.includes('Collecting / In Effect' as any)).toBe(false);
+      // Sanity: the 7 open stages we expect
+      expect(ACTIVE_FUNNEL_STAGES.includes('Lead Gen' as any)).toBe(true);
+      expect(ACTIVE_FUNNEL_STAGES.includes('Negotiating Contract' as any)).toBe(true);
+    });
+
+    it('CLOSED_FUNNEL_STAGES has 5 SF-canonical terminal stages in display order', () => {
+      expect(CLOSED_FUNNEL_STAGES).toEqual([
+        'Collecting / In Effect',
+        'Closed / Completed',
+        'Closed Lost',
+        'Withdrawn',
+        'Closed / Did not Fulfill',
+      ]);
+    });
+
+    it('ACTIVE and CLOSED sets are disjoint (no stage in both)', () => {
+      const activeSet = new Set<string>(ACTIVE_FUNNEL_STAGES);
+      for (const stage of CLOSED_FUNNEL_STAGES) {
+        expect(activeSet.has(stage)).toBe(false);
+      }
     });
   });
 });

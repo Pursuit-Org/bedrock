@@ -32,6 +32,17 @@ interface AccountCellProps {
   recordLock?: { locked_by: string; locked_at: string } | null;
   recordLockedByName?: string | null;
   readOnly?: boolean;
+  /**
+   * Per-row ownership gate. Forwarded to InlineEditable → useFieldPermission.
+   * Schema-driven cells (via buildSchemaColumns) pass this per-row; hand-coded
+   * call sites (Opportunities/columns.tsx) omit it because ownership is already
+   * gated upstream via the page-level lockMap. See useFieldPermission.ts for
+   * the bypass semantics (admin, editAllPermission, or rowOwnerId === sfUserId).
+   */
+  ownerGate?: {
+    rowOwnerId: string | null | undefined;
+    editAllPermission?: string;
+  };
 }
 
 export const AccountCell: React.FC<AccountCellProps> = ({
@@ -44,6 +55,7 @@ export const AccountCell: React.FC<AccountCellProps> = ({
   recordLock,
   recordLockedByName,
   readOnly,
+  ownerGate,
 }) => {
   const options: InlineEditableOption[] = useMemo(
     () =>
@@ -83,6 +95,7 @@ export const AccountCell: React.FC<AccountCellProps> = ({
       recordLock={recordLock}
       recordLockedByName={recordLockedByName}
       readOnly={readOnly}
+      ownerGate={ownerGate}
     />
   );
 };

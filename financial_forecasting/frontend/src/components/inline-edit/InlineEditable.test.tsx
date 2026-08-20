@@ -227,3 +227,69 @@ describe('InlineEditable — record-level lock by another user', () => {
     expect(screen.getByDisplayValue('ACME Corp')).toBeInTheDocument();
   });
 });
+
+describe('InlineEditable — per-row ownerGate', () => {
+  // Mirrors main.py:_enforce_record_ownership: non-admin / non-edit-all users
+  // may only edit records they own. Schema-generated cells pass ownerGate
+  // per-row; hand-coded cells omit it and fall through to sensitivity-only.
+  it('locks a safe field when the user is not the record owner (non-admin, no edit-all)', () => {
+    mockPermissions.sfUserId = 'user-1';
+    mockPermissions.isAdmin = false;
+    mockPermissions.can.mockReturnValue(false);
+    render(
+      <InlineEditable
+        {...safeProps}
+        value="ACME Corp"
+        ownerGate={{ rowOwnerId: 'other-user', editAllPermission: 'edit_all_opportunities' }}
+      />,
+    );
+    fireEvent.click(screen.getByText('ACME Corp'));
+    // Should NOT enter edit mode — ownerGate blocks non-owners.
+    expect(screen.queryByDisplayValue('ACME Corp')).not.toBeInTheDocument();
+  });
+
+  it('allows edit when the user is admin, regardless of ownership', () => {
+    mockPermissions.sfUserId = 'user-1';
+    mockPermissions.isAdmin = true;
+    render(
+      <InlineEditable
+        {...safeProps}
+        value="ACME Corp"
+        ownerGate={{ rowOwnerId: 'other-user' }}
+      />,
+    );
+    fireEvent.click(screen.getByText('ACME Corp'));
+    // Admin bypass: free edit on safe field.
+    expect(screen.getByDisplayValue('ACME Corp')).toBeInTheDocument();
+  });
+
+  it('allows edit when the user holds the edit-all permission for this resource', () => {
+    mockPermissions.sfUserId = 'user-1';
+    mockPermissions.isAdmin = false;
+    mockPermissions.can.mockImplementation((k: string) => k === 'edit_all_opportunities');
+    render(
+      <InlineEditable
+        {...safeProps}
+        value="ACME Corp"
+        ownerGate={{ rowOwnerId: 'other-user', editAllPermission: 'edit_all_opportunities' }}
+      />,
+    );
+    fireEvent.click(screen.getByText('ACME Corp'));
+    expect(screen.getByDisplayValue('ACME Corp')).toBeInTheDocument();
+  });
+
+  it('allows edit when the user owns the row', () => {
+    mockPermissions.sfUserId = 'user-1';
+    mockPermissions.isAdmin = false;
+    mockPermissions.can.mockReturnValue(false);
+    render(
+      <InlineEditable
+        {...safeProps}
+        value="ACME Corp"
+        ownerGate={{ rowOwnerId: 'user-1' }}
+      />,
+    );
+    fireEvent.click(screen.getByText('ACME Corp'));
+    expect(screen.getByDisplayValue('ACME Corp')).toBeInTheDocument();
+  });
+});

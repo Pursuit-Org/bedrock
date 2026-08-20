@@ -176,7 +176,7 @@ const Accounts: React.FC = () => {
   const [editAccountId, setEditAccountId] = useState<string | null>(null);
 
   const queryClient = useQueryClient();
-  const { can, isAdmin } = usePermissions();
+  const { can, isAdmin, sfUserId } = usePermissions();
   const canEdit = isAdmin || can('edit_accounts');
   const { pushDialog } = useDialogStack();
   const [searchParams] = useSearchParams();
@@ -207,6 +207,17 @@ const Accounts: React.FC = () => {
       const response = await apiService.getOpportunities();
       return response.data;
     }
+  );
+
+  // Fetch users for schema-driven OwnerId reference autocomplete. One call
+  // per page mount; react-query dedupes across sibling tabs.
+  const { data: usersData } = useQuery(
+    'users',
+    async () => {
+      const response = await apiService.getUsers({ limit: 1000 });
+      return response.data ?? [];
+    },
+    { staleTime: 10 * 60 * 1000 },
   );
 
   // Fetch schema for Account object
@@ -395,11 +406,41 @@ const Accounts: React.FC = () => {
     createAccountMutation.mutate(newAccountData);
   };
 
+  // ── Inline save handler — used by schemaColumns InlineEditable cells. ───
+
+  const handleSaveField = useCallback(
+    async (recordId: string, field: string, newValue: unknown) => {
+      const loadingToast = toast.loading('Saving to Salesforce...');
+      try {
+        await apiService.updateAccount(recordId, { [field]: newValue as any });
+        toast.success('Saved!', { id: loadingToast, duration: 2000 });
+        // Invalidate after a short delay so SF's workflow side-effects settle
+        // before we re-query (mirrors the prior handleCellEdit cadence).
+        setTimeout(() => {
+          queryClient.invalidateQueries('accounts');
+          queryClient.invalidateQueries('opportunities-for-accounts');
+        }, 1000);
+      } catch (error: any) {
+        toast.error(`Failed: ${error.response?.data?.detail || error.message}`, { id: loadingToast });
+        throw error; // re-throw so InlineEditable surfaces the error inline
+      }
+    },
+    [queryClient],
+  );
+
   // ── Schema-driven columns ────────────────────────────────────────────────
 
   const schemaColumns = useMemo(() => {
     if (!schemaData?.fields) return [];
     return buildSchemaColumns(schemaData.fields as SchemaField[], {
+      entityType: 'Account',
+      onSaveField: handleSaveField,
+      canEditObject: canEdit,
+      sfUserId,
+      accounts,
+      users: usersData ?? [],
+      // Account has no edit-all permission key in PERMISSION_KEYS — only
+      // admins or the record owner may edit (main.py:_enforce_record_ownership).
       overrides: new Map([
         ['Name', {
           flex: 2,
@@ -420,7 +461,7 @@ const Accounts: React.FC = () => {
         }],
       ]),
     });
-  }, [schemaData]);
+  }, [schemaData, handleSaveField, canEdit, sfUserId, accounts, usersData]);
 
   // Assemble the final columns: computed columns + schema columns + edit action
   const columns = useMemo(() => {
@@ -575,39 +616,6 @@ const Accounts: React.FC = () => {
     localStorage.setItem(COLUMN_STORAGE_KEY, JSON.stringify(newModel));
   }, []);
 
-  // ── Inline cell editing handler ──────────────────────────────────────────
-
-  const handleCellEdit = async (newRow: any, oldRow: any) => {
-    const updates: Record<string, any> = {};
-    Object.keys(newRow).forEach((key) => {
-      if (newRow[key] !== oldRow[key] && key !== 'Id' && key !== 'id') {
-        // Skip nested relationship objects (Owner, RecordType, etc.)
-        if (typeof newRow[key] === 'object' && newRow[key] !== null && !(newRow[key] instanceof Date)) return;
-        // Convert Date to ISO date string
-        if (newRow[key] instanceof Date) {
-          updates[key] = newRow[key].toISOString().split('T')[0];
-        } else {
-          updates[key] = newRow[key];
-        }
-      }
-    });
-    if (Object.keys(updates).length === 0) return newRow;
-
-    const loadingToast = toast.loading('Saving to Salesforce...');
-    try {
-      await apiService.updateAccount(newRow.Id || newRow.id, updates);
-      toast.success('Saved!', { id: loadingToast, duration: 2000 });
-      setTimeout(() => {
-        queryClient.invalidateQueries('accounts');
-        queryClient.invalidateQueries('opportunities-for-accounts');
-      }, 1000);
-      return newRow;
-    } catch (error: any) {
-      toast.error(`Failed: ${error.response?.data?.detail || error.message}`, { id: loadingToast });
-      return oldRow;
-    }
-  };
-
   // Get opportunities for selected account
   const accountOpportunities = selectedAccount
     ? opportunities?.filter((opp: Opportunity) => opp.AccountId === (selectedAccount.id || selectedAccount.Id)) || []
@@ -726,13 +734,6 @@ const Accounts: React.FC = () => {
               columns={columns}
               loading={accountsLoading || oppsLoading}
               getRowId={(row) => row.id || row.Id}
-              editMode="cell"
-              processRowUpdate={handleCellEdit}
-              onProcessRowUpdateError={console.error}
-              isCellEditable={(params) => {
-                if (!canEdit) return false;
-                return params.colDef.editable === true;
-              }}
               columnVisibilityModel={columnVisibilityModel}
               onColumnVisibilityModelChange={handleColumnVisibilityChange}
               pagination

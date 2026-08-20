@@ -27,6 +27,15 @@ describe('classifyField', () => {
       expect(classifyField('Task', 'Priority').sensitivity).toBe('safe');
       expect(classifyField('Task', 'Subject').sensitivity).toBe('safe');
     });
+    // A9 (mega-B, 2026-04-22): Amount + Probability softened from
+    // 'sensitive' to 'safe' — RM daily-edit velocity. StageName stays
+    // sensitive (sf_stages_sacred).
+    it('Opportunity Amount is safe (softened in A9)', () => {
+      expect(classifyField('Opportunity', 'Amount').sensitivity).toBe('safe');
+    });
+    it('Opportunity Probability is safe (softened in A9)', () => {
+      expect(classifyField('Opportunity', 'Probability').sensitivity).toBe('safe');
+    });
   });
 
   describe('sensitive fields', () => {
@@ -34,12 +43,6 @@ describe('classifyField', () => {
       const c = classifyField('Opportunity', 'StageName');
       expect(c.sensitivity).toBe('sensitive');
       expect(c.lockReason).toBeTruthy();
-    });
-    it('Opportunity Amount is sensitive', () => {
-      expect(classifyField('Opportunity', 'Amount').sensitivity).toBe('sensitive');
-    });
-    it('Opportunity Probability is sensitive', () => {
-      expect(classifyField('Opportunity', 'Probability').sensitivity).toBe('sensitive');
     });
     it('Opportunity OwnerId is sensitive', () => {
       expect(classifyField('Opportunity', 'OwnerId').sensitivity).toBe('sensitive');
@@ -65,6 +68,32 @@ describe('classifyField', () => {
     it('Task OwnerId is sensitive', () => {
       expect(classifyField('Task', 'OwnerId').sensitivity).toBe('sensitive');
     });
+    it('Account NumberOfEmployees is sensitive (mega-B #8)', () => {
+      const c = classifyField('Account', 'NumberOfEmployees');
+      expect(c.sensitivity).toBe('sensitive');
+      expect(c.lockReason).toMatch(/segmentation/i);
+    });
+    it('Contact npsp__Primary_Affiliation__c is sensitive (mega-B #8)', () => {
+      const c = classifyField('Contact', 'npsp__Primary_Affiliation__c');
+      expect(c.sensitivity).toBe('sensitive');
+      expect(c.lockReason).toMatch(/household|rollup/i);
+    });
+    it('Activity OwnerId is sensitive (mega-B #8)', () => {
+      expect(classifyField('Activity', 'OwnerId').sensitivity).toBe('sensitive');
+    });
+    it('Activity WhatId + WhoId are sensitive (mega-B #8)', () => {
+      expect(classifyField('Activity', 'WhatId').sensitivity).toBe('sensitive');
+      expect(classifyField('Activity', 'WhoId').sensitivity).toBe('sensitive');
+    });
+  });
+
+  describe('Activity safe fields (mega-B #8)', () => {
+    it.each(['Subject', 'Status', 'Priority', 'ActivityDate', 'Description'])(
+      'Activity.%s is safe',
+      (f) => {
+        expect(classifyField('Activity', f).sensitivity).toBe('safe');
+      },
+    );
   });
 
   describe('permission-gated fields', () => {
@@ -96,6 +125,41 @@ describe('classifyField', () => {
       const c = classifyField('Opportunity', 'SomeFieldNobodyClassified__c');
       expect(c.sensitivity).toBe('sensitive');
       expect(c.lockReason).toContain('not classified');
+    });
+  });
+
+  // A10 audit / mega-B: Commit 6 adds an optional defaultSensitivity arg so
+  // schema-generated cells (schemaColumns.tsx) can opt unclassified fields
+  // into 'safe' without declaring every SF-updateable field. Hand-coded
+  // call sites still fail safe.
+  describe('defaultSensitivity override for unclassified pairs', () => {
+    it("returns 'safe' when defaultSensitivity='safe' for unknown field", () => {
+      const c = classifyField('Account', 'CustomField_That_Isnt_Listed__c', 'safe');
+      expect(c.sensitivity).toBe('safe');
+      // No lockReason when defaulting safe — the cell edits freely without
+      // a "not classified" tooltip.
+      expect(c.lockReason).toBeUndefined();
+    });
+
+    it("returns 'sensitive' fail-safe when defaultSensitivity is omitted", () => {
+      const c = classifyField('Account', 'CustomField_That_Isnt_Listed__c');
+      expect(c.sensitivity).toBe('sensitive');
+      expect(c.lockReason).toContain('not classified');
+    });
+
+    it('explicit classification always wins over defaultSensitivity', () => {
+      // Opportunity.StageName is 'sensitive' in the table — passing 'safe'
+      // as the default must not downgrade it.
+      const c = classifyField('Opportunity', 'StageName', 'safe');
+      expect(c.sensitivity).toBe('sensitive');
+      expect(c.lockReason).toBeTruthy();
+    });
+
+    it('explicit safe in the table also wins over defaultSensitivity=sensitive', () => {
+      // Opportunity.Name is 'safe' in the table — a caller passing
+      // 'sensitive' as the default shouldn't re-lock it.
+      const c = classifyField('Opportunity', 'Name', 'sensitive');
+      expect(c.sensitivity).toBe('safe');
     });
   });
 

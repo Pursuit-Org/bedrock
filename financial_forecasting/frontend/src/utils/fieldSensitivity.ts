@@ -46,9 +46,15 @@ export interface FieldClassification {
 const FIELD_CLASSIFICATIONS: Record<string, Record<string, FieldClassification>> = {
   Opportunity: {
     Name:                 { sensitivity: 'safe' },
+    // StageName stays sensitive per feedback_sf_stages_sacred — stage changes
+    // drive pipeline bucketing and funnel reporting, fat-finger risk is high.
     StageName:            { sensitivity: 'sensitive',        lockReason: 'Stage changes affect pipeline metrics. Click to confirm.' },
-    Amount:               { sensitivity: 'sensitive',        lockReason: 'Amount changes affect financial rollups. Click to confirm.' },
-    Probability:          { sensitivity: 'sensitive',        lockReason: 'Probability affects weighted pipeline. Click to confirm.' },
+    // Amount + Probability softened to 'safe' in A9 (mega-B, 2026-04-22).
+    // Previously required per-edit unlock; friction outweighed the fat-finger
+    // risk for RM daily-edit workflow. Reverting is a single-line flip back
+    // to 'sensitive' + lockReason if the softening turns out to be wrong.
+    Amount:               { sensitivity: 'safe' },
+    Probability:          { sensitivity: 'safe' },
     CloseDate:            { sensitivity: 'safe' },
     OwnerId:              { sensitivity: 'sensitive',        lockReason: 'Reassigning changes accountability. Click to confirm.' },
     AccountId:            { sensitivity: 'sensitive',        lockReason: 'Changing the account affects commission rollups. Click to confirm.' },
@@ -68,6 +74,7 @@ const FIELD_CLASSIFICATIONS: Record<string, Record<string, FieldClassification>>
     Type:                 { sensitivity: 'safe' },
     OwnerId:              { sensitivity: 'sensitive',        lockReason: 'Reassigning the account changes ownership. Click to confirm.' },
     AnnualRevenue:        { sensitivity: 'sensitive',        lockReason: 'Revenue figures impact reporting. Click to confirm.' },
+    NumberOfEmployees:    { sensitivity: 'sensitive',        lockReason: 'Employee count feeds segmentation reports. Click to confirm.' },
     BillingStreet:        { sensitivity: 'safe' },
     BillingCity:          { sensitivity: 'safe' },
     BillingState:         { sensitivity: 'safe' },
@@ -82,6 +89,7 @@ const FIELD_CLASSIFICATIONS: Record<string, Record<string, FieldClassification>>
     Department:           { sensitivity: 'safe' },
     AccountId:            { sensitivity: 'sensitive',        lockReason: 'Reassigning the contact changes the linked account. Click to confirm.' },
     OwnerId:              { sensitivity: 'sensitive',        lockReason: 'Reassigning the contact changes ownership. Click to confirm.' },
+    npsp__Primary_Affiliation__c: { sensitivity: 'sensitive', lockReason: "Reassigning affiliation rewrites the contact's household + rollups. Click to confirm." },
   },
   Project: {
     name:                 { sensitivity: 'safe' },
@@ -105,6 +113,16 @@ const FIELD_CLASSIFICATIONS: Record<string, Record<string, FieldClassification>>
     Description:          { sensitivity: 'safe' },
     OwnerId:              { sensitivity: 'sensitive',        lockReason: 'Reassigning a task changes accountability. Click to confirm.' },
   },
+  Activity: {
+    Subject:              { sensitivity: 'safe' },
+    Status:               { sensitivity: 'safe' },
+    Priority:             { sensitivity: 'safe' },
+    ActivityDate:         { sensitivity: 'safe' },
+    Description:          { sensitivity: 'safe' },
+    OwnerId:              { sensitivity: 'sensitive',        lockReason: 'Reassigning an activity changes accountability. Click to confirm.' },
+    WhatId:               { sensitivity: 'sensitive',        lockReason: 'Changing the parent record rewrites activity linkage. Click to confirm.' },
+    WhoId:                { sensitivity: 'sensitive',        lockReason: 'Changing the related contact affects linkage. Click to confirm.' },
+  },
   Target: {
     amount:               { sensitivity: 'permission-gated', permission: 'manage_owner_goals', lockReason: 'Revenue targets require Admin or Executive permission.' },
     period:               { sensitivity: 'permission-gated', permission: 'manage_owner_goals', lockReason: 'Target periods require Admin or Executive permission.' },
@@ -113,17 +131,39 @@ const FIELD_CLASSIFICATIONS: Record<string, Record<string, FieldClassification>>
 
 /**
  * Look up the sensitivity classification for a (objectType, fieldName) pair.
+ *
  * Unknown pairs fail safe to `sensitive` so untriaged fields still require
- * an unlock action.
+ * an unlock action — the primitive assumption is that a cell hand-coded
+ * with an explicit (objectType, fieldName) deserves a deliberate entry.
+ *
+ * Schema-generated cells (via `buildSchemaColumns` in utils/schemaColumns.tsx)
+ * emit renderCells for every SF `updateable` field — tens of fields per entity.
+ * Declaring every one of them would be brittle and noisy, and SF already
+ * enforces edit permission on the server. Those callers pass
+ * `defaultSensitivity: 'safe'` to opt out of the fail-safe for fields they
+ * know came from SF's own updateable list. Hand-coded call sites (no third
+ * arg, or `defaultSensitivity` omitted) keep the fail-safe behavior.
+ *
+ * Explicit entries in FIELD_CLASSIFICATIONS always win — so a schema-
+ * generated cell on `Opportunity.StageName` still reads `'sensitive'`
+ * regardless of the default, because StageName is in the table.
  */
-export function classifyField(objectType: string, fieldName: string): FieldClassification {
+export function classifyField(
+  objectType: string,
+  fieldName: string,
+  defaultSensitivity: FieldSensitivity = 'sensitive',
+): FieldClassification {
   const objectMap = FIELD_CLASSIFICATIONS[objectType];
   const classification = objectMap?.[fieldName];
   if (!classification) {
-    return {
-      sensitivity: 'sensitive',
-      lockReason: `${fieldName} is not classified. Click to confirm the edit.`,
-    };
+    if (defaultSensitivity === 'sensitive') {
+      return {
+        sensitivity: 'sensitive',
+        lockReason: `${fieldName} is not classified. Click to confirm the edit.`,
+      };
+    }
+    // defaultSensitivity === 'safe' — no lockReason; the cell edits freely.
+    return { sensitivity: defaultSensitivity };
   }
   return classification;
 }

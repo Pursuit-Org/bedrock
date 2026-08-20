@@ -33,6 +33,7 @@ import { AccountCell } from '../../components/inline-edit/cells/AccountCell';
 import { AmountCell } from '../../components/inline-edit/cells/AmountCell';
 import { DateCell } from '../../components/inline-edit/cells/DateCell';
 import { ProbabilityCell } from '../../components/inline-edit/cells/ProbabilityCell';
+import { InlineEditable } from '../../components/inline-edit/InlineEditable';
 
 /**
  * Look up the display name of the user who holds the record-level lock on
@@ -137,14 +138,7 @@ export function buildPipelineColumns(cb: ColumnCallbacks): GridColDef[] {
   return [
     lockColumn(cb),
     taskColumn(cb),
-    {
-      field: 'Name',
-      headerName: 'Opportunity Name',
-      flex: 2,
-      minWidth: 250,
-      editable: true,
-      filterable: true,
-    },
+    nameColumn(cb, { headerName: 'Opportunity Name', flex: 2, minWidth: 250 }),
     accountColumn(cb, { editable: true }),
     ownerColumn(cb),
     stageColumn(cb),
@@ -172,7 +166,7 @@ export function buildPipelineColumns(cb: ColumnCallbacks): GridColDef[] {
         />
       ),
     },
-    closeDateColumn(),
+    closeDateColumn(cb),
     {
       field: 'PaymentDate__c',
       headerName: '1st Payment Date',
@@ -223,27 +217,10 @@ export function buildPipelineColumns(cb: ColumnCallbacks): GridColDef[] {
 export function buildPaymentColumns(cb: ColumnCallbacks): GridColDef[] {
   return [
     taskColumn(cb),
-    {
-      field: 'Name',
-      headerName: 'Grant Name',
-      flex: 2,
-      minWidth: 250,
-      filterable: true,
-    },
+    nameColumn(cb, { headerName: 'Grant Name', flex: 2, minWidth: 250 }),
     accountColumn(cb, { editable: false }),
-    closeDateColumn(),
-    {
-      field: 'Amount',
-      headerName: 'Total Amount',
-      flex: 0.9,
-      minWidth: 130,
-      type: 'number',
-      filterable: true,
-      valueFormatter: (params) => formatDollarMillions(params.value as number),
-      renderCell: (params: GridRenderCellParams) => (
-        <Box sx={{ fontWeight: 600 }}>{formatDollarMillions(params.value as number)}</Box>
-      ),
-    },
+    closeDateColumn(cb),
+    amountColumn(cb),
     {
       field: 'npe01__Payments_Made__c',
       headerName: 'Received',
@@ -469,17 +446,67 @@ function amountColumn(cb: ColumnCallbacks): GridColDef {
   };
 }
 
-function closeDateColumn(): GridColDef {
+function closeDateColumn(cb: ColumnCallbacks): GridColDef {
   return {
     field: 'CloseDate',
     headerName: 'Close Date',
     flex: 0.9,
     minWidth: 120,
     type: 'date',
-    editable: true,
+    // DataGrid native edit disabled; DateCell owns the edit flow so Close
+    // Date picks up the same single-click affordance + sensitivity pipeline
+    // as PaymentDate__c and the other inline-edit cells. A10 Opp audit
+    // (mega-B, 2026-04-22) — CloseDate is classified 'safe' in
+    // fieldSensitivity.ts:52 so no unlock prompt is expected.
+    editable: false,
     filterable: true,
     valueGetter: (params: GridValueGetterParams) => (params.value ? new Date(params.value) : null),
     valueFormatter: (params) => (!params.value ? 'N/A' : format(new Date(params.value as string), 'MMM dd, yyyy')),
+    renderCell: (params: GridRenderCellParams) => (
+      <DateCell
+        value={(params.row.CloseDate as string) || ''}
+        onSave={async (newDate) => {
+          if (cb.onSaveField) await cb.onSaveField(params.row.Id, 'CloseDate', newDate || null);
+        }}
+        fieldName="CloseDate"
+        objectType="Opportunity"
+        displayFormat="MMM dd, yyyy"
+        recordLock={cb.lockMap?.get(params.row.Id) ?? null}
+        recordLockedByName={resolveLockerName(cb, params.row.Id)}
+      />
+    ),
+  };
+}
+
+function nameColumn(
+  cb: ColumnCallbacks,
+  opts: { headerName: string; flex: number; minWidth: number },
+): GridColDef {
+  return {
+    field: 'Name',
+    headerName: opts.headerName,
+    flex: opts.flex,
+    minWidth: opts.minWidth,
+    // DataGrid native edit disabled; InlineEditable owns the edit flow so
+    // Name gets single-click + the dark-mode fill affordance matching every
+    // other editable cell in the row. A10 Opp audit (mega-B, 2026-04-22) —
+    // Opportunity.Name is classified 'safe' in fieldSensitivity.ts:48.
+    editable: false,
+    filterable: true,
+    renderCell: (params: GridRenderCellParams) => (
+      <InlineEditable<string>
+        value={(params.value as string) || ''}
+        variant="text"
+        objectType="Opportunity"
+        fieldName="Name"
+        fieldLabel="Opportunity Name"
+        onSave={async (newName) => {
+          if (cb.onSaveField) await cb.onSaveField(params.row.Id, 'Name', newName);
+        }}
+        recordLock={cb.lockMap?.get(params.row.Id) ?? null}
+        recordLockedByName={resolveLockerName(cb, params.row.Id)}
+      />
+    ),
   };
 }
 

@@ -34,7 +34,7 @@ const DEFAULT_VISIBLE_TASKS = new Set([
 
 const Tasks: React.FC = () => {
   const queryClient = useQueryClient();
-  const { can, isAdmin } = usePermissions();
+  const { can, isAdmin, sfUserId } = usePermissions();
   const canEdit = isAdmin || can('edit_own_tasks');
   const [searchParams] = useSearchParams();
   const searchFromUrl = searchParams.get('search') || '';
@@ -71,14 +71,60 @@ const Tasks: React.FC = () => {
     { staleTime: 30 * 60 * 1000 }
   );
 
+  // Preload accounts + users for Task.WhatId / Task.OwnerId reference autocomplete.
+  const { data: accountsData } = useQuery(
+    'accounts',
+    async () => {
+      const response = await apiService.getAccounts();
+      return response.data;
+    },
+    { staleTime: 10 * 60 * 1000 },
+  );
+  const { data: usersData } = useQuery(
+    'users',
+    async () => {
+      const response = await apiService.getUsers({ limit: 1000 });
+      return response.data ?? [];
+    },
+    { staleTime: 10 * 60 * 1000 },
+  );
+
   const tasks = Array.isArray(tasksData) ? tasksData : [];
+  const accounts = Array.isArray(accountsData) ? accountsData : (accountsData?.accounts || []);
+
+  // ── Inline save handler — used by schemaColumns InlineEditable cells. ───
+
+  const handleSaveField = useCallback(
+    async (recordId: string, field: string, newValue: unknown) => {
+      const loadingToast = toast.loading('Saving to Salesforce...');
+      try {
+        await apiService.updateTask(recordId, { [field]: newValue as any });
+        toast.success('Saved!', { id: loadingToast, duration: 2000 });
+        setTimeout(() => {
+          queryClient.invalidateQueries(['my-tasks']);
+        }, 1000);
+      } catch (error: any) {
+        toast.error(`Failed: ${error.response?.data?.detail || error.message}`, { id: loadingToast });
+        throw error;
+      }
+    },
+    [queryClient],
+  );
 
   // ── Schema-driven columns ───────────────────────────────────────────
 
   const schemaColumns = useMemo(() => {
     if (!taskSchemaData?.fields) return [];
-    return buildSchemaColumns(taskSchemaData.fields as SchemaField[]);
-  }, [taskSchemaData]);
+    return buildSchemaColumns(taskSchemaData.fields as SchemaField[], {
+      entityType: 'Task',
+      onSaveField: handleSaveField,
+      canEditObject: canEdit,
+      sfUserId,
+      accounts,
+      users: usersData ?? [],
+      // Task has no edit-all permission key — admin or owner only.
+    });
+  }, [taskSchemaData, handleSaveField, canEdit, sfUserId, accounts, usersData]);
 
   const columns = useMemo(() => {
     const action = editActionColumn(
@@ -130,37 +176,6 @@ const Tasks: React.FC = () => {
     setColumnVisibilityModel(newModel);
     localStorage.setItem(COLUMN_STORAGE_KEY, JSON.stringify(newModel));
   }, []);
-
-  // ── Inline cell editing ─────────────────────────────────────────────
-
-  const handleCellEdit = async (newRow: any, oldRow: any) => {
-    const updates: Record<string, any> = {};
-    Object.keys(newRow).forEach((key) => {
-      if (newRow[key] !== oldRow[key] && key !== 'Id') {
-        // Skip nested relationship objects
-        if (typeof newRow[key] === 'object' && newRow[key] !== null && !(newRow[key] instanceof Date)) return;
-        if (newRow[key] instanceof Date) {
-          updates[key] = newRow[key].toISOString().split('T')[0];
-        } else {
-          updates[key] = newRow[key];
-        }
-      }
-    });
-    if (Object.keys(updates).length === 0) return newRow;
-
-    const loadingToast = toast.loading('Saving to Salesforce...');
-    try {
-      await apiService.updateTask(newRow.Id, updates);
-      toast.success('Saved!', { id: loadingToast, duration: 2000 });
-      setTimeout(() => {
-        queryClient.invalidateQueries(['my-tasks']);
-      }, 1000);
-      return newRow;
-    } catch (error: any) {
-      toast.error(`Failed: ${error.response?.data?.detail || error.message}`, { id: loadingToast });
-      return oldRow;
-    }
-  };
 
   return (
     <Box>
@@ -217,13 +232,6 @@ const Tasks: React.FC = () => {
               columns={columns}
               loading={tasksLoading}
               getRowId={(row) => row.Id}
-              editMode="cell"
-              processRowUpdate={handleCellEdit}
-              onProcessRowUpdateError={console.error}
-              isCellEditable={(params) => {
-                if (!canEdit) return false;
-                return params.colDef.editable === true;
-              }}
               columnVisibilityModel={columnVisibilityModel}
               onColumnVisibilityModelChange={handleColumnVisibilityChange}
               pagination

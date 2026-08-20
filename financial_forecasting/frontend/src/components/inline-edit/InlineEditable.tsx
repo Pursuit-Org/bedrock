@@ -19,6 +19,7 @@
  * primitive will gate edit behavior automatically.
  */
 import React, { useState, useRef, useCallback, useEffect } from 'react';
+import { format as formatDateFn } from 'date-fns';
 import {
   Box,
   Chip,
@@ -30,15 +31,29 @@ import {
   Popover,
   IconButton,
   Tooltip,
+  Checkbox,
 } from '@mui/material';
 import { Lock as LockIcon } from '@mui/icons-material';
 import {
   useFieldPermission,
   UseFieldPermissionArgs,
 } from '../../hooks/useFieldPermission';
+import { formatDollarMillions } from '../../utils/formatters';
 import { UnlockWarningDialog } from './UnlockWarningDialog';
 
-export type InlineEditVariant = 'select' | 'autocomplete' | 'text' | 'number' | 'date';
+export type InlineEditVariant =
+  | 'select'
+  | 'autocomplete'
+  | 'text'
+  | 'number'
+  | 'currency'
+  | 'percent'
+  | 'date'
+  | 'datetime'
+  | 'boolean'
+  | 'email'
+  | 'phone'
+  | 'url';
 export type InlineEditDisplay = 'pill' | 'inline';
 
 export interface InlineEditableOption {
@@ -121,6 +136,8 @@ export function InlineEditable<TValue = unknown>(
     recordLock,
     recordLockedByName,
     readOnly,
+    defaultSensitivity,
+    ownerGate,
   } = props;
 
   const permission = useFieldPermission({
@@ -128,6 +145,8 @@ export function InlineEditable<TValue = unknown>(
     fieldName,
     recordLock,
     recordLockedByName,
+    defaultSensitivity,
+    ownerGate,
   });
 
   // Editor state: which mode we're in right now.
@@ -211,12 +230,37 @@ export function InlineEditable<TValue = unknown>(
   }, [draft, value, validate, onSave, saving]);
 
   // ── Display rendering ───────────────────────────────────────────────────
+  // When no custom formatDisplay is provided, apply a sensible default per
+  // variant so schemaColumns-generated cells don't each have to pass one.
+  // Caller-provided formatDisplay always wins.
+  const defaultFormatForVariant = (v: TValue): React.ReactNode => {
+    if (v == null || v === '') return placeholder;
+    switch (variant) {
+      case 'currency':
+        return typeof v === 'number' ? formatDollarMillions(v) : String(v);
+      case 'percent':
+        return typeof v === 'number' ? `${v}%` : String(v);
+      case 'boolean':
+        return v ? 'Yes' : 'No';
+      case 'datetime': {
+        const d = typeof v === 'string' ? new Date(v) : (v as unknown as Date);
+        return d instanceof Date && !Number.isNaN(d.getTime())
+          ? formatDateFn(d, 'MMM dd, yyyy h:mm a')
+          : String(v);
+      }
+      case 'date': {
+        const d = typeof v === 'string' ? new Date(v) : (v as unknown as Date);
+        return d instanceof Date && !Number.isNaN(d.getTime())
+          ? formatDateFn(d, 'MMM dd, yyyy')
+          : String(v);
+      }
+      default:
+        return String(v);
+    }
+  };
+
   const renderDisplay = () => {
-    const formatted = formatDisplay
-      ? formatDisplay(value)
-      : value == null || value === ''
-        ? placeholder
-        : String(value);
+    const formatted = formatDisplay ? formatDisplay(value) : defaultFormatForVariant(value);
 
     if (display === 'pill') {
       const color =
@@ -281,9 +325,20 @@ export function InlineEditable<TValue = unknown>(
     }
   }, [validate, value, onSave, saving]);
 
-  // ── Inline TextField editor (text / number / date variants) ───────────
+  // ── Inline TextField editor (all text-input-based variants) ─────────
+  // Maps each variant to the matching HTML input type. Number-style
+  // variants (number, currency, percent) coerce strings to numbers on
+  // change; others pass through as strings.
   const renderInlineTextEditor = () => {
-    const inputType = variant === 'date' ? 'date' : variant === 'number' ? 'number' : 'text';
+    const inputType: React.InputHTMLAttributes<unknown>['type'] =
+      variant === 'date' ? 'date'
+      : variant === 'datetime' ? 'datetime-local'
+      : variant === 'number' || variant === 'currency' || variant === 'percent' ? 'number'
+      : variant === 'email' ? 'email'
+      : variant === 'phone' ? 'tel'
+      : variant === 'url' ? 'url'
+      : 'text';
+    const isNumeric = variant === 'number' || variant === 'currency' || variant === 'percent';
     return (
       <TextField
         type={inputType}
@@ -291,7 +346,7 @@ export function InlineEditable<TValue = unknown>(
         autoFocus
         onChange={(e) => {
           const raw = e.target.value;
-          const next = (variant === 'number' ? (raw === '' ? '' : Number(raw)) : raw) as unknown as TValue;
+          const next = (isNumeric ? (raw === '' ? '' : Number(raw)) : raw) as unknown as TValue;
           setDraft(next);
         }}
         onBlur={handleSave}
@@ -305,13 +360,33 @@ export function InlineEditable<TValue = unknown>(
         }}
         size="small"
         sx={{ minWidth: 140 }}
-        InputLabelProps={inputType === 'date' ? { shrink: true } : undefined}
+        InputLabelProps={
+          inputType === 'date' || inputType === 'datetime-local' ? { shrink: true } : undefined
+        }
+        inputProps={variant === 'percent' ? { min: 0, max: 100, step: 1 } : undefined}
         error={!!error}
         helperText={error || undefined}
         disabled={saving}
       />
     );
   };
+
+  // ── Boolean editor (checkbox — click-to-toggle-and-save) ─────────────
+  // Boolean doesn't fit the click-then-type-or-select model; clicking
+  // the checkbox toggles and saves immediately via commitNow.
+  const renderBooleanEditor = () => (
+    <Checkbox
+      checked={!!draft}
+      onChange={(e) => {
+        const next = e.target.checked as unknown as TValue;
+        setDraft(next);
+        commitNow(next);
+      }}
+      autoFocus
+      disabled={saving}
+      sx={{ p: 0.5, color: 'primary.contrastText', '&.Mui-checked': { color: 'primary.contrastText' } }}
+    />
+  );
 
   // ── Lock icon (hover-only when sensitive; always when locked-by-other) ──
   const renderLockBadge = () => {
@@ -349,8 +424,13 @@ export function InlineEditable<TValue = unknown>(
   // ── Render shell ────────────────────────────────────────────────────────
   // The .inline-editable-host class is the hover target for HOVER_LOCK_SX.
   // Display mode is always rendered (it doubles as the anchor for popovers);
-  // text-style editors replace it inline; menu/autocomplete float over it.
-  const editingTextStyle = mode === 'editing' && (variant === 'text' || variant === 'number' || variant === 'date');
+  // text-style editors replace it inline; menu/autocomplete float over it;
+  // boolean toggles a checkbox inline.
+  const TEXT_INPUT_VARIANTS: ReadonlyArray<InlineEditVariant> = [
+    'text', 'number', 'currency', 'percent', 'date', 'datetime', 'email', 'phone', 'url',
+  ];
+  const editingTextStyle = mode === 'editing' && TEXT_INPUT_VARIANTS.includes(variant);
+  const editingBooleanStyle = mode === 'editing' && variant === 'boolean';
 
   return (
     <>
@@ -367,17 +447,27 @@ export function InlineEditable<TValue = unknown>(
           // `position: absolute` (HOVER_LOCK_SX) so the icon floats in
           // the cell's right padding area without reserving layout width.
           position: 'relative',
-          transition: 'box-shadow 120ms ease, background-color 120ms ease',
-          // Active edit-or-unlock mode — bold blue ring + subtle blue tint
-          // so the targeted cell is unmistakable the instant you click,
-          // even while the unlock dialog is up. Using `mode !== 'display'`
-          // covers both `unlock` and `editing` so the ring doesn't appear
-          // only after dialog confirmation (previously felt like it only
-          // turned on when typing started). Uses box-shadow so nothing
-          // shifts in the grid layout.
+          transition: 'box-shadow 120ms ease, background-color 120ms ease, color 120ms ease',
+          // Active edit-or-unlock mode — dark-mode fill (primary bg + white
+          // text) so the targeted cell is unmistakable the instant you click,
+          // even while the unlock dialog is up. A10 upgrade (mega-B,
+          // 2026-04-22) from the prior 3px blue-ring affordance — the ring
+          // was easy to miss on small cells / dense grids. `mode !== 'display'`
+          // covers both 'unlock' and 'editing' so the fill appears the
+          // instant you click, not after dialog confirmation. Child text +
+          // svg nodes inherit primary.contrastText so placeholders, lock
+          // icons, and input text all flip to white together.
+          //
+          // Using box-shadow (not border) + bgcolor keeps the cell's
+          // intrinsic width unchanged, so grid layout doesn't shift
+          // around the activated cell.
           ...(mode !== 'display' && {
-            boxShadow: '0 0 0 3px #1976d2',
-            bgcolor: 'rgba(25, 118, 210, 0.08)',
+            bgcolor: 'primary.main',
+            color: 'primary.contrastText',
+            boxShadow: 2,
+            '& input, & .MuiInputBase-input, & .MuiTypography-root, & svg, & .MuiChip-label': {
+              color: 'primary.contrastText',
+            },
           }),
           // Display-mode hover when editable — medium inset ring hints
           // that clicking opens an editor. Suppressed once we enter
@@ -389,12 +479,36 @@ export function InlineEditable<TValue = unknown>(
           }),
         }}
         onClick={mode === 'display' ? handleDisplayClick : undefined}
+        onMouseDown={(e) => {
+          // Stop the bubble so MUI DataGrid's GridCell.onMouseDown publishEvent('cellMouseDown')
+          // (node_modules/@mui/x-data-grid/.../components/cell/GridCell.js:320) doesn't record
+          // this click. That handler pairs with a document-level mouseup listener in useGridFocus
+          // that runs setCellFocus → forceUpdate, which steals focus from our autoFocus'd
+          // TextField during the edit-mode transition (InlineEditable.tsx:350 onBlur=handleSave
+          // then fires with draft===value → silent revert to display mode). Stopping the
+          // mousedown bubble neutralizes that path; DataGrid's "mouseup target inside focused
+          // cell" branch (useGridFocus.js:291-294) handles the mouseup gracefully.
+          //
+          // Gated on display-mode + editable so we don't block the inner Menu/Popover/TextField
+          // from receiving their own mousedowns (those are rendered outside this Box), and don't
+          // interfere once we've entered edit/unlock mode. Without this gate, select/autocomplete
+          // variants (which already worked because their popover is detached) would break.
+          if (mode === 'display' && canEditAtAll) e.stopPropagation();
+        }}
       >
-        {editingTextStyle ? renderInlineTextEditor() : renderDisplay()}
+        {editingTextStyle
+          ? renderInlineTextEditor()
+          : editingBooleanStyle
+            ? renderBooleanEditor()
+            : renderDisplay()}
         {mode === 'display' && renderLockBadge()}
       </Box>
 
-      {/* Select editor — Menu anchored to the display element */}
+      {/* Select editor — Menu anchored to the display element.
+          A8 popper fix: slotProps.paper caps the Paper height so long option
+          lists scroll internally instead of overflowing off-screen when a
+          cell is near the viewport bottom. marginThreshold aligns with
+          MUI's default shift-into-viewport behavior. */}
       {mode === 'editing' && variant === 'select' && (
         <Menu
           open
@@ -402,6 +516,12 @@ export function InlineEditable<TValue = unknown>(
           onClose={handleCancel}
           anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
           transformOrigin={{ vertical: 'top', horizontal: 'left' }}
+          marginThreshold={8}
+          slotProps={{
+            paper: {
+              sx: { maxHeight: '50vh', overflowY: 'auto' },
+            },
+          }}
         >
           {(options || []).map((o) => (
             <MenuItem
@@ -429,13 +549,23 @@ export function InlineEditable<TValue = unknown>(
         </Menu>
       )}
 
-      {/* Autocomplete editor — Popover anchored to display */}
+      {/* Autocomplete editor — Popover anchored to display.
+          A8 popper fix: adds transformOrigin (was missing — the anchor pair
+          was incomplete), slotProps.paper height cap, and marginThreshold
+          to match the Menu's overflow behavior. */}
       {mode === 'editing' && variant === 'autocomplete' && (
         <Popover
           open
           anchorEl={anchorRef.current}
           onClose={handleCancel}
           anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+          transformOrigin={{ vertical: 'top', horizontal: 'left' }}
+          marginThreshold={8}
+          slotProps={{
+            paper: {
+              sx: { maxHeight: '50vh', overflowY: 'auto' },
+            },
+          }}
         >
           <Box sx={{ p: 1, minWidth: 260 }}>
             <Autocomplete

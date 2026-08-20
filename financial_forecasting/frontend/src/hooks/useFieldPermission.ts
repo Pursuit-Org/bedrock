@@ -41,7 +41,7 @@ export interface FieldPermissionResult {
 }
 
 export interface UseFieldPermissionArgs {
-  /** Object type: 'Opportunity' | 'Account' | 'Contact' | 'Project' | 'Milestone' | 'Task' | 'Target' */
+  /** Object type: 'Opportunity' | 'Account' | 'Contact' | 'Project' | 'Milestone' | 'Task' | 'Target' | 'Activity' | ... */
   objectType: string;
   /** API field name (matches the sensitivity table key) */
   fieldName: string;
@@ -49,6 +49,38 @@ export interface UseFieldPermissionArgs {
   recordLock?: { locked_by: string; locked_at: string } | null;
   /** Optional display name for the user holding the record lock */
   recordLockedByName?: string | null;
+  /**
+   * Default sensitivity for unclassified (objectType, fieldName) pairs.
+   * Omit (or leave undefined) for hand-coded cells — unclassified fields get
+   * the fail-safe 'sensitive' unlock prompt. Schema-generated cells (via
+   * `buildSchemaColumns`) should pass 'safe' — SF already gates writes via
+   * field-level security server-side, and declaring every updateable field
+   * in the sensitivity table would be noisy. Explicit classifications in
+   * `fieldSensitivity.ts` always override this default.
+   */
+  defaultSensitivity?: FieldSensitivity;
+  /**
+   * Per-row ownership gate. Mirrors the backend's `_enforce_record_ownership`
+   * helper (financial_forecasting/main.py:862) — PATCH is rejected with 403
+   * unless the caller is (a) admin ('manage_users_roles'), (b) holds the
+   * `editAllPermission` key for this resource (Opportunity/Payment only —
+   * Account/Contact/Task have no edit-all bypass), or (c) IS the row's Owner.
+   *
+   * When `ownerGate.rowOwnerId` is provided and the caller fails all three
+   * bypasses, this hook returns a sticky-lock result with
+   * `recordLockedByOther: true` + `canUnlock: false` — so the cell shows a
+   * permanent lock and clicks are inert. Without this, a non-admin user
+   * clicking an unowned cell would type, tab out, then see "Failed to update"
+   * from the sanitized server error with no explanation.
+   *
+   * Omit this arg entirely for cells whose ownership is already enforced
+   * upstream (e.g., Opportunities.tsx already filters OwnerId-free via the
+   * checkboxSelection/lockMap path). Schema-driven cells pass it per-row.
+   */
+  ownerGate?: {
+    rowOwnerId: string | null | undefined;
+    editAllPermission?: string;
+  };
 }
 
 export function useFieldPermission({
@@ -56,11 +88,13 @@ export function useFieldPermission({
   fieldName,
   recordLock,
   recordLockedByName,
+  defaultSensitivity,
+  ownerGate,
 }: UseFieldPermissionArgs): FieldPermissionResult {
   const { can, isAdmin, sfUserId } = usePermissions();
 
   return useMemo(() => {
-    const classification = classifyField(objectType, fieldName);
+    const classification = classifyField(objectType, fieldName, defaultSensitivity);
 
     // Record-lock takes precedence over everything else — if another user holds
     // the lock, no field on this record is editable regardless of sensitivity.
@@ -77,6 +111,27 @@ export function useFieldPermission({
         canUnlock: false,
         lockTooltip: `Record locked by ${lockedByLabel}.`,
       };
+    }
+
+    // Owner gate: non-admin / non-edit-all users can only edit records they own.
+    // Mirrors backend's `_enforce_record_ownership`. Missing sfUserId → cannot
+    // evaluate ownership → deny, matching backend (main.py:907-912). A null
+    // rowOwnerId (record fetched without OwnerId, or record has no owner) ALSO
+    // denies for the same safer-to-fail reason.
+    if (ownerGate) {
+      const hasEditAll = !!ownerGate.editAllPermission && can(ownerGate.editAllPermission);
+      const isOwner = !!sfUserId && !!ownerGate.rowOwnerId && ownerGate.rowOwnerId === sfUserId;
+      const ownerCanEdit = isAdmin || hasEditAll || isOwner;
+      if (!ownerCanEdit) {
+        return {
+          sensitivity: classification.sensitivity,
+          requiresUnlock: false,
+          recordLockedByOther: true,
+          recordLockedBy: 'record owner',
+          canUnlock: false,
+          lockTooltip: 'Only the record owner (or an admin) can edit this field.',
+        };
+      }
     }
 
     // Permission-gated: the lock is sticky if the user lacks the permission.
@@ -117,5 +172,15 @@ export function useFieldPermission({
       canUnlock: true,
       lockTooltip: '',
     };
-  }, [objectType, fieldName, recordLock, recordLockedByName, can, isAdmin, sfUserId]);
+  }, [
+    objectType,
+    fieldName,
+    recordLock,
+    recordLockedByName,
+    defaultSensitivity,
+    ownerGate,
+    can,
+    isAdmin,
+    sfUserId,
+  ]);
 }

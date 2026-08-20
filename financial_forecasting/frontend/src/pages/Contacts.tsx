@@ -69,7 +69,7 @@ const Contacts: React.FC = () => {
   });
 
   const queryClient = useQueryClient();
-  const { can, isAdmin } = usePermissions();
+  const { can, isAdmin, sfUserId } = usePermissions();
   const canEdit = isAdmin || can('edit_contacts');
   const { pushDialog } = useDialogStack();
   const [searchParams] = useSearchParams();
@@ -90,13 +90,23 @@ const Contacts: React.FC = () => {
     }
   );
 
-  // Fetch accounts for dropdown
+  // Fetch accounts for dropdown + schema-driven AccountId reference autocomplete.
   const { data: accountsData, isLoading: accountsLoading } = useQuery(
     'accounts',
     async () => {
       const response = await apiService.getAccounts();
       return response.data;
     }
+  );
+
+  // Fetch users for schema-driven OwnerId reference autocomplete.
+  const { data: usersData } = useQuery(
+    'users',
+    async () => {
+      const response = await apiService.getUsers({ limit: 1000 });
+      return response.data ?? [];
+    },
+    { staleTime: 10 * 60 * 1000 },
   );
 
   // Fetch contact schema for dynamic columns
@@ -113,12 +123,40 @@ const Contacts: React.FC = () => {
   const contacts = Array.isArray(contactsData) ? contactsData : (contactsData?.contacts || []);
   const accounts = Array.isArray(accountsData) ? accountsData : (accountsData?.accounts || []);
 
+  // ── Inline save handler — used by schemaColumns InlineEditable cells. ───
+
+  const handleSaveField = useCallback(
+    async (recordId: string, field: string, newValue: unknown) => {
+      const loadingToast = toast.loading('Saving to Salesforce...');
+      try {
+        await apiService.updateContact(recordId, { [field]: newValue as any });
+        toast.success('Saved!', { id: loadingToast, duration: 2000 });
+        setTimeout(() => {
+          queryClient.invalidateQueries('all-contacts');
+          queryClient.invalidateQueries(['account-contacts']);
+        }, 1000);
+      } catch (error: any) {
+        toast.error(`Failed: ${error.response?.data?.detail || error.message}`, { id: loadingToast });
+        throw error;
+      }
+    },
+    [queryClient],
+  );
+
   // ── Schema-driven columns ──────────────────────────────────────────────
 
   const schemaColumns = useMemo(() => {
     if (!contactSchemaData?.fields) return [];
-    return buildSchemaColumns(contactSchemaData.fields as SchemaField[]);
-  }, [contactSchemaData]);
+    return buildSchemaColumns(contactSchemaData.fields as SchemaField[], {
+      entityType: 'Contact',
+      onSaveField: handleSaveField,
+      canEditObject: canEdit,
+      sfUserId,
+      accounts,
+      users: usersData ?? [],
+      // Contact has no edit-all permission key — admin or owner only.
+    });
+  }, [contactSchemaData, handleSaveField, canEdit, sfUserId, accounts, usersData]);
 
   const columns = useMemo(() => {
     const action = editActionColumn(
@@ -159,40 +197,6 @@ const Contacts: React.FC = () => {
     setColumnVisibilityModel(newModel);
     localStorage.setItem(COLUMN_STORAGE_KEY, JSON.stringify(newModel));
   }, []);
-
-  // ── Inline cell editing ────────────────────────────────────────────────
-
-  const handleCellEdit = async (newRow: any, oldRow: any) => {
-    const updates: Record<string, any> = {};
-    Object.keys(newRow).forEach((key) => {
-      if (newRow[key] !== oldRow[key] && key !== 'Id') {
-        // Skip nested relationship objects
-        if (typeof newRow[key] === 'object' && newRow[key] !== null && !(newRow[key] instanceof Date)) return;
-        if (newRow[key] instanceof Date) {
-          updates[key] = newRow[key].toISOString().split('T')[0];
-        } else {
-          updates[key] = newRow[key];
-        }
-      }
-    });
-    if (Object.keys(updates).length === 0) return newRow;
-
-    const loadingToast = toast.loading('Saving to Salesforce...');
-    try {
-      await apiService.updateContact(newRow.Id, updates);
-      toast.success('Saved!', { id: loadingToast, duration: 2000 });
-      setTimeout(() => {
-        queryClient.invalidateQueries('all-contacts');
-        if (newRow.AccountId) {
-          queryClient.invalidateQueries(['account-contacts', newRow.AccountId]);
-        }
-      }, 1000);
-      return newRow;
-    } catch (error: any) {
-      toast.error(`Failed: ${error.response?.data?.detail || error.message}`, { id: loadingToast });
-      return oldRow;
-    }
-  };
 
   // Create contact mutation
   const createContactMutation = useMutation(
@@ -298,13 +302,6 @@ const Contacts: React.FC = () => {
               columns={columns}
               loading={contactsLoading}
               getRowId={(row) => row.Id}
-              editMode="cell"
-              processRowUpdate={handleCellEdit}
-              onProcessRowUpdateError={console.error}
-              isCellEditable={(params) => {
-                if (!canEdit) return false;
-                return params.colDef.editable === true;
-              }}
               columnVisibilityModel={columnVisibilityModel}
               onColumnVisibilityModelChange={handleColumnVisibilityChange}
               pagination

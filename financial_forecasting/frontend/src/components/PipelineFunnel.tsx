@@ -40,6 +40,7 @@ import LookbackRangeSelector, {
 
 import {
   ACTIVE_FUNNEL_STAGES,
+  CLOSED_FUNNEL_STAGES,
   STAGE_IDX,
   WON_STAGES,
   LOST_STAGES,
@@ -331,6 +332,31 @@ const PipelineFunnel: React.FC<PipelineFunnelProps> = ({ opportunities, selected
       ),
     [opportunities, effectiveOwnerIds],
   );
+
+  // Closed-stage opps — parallel to filteredOpps, same owner filter, but
+  // scoped to the terminal stages we render below the active funnel.
+  const closedOpps = useMemo(
+    () =>
+      opportunities.filter(
+        (opp) =>
+          CLOSED_FUNNEL_STAGES.includes(opp.StageName as any) &&
+          (!effectiveOwnerIds || (opp.OwnerId && effectiveOwnerIds.has(opp.OwnerId))),
+      ),
+    [opportunities, effectiveOwnerIds],
+  );
+
+  const closedStageTotals = useMemo(() => {
+    const totals = new Map<string, { count: number; total: number }>();
+    for (const stage of CLOSED_FUNNEL_STAGES) totals.set(stage, { count: 0, total: 0 });
+    for (const opp of closedOpps) {
+      const entry = totals.get(opp.StageName);
+      if (entry) {
+        entry.count++;
+        entry.total += opp.Amount || 0;
+      }
+    }
+    return totals;
+  }, [closedOpps]);
 
   const funnel = useMemo(() => buildFunnelData(filteredOpps, history), [filteredOpps, history]);
 
@@ -705,6 +731,87 @@ const PipelineFunnel: React.FC<PipelineFunnelProps> = ({ opportunities, selected
               </Box>
             );
           })}
+        </Box>
+
+        {/* Closed section — terminal stages (wins + losses) rendered as compact
+            horizontal cards below the active funnel. These opps have exited
+            the active pipeline but are relevant to Progress-page reporting:
+            Collecting / In Effect (signed, payment in progress) through
+            Closed / Completed, and the three loss outcomes. */}
+        <Box sx={{ mt: 2, pt: 1.5, borderTop: '1px solid', borderColor: 'divider' }}>
+          <Typography
+            variant="caption"
+            sx={{
+              fontWeight: 700,
+              color: 'text.secondary',
+              textTransform: 'uppercase',
+              letterSpacing: '0.05em',
+              fontSize: '0.68rem',
+              display: 'block',
+              mb: 1,
+            }}
+          >
+            Closed
+          </Typography>
+          <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+            {CLOSED_FUNNEL_STAGES.map((stage) => {
+              const entry = closedStageTotals.get(stage) || { count: 0, total: 0 };
+              const color = getStageHexColor(stage);
+              return (
+                <Box
+                  key={stage}
+                  sx={{
+                    flex: '1 1 0',
+                    minWidth: 140,
+                    p: 1,
+                    borderRadius: 1,
+                    border: '1px solid',
+                    borderColor: 'grey.200',
+                    bgcolor: 'grey.50',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 0.25,
+                  }}
+                >
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
+                    <Box
+                      sx={{
+                        width: 8,
+                        height: 8,
+                        borderRadius: '50%',
+                        bgcolor: color,
+                        flexShrink: 0,
+                      }}
+                    />
+                    <Typography
+                      variant="caption"
+                      noWrap
+                      sx={{
+                        fontSize: '0.72rem',
+                        fontWeight: 600,
+                        color: 'text.primary',
+                        lineHeight: 1.2,
+                      }}
+                    >
+                      {stage}
+                    </Typography>
+                  </Box>
+                  <Box sx={{ display: 'flex', justifyContent: 'space-between', pl: 1.75 }}>
+                    <Tooltip title={`${entry.count} opportunit${entry.count === 1 ? 'y' : 'ies'} currently in ${stage}`} arrow>
+                      <Typography variant="caption" sx={{ fontSize: '0.7rem', color: 'text.secondary', cursor: 'default' }}>
+                        {entry.count} opp{entry.count !== 1 ? 's' : ''}
+                      </Typography>
+                    </Tooltip>
+                    <Tooltip title={`Sum of Amount for ${entry.count} opp${entry.count !== 1 ? 's' : ''} in ${stage}`} arrow>
+                      <Typography variant="caption" sx={{ fontSize: '0.7rem', fontWeight: 700, cursor: 'default' }}>
+                        {formatDollarMillions(entry.total)}
+                      </Typography>
+                    </Tooltip>
+                  </Box>
+                </Box>
+              );
+            })}
+          </Box>
         </Box>
 
         <Box sx={{ mt: 2, pt: 1.5, borderTop: '1px solid', borderColor: 'divider' }}>
