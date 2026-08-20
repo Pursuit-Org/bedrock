@@ -47,6 +47,7 @@ import { SortableHeader } from "@/components/ui/SortableHeader";
 import { SavedViewsPicker } from "@/components/ui/SavedViewsPicker";
 import { ColumnChooser } from "@/components/ui/ColumnChooser";
 import { ResizableTh, useColumnDrag } from "@/components/ui/ResizableTable";
+import { ExpandRow } from "@/components/ui/ExpandRow";
 import { Toolbar } from "@/components/ui/Toolbar";
 import { useColumnVisibility } from "@/lib/columnVisibility";
 import { useColumnWidths } from "@/lib/columnWidths";
@@ -1021,12 +1022,12 @@ function ActivityRow({
           {isExpanded && (
             <div className="mt-1.5 flex flex-col gap-1">
               {e.email_from ? (
-                <span className="text-[11px] text-ink-3">
+                <span className="break-words text-[11px] text-ink-3">
                   <span className="font-medium">From:</span> {decodeEntities(e.email_from)}
                 </span>
               ) : null}
               {e.email_to && e.email_to.length > 0 ? (
-                <span className="text-[11px] text-ink-3">
+                <span className="break-words text-[11px] text-ink-3">
                   <span className="font-medium">To:</span> {e.email_to.map(decodeEntities).join(", ")}
                 </span>
               ) : null}
@@ -1037,7 +1038,7 @@ function ActivityRow({
               ) : null}
               {body ? (
                 <div className="mt-0.5 rounded bg-surface-2/40 p-2">
-                  <p className="whitespace-pre-wrap text-[11.5px] leading-relaxed text-ink-2">
+                  <p className="whitespace-pre-wrap break-words text-[11.5px] leading-relaxed text-ink-2">
                     {showFull || body.length <= EMAIL_PREVIEW_LENGTH
                       ? body
                       : body.slice(0, EMAIL_PREVIEW_LENGTH) + "…"}
@@ -1659,11 +1660,9 @@ function DealRow({
       </tr>
 
       {isExpanded ? (
-        <tr>
-          <td colSpan={visibleCols.length} className="p-0">
-            <DealExpandPanel deal={deal} />
-          </td>
-        </tr>
+        <ExpandRow colSpan={visibleCols.length}>
+          <DealExpandPanel deal={deal} />
+        </ExpandRow>
       ) : null}
     </Fragment>
   );

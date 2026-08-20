@@ -17,6 +17,7 @@ import { InlineSelect, InlineText } from "@/components/ui/InlineEdit";
 import { ColumnChooser } from "@/components/ui/ColumnChooser";
 import { SavedViewsPicker } from "@/components/ui/SavedViewsPicker";
 import { ColGroup, ResizableTh, useColumnDrag } from "@/components/ui/ResizableTable";
+import { ExpandRow } from "@/components/ui/ExpandRow";
 import { SortableHeader } from "@/components/ui/SortableHeader";
 import { Toolbar } from "@/components/ui/Toolbar";
 import { totalWidth, useColumnWidths } from "@/lib/columnWidths";
@@ -525,11 +526,9 @@ export function ContactsPage() {
                         onSaveOwner={(ownerId) => saveOwner(c.Id, ownerId)}
                       />
                       {isExpanded ? (
-                        <tr>
-                          <td colSpan={visibleCols.length} className="p-0">
-                            <ContactExpandPanel contactId={c.Id} />
-                          </td>
-                        </tr>
+                        <ExpandRow colSpan={visibleCols.length}>
+                          <ContactExpandPanel contactId={c.Id} />
+                        </ExpandRow>
                       ) : null}
                     </Fragment>
                   );

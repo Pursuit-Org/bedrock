@@ -8,6 +8,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { ColumnChooser } from "@/components/ui/ColumnChooser";
 import { InlineSelect } from "@/components/ui/InlineEdit";
 import { ColGroup, ResizableTh, useColumnDrag } from "@/components/ui/ResizableTable";
+import { ExpandRow } from "@/components/ui/ExpandRow";
 import { SavedViewsPicker } from "@/components/ui/SavedViewsPicker";
 import { SortableHeader } from "@/components/ui/SortableHeader";
 import { Tag } from "@/components/ui/Tag";
@@ -838,11 +839,9 @@ export function AccountsPage() {
                         visibleCols={visibleCols}
                       />
                       {isExpanded ? (
-                        <tr>
-                          <td colSpan={visibleCols.length} className="p-0">
-                            <AccountExpandPanel accountId={a.Id} />
-                          </td>
-                        </tr>
+                        <ExpandRow colSpan={visibleCols.length}>
+                          <AccountExpandPanel accountId={a.Id} />
+                        </ExpandRow>
                       ) : null}
                     </Fragment>
                   );

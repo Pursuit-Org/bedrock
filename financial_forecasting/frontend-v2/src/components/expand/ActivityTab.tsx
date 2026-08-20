@@ -246,7 +246,7 @@ function ActivityRow({
           ) : null}
           {body && body !== subject ? (
             <>
-              <p className="whitespace-pre-wrap text-[12px] text-ink-2">
+              <p className="whitespace-pre-wrap break-words text-[12px] text-ink-2">
                 {showFull || body.length <= EMAIL_PREVIEW_LENGTH
                   ? body
                   : body.slice(0, EMAIL_PREVIEW_LENGTH) + "…"}

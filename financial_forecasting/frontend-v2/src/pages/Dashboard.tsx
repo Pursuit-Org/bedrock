@@ -2,6 +2,7 @@ import { Fragment, useMemo, useState } from "react";
 import { ChevronDown, ChevronRight, Info } from "lucide-react";
 
 import { OwnerExpandPanel, OWNER_PANEL_HEIGHT } from "@/components/OwnerExpandPanel";
+import { ExpandRow } from "@/components/ui/ExpandRow";
 import { PageHeader } from "@/components/PageHeader";
 import { PipelineFunnel } from "@/components/dashboard/PipelineFunnel";
 import { Tooltip } from "@/components/ui/Tooltip";
@@ -575,15 +576,13 @@ function IndividualGoals({
                       </td>
                     </tr>
                     {isExpanded ? (
-                      <tr className="border-t border-border-strong">
-                        <td
-                          colSpan={7}
-                          className="p-0"
-                          style={{ height: OWNER_PANEL_HEIGHT }}
-                        >
-                          <OwnerExpandPanel ownerId={r.ownerId} />
-                        </td>
-                      </tr>
+                      <ExpandRow
+                        trClassName="border-t border-border-strong"
+                        colSpan={7}
+                        tdStyle={{ height: OWNER_PANEL_HEIGHT }}
+                      >
+                        <OwnerExpandPanel ownerId={r.ownerId} />
+                      </ExpandRow>
                     ) : null}
                   </Fragment>
                 );

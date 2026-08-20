@@ -15,6 +15,7 @@ import { ChevronDown, ChevronRight, ExternalLink } from "lucide-react";
 
 import { AccountAvatar } from "@/components/AccountAvatar";
 import { JobsAccountExpandPanel } from "@/components/jobs/JobsAccountExpandPanel";
+import { ExpandRow } from "@/components/ui/ExpandRow";
 import { SectionCard, withReferrer } from "@/components/detail";
 import { SortableHeader } from "@/components/ui/SortableHeader";
 import { Tag } from "@/components/ui/Tag";
@@ -216,11 +217,9 @@ export function JobsAccounts() {
                     <td className="px-3 py-1.5 align-middle"></td>
                   </tr>
                   {isExpanded ? (
-                    <tr>
-                      <td colSpan={8} className="p-0">
-                        <JobsAccountExpandPanel accountId={a.Id} />
-                      </td>
-                    </tr>
+                    <ExpandRow colSpan={8}>
+                      <JobsAccountExpandPanel accountId={a.Id} />
+                    </ExpandRow>
                   ) : null}
                 </Fragment>
               );

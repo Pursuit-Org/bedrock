@@ -29,6 +29,7 @@ import { useAccountsWithFellows } from "@/services/affiliations";
 import { useColumnVisibility } from "@/lib/columnVisibility";
 import { useColumnWidths } from "@/lib/columnWidths";
 import { ResizableTh, ColGroup, useColumnDrag } from "@/components/ui/ResizableTable";
+import { ExpandRow } from "@/components/ui/ExpandRow";
 import { useSessionState } from "@/lib/useSessionState";
 import { useSort, sortBy, type SortState } from "@/lib/sort";
 import {
@@ -218,7 +219,7 @@ function AccountRow({
         ))}
       </tr>
       {expanded && (
-        <tr className="bg-surface-2/30"><td colSpan={visibleCols.length} className="p-0"><AccountExpandTabs account={account} scope={scope} /></td></tr>
+        <ExpandRow trClassName="bg-surface-2/30" colSpan={visibleCols.length}><AccountExpandTabs account={account} scope={scope} /></ExpandRow>
       )}
     </Fragment>
   );

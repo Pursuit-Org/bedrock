@@ -12,6 +12,7 @@ import { Link } from "react-router-dom";
 import { ChevronDown, ChevronRight, ExternalLink } from "lucide-react";
 
 import { AwardExpandPanel } from "@/components/AwardExpandPanel";
+import { ExpandRow } from "@/components/ui/ExpandRow";
 import { SectionCard, withReferrer } from "@/components/detail";
 import { Tag } from "@/components/ui/Tag";
 import { InlineDate, InlineSelect } from "@/components/ui/InlineEdit";
@@ -260,11 +261,9 @@ export function PortfolioAwards({ awards, oppsById, loading, canEdit }: Portfoli
                     <td className="px-3 py-1.5 align-middle text-right text-ink-4"></td>
                   </tr>
                   {isExpanded ? (
-                    <tr>
-                      <td colSpan={8} className="p-0">
-                        <AwardExpandPanel award={a} />
-                      </td>
-                    </tr>
+                    <ExpandRow colSpan={8}>
+                      <AwardExpandPanel award={a} />
+                    </ExpandRow>
                   ) : null}
                 </Fragment>
               );

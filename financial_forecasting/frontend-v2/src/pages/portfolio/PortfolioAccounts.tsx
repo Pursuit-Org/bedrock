@@ -13,6 +13,7 @@ import { ChevronDown, ChevronRight, ExternalLink } from "lucide-react";
 
 import { AccountAvatar } from "@/components/AccountAvatar";
 import { AccountExpandPanel } from "@/components/AccountExpandPanel";
+import { ExpandRow } from "@/components/ui/ExpandRow";
 import { SectionCard, withReferrer } from "@/components/detail";
 import { InlineText } from "@/components/ui/InlineEdit";
 import { SortableHeader } from "@/components/ui/SortableHeader";
@@ -188,11 +189,9 @@ export function PortfolioAccounts({ accounts, loading, sfReady, canEdit }: Portf
                     </td>
                   </tr>
                   {isExpanded ? (
-                    <tr>
-                      <td colSpan={7} className="p-0">
-                        <AccountExpandPanel accountId={a.Id} />
-                      </td>
-                    </tr>
+                    <ExpandRow colSpan={7}>
+                      <AccountExpandPanel accountId={a.Id} />
+                    </ExpandRow>
                   ) : null}
                 </Fragment>
               );

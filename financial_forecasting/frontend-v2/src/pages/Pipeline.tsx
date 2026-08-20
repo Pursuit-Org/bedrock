@@ -20,6 +20,7 @@ import { useStageChangeGate } from "@/lib/useStageChangeGate";
 import { ColumnChooser } from "@/components/ui/ColumnChooser";
 import { InlineDate, InlineSelect, InlineText } from "@/components/ui/InlineEdit";
 import { ColGroup, ResizableTh, useColumnDrag } from "@/components/ui/ResizableTable";
+import { ExpandRow } from "@/components/ui/ExpandRow";
 import { SavedViewsPicker } from "@/components/ui/SavedViewsPicker";
 import { SortableHeader } from "@/components/ui/SortableHeader";
 import { StageChip } from "@/components/ui/StageChip";
@@ -782,15 +783,13 @@ export function PipelinePage() {
                         ruleLabel={reviewRuleLabels}
                       />
                       {isExpanded ? (
-                        <tr>
-                          <td colSpan={visibleCols.length} className="p-0">
-                            <OpportunityExpandPanel
-                              opportunityId={o.Id}
-                              oppAmount={o.Amount ?? null}
-                              oppCloseDate={o.CloseDate ?? null}
-                            />
-                          </td>
-                        </tr>
+                        <ExpandRow colSpan={visibleCols.length}>
+                          <OpportunityExpandPanel
+                            opportunityId={o.Id}
+                            oppAmount={o.Amount ?? null}
+                            oppCloseDate={o.CloseDate ?? null}
+                          />
+                        </ExpandRow>
                       ) : null}
                     </Fragment>
                   );

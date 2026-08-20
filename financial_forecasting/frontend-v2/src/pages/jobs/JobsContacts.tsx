@@ -32,6 +32,7 @@ import { useColumnVisibility } from "@/lib/columnVisibility";
 import { useContactStageChange } from "@/lib/useContactStageChange";
 import { useColumnWidths } from "@/lib/columnWidths";
 import { ResizableTh, ColGroup, useColumnDrag } from "@/components/ui/ResizableTable";
+import { ExpandRow } from "@/components/ui/ExpandRow";
 import { useSessionState } from "@/lib/useSessionState";
 import { useSort, sortBy, type SortState } from "@/lib/sort";
 import {
@@ -577,7 +578,7 @@ function ContactRow({ contact, expanded, onOpen, visibleCols, selected, onToggle
           <td key={key} className={cn("overflow-hidden px-3 py-1.5 align-middle", i === 0 && cn("sticky left-0 z-10 group-hover:bg-surface-2", expanded ? "bg-surface-2" : "bg-surface"))} onClick={["flag", "prospect", "owner", "tags"].includes(key) ? (e) => e.stopPropagation() : undefined}>{cells[key]}</td>
         ))}
       </tr>
-      {expanded && <tr className="bg-surface-2"><td colSpan={visibleCols.length} className="p-0"><ContactExpandTabs contactId={contact.contact_id} /></td></tr>}
+      {expanded && <ExpandRow trClassName="bg-surface-2" colSpan={visibleCols.length}><ContactExpandTabs contactId={contact.contact_id} /></ExpandRow>}
       {/* Rendered outside the cells: a modal can't live inside a <td> in a
           ternary, and only the row you clicked has a pending revisit. */}
       {stageChange.dialog}
