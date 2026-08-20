@@ -6,23 +6,12 @@ import { useActivities, type ActivityFilters } from "@/services/activities";
 import { useAccounts } from "@/services/accounts";
 import { useContacts } from "@/services/contacts";
 import { useOpportunities } from "@/services/opportunities";
+import { activityBodyText, cleanEmailText, decodeEntities } from "@/lib/emailText";
 import { fmtDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { BedrockActivity } from "@/types/salesforce";
 
 const EMAIL_PREVIEW_LENGTH = 800;
-
-/** Strip HTML tags and decode common entities so raw email body text renders cleanly. */
-function cleanEmailText(s: string | null | undefined): string {
-  if (!s) return "";
-  return s
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&nbsp;/g, " ")
-    .replace(/[ \t]+/g, " ")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-}
 
 function isEmailOrMeeting(a: BedrockActivity): boolean {
   const t = (a.type ?? "").toLowerCase();
@@ -86,10 +75,11 @@ export function ActivityTab({
         (a.opportunity_id ? oppNames.get(a.opportunity_id) ?? null : null) ??
         (a.account_id ? accountNames.get(a.account_id) ?? null : null) ??
         "";
+      // Search the cleaned text the rows actually display (plus the plain
+      // description, which meetings show as notes).
       const fields: string[] = [
-        cleanEmailText(a.subject),
-        cleanEmailText(a.email_snippet),
-        cleanEmailText(a.email_body_text),
+        decodeEntities(a.subject),
+        activityBodyText(a),
         a.description ?? "",
         ctx,
         a.owner_name ?? "",
@@ -183,7 +173,10 @@ function ActivityRow({
   const [showFull, setShowFull] = useState(false);
 
   const dateStr = fmtDate(a.occurred_at ?? a.activity_date ?? a.created_at ?? null);
-  const subject = cleanEmailText(a.subject ?? a.email_snippet) || "(no subject)";
+  // Subjects are plain text — decode entities only, so legit angle-bracket
+  // text ("RE: <proposal>") isn't eaten. The snippet fallback IS email HTML.
+  const subject =
+    decodeEntities(a.subject) || cleanEmailText(a.email_snippet) || "(no subject)";
 
   const contextName =
     a._context_name ??
@@ -196,14 +189,12 @@ function ActivityRow({
       (a.type ?? "").toLowerCase(),
     ) || (a.source ?? "").toLowerCase().includes("calendar") || (a.source ?? "").toLowerCase().includes("fireflies");
 
-  // Detail content — what to show when expanded
-  const cleanedBody = cleanEmailText(a.email_body_text);
-  const cleanedSnippet = cleanEmailText(a.email_snippet);
+  // Detail content — what to show when expanded. Full email body when the
+  // row has one (tag-stripped); plain descriptions pass through untouched.
+  const body = activityBodyText(a);
 
   const hasDetail =
-    !!(a.description && a.description !== a.subject) ||
-    !!cleanedBody ||
-    !!cleanedSnippet ||
+    !!(body && body !== subject) ||
     !!a.meeting_duration_minutes ||
     !!a.meeting_location;
 
@@ -253,18 +244,14 @@ function ActivityRow({
               {a.meeting_location ? <span>{a.meeting_location}</span> : null}
             </div>
           ) : null}
-          {a.description && a.description !== a.subject ? (
-            <p className="whitespace-pre-wrap text-[12px] text-ink-2">
-              {a.description}
-            </p>
-          ) : cleanedBody && cleanedBody !== subject ? (
+          {body && body !== subject ? (
             <>
-              <p className="whitespace-pre-wrap text-[12px] text-ink-2">
-                {showFull || cleanedBody.length <= EMAIL_PREVIEW_LENGTH
-                  ? cleanedBody
-                  : cleanedBody.slice(0, EMAIL_PREVIEW_LENGTH) + "…"}
+              <p className="whitespace-pre-wrap break-words text-[12px] text-ink-2">
+                {showFull || body.length <= EMAIL_PREVIEW_LENGTH
+                  ? body
+                  : body.slice(0, EMAIL_PREVIEW_LENGTH) + "…"}
               </p>
-              {cleanedBody.length > EMAIL_PREVIEW_LENGTH ? (
+              {body.length > EMAIL_PREVIEW_LENGTH ? (
                 <button
                   type="button"
                   onClick={(e) => { e.stopPropagation(); setShowFull((v) => !v); }}
@@ -274,10 +261,6 @@ function ActivityRow({
                 </button>
               ) : null}
             </>
-          ) : cleanedSnippet && cleanedSnippet !== subject ? (
-            <p className="whitespace-pre-wrap text-[12px] italic text-ink-2">
-              {cleanedSnippet}
-            </p>
           ) : null}
         </div>
       ) : null}

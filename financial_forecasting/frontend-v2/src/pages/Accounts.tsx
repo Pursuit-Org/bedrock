@@ -7,7 +7,8 @@ import { AccountExpandPanel, ACCOUNT_PANEL_HEIGHT } from "@/components/AccountEx
 import { PageHeader } from "@/components/PageHeader";
 import { ColumnChooser } from "@/components/ui/ColumnChooser";
 import { InlineSelect } from "@/components/ui/InlineEdit";
-import { ColGroup, ResizableTh } from "@/components/ui/ResizableTable";
+import { ColGroup, ResizableTh, useColumnDrag } from "@/components/ui/ResizableTable";
+import { ExpandRow } from "@/components/ui/ExpandRow";
 import { SavedViewsPicker } from "@/components/ui/SavedViewsPicker";
 import { SortableHeader } from "@/components/ui/SortableHeader";
 import { Tag } from "@/components/ui/Tag";
@@ -263,8 +264,9 @@ export function AccountsPage() {
     [setCollapsedGroups],
   );
 
-  const { visible: visibleCols, toggle: toggleCol, replaceAll: replaceVisibleCols } =
+  const { visible: visibleCols, toggle: toggleCol, replaceAll: replaceVisibleCols, move: moveCol } =
     useColumnVisibility("bedrock-v2:vis:accounts", COLUMN_ORDER, DEFAULT_VISIBLE);
+  const colDrag = useColumnDrag(visibleCols, moveCol);
 
   const [sort, setSort] = useSessionState<SortState<ColKey>>("accounts:sort", {
     key: "openPipeline",
@@ -746,6 +748,7 @@ export function AccountsPage() {
                   onStartResize={(e) => startResize(key, e)}
                   align="left"
                   isLast={idx === visibleCols.length - 1}
+                  drag={colDrag(key)}
                 >
                   <SortableHeader
                     label={COL_LABELS[key]}
@@ -839,11 +842,9 @@ export function AccountsPage() {
                         visibleCols={visibleCols}
                       />
                       {isExpanded ? (
-                        <tr>
-                          <td colSpan={visibleCols.length} className="p-0">
-                            <AccountExpandPanel accountId={a.Id} />
-                          </td>
-                        </tr>
+                        <ExpandRow colSpan={visibleCols.length}>
+                          <AccountExpandPanel accountId={a.Id} />
+                        </ExpandRow>
                       ) : null}
                     </Fragment>
                   );

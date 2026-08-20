@@ -19,7 +19,8 @@ import { useProbabilityScheduleGate } from "@/lib/useProbabilityScheduleGate";
 import { useStageChangeGate } from "@/lib/useStageChangeGate";
 import { ColumnChooser } from "@/components/ui/ColumnChooser";
 import { InlineDate, InlineSelect, InlineText } from "@/components/ui/InlineEdit";
-import { ColGroup, ResizableTh } from "@/components/ui/ResizableTable";
+import { ColGroup, ResizableTh, useColumnDrag } from "@/components/ui/ResizableTable";
+import { ExpandRow } from "@/components/ui/ExpandRow";
 import { SavedViewsPicker } from "@/components/ui/SavedViewsPicker";
 import { SortableHeader } from "@/components/ui/SortableHeader";
 import { StageChip } from "@/components/ui/StageChip";
@@ -230,8 +231,9 @@ export function PipelinePage() {
   const [expandedId, setExpandedId] = useSessionState<string | null>("pipeline:expandedId", null);
   const canEdit = usePerm("edit_all_opportunities");
 
-  const { visible: visibleCols, toggle: toggleCol, replaceAll: replaceVisibleCols } =
+  const { visible: visibleCols, toggle: toggleCol, replaceAll: replaceVisibleCols, move: moveCol } =
     useColumnVisibility("bedrock-v2:vis:pipeline", COLUMN_ORDER, DEFAULT_VISIBLE_COLS);
+  const colDrag = useColumnDrag(visibleCols, moveCol);
 
   const { sort, toggle } = useSort<ColKey>({ key: "close", direction: "asc" });
   const { widths, startResize, replaceAll: replaceWidths } = useColumnWidths<ColKey>(
@@ -709,6 +711,7 @@ export function PipelinePage() {
                   onStartResize={(e) => startResize(key, e)}
                   align="left"
                   isLast={idx === visibleCols.length - 1}
+                  drag={colDrag(key)}
                 >
                   <SortableHeader
                     label={COL_LABELS[key]}
@@ -780,15 +783,13 @@ export function PipelinePage() {
                         ruleLabel={reviewRuleLabels}
                       />
                       {isExpanded ? (
-                        <tr>
-                          <td colSpan={visibleCols.length} className="p-0">
-                            <OpportunityExpandPanel
-                              opportunityId={o.Id}
-                              oppAmount={o.Amount ?? null}
-                              oppCloseDate={o.CloseDate ?? null}
-                            />
-                          </td>
-                        </tr>
+                        <ExpandRow colSpan={visibleCols.length}>
+                          <OpportunityExpandPanel
+                            opportunityId={o.Id}
+                            oppAmount={o.Amount ?? null}
+                            oppCloseDate={o.CloseDate ?? null}
+                          />
+                        </ExpandRow>
                       ) : null}
                     </Fragment>
                   );

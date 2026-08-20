@@ -14,15 +14,15 @@ import { useMemo, useState } from "react";
 import { ChevronDown, ChevronRight, Search } from "lucide-react";
 
 import { ActivitySourceIcon } from "@/components/ActivitySourceIcon";
+import {
+  activityBodyText,
+  cleanEmailText,
+  decodeEntities,
+} from "@/lib/emailText";
 import { cn } from "@/lib/utils";
 import { useSetActivityRelevance, type ActivityEntry } from "@/services/jobs";
 
-function decode(s: string | null): string {
-  if (!s) return "";
-  return s
-    .replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&nbsp;/g, " ");
-}
+const EMAIL_PREVIEW_LENGTH = 800;
 
 function fmtDate(iso: string | null): string {
   if (!iso) return "";
@@ -93,9 +93,11 @@ function RelevanceChip({ a }: { a: ActivityEntry }) {
 /** One activity row — every row expands (uniform) to show From / To / When / body. */
 function Row({ a, depth = 0 }: { a: ActivityEntry; depth?: number }) {
   const [open, setOpen] = useState(false);
-  const body = decode(a.email_body_text || a.description);
-  const snippet = decode(a.email_snippet || a.description);
-  const to = (a.email_to ?? []).map(decode);
+  const [showFull, setShowFull] = useState(false);
+  // Email fields are HTML (tag-stripped); plain descriptions pass through.
+  const body = activityBodyText(a);
+  const snippet = a.email_snippet ? cleanEmailText(a.email_snippet) : body;
+  const to = (a.email_to ?? []).map(decodeEntities);
   return (
     <div className={cn("border-b border-border-strong/60 last:border-0", depth > 0 && "bg-surface-2/20")}>
       <button
@@ -109,18 +111,33 @@ function Row({ a, depth = 0 }: { a: ActivityEntry; depth?: number }) {
         <span className="mt-0.5 shrink-0"><ActivitySourceIcon source={a.source} type={a.type} size={14} /></span>
         <span className="min-w-0 flex-1">
           <span className="flex items-baseline gap-2">
-            <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-ink">{decode(a.subject) || a.type || "Activity"}</span>
+            <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-ink">{decodeEntities(a.subject) || a.type || "Activity"}</span>
             <RelevanceChip a={a} />
             <span className="shrink-0 whitespace-nowrap text-[11px] text-ink-4">{fmtDate(a.activity_date)}</span>
           </span>
-          {a.email_from && !open && <span className="block truncate text-[11px] text-ink-4">{decode(a.email_from)}</span>}
+          {a.email_from && !open && <span className="block truncate text-[11px] text-ink-4">{decodeEntities(a.email_from)}</span>}
           {!open && snippet && <span className="mt-0.5 block truncate text-[11.5px] text-ink-3">{snippet}</span>}
           {open && (
             <span className="mt-1.5 block rounded-md bg-surface-2/50 p-2 text-[11.5px] leading-relaxed text-ink-2">
-              {a.email_from && <span className="block text-[11px] text-ink-4"><span className="font-medium text-ink-3">From:</span> {decode(a.email_from)}</span>}
+              {a.email_from && <span className="block text-[11px] text-ink-4"><span className="font-medium text-ink-3">From:</span> {decodeEntities(a.email_from)}</span>}
               {to.length > 0 && <span className="block text-[11px] text-ink-4"><span className="font-medium text-ink-3">To:</span> {to.join(", ")}</span>}
               <span className="block text-[11px] text-ink-4"><span className="font-medium text-ink-3">When:</span> {fmtDateTime(a.activity_date)}</span>
-              <span className="mt-1.5 block whitespace-pre-wrap border-t border-border-strong/60 pt-1.5">{body || <span className="italic text-ink-4">No further detail.</span>}</span>
+              <span className="mt-1.5 block whitespace-pre-wrap border-t border-border-strong/60 pt-1.5">
+                {body
+                  ? (showFull || body.length <= EMAIL_PREVIEW_LENGTH ? body : body.slice(0, EMAIL_PREVIEW_LENGTH) + "…")
+                  : <span className="italic text-ink-4">No further detail.</span>}
+              </span>
+              {body.length > EMAIL_PREVIEW_LENGTH && (
+                <span
+                  role="button"
+                  tabIndex={0}
+                  onClick={(e) => { e.stopPropagation(); setShowFull((v) => !v); }}
+                  onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); setShowFull((v) => !v); } }}
+                  className="mt-1 block text-[11px] text-accent hover:underline"
+                >
+                  {showFull ? "Show less" : "Show more"}
+                </span>
+              )}
             </span>
           )}
         </span>
@@ -143,10 +160,10 @@ function GroupRow({ subject, rows }: { subject: string; rows: ActivityEntry[] })
         <span className="mt-0.5 shrink-0"><ActivitySourceIcon source={a.source} type={a.type} size={14} /></span>
         <span className="min-w-0 flex-1">
           <span className="flex items-baseline gap-2">
-            <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-ink">{decode(subject) || "(no subject)"}</span>
+            <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-ink">{decodeEntities(subject) || "(no subject)"}</span>
             <span className="shrink-0 whitespace-nowrap text-[11px] text-ink-4">{fmtDate(a.activity_date)}</span>
           </span>
-          <span className="block truncate text-[11px] text-ink-4">{decode(a.email_from)} · <span className="text-accent">{rows.length} messages · {detail}</span></span>
+          <span className="block truncate text-[11px] text-ink-4">{decodeEntities(a.email_from)} · <span className="text-accent">{rows.length} messages · {detail}</span></span>
         </span>
       </button>
       {open && <div>{rows.map((r) => <Row key={r.id} a={r} depth={1} />)}</div>}

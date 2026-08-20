@@ -9,7 +9,8 @@ import { PageHeader } from "@/components/PageHeader";
 import { ColumnChooser } from "@/components/ui/ColumnChooser";
 import { InlineSelect } from "@/components/ui/InlineEdit";
 import { SavedViewsPicker } from "@/components/ui/SavedViewsPicker";
-import { ColGroup, ResizableTh } from "@/components/ui/ResizableTable";
+import { ColGroup, ResizableTh, useColumnDrag } from "@/components/ui/ResizableTable";
+import { ExpandRow } from "@/components/ui/ExpandRow";
 import { SortableHeader } from "@/components/ui/SortableHeader";
 import { Tag } from "@/components/ui/Tag";
 import { ButtonGroup, Toolbar } from "@/components/ui/Toolbar";
@@ -316,8 +317,9 @@ export function AwardsPage() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
   const canEdit = usePerm("edit_awards");
-  const { visible: visibleCols, toggle: toggleCol, replaceAll: replaceVisibleCols } =
+  const { visible: visibleCols, toggle: toggleCol, replaceAll: replaceVisibleCols, move: moveCol } =
     useColumnVisibility<ColKey>("bedrock-v2:vis:awards", COLUMN_ORDER, DEFAULT_VISIBLE);
+  const colDrag = useColumnDrag(visibleCols, moveCol);
 
   const { sort, toggle } = useSort<ColKey>({ key: "awardDate", direction: "desc" });
   const { widths, startResize, replaceAll: replaceWidths } = useColumnWidths<ColKey>(
@@ -521,19 +523,6 @@ export function AwardsPage() {
   const tableMinWidth = totalWidth(widths);
 
   const scrollRef = useRef<HTMLDivElement>(null);
-  // Track the scroll container's visible width so the expand panel can be
-  // capped to it (sticky-left keeps it pinned even when the table is wider
-  // than the viewport, so the user never has to scroll horizontally to read
-  // reporting / payment / task content).
-  const [containerWidth, setContainerWidth] = useState(0);
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    setContainerWidth(el.clientWidth);
-    const ro = new ResizeObserver(() => setContainerWidth(el.clientWidth));
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
 
   const virtualizer = useVirtualizer({
     count: filtered.length,
@@ -659,6 +648,7 @@ export function AwardsPage() {
                   onStartResize={(e) => startResize(key, e)}
                   align="left"
                   isLast={idx === visibleCols.length - 1}
+                  drag={colDrag(key)}
                 >
                   <SortableHeader label={COL_LABELS[key]} sortKey={key} sort={sort} onToggle={toggle} />
                 </ResizableTh>
@@ -716,16 +706,9 @@ export function AwardsPage() {
                         }}
                       />
                       {isExpanded ? (
-                        <tr>
-                          <td colSpan={visibleCols.length} className="p-0">
-                            <div
-                              className="sticky left-0"
-                              style={containerWidth ? { width: containerWidth } : undefined}
-                            >
-                              <AwardExpandPanel award={a} />
-                            </div>
-                          </td>
-                        </tr>
+                        <ExpandRow colSpan={visibleCols.length}>
+                          <AwardExpandPanel award={a} />
+                        </ExpandRow>
                       ) : null}
                     </Fragment>
                   );

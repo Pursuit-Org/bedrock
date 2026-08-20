@@ -303,7 +303,7 @@ function CommentRollupRow({ c }: { c: AccountComment }) {
         <span className="text-[11.5px] font-medium text-ink-2">{c.author_email ?? "—"}</span>
         <span className="ml-auto"><ScopeChip scope={c.scope} label={c.scope_label} /></span>
       </div>
-      <p className="mt-1 whitespace-pre-wrap text-[12px] text-ink-2">{c.content}</p>
+      <p className="mt-1 whitespace-pre-wrap break-words text-[12px] text-ink-2">{c.content}</p>
     </div>
   );
 }

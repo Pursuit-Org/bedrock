@@ -201,16 +201,20 @@ export function TaskListTab({
       ) : (
         <div
           className={cn(
-            "max-w-full align-top",
+            "max-w-full",
             unstyled
               ? "block"
-              : "inline-block overflow-hidden rounded border border-border-strong bg-surface",
+              : "overflow-hidden rounded border border-border-strong bg-surface",
           )}
         >
-          <table className="table-fixed text-[12px]">
+          {/* w-full + table-fixed with an unsized Subject column: the fixed
+              columns keep their widths and Subject absorbs whatever the
+              panel has left, so the table can never force horizontal
+              scrolling inside an expanded row. */}
+          <table className="w-full table-fixed text-[12px]">
             <colgroup>
               <col style={{ width: 36 }} />
-              <col style={{ width: 480 }} />
+              <col />
               <col style={{ width: 150 }} />
               <col style={{ width: 150 }} />
               <col style={{ width: 120 }} />

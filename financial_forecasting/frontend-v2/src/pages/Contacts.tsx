@@ -16,7 +16,8 @@ import { PageHeader } from "@/components/PageHeader";
 import { InlineSelect, InlineText } from "@/components/ui/InlineEdit";
 import { ColumnChooser } from "@/components/ui/ColumnChooser";
 import { SavedViewsPicker } from "@/components/ui/SavedViewsPicker";
-import { ColGroup, ResizableTh } from "@/components/ui/ResizableTable";
+import { ColGroup, ResizableTh, useColumnDrag } from "@/components/ui/ResizableTable";
+import { ExpandRow } from "@/components/ui/ExpandRow";
 import { SortableHeader } from "@/components/ui/SortableHeader";
 import { Toolbar } from "@/components/ui/Toolbar";
 import { totalWidth, useColumnWidths } from "@/lib/columnWidths";
@@ -160,8 +161,9 @@ export function ContactsPage() {
   const [rules, setRules] = useState<FilterRule<ContactField>[]>([]);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const { philOnly } = filter;
-  const { visible: visibleCols, toggle: toggleCol, replaceAll: replaceVisibleCols } =
+  const { visible: visibleCols, toggle: toggleCol, replaceAll: replaceVisibleCols, move: moveCol } =
     useColumnVisibility("bedrock-v2:vis:contacts", COLUMN_ORDER);
+  const colDrag = useColumnDrag(visibleCols, moveCol);
 
   const { sort, toggle } = useSort<ColKey>({ key: "name", direction: "asc" });
   const { widths, startResize, replaceAll: replaceWidths } = useColumnWidths<ColKey>(
@@ -460,6 +462,7 @@ export function ContactsPage() {
                   onStartResize={(e) => startResize(key, e)}
                   align="left"
                   isLast={idx === visibleCols.length - 1}
+                  drag={colDrag(key)}
                 >
                   <SortableHeader
                     label={COL_LABELS[key]}
@@ -523,11 +526,9 @@ export function ContactsPage() {
                         onSaveOwner={(ownerId) => saveOwner(c.Id, ownerId)}
                       />
                       {isExpanded ? (
-                        <tr>
-                          <td colSpan={visibleCols.length} className="p-0">
-                            <ContactExpandPanel contactId={c.Id} />
-                          </td>
-                        </tr>
+                        <ExpandRow colSpan={visibleCols.length}>
+                          <ContactExpandPanel contactId={c.Id} />
+                        </ExpandRow>
                       ) : null}
                     </Fragment>
                   );

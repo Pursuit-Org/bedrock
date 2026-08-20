@@ -1,9 +1,9 @@
 import { useMemo } from "react";
 import { Link } from "react-router-dom";
 
+import { ActivityListRow } from "@/components/ActivityListRow";
 import { Drawer } from "@/components/ui/Drawer";
 import { StageChip } from "@/components/ui/StageChip";
-import { Tag } from "@/components/ui/Tag";
 import { fmtDate, fmtMoney, fmtMoneyFull } from "@/lib/format";
 import { isOpen, stageStatus } from "@/lib/stages";
 import { cn } from "@/lib/utils";
@@ -149,23 +149,7 @@ function AccountDrawerBody({ account }: { account: SfAccount }) {
         ) : (
           <ul className="flex flex-col">
             {activities.slice(0, 12).map((a) => (
-              <li
-                key={a.id}
-                className="flex items-start gap-2 border-b border-border-strong px-4 py-2 last:border-b-0"
-              >
-                <Tag>{a.type}</Tag>
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-[13px]">{a.subject ?? "(no subject)"}</div>
-                  {a.email_snippet || a.description ? (
-                    <div className="line-clamp-1 text-[11.5px] text-ink-3">
-                      {a.email_snippet ?? a.description}
-                    </div>
-                  ) : null}
-                </div>
-                <div className="mono flex-shrink-0 text-[10.5px] text-ink-3">
-                  {fmtDate(a.occurred_at ?? a.created_at)}
-                </div>
-              </li>
+              <ActivityListRow key={a.id} a={a} />
             ))}
           </ul>
         )}

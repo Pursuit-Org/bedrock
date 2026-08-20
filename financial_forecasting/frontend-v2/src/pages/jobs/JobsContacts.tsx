@@ -31,7 +31,8 @@ import { RECENCY_OPTIONS, recencyLabel } from "@/lib/recencyFilter";
 import { useColumnVisibility } from "@/lib/columnVisibility";
 import { useContactStageChange } from "@/lib/useContactStageChange";
 import { useColumnWidths } from "@/lib/columnWidths";
-import { ResizableTh, ColGroup } from "@/components/ui/ResizableTable";
+import { ResizableTh, ColGroup, useColumnDrag } from "@/components/ui/ResizableTable";
+import { ExpandRow } from "@/components/ui/ExpandRow";
 import { useSessionState } from "@/lib/useSessionState";
 import { useSort, sortBy, type SortState } from "@/lib/sort";
 import {
@@ -577,7 +578,7 @@ function ContactRow({ contact, expanded, onOpen, visibleCols, selected, onToggle
           <td key={key} className={cn("overflow-hidden px-3 py-1.5 align-middle", i === 0 && cn("sticky left-0 z-10 group-hover:bg-surface-2", expanded ? "bg-surface-2" : "bg-surface"))} onClick={["flag", "prospect", "owner", "tags"].includes(key) ? (e) => e.stopPropagation() : undefined}>{cells[key]}</td>
         ))}
       </tr>
-      {expanded && <tr className="bg-surface-2"><td colSpan={visibleCols.length} className="p-0"><ContactExpandTabs contactId={contact.contact_id} /></td></tr>}
+      {expanded && <ExpandRow trClassName="bg-surface-2" colSpan={visibleCols.length}><ContactExpandTabs contactId={contact.contact_id} /></ExpandRow>}
       {/* Rendered outside the cells: a modal can't live inside a <td> in a
           ternary, and only the row you clicked has a pending revisit. */}
       {stageChange.dialog}
@@ -629,10 +630,7 @@ export function JobsContacts({ initialQuery, initialContactId, initialConnectedO
   const { sort, toggle, setSort } = useSort<ColKey>({ key: "name", direction: "asc" });
   const { visible: visibleCols, toggle: toggleCol, replaceAll: replaceVisibleCols, move: moveCol } =
     useColumnVisibility<ColKey>("bedrock-v2:vis:jobs-contacts-v2", COLUMN_ORDER, DEFAULT_VISIBLE);
-  // Column drag-reorder (spreadsheet-style: grab a header, drop it where you
-  // want it). `dragCol` is what's moving, `dropCol` is what it's hovering.
-  const [dragCol, setDragCol] = useState<ColKey | null>(null);
-  const [dropCol, setDropCol] = useState<ColKey | null>(null);
+  const colDrag = useColumnDrag(visibleCols, moveCol);
   const { widths, startResize } = useColumnWidths<ColKey>("bedrock-v2:cols:jobs-contacts", DEFAULT_WIDTHS);
   const [showAllRows, setShowAllRows] = useState(false);
 
@@ -978,18 +976,7 @@ export function JobsContacts({ initialQuery, initialContactId, initialConnectedO
                 width={widths[key]}
                 onStartResize={(e) => startResize(key, e)}
                 isLast={idx === visibleCols.length - 1}
-                drag={{
-                  onDragStart: () => setDragCol(key),
-                  onDragEnter: () => setDropCol(key),
-                  onDrop: () => { if (dragCol) moveCol(dragCol, key); setDragCol(null); setDropCol(null); },
-                  onDragEnd: () => { setDragCol(null); setDropCol(null); },
-                  dragging: dragCol === key,
-                  // The line marks where the column will land: to the right of
-                  // the target when dragging rightwards, left when leftwards.
-                  dropEdge: dragCol && dropCol === key && dragCol !== key
-                    ? (visibleCols.indexOf(dragCol) < idx ? "right" : "left")
-                    : null,
-                }}
+                drag={colDrag(key)}
                 className={cn("py-1.5 font-semibold", idx === 0 && "sticky left-0 z-30")}
               >
                 {key === "name" ? (

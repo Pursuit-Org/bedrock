@@ -26,6 +26,7 @@ import { Tag } from "@/components/ui/Tag";
 import { InlineDate, InlineSelect } from "@/components/ui/InlineEdit";
 import { useContactStageChange } from "@/lib/useContactStageChange";
 import { RowExpandPanel } from "@/components/RowExpandPanel";
+import { ExpandRow } from "@/components/ui/ExpandRow";
 import { SortableHeader } from "@/components/ui/SortableHeader";
 import { ContactExpandTabs, OwnerSelect } from "@/components/jobs/jobsEntity";
 import { OppRolesSection } from "@/components/jobs/OppRolesSection";
@@ -494,11 +495,9 @@ function OppTableRow({ o, needs, expanded, onToggle, showOwner, resolveName, onR
         )}
       </tr>
       {expanded && (
-        <tr>
-          <td colSpan={colSpan} className="border-t border-border-strong bg-surface-2/20 p-0">
-            <DealExpandPanel deal={o} />
-          </td>
-        </tr>
+        <ExpandRow colSpan={colSpan} tdClassName="border-t border-border-strong bg-surface-2/20">
+          <DealExpandPanel deal={o} />
+        </ExpandRow>
       )}
     </>
   );
@@ -773,14 +772,12 @@ function RoleTableRow({ role, opp, expanded, sibling, colSpan, showOwner, resolv
         )}
       </tr>
       {expanded && (
-        <tr>
-          <td colSpan={colSpan} className="border-t border-border-strong bg-surface-2/20 p-0">
-            <RowExpandPanel defaultTab="roles" tabs={[
-              { id: "roles", label: "Roles", render: () => <div className="px-4 py-3"><OppRolesSection oppId={opp.opportunity_id} /></div> },
-              { id: "builders", label: "Builders", render: () => <div className="px-4 py-3"><OppBuilderActivity oppId={opp.opportunity_id} /></div> },
-            ]} />
-          </td>
-        </tr>
+        <ExpandRow colSpan={colSpan} tdClassName="border-t border-border-strong bg-surface-2/20">
+          <RowExpandPanel defaultTab="roles" tabs={[
+            { id: "roles", label: "Roles", render: () => <div className="px-4 py-3"><OppRolesSection oppId={opp.opportunity_id} /></div> },
+            { id: "builders", label: "Builders", render: () => <div className="px-4 py-3"><OppBuilderActivity oppId={opp.opportunity_id} /></div> },
+          ]} />
+        </ExpandRow>
       )}
     </>
   );

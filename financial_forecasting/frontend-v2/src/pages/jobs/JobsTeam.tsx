@@ -46,7 +46,8 @@ import { useSort, sortBy, type SortState } from "@/lib/sort";
 import { SortableHeader } from "@/components/ui/SortableHeader";
 import { SavedViewsPicker } from "@/components/ui/SavedViewsPicker";
 import { ColumnChooser } from "@/components/ui/ColumnChooser";
-import { ResizableTh } from "@/components/ui/ResizableTable";
+import { ResizableTh, useColumnDrag } from "@/components/ui/ResizableTable";
+import { ExpandRow } from "@/components/ui/ExpandRow";
 import { Toolbar } from "@/components/ui/Toolbar";
 import { useColumnVisibility } from "@/lib/columnVisibility";
 import { useColumnWidths } from "@/lib/columnWidths";
@@ -60,6 +61,12 @@ import {
   type FilterRule,
 } from "@/pages/cleanup/Filters";
 import { ChevronDown, ChevronRight, Mail, Linkedin, Trash2, X, Plus, Check, CheckSquare, Search } from "lucide-react";
+import {
+  activityBodyText,
+  cleanEmailText,
+  cleanPlainText,
+  decodeEntities,
+} from "@/lib/emailText";
 import { cn } from "@/lib/utils";
 import { format, formatDistanceToNow } from "date-fns";
 
@@ -171,16 +178,7 @@ function fmtShortDate(iso: string | null): string {
   }
 }
 
-// Synced email bodies arrive with raw HTML entities (e.g. "you&#39;re").
-// Decode them for display via a detached textarea (no DOM injection).
-let _entityDecoder: HTMLTextAreaElement | null = null;
-function decodeEntities(s: string | null | undefined): string {
-  if (!s) return "";
-  if (typeof document === "undefined") return s;
-  _entityDecoder = _entityDecoder ?? document.createElement("textarea");
-  _entityDecoder.innerHTML = s;
-  return _entityDecoder.value;
-}
+const EMAIL_PREVIEW_LENGTH = 800;
 
 // ── Sub-components ────────────────────────────────────────────────────────────
 
@@ -996,8 +994,12 @@ function ActivityRow({
   onDelete: () => void;
 }) {
   const icon = activityIconProps(e);
-  const preview = decodeEntities(e.description || e.email_snippet);
-  const body = decodeEntities(e.email_body_text || e.description || e.email_snippet);
+  const [showFull, setShowFull] = useState(false);
+  // Descriptions are plain text (never tag-stripped); email fields are HTML.
+  const preview = e.description
+    ? cleanPlainText(e.description)
+    : cleanEmailText(e.email_snippet);
+  const body = activityBodyText(e);
   return (
     <li
       className="cursor-pointer px-4 py-2.5 hover:bg-surface-2/40 transition-colors"
@@ -1020,13 +1022,13 @@ function ActivityRow({
           {isExpanded && (
             <div className="mt-1.5 flex flex-col gap-1">
               {e.email_from ? (
-                <span className="text-[11px] text-ink-3">
-                  <span className="font-medium">From:</span> {e.email_from}
+                <span className="break-words text-[11px] text-ink-3">
+                  <span className="font-medium">From:</span> {decodeEntities(e.email_from)}
                 </span>
               ) : null}
               {e.email_to && e.email_to.length > 0 ? (
-                <span className="text-[11px] text-ink-3">
-                  <span className="font-medium">To:</span> {e.email_to.join(", ")}
+                <span className="break-words text-[11px] text-ink-3">
+                  <span className="font-medium">To:</span> {e.email_to.map(decodeEntities).join(", ")}
                 </span>
               ) : null}
               {e.meeting_duration_minutes != null ? (
@@ -1035,9 +1037,22 @@ function ActivityRow({
                 </span>
               ) : null}
               {body ? (
-                <p className="mt-0.5 max-h-72 overflow-y-auto whitespace-pre-wrap rounded bg-surface-2/40 p-2 text-[11.5px] leading-relaxed text-ink-2">
-                  {body}
-                </p>
+                <div className="mt-0.5 rounded bg-surface-2/40 p-2">
+                  <p className="whitespace-pre-wrap break-words text-[11.5px] leading-relaxed text-ink-2">
+                    {showFull || body.length <= EMAIL_PREVIEW_LENGTH
+                      ? body
+                      : body.slice(0, EMAIL_PREVIEW_LENGTH) + "…"}
+                  </p>
+                  {body.length > EMAIL_PREVIEW_LENGTH ? (
+                    <button
+                      type="button"
+                      onClick={(ev) => { ev.stopPropagation(); setShowFull((v) => !v); }}
+                      className="mt-1 text-[11px] text-accent hover:underline"
+                    >
+                      {showFull ? "Show less" : "Show more"}
+                    </button>
+                  ) : null}
+                </div>
               ) : null}
             </div>
           )}
@@ -1645,11 +1660,9 @@ function DealRow({
       </tr>
 
       {isExpanded ? (
-        <tr>
-          <td colSpan={visibleCols.length} className="p-0">
-            <DealExpandPanel deal={deal} />
-          </td>
-        </tr>
+        <ExpandRow colSpan={visibleCols.length}>
+          <DealExpandPanel deal={deal} />
+        </ExpandRow>
       ) : null}
     </Fragment>
   );
@@ -2316,8 +2329,9 @@ export function JobsTeam() {
   const [closedLostDeal, setClosedLostDeal] = useState<{ id: string; account_name: string } | null>(null);
 
   const { sort, toggle, setSort } = useSort<OppColKey>({ key: "priority", direction: "desc" });
-  const { visible: visibleCols, toggle: toggleCol, replaceAll: replaceVisibleCols } =
+  const { visible: visibleCols, toggle: toggleCol, replaceAll: replaceVisibleCols, move: moveCol } =
     useColumnVisibility<OppColKey>("bedrock-v2:vis:jobs-opportunities", OPP_COLUMN_ORDER, OPP_DEFAULT_VISIBLE);
+  const colDrag = useColumnDrag(visibleCols, moveCol);
   const { widths, startResize, replaceAll: replaceWidths } =
     useColumnWidths<OppColKey>("bedrock-v2:cols:jobs-opportunities:v2", OPP_DEFAULT_WIDTHS);
 
@@ -2549,6 +2563,7 @@ export function JobsTeam() {
                   onStartResize={(e) => startResize(key, e)}
                   align={key === "num_roles" || key === "salary" ? "right" : "left"}
                   isLast={idx === visibleCols.length - 1}
+                  drag={colDrag(key)}
                   className={idx === 0 ? "sticky left-0 z-30" : undefined}
                 >
                   <SortableHeader label={OPP_COL_LABELS[key]} sortKey={key} sort={sort} onToggle={toggle} />
