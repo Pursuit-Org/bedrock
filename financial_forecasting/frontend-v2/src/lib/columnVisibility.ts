@@ -15,6 +15,16 @@ function orderBy<K extends string>(cols: K[], allColumns: K[]): K[] {
   );
 }
 
+/** Insert `col` without disturbing a drag-reordered layout: it lands before
+ *  the first column that follows it canonically — identical to orderBy()
+ *  when the layout is untouched. */
+function insertNear<K extends string>(prev: K[], col: K, allColumns: K[]): K[] {
+  const rank = allColumns.indexOf(col);
+  const at = prev.findIndex((k) => allColumns.indexOf(k) > rank);
+  if (at === -1) return [...prev, col];
+  return [...prev.slice(0, at), col, ...prev.slice(at)];
+}
+
 export function useColumnVisibility<K extends string>(
   storageKey: string,
   allColumns: K[],
@@ -52,7 +62,11 @@ export function useColumnVisibility<K extends string>(
             (k) => !known.includes(k) && defaults.includes(k),
           );
           if (valid.length > 0 || newDefaults.length > 0) {
-            const merged = orderBy([...valid, ...newDefaults], allColumns);
+            // Keep the saved order verbatim — orderBy() here would silently
+            // undo a drag-reordered layout on every reload. New columns slot
+            // in near their canonical neighbors instead.
+            let merged = [...new Set(valid)];
+            for (const col of newDefaults) merged = insertNear(merged, col, allColumns);
             if (newDefaults.length > 0) persist(merged);
             return merged;
           }
@@ -62,23 +76,11 @@ export function useColumnVisibility<K extends string>(
     return [...defaults];
   });
 
-  /** Re-show `col` without disturbing a user's drag-reordered layout.
-   *  orderBy() would re-sort the whole row back to canonical order, silently
-   *  undoing a manual arrangement every time a column is toggled. Instead the
-   *  column lands before the first visible column that follows it canonically
-   *  — identical to orderBy() when the layout is untouched. */
-  const insertNear = (prev: K[], col: K): K[] => {
-    const rank = allColumns.indexOf(col);
-    const at = prev.findIndex((k) => allColumns.indexOf(k) > rank);
-    if (at === -1) return [...prev, col];
-    return [...prev.slice(0, at), col, ...prev.slice(at)];
-  };
-
   const toggle = (col: K) => {
     setVisible((prev) => {
       const next = prev.includes(col)
         ? prev.filter((k) => k !== col)
-        : insertNear(prev, col);
+        : insertNear(prev, col, allColumns);
       persist(next);
       return next;
     });

@@ -9,7 +9,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { ColumnChooser } from "@/components/ui/ColumnChooser";
 import { InlineSelect } from "@/components/ui/InlineEdit";
 import { SavedViewsPicker } from "@/components/ui/SavedViewsPicker";
-import { ColGroup, ResizableTh } from "@/components/ui/ResizableTable";
+import { ColGroup, ResizableTh, useColumnDrag } from "@/components/ui/ResizableTable";
 import { SortableHeader } from "@/components/ui/SortableHeader";
 import { Tag } from "@/components/ui/Tag";
 import { ButtonGroup, Toolbar } from "@/components/ui/Toolbar";
@@ -316,8 +316,9 @@ export function AwardsPage() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
   const canEdit = usePerm("edit_awards");
-  const { visible: visibleCols, toggle: toggleCol, replaceAll: replaceVisibleCols } =
+  const { visible: visibleCols, toggle: toggleCol, replaceAll: replaceVisibleCols, move: moveCol } =
     useColumnVisibility<ColKey>("bedrock-v2:vis:awards", COLUMN_ORDER, DEFAULT_VISIBLE);
+  const colDrag = useColumnDrag(visibleCols, moveCol);
 
   const { sort, toggle } = useSort<ColKey>({ key: "awardDate", direction: "desc" });
   const { widths, startResize, replaceAll: replaceWidths } = useColumnWidths<ColKey>(
@@ -659,6 +660,7 @@ export function AwardsPage() {
                   onStartResize={(e) => startResize(key, e)}
                   align="left"
                   isLast={idx === visibleCols.length - 1}
+                  drag={colDrag(key)}
                 >
                   <SortableHeader label={COL_LABELS[key]} sortKey={key} sort={sort} onToggle={toggle} />
                 </ResizableTh>

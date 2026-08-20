@@ -1,6 +1,56 @@
-import { type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 
 import { cn } from "@/lib/utils";
+
+/** Drag-reorder wiring for one header cell — see `useColumnDrag`. */
+export type ColumnDrag = {
+  onDragStart: () => void;
+  onDragEnter: () => void;
+  onDrop: () => void;
+  onDragEnd: () => void;
+  dragging?: boolean;
+  dropEdge?: "left" | "right" | null;
+};
+
+/**
+ * Spreadsheet-style column drag-reorder for a row of `ResizableTh` headers.
+ * Owns the transient drag state; persistence happens in the `move` callback
+ * (wire it to `useColumnVisibility().move`, which writes the reordered layout
+ * to the same localStorage key as visibility toggles).
+ *
+ *   const colDrag = useColumnDrag(visibleCols, moveCol);
+ *   <ResizableTh drag={colDrag(key)} ... />
+ */
+export function useColumnDrag<K extends string>(
+  order: K[],
+  move: (col: K, target: K) => void,
+): (key: K) => ColumnDrag {
+  // `dragCol` is what's moving, `dropCol` is what it's hovering.
+  const [dragCol, setDragCol] = useState<K | null>(null);
+  const [dropCol, setDropCol] = useState<K | null>(null);
+  return (key: K) => ({
+    onDragStart: () => setDragCol(key),
+    onDragEnter: () => setDropCol(key),
+    onDrop: () => {
+      if (dragCol) move(dragCol, key);
+      setDragCol(null);
+      setDropCol(null);
+    },
+    onDragEnd: () => {
+      setDragCol(null);
+      setDropCol(null);
+    },
+    dragging: dragCol === key,
+    // The line marks where the column will land: to the right of the target
+    // when dragging rightwards, left when leftwards.
+    dropEdge:
+      dragCol && dropCol === key && dragCol !== key
+        ? order.indexOf(dragCol) < order.indexOf(key)
+          ? "right"
+          : "left"
+        : null,
+  });
+}
 
 /**
  * <th> that renders an unobtrusive drag handle on its right edge.
@@ -22,17 +72,10 @@ export function ResizableTh({
   isLast?: boolean;
   align?: "left" | "right";
   className?: string;
-  /** Opt-in column reordering. Omit and the header behaves exactly as before.
-   *  `dropEdge` draws the insertion line while a column is dragged over this
-   *  one; `dragging` dims the column being moved. */
-  drag?: {
-    onDragStart: () => void;
-    onDragEnter: () => void;
-    onDrop: () => void;
-    onDragEnd: () => void;
-    dragging?: boolean;
-    dropEdge?: "left" | "right" | null;
-  };
+  /** Opt-in column reordering (from `useColumnDrag`). Omit and the header
+   *  behaves exactly as before. `dropEdge` draws the insertion line while a
+   *  column is dragged over this one; `dragging` dims the column being moved. */
+  drag?: ColumnDrag;
 }) {
   return (
     <th

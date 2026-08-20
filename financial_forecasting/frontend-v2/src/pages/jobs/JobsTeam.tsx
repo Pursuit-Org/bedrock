@@ -46,7 +46,7 @@ import { useSort, sortBy, type SortState } from "@/lib/sort";
 import { SortableHeader } from "@/components/ui/SortableHeader";
 import { SavedViewsPicker } from "@/components/ui/SavedViewsPicker";
 import { ColumnChooser } from "@/components/ui/ColumnChooser";
-import { ResizableTh } from "@/components/ui/ResizableTable";
+import { ResizableTh, useColumnDrag } from "@/components/ui/ResizableTable";
 import { Toolbar } from "@/components/ui/Toolbar";
 import { useColumnVisibility } from "@/lib/columnVisibility";
 import { useColumnWidths } from "@/lib/columnWidths";
@@ -2316,8 +2316,9 @@ export function JobsTeam() {
   const [closedLostDeal, setClosedLostDeal] = useState<{ id: string; account_name: string } | null>(null);
 
   const { sort, toggle, setSort } = useSort<OppColKey>({ key: "priority", direction: "desc" });
-  const { visible: visibleCols, toggle: toggleCol, replaceAll: replaceVisibleCols } =
+  const { visible: visibleCols, toggle: toggleCol, replaceAll: replaceVisibleCols, move: moveCol } =
     useColumnVisibility<OppColKey>("bedrock-v2:vis:jobs-opportunities", OPP_COLUMN_ORDER, OPP_DEFAULT_VISIBLE);
+  const colDrag = useColumnDrag(visibleCols, moveCol);
   const { widths, startResize, replaceAll: replaceWidths } =
     useColumnWidths<OppColKey>("bedrock-v2:cols:jobs-opportunities:v2", OPP_DEFAULT_WIDTHS);
 
@@ -2549,6 +2550,7 @@ export function JobsTeam() {
                   onStartResize={(e) => startResize(key, e)}
                   align={key === "num_roles" || key === "salary" ? "right" : "left"}
                   isLast={idx === visibleCols.length - 1}
+                  drag={colDrag(key)}
                   className={idx === 0 ? "sticky left-0 z-30" : undefined}
                 >
                   <SortableHeader label={OPP_COL_LABELS[key]} sortKey={key} sort={sort} onToggle={toggle} />

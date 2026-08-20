@@ -4,9 +4,10 @@ import { useNavigate } from "react-router-dom";
 import { useVirtualizer } from "@tanstack/react-virtual";
 
 import { PageHeader } from "@/components/PageHeader";
-import { ColGroup, ResizableTh } from "@/components/ui/ResizableTable";
+import { ColGroup, ResizableTh, useColumnDrag } from "@/components/ui/ResizableTable";
 import { SortableHeader } from "@/components/ui/SortableHeader";
 import { Toolbar } from "@/components/ui/Toolbar";
+import { useColumnVisibility } from "@/lib/columnVisibility";
 import { totalWidth, useColumnWidths } from "@/lib/columnWidths";
 import { cn } from "@/lib/utils";
 import { fmtDate } from "@/lib/format";
@@ -74,6 +75,11 @@ export function ProjectsPage() {
     "bedrock-v2:cols:projects",
     DEFAULT_WIDTHS,
   );
+  // No column chooser here — every column stays visible — but the visibility
+  // hook is still the store for a drag-reordered, persisted column order.
+  const { visible: colOrder, move: moveCol } =
+    useColumnVisibility<ColKey>("bedrock-v2:vis:projects", COLUMN_ORDER);
+  const colDrag = useColumnDrag(colOrder, moveCol);
 
   const createProject = useCreateProject();
   const [showCreate, setShowCreate] = useState(false);
@@ -253,16 +259,17 @@ export function ProjectsPage() {
             minWidth: tableMinWidth,
           }}
         >
-          <ColGroup order={COLUMN_ORDER} widths={widths} />
+          <ColGroup order={colOrder} widths={widths} />
           <thead className="sticky top-0 z-10">
             <tr>
-              {COLUMN_ORDER.map((key, idx) => (
+              {colOrder.map((key, idx) => (
                 <ResizableTh
                   key={key}
                   width={widths[key]}
                   onStartResize={(e) => startResize(key, e)}
                   align="left"
-                  isLast={idx === COLUMN_ORDER.length - 1}
+                  isLast={idx === colOrder.length - 1}
+                  drag={colDrag(key)}
                 >
                   <SortableHeader
                     label={COL_LABELS[key]}
@@ -311,6 +318,7 @@ export function ProjectsPage() {
                     <ProjectRow
                       key={p.id}
                       p={p}
+                      order={colOrder}
                       onOpen={() => navigate(`/projects/${p.id}`, { state: PROJECTS_REFERRER })}
                     />
                   );
@@ -332,41 +340,61 @@ export function ProjectsPage() {
 
 interface RowProps {
   p: BedrockProject;
+  order: ColKey[];
   onOpen: () => void;
 }
 
-const ProjectRow = memo(function ProjectRow({ p, onOpen }: RowProps) {
+// Cells render in `order` so drag-reordered headers stay aligned with rows.
+function renderCell(p: BedrockProject, key: ColKey) {
+  switch (key) {
+    case "name":
+      return (
+        <td key={key} className="overflow-hidden px-3 py-1 text-[13px]">
+          <span
+            className="block truncate font-medium hover:underline"
+            title={p.name}
+          >
+            {p.name}
+          </span>
+          {p.description ? (
+            <span
+              className="block truncate text-[11.5px] text-ink-3"
+              title={p.description}
+            >
+              {p.description}
+            </span>
+          ) : null}
+        </td>
+      );
+    case "owner":
+      return (
+        <td key={key} className="overflow-hidden truncate px-3 py-1 text-[12.5px] text-ink-2">
+          {p.owner_email ?? <span className="text-ink-4">—</span>}
+        </td>
+      );
+    case "created":
+      return (
+        <td key={key} className="mono overflow-hidden truncate px-3 py-1 text-[11.5px] text-ink-3">
+          {fmtDate(p.created_at)}
+        </td>
+      );
+    case "updated":
+      return (
+        <td key={key} className="mono overflow-hidden truncate px-3 py-1 text-[11.5px] text-ink-3">
+          {fmtDate(p.updated_at)}
+        </td>
+      );
+  }
+}
+
+const ProjectRow = memo(function ProjectRow({ p, order, onOpen }: RowProps) {
   return (
     <tr
       className="group/row cursor-pointer border-b border-border-strong hover:bg-surface-2"
       style={{ height: ROW_HEIGHT }}
       onClick={onOpen}
     >
-      <td className="overflow-hidden px-3 py-1 text-[13px]">
-        <span
-          className="block truncate font-medium hover:underline"
-          title={p.name}
-        >
-          {p.name}
-        </span>
-        {p.description ? (
-          <span
-            className="block truncate text-[11.5px] text-ink-3"
-            title={p.description}
-          >
-            {p.description}
-          </span>
-        ) : null}
-      </td>
-      <td className="overflow-hidden truncate px-3 py-1 text-[12.5px] text-ink-2">
-        {p.owner_email ?? <span className="text-ink-4">—</span>}
-      </td>
-      <td className="mono overflow-hidden truncate px-3 py-1 text-[11.5px] text-ink-3">
-        {fmtDate(p.created_at)}
-      </td>
-      <td className="mono overflow-hidden truncate px-3 py-1 text-[11.5px] text-ink-3">
-        {fmtDate(p.updated_at)}
-      </td>
+      {order.map((key) => renderCell(p, key))}
     </tr>
   );
 });

@@ -11,10 +11,11 @@ import {
   statusVariant,
   type FlatTask,
 } from "@/components/TaskDrawer";
-import { ColGroup, ResizableTh } from "@/components/ui/ResizableTable";
+import { ColGroup, ResizableTh, useColumnDrag } from "@/components/ui/ResizableTable";
 import { SortableHeader } from "@/components/ui/SortableHeader";
 import { Tag } from "@/components/ui/Tag";
 import { ButtonGroup, Toolbar } from "@/components/ui/Toolbar";
+import { useColumnVisibility } from "@/lib/columnVisibility";
 import { totalWidth, useColumnWidths } from "@/lib/columnWidths";
 import { fmtDate } from "@/lib/format";
 import { sortBy, useSort } from "@/lib/sort";
@@ -173,6 +174,11 @@ export function TasksPage() {
     "bedrock-v2:cols:tasks",
     DEFAULT_WIDTHS,
   );
+  // No column chooser here — every column stays visible — but the visibility
+  // hook is still the store for a drag-reordered, persisted column order.
+  const { visible: colOrder, move: moveCol } =
+    useColumnVisibility<ColKey>("bedrock-v2:vis:tasks", COLUMN_ORDER);
+  const colDrag = useColumnDrag(colOrder, moveCol);
 
   // Build a quick lookup for opp WhatId → SfOpportunity so CRM tasks can
   // resolve their parent name + link without a second fetch.
@@ -352,16 +358,17 @@ export function TasksPage() {
             minWidth: tableMinWidth,
           }}
         >
-          <ColGroup order={COLUMN_ORDER} widths={widths} />
+          <ColGroup order={colOrder} widths={widths} />
           <thead className="sticky top-0 z-10">
             <tr>
-              {COLUMN_ORDER.map((key, idx) => (
+              {colOrder.map((key, idx) => (
                 <ResizableTh
                   key={key}
                   width={widths[key]}
                   onStartResize={(e) => startResize(key, e)}
                   align="left"
-                  isLast={idx === COLUMN_ORDER.length - 1}
+                  isLast={idx === colOrder.length - 1}
+                  drag={colDrag(key)}
                 >
                   <SortableHeader
                     label={COL_LABELS[key]}
@@ -400,6 +407,7 @@ export function TasksPage() {
                     <TaskRow
                       key={`${t.source}:${t.id}`}
                       t={t}
+                      order={colOrder}
                       onOpen={() => setDrawerTask(t)}
                     />
                   );
@@ -432,56 +440,82 @@ export function TasksPage() {
 
 interface RowProps {
   t: FlatTask;
+  order: ColKey[];
   onOpen: () => void;
 }
 
-const TaskRow = memo(function TaskRow({ t, onOpen }: RowProps) {
-  const overdue = isOverdue(t);
+// Cells render in `order` so drag-reordered headers stay aligned with rows.
+function renderCell(t: FlatTask, key: ColKey) {
+  switch (key) {
+    case "source":
+      return (
+        <td key={key} className="overflow-hidden px-3 py-1">
+          <SourceBadge source={t.source} />
+        </td>
+      );
+    case "title":
+      return (
+        <td key={key} className="overflow-hidden px-3 py-1 text-[13px]">
+          <div className="flex flex-col leading-tight">
+            <span className="truncate font-medium" title={t.title}>
+              {t.title}
+            </span>
+            {t.parentLabel ? (
+              <span
+                className="truncate text-[11.5px] text-ink-3"
+                title={t.parentLabel}
+              >
+                {t.parentLabel}
+              </span>
+            ) : null}
+          </div>
+        </td>
+      );
+    case "status":
+      return (
+        <td key={key} className="overflow-hidden px-3 py-1 text-[13px]">
+          <Tag variant={statusVariant(t.status)}>{t.status || "—"}</Tag>
+        </td>
+      );
+    case "owner":
+      return (
+        <td key={key} className="overflow-hidden truncate px-3 py-1 text-[12.5px] text-ink-2">
+          {t.owner || <span className="text-ink-4">—</span>}
+        </td>
+      );
+    case "deadline":
+      return (
+        <td
+          key={key}
+          className={cn(
+            "mono overflow-hidden px-3 py-1 text-[11.5px] tabular-nums",
+            isOverdue(t) ? "font-semibold text-red" : "text-ink-3",
+          )}
+        >
+          {fmtDate(t.deadline)}
+        </td>
+      );
+    case "priority":
+      return (
+        <td key={key} className="overflow-hidden px-3 py-1 text-[12.5px]">
+          {t.source === "crm" && t.priority ? (
+            <Tag variant={priorityVariant(t.priority)}>{t.priority}</Tag>
+          ) : (
+            <span className="text-ink-4">—</span>
+          )}
+        </td>
+      );
+  }
+}
+
+const TaskRow = memo(function TaskRow({ t, order, onOpen }: RowProps) {
   return (
     <tr
       className="cursor-pointer border-b border-border-strong hover:bg-surface-2"
       style={{ height: ROW_HEIGHT }}
       onClick={onOpen}
     >
-      <td className="overflow-hidden px-3 py-1">
-        <SourceBadge source={t.source} />
-      </td>
-      <td className="overflow-hidden px-3 py-1 text-[13px]">
-        <div className="flex flex-col leading-tight">
-          <span className="truncate font-medium" title={t.title}>
-            {t.title}
-          </span>
-          {t.parentLabel ? (
-            <span
-              className="truncate text-[11.5px] text-ink-3"
-              title={t.parentLabel}
-            >
-              {t.parentLabel}
-            </span>
-          ) : null}
-        </div>
-      </td>
-      <td className="overflow-hidden px-3 py-1 text-[13px]">
-        <Tag variant={statusVariant(t.status)}>{t.status || "—"}</Tag>
-      </td>
-      <td className="overflow-hidden truncate px-3 py-1 text-[12.5px] text-ink-2">
-        {t.owner || <span className="text-ink-4">—</span>}
-      </td>
-      <td
-        className={cn(
-          "mono overflow-hidden px-3 py-1 text-[11.5px] tabular-nums",
-          overdue ? "font-semibold text-red" : "text-ink-3",
-        )}
-      >
-        {fmtDate(t.deadline)}
-      </td>
-      <td className="overflow-hidden px-3 py-1 text-[12.5px]">
-        {t.source === "crm" && t.priority ? (
-          <Tag variant={priorityVariant(t.priority)}>{t.priority}</Tag>
-        ) : (
-          <span className="text-ink-4">—</span>
-        )}
-      </td>
+      {order.map((key) => renderCell(t, key))}
     </tr>
   );
 });

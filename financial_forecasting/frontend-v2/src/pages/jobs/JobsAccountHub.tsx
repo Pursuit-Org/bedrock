@@ -28,7 +28,7 @@ import { RECENCY_OPTIONS, recencyLabel } from "@/lib/recencyFilter";
 import { useAccountsWithFellows } from "@/services/affiliations";
 import { useColumnVisibility } from "@/lib/columnVisibility";
 import { useColumnWidths } from "@/lib/columnWidths";
-import { ResizableTh, ColGroup } from "@/components/ui/ResizableTable";
+import { ResizableTh, ColGroup, useColumnDrag } from "@/components/ui/ResizableTable";
 import { useSessionState } from "@/lib/useSessionState";
 import { useSort, sortBy, type SortState } from "@/lib/sort";
 import {
@@ -243,8 +243,9 @@ export function JobsAccountHub({ initialQuery }: { initialQuery?: string } = {})
   );
 
   const { sort, toggle, setSort } = useSort<ColKey>({ key: "status", direction: "asc" });
-  const { visible: visibleCols, toggle: toggleCol, replaceAll: replaceVisibleCols } =
+  const { visible: visibleCols, toggle: toggleCol, replaceAll: replaceVisibleCols, move: moveCol } =
     useColumnVisibility<ColKey>("bedrock-v2:vis:jobs-accounts", COLUMN_ORDER, DEFAULT_VISIBLE);
+  const colDrag = useColumnDrag(visibleCols, moveCol);
   const { widths, startResize } = useColumnWidths<ColKey>("bedrock-v2:cols:jobs-accounts", DEFAULT_WIDTHS);
 
   const { data: rawAccounts = [], isLoading, isError, refetch } = useJobsAccounts("all", scope);
@@ -392,6 +393,7 @@ export function JobsAccountHub({ initialQuery }: { initialQuery?: string } = {})
                   width={widths[key]}
                   onStartResize={(e) => startResize(key, e)}
                   isLast={idx === visibleCols.length - 1}
+                  drag={colDrag(key)}
                   className={cn("py-1.5 font-semibold", idx === 0 && "sticky left-0 z-30")}
                 >
                   {SORTABLE.has(key) ? <SortableHeader label={COL_LABELS[key]} sortKey={key} sort={sort} onToggle={toggle} /> : COL_LABELS[key]}

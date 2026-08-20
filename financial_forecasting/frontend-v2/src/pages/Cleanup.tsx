@@ -26,7 +26,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { AccountAvatar } from "@/components/AccountAvatar";
 import { ColumnChooser } from "@/components/ui/ColumnChooser";
 import { ExportCsvButton } from "@/components/ui/ExportCsvButton";
-import { ResizableTh } from "@/components/ui/ResizableTable";
+import { ResizableTh, useColumnDrag } from "@/components/ui/ResizableTable";
 import { SortableHeader } from "@/components/ui/SortableHeader";
 import { StageChip } from "@/components/ui/StageChip";
 import { Tag } from "@/components/ui/Tag";
@@ -496,10 +496,11 @@ function OpportunitiesCleanupTab() {
   const { sort, toggle } = useSort<ColKey>({ key: "name", direction: "asc" });
   const sorted = useMemo(() => sortBy(filtered, sort, extractOpp), [filtered, sort]);
 
-  const { visible: visibleCols, toggle: toggleCol } = useColumnVisibility<ColKey>(
+  const { visible: visibleCols, toggle: toggleCol, move: moveCol } = useColumnVisibility<ColKey>(
     "bedrock-v2:vis:cleanup",
     COLUMN_ORDER,
   );
+  const colDrag = useColumnDrag(visibleCols, moveCol);
   const { widths, startResize } = useColumnWidths<ColKey>("bedrock-v2:cols:cleanup", DEFAULT_WIDTHS);
 
   // Drop selections that disappear from the filtered set so the count
@@ -747,6 +748,7 @@ function OpportunitiesCleanupTab() {
                   onStartResize={(e) => startResize(key, e)}
                   align="left"
                   isLast={idx === visibleCols.length - 1}
+                  drag={colDrag(key)}
                 >
                   <SortableHeader
                     label={COL_LABELS[key]}
