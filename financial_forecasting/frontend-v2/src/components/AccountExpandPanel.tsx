@@ -1,5 +1,6 @@
 import { useMemo } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
+import { Mail, Phone } from "lucide-react";
 
 import { ActivityTab } from "@/components/expand/ActivityTab";
 import { AccountFilesSection } from "@/components/AccountFilesSection";
@@ -11,7 +12,7 @@ import { InlineDate, InlineSelect, InlineText } from "@/components/ui/InlineEdit
 import { SortableHeader } from "@/components/ui/SortableHeader";
 import { StageChip } from "@/components/ui/StageChip";
 import { Tag } from "@/components/ui/Tag";
-import { fmtMoney } from "@/lib/format";
+import { fmtDate, fmtMoney, initials } from "@/lib/format";
 import { sortBy, useSort } from "@/lib/sort";
 import { SF_STAGE_OPTIONS, stageStatus } from "@/lib/stages";
 import { useStageChangeGate } from "@/lib/useStageChangeGate";
@@ -23,6 +24,7 @@ import {
 } from "@/services/opportunities";
 import { useAwards, useUpdateAward, type AwardStatus } from "@/services/awards";
 import { useActiveUsers } from "@/services/users";
+import { useContacts } from "@/services/contacts";
 import type { SfTask } from "@/types/salesforce";
 
 type AccountOppSortKey = "name" | "stage" | "close" | "amount";
@@ -49,6 +51,11 @@ export function AccountExpandPanel({ accountId }: { accountId: string }) {
           id: "tasks",
           label: "Tasks",
           render: () => <AccountTasks accountId={accountId} />,
+        },
+        {
+          id: "contacts",
+          label: "Contacts",
+          render: () => <AccountContacts accountId={accountId} />,
         },
         {
           id: "opps",
@@ -399,4 +406,99 @@ function statusVariant(s: AwardStatus): "green" | "amber" | "default" | "red" {
   if (s === "Closing") return "amber";
   if (s === "Did Not Fulfill") return "red";
   return "default";
+}
+
+function AccountContacts({ accountId }: { accountId: string }) {
+  const navigate = useNavigate();
+  const contactsQ = useContacts(accountId);
+  const contacts = contactsQ.data ?? [];
+  const { isLoading, isError } = contactsQ;
+
+  return (
+    <div className="px-4 py-3">
+      <div className="mb-2 flex items-center text-[11px] uppercase tracking-wider text-ink-3">
+        <span>
+          {isLoading ? "…" : contacts.length} contact{contacts.length === 1 ? "" : "s"}
+        </span>
+      </div>
+
+      {isLoading ? (
+        <div className="text-[12px] text-ink-3">Loading…</div>
+      ) : isError ? (
+        <div className="rounded border border-dashed border-border-strong px-3 py-4 text-center text-[12px] text-ink-3">
+          Could not load contacts —{" "}
+          <button type="button" className="underline hover:text-ink" onClick={() => void contactsQ.refetch?.()}>
+            try again
+          </button>
+        </div>
+      ) : contacts.length === 0 ? (
+        <div className="rounded border border-dashed border-border-strong px-3 py-4 text-center text-[12px] text-ink-3">
+          No contacts on this account.
+        </div>
+      ) : (
+        <div className="overflow-hidden rounded border border-border-strong bg-surface">
+          <table className="w-full text-[12px]">
+            <thead className="bg-surface-2 text-[10.5px] uppercase tracking-wider text-ink-3">
+              <tr>
+                <th className="px-3 py-1.5 text-left font-semibold">Name</th>
+                <th className="px-3 py-1.5 text-left font-semibold">Email</th>
+                <th className="px-3 py-1.5 text-left font-semibold">Phone</th>
+                <th className="px-3 py-1.5 text-right font-semibold">Last Activity</th>
+              </tr>
+            </thead>
+            <tbody>
+              {contacts.map((c) => (
+                <tr
+                  key={c.Id}
+                  className="cursor-pointer border-t border-border-strong hover:bg-surface-2/40"
+                  onClick={() => navigate(`/contacts/${c.Id}`)}
+                >
+                  <td className="px-3 py-1.5">
+                    <div className="flex items-center gap-2">
+                      <div className="grid h-5 w-5 flex-shrink-0 place-items-center rounded-full bg-surface-2 text-[9px] font-semibold text-ink-2">
+                        {initials(`${c.FirstName ?? ""} ${c.LastName ?? ""}`.trim() || "?")}
+                      </div>
+                      <div className="flex flex-col leading-tight">
+                        <Link
+                          to={`/contacts/${c.Id}`}
+                          className="font-medium hover:underline"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          {[c.FirstName, c.LastName].filter(Boolean).join(" ") || c.Name || "—"}
+                        </Link>
+                        {c.Title ? (
+                          <span className="text-[10.5px] text-ink-3">{c.Title}</span>
+                        ) : null}
+                      </div>
+                    </div>
+                  </td>
+                  <td className="px-3 py-1.5 text-ink-2">
+                    {c.Email ? (
+                      <a
+                        href={`mailto:${c.Email}`}
+                        className="inline-flex items-center gap-1 hover:text-accent-ink"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <Mail size={11} /> {c.Email}
+                      </a>
+                    ) : null}
+                  </td>
+                  <td className="px-3 py-1.5 text-ink-3">
+                    {c.Phone || c.MobilePhone ? (
+                      <span className="inline-flex items-center gap-1">
+                        <Phone size={11} /> {c.Phone || c.MobilePhone}
+                      </span>
+                    ) : null}
+                  </td>
+                  <td className="mono px-3 py-1.5 text-right text-[11px] text-ink-3">
+                    {fmtDate(c.Last_Activity_Date__c ?? c.LastActivityDate)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
 }
