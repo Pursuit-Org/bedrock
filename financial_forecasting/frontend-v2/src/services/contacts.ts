@@ -71,6 +71,7 @@ export function useContacts(accountId?: string) {
       error: scopedQ.error,
       isStale: scopedQ.isStale,
       isPartial: false,
+      refetch: scopedQ.refetch,
     };
   }
   return {

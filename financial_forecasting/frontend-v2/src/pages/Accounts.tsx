@@ -1,5 +1,5 @@
 import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { ChevronDown, ChevronRight, Plus, Search, X } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 
@@ -1084,7 +1084,12 @@ const AccountRow = memo(function AccountRow({
           {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
         </button>
         <AccountAvatar name={a.Name} logoUrl={logoUrl} website={a.Website} size={22} />
-        <div className="min-w-0 flex-1 cursor-pointer" onClick={onOpen}>
+        <Link
+          to={`/accounts/${a.Id}`}
+          state={ACCOUNTS_REFERRER}
+          className="min-w-0 flex-1 block"
+          onClick={(e) => e.stopPropagation()}
+        >
           <span className="block truncate font-medium hover:underline" title={a.Name}>
             {a.Name}
           </span>
@@ -1093,7 +1098,7 @@ const AccountRow = memo(function AccountRow({
               {[a.BillingCity, a.BillingState].filter(Boolean).join(", ")}
             </span>
           ) : null}
-        </div>
+        </Link>
       </div>
     ),
     owner: canEdit ? (
