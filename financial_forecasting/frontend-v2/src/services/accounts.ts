@@ -207,6 +207,15 @@ export function useDeleteAccount() {
   });
 }
 
+// Tracks patches sent to SF that haven't been confirmed by a read-back yet.
+// Shared across all useUpdateAccount instances so the post-refetch re-apply
+// works regardless of which component triggered the mutation.
+type PendingAccountPatch = {
+  sfPatch: Record<string, unknown>;  // raw SF fields — used to detect SF confirmation
+  merged: Record<string, unknown>;   // sfPatch + displayPatch — applied to the cache
+};
+const pendingAccountPatches = new Map<string, PendingAccountPatch>();
+
 export function useUpdateAccount() {
   const qc = useQueryClient();
   return useMutation({
@@ -225,6 +234,8 @@ export function useUpdateAccount() {
     },
     onSuccess: (_data, { id, patch, displayPatch }) => {
       const merged = { ...patch, ...(displayPatch ?? {}) };
+      // Register as pending before setQueryData so re-apply logic is ready
+      pendingAccountPatches.set(id, { sfPatch: patch, merged });
       const patchCache = (old: SfAccount[] | undefined) => {
         if (!old) return old;
         return old.map((a) => (a.Id === id ? ({ ...a, ...merged } as SfAccount) : a));
@@ -246,13 +257,39 @@ export function useUpdateAccount() {
     },
     onSettled: (_data, error) => {
       if (error) return;
-      // Delayed refetch: give Salesforce a moment to propagate, then take the
-      // server's answer as truth. (The previous version re-applied the client
-      // patch over the refetched data, which hid silently-ignored SF writes —
-      // exactly the failure the read-back exists to surface.)
-      setTimeout(() => {
-        void qc.refetchQueries({ queryKey: ["accounts"] });
+      // Delayed refetch: give Salesforce a moment to propagate. After the
+      // refetch lands, re-apply any patches SF hasn't confirmed yet so the UI
+      // doesn't silently revert while SF is still catching up.
+      setTimeout(async () => {
+        await qc.refetchQueries({ queryKey: ["accounts"] });
         void qc.invalidateQueries({ queryKey: ["jobs", "accounts"] });
+
+        if (pendingAccountPatches.size === 0) return;
+        const accounts = qc.getQueryData<SfAccount[]>(["accounts"]);
+        if (!accounts) return;
+
+        let needsReapply = false;
+        const reapplied = accounts.map((a) => {
+          const pending = pendingAccountPatches.get(a.Id);
+          if (!pending) return a;
+          const aRecord = a as unknown as Record<string, unknown>;
+          const confirmed = Object.entries(pending.sfPatch).every(
+            ([k, v]) => aRecord[k] === v,
+          );
+          if (confirmed) {
+            pendingAccountPatches.delete(a.Id);
+            return a;
+          }
+          needsReapply = true;
+          return { ...a, ...pending.merged } as SfAccount;
+        });
+
+        if (needsReapply) {
+          qc.setQueriesData<SfAccount[]>(
+            { queryKey: ["accounts"] },
+            (old) => (old ? reapplied.filter((a) => old.some((o) => o.Id === a.Id)) : old),
+          );
+        }
       }, 2000);
     },
   });
