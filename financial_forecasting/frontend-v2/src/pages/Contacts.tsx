@@ -8,7 +8,7 @@ import {
 } from "react";
 import { Fragment } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { ChevronDown, ChevronRight, Mail, Search } from "lucide-react";
+import { ChevronDown, ChevronRight, ExternalLink, Mail, Search } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 
 import { ContactExpandPanel, CONTACT_PANEL_HEIGHT } from "@/components/ContactExpandPanel";
@@ -89,9 +89,20 @@ type ColKey =
   | "email"
   | "phone"
   | "owner"
-  | "lastActivity";
+  | "lastActivity"
+  | "linkedin";
 
 const COLUMN_ORDER: ColKey[] = [
+  "name",
+  "account",
+  "email",
+  "phone",
+  "owner",
+  "lastActivity",
+  "linkedin",
+];
+
+const DEFAULT_VISIBLE: ColKey[] = [
   "name",
   "account",
   "email",
@@ -107,6 +118,7 @@ const DEFAULT_WIDTHS: Record<ColKey, number> = {
   phone: 150,
   owner: 160,
   lastActivity: 130,
+  linkedin: 72,
 };
 
 const COL_LABELS: Record<ColKey, string> = {
@@ -116,6 +128,7 @@ const COL_LABELS: Record<ColKey, string> = {
   phone: "Phone",
   owner: "Owner",
   lastActivity: "Last activity",
+  linkedin: "LinkedIn",
 };
 
 const ROW_HEIGHT = 44; // px — must match the row's actual rendered height
@@ -161,7 +174,7 @@ export function ContactsPage() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const { philOnly } = filter;
   const { visible: visibleCols, toggle: toggleCol, replaceAll: replaceVisibleCols } =
-    useColumnVisibility("bedrock-v2:vis:contacts", COLUMN_ORDER);
+    useColumnVisibility("bedrock-v2:vis:contacts", COLUMN_ORDER, DEFAULT_VISIBLE);
 
   const { sort, toggle } = useSort<ColKey>({ key: "name", direction: "asc" });
   const { widths, startResize, replaceAll: replaceWidths } = useColumnWidths<ColKey>(
@@ -677,6 +690,20 @@ const ContactRow = memo(function ContactRow({
         {fmtDate(c.Last_Activity_Date__c ?? c.LastActivityDate)}
       </span>
     ),
+    linkedin: c.LinkedIn_URL__c ? (
+      <a
+        href={c.LinkedIn_URL__c}
+        target="_blank"
+        rel="noopener noreferrer"
+        onClick={(e) => e.stopPropagation()}
+        className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-semibold text-[#0A66C2] hover:underline"
+        title={c.LinkedIn_URL__c}
+      >
+        in <ExternalLink size={11} />
+      </a>
+    ) : (
+      <span className="text-ink-4">—</span>
+    ),
   };
 
   const cellCls: Record<ColKey, string> = {
@@ -686,6 +713,7 @@ const ContactRow = memo(function ContactRow({
     phone: "overflow-hidden px-3 py-1 text-[12.5px] text-ink-3",
     owner: "overflow-hidden px-3 py-1 text-[12.5px] text-ink-2",
     lastActivity: "overflow-hidden px-3 py-1 text-[12.5px]",
+    linkedin: "overflow-hidden px-3 py-1 text-[12.5px]",
   };
 
   return (

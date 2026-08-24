@@ -574,6 +574,22 @@ export function AccountDetailPage() {
                   <td className="mono px-5 py-2.5 text-right text-[11.5px] text-ink-3">
                     {fmtDate(c.Last_Activity_Date__c ?? c.LastActivityDate)}
                   </td>
+                  <td className="px-5 py-2.5 text-[12.5px]">
+                    {c.LinkedIn_URL__c ? (
+                      <a
+                        href={c.LinkedIn_URL__c}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={(e) => e.stopPropagation()}
+                        className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-semibold text-[#0A66C2] hover:underline"
+                        title={c.LinkedIn_URL__c}
+                      >
+                        in <ExternalLink size={11} />
+                      </a>
+                    ) : (
+                      <span className="text-ink-4">—</span>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>
