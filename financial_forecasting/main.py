@@ -1064,7 +1064,7 @@ async def get_contacts(
                    Last_Activity_Date__c, Days_Since_Last_Activity__c,
                    Philanthropic_Contact__c, Philanthropy__c, Board_Status__c,
                    LinkedIn_URL__c, Pronouns__c, Preferred_Name__c,
-                   MailingCity, MailingState
+                   MailingCity, MailingState, Description
             FROM Contact
             """
         else:

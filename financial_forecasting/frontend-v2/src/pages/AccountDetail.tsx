@@ -489,6 +489,20 @@ export function AccountDetailPage() {
         </SectionCard>
       ) : null}
 
+      <SectionCard
+        title="About"
+        defaultOpen={Boolean(account.Description?.length)}
+      >
+        <div className="px-5 py-3">
+          <InlineText
+            value={account.Description}
+            onSave={(v) => patch("Description", v || null)}
+            placeholder="Add context, history, or notes…"
+            multiline
+          />
+        </div>
+      </SectionCard>
+
       <SectionCard title="Linked projects">
         <div className="px-5 py-4">
           {/* Account-detail card surfaces projects linked three ways:

@@ -180,7 +180,7 @@ export function InlineText({
         )}
         title={shownHasValue ? shown : (emptyLabel ?? placeholder)}
       >
-        <span className="min-w-0 flex-1 truncate">
+        <span className={cn("min-w-0 flex-1", multiline ? "whitespace-pre-wrap break-words" : "truncate")}>
           {shownHasValue ? shown : (emptyLabel ?? placeholder)}
         </span>
         <StatusIndicator saving={showSpinner} saved={saved} error={!!error} />
@@ -196,7 +196,7 @@ export function InlineText({
       {multiline ? (
         <textarea
           ref={inputRef as React.RefObject<HTMLTextAreaElement>}
-          rows={2}
+          rows={4}
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onBlur={commit}
