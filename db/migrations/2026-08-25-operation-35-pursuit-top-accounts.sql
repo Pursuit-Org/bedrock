@@ -114,20 +114,47 @@ UPDATE public.contacts c
  WHERE c.contact_id = t.contact_id
    AND NOT (coalesce(c.tags,'{}'::text[]) @> ARRAY['operation_35_pursuit']);
 
--- 2. Jobs pipeline. 'assigned' = in pipeline, not yet contacted.
---    activation_reason 'strategic' (not 'manual'/'algorithm'): these came from a
---    named campaign over a hire-count list, which is what that value is for.
---    DO NOTHING protects anyone already further along, or marked not_a_fit.
-INSERT INTO bedrock.jobs_contact_membership
-       (contact_id, stage, activation_reason, activation_note, assigned_by, assigned_at, updated_at)
-SELECT t.contact_id, 'assigned', 'strategic',
-       'Operation 35 — Pursuit: ' || t.hires || ' Builders hired at ' || t.account,
-       'kwame@pursuit.org', now(), now()
-  FROM op35_targets t
-ON CONFLICT (contact_id) DO NOTHING;
+-- 2. Funnel stage — OPTIONAL, and skipped when the role can't write it.
+--    Writes on bedrock.jobs_contact_membership are granted only to bedrock_user
+--    and postgres; every team role (jobs_dev, jobs_team, ceo_dev, pbd_team) holds
+--    SELECT. Without this guard the whole migration aborts with
+--    "permission denied for table jobs_contact_membership" and steps 1, 3 and 4
+--    roll back with it — even though a team role is allowed to do all three.
+--
+--    Skipping this costs nothing that was asked for. Pipeline membership is
+--    is_jobs_contact, NOT a row here: see the comment at routes/jobs.py
+--    ("in pipeline" = the jobs-prospect flag (is_jobs_contact), NOT a
+--    membership). This table only records WHERE IN THE FUNNEL someone sits, and
+--    "no stage at all = blank/not-yet, computed on the client" is a valid state
+--    the UI already renders. So a team role gets tag + pipeline + comment, and
+--    the stage is filled in later by anyone running as bedrock_user — this file
+--    is idempotent, so a second run by a privileged role does exactly that and
+--    nothing else.
+--
+--    'assigned' = in pipeline, not yet contacted. activation_reason 'strategic'
+--    (not 'manual'/'algorithm'): these came from a named campaign over a
+--    hire-count list, which is what that value is for. DO NOTHING protects
+--    anyone already further along, or marked not_a_fit.
+DO $stage$
+BEGIN
+  IF has_table_privilege('bedrock.jobs_contact_membership', 'INSERT') THEN
+    INSERT INTO bedrock.jobs_contact_membership
+           (contact_id, stage, activation_reason, activation_note, assigned_by, assigned_at, updated_at)
+    SELECT t.contact_id, 'assigned', 'strategic',
+           'Operation 35 — Pursuit: ' || t.hires || ' Builders hired at ' || t.account,
+           'kwame@pursuit.org', now(), now()
+      FROM op35_targets t
+    ON CONFLICT (contact_id) DO NOTHING;
+  ELSE
+    RAISE NOTICE '%', 'SKIPPED funnel stage: this role holds SELECT only on '
+      'bedrock.jobs_contact_membership. Tag, pipeline (is_jobs_contact) and '
+      'comment still applied — those are the whole of the request. Re-run this '
+      'file as bedrock_user to set stage=assigned.';
+  END IF;
+END $stage$;
 
--- 3. Consistency: anyone with a membership must be a jobs prospect. Mirrors
---    2026-07-23-flag-in-pipeline-as-prospect.sql.
+-- 3. Jobs pipeline. is_jobs_contact IS the pipeline membership (see step 2).
+--    Mirrors 2026-07-23-flag-in-pipeline-as-prospect.sql.
 UPDATE public.contacts c
    SET is_jobs_contact = true, updated_at = now()
   FROM op35_targets t

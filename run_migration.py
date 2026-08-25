@@ -43,6 +43,9 @@ async def main():
 
     body = load_sql(path)
     conn = await asyncpg.connect(dsn)
+    # Surface RAISE NOTICE from the migration (e.g. the skipped-funnel-stage
+    # message) -- asyncpg swallows these otherwise.
+    conn.add_log_listener(lambda _c, msg: print(f"NOTICE: {msg}"))
     try:
         db = await conn.fetchval('select current_database()')
         print(f"connected to {db}")
@@ -89,15 +92,20 @@ async def report(conn):
     """, IDS)
 
     for r in rows:
-        flag = '  ok ' if (r['tagged'] and r['prospect'] and r['stage'] and r['commented']) else ' MISS'
-        print(f"{flag} {r['full_name'][:26]:<26} {(r['current_company'] or '')[:22]:<22} {r['stage'] or '-'}")
+        # The funnel stage is optional -- a SELECT-only role skips it by design
+        # (see step 2 of the migration), so it is reported, not required.
+        ok = r['tagged'] and r['prospect'] and r['commented']
+        print(f"{'  ok ' if ok else ' MISS'} {r['full_name'][:26]:<26} "
+              f"{(r['current_company'] or '')[:22]:<22} {r['stage'] or '(no stage)'}")
 
     print("-" * 52)
-    print(f"{len(rows)}/29 contacts found | "
+    print(f"{len(rows)}/29 contacts | "
           f"tagged {sum(bool(r['tagged']) for r in rows)} | "
-          f"prospect {sum(bool(r['prospect']) for r in rows)} | "
-          f"in pipeline {sum(bool(r['stage']) for r in rows)} | "
+          f"in pipeline {sum(bool(r['prospect']) for r in rows)} | "
           f"commented {sum(bool(r['commented']) for r in rows)}")
+    staged = sum(bool(r['stage']) for r in rows)
+    if staged < len(rows):
+        print(f"funnel stage set on {staged}/{len(rows)} (optional -- needs bedrock_user)")
 
 
 IDS = [45254, 36527, 34615, 5193, 45230, 45219, 45454, 27983, 45558, 33100,
