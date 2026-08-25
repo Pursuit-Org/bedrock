@@ -365,7 +365,7 @@ function FutureYearsTable({
     .map(([yr, data]) => ({ label: Number(yr), data }));
 
   return (
-    <div className="rounded-lg border border-border bg-surface shadow-sm">
+    <div className="flex h-full flex-col rounded-lg border border-border bg-surface shadow-sm">
       <div className="flex items-center gap-1.5 border-b border-border px-4 py-2.5">
         <h3 className="text-[11px] font-semibold uppercase tracking-wide text-ink-3">
           Revenue Secured by Future Year
@@ -531,7 +531,7 @@ export function RevenueSnapshotPanel({ year }: { year: number }) {
       )}
 
       {/* ── Three-column panel: two stat tiles + future years ───────── */}
-      <div className="grid grid-cols-3 gap-3 items-start">
+      <div className="grid grid-cols-3 gap-3 items-stretch">
         <StatTile
           label="Revenue Secured for Year"
           tooltip={`Payment tranches from Won deals scheduled to land in ${year} — confirmed revenue arriving this year.`}
