@@ -155,13 +155,19 @@ async def main():
             await snapshot(conn, "AFTER")
 
             # post-conditions
-            for label, sql in (
-                ("not tagged", "SELECT count(*) FROM public.contacts WHERE contact_id = ANY($1::int[]) "
-                               "AND NOT ($2 = ANY(coalesce(tags,'{}')))"),
-                ("not jobs prospects", "SELECT count(*) FROM public.contacts WHERE contact_id = ANY($1::int[]) "
-                                       "AND NOT is_jobs_contact"),
+            # Each guard carries its own args — the arg count must match the
+            # placeholders in that specific query, not a shared tuple.
+            for label, sql, args in (
+                ("not tagged",
+                 "SELECT count(*) FROM public.contacts WHERE contact_id = ANY($1::int[]) "
+                 "AND NOT ($2 = ANY(coalesce(tags,'{}')))",
+                 (CONTACT_IDS, TAG)),
+                ("not jobs prospects",
+                 "SELECT count(*) FROM public.contacts WHERE contact_id = ANY($1::int[]) "
+                 "AND NOT is_jobs_contact",
+                 (CONTACT_IDS,)),
             ):
-                bad = await conn.fetchval(sql, CONTACT_IDS, TAG)
+                bad = await conn.fetchval(sql, *args)
                 if bad:
                     raise RuntimeError(f"guard failed: {bad} contact(s) {label}")
             bad = await conn.fetchval(
