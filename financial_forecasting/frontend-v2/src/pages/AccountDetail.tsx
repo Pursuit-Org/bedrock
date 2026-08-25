@@ -7,6 +7,7 @@ import { api } from "@/lib/api";
 import { ChevronDown, ChevronRight, ExternalLink, Info, Loader2, Mail, Pencil, Phone, Plus, Search, UserPlus, X } from "lucide-react";
 
 import { AccountAvatar } from "@/components/AccountAvatar";
+import { AccountHistoryOverlay } from "@/components/AccountHistoryOverlay";
 import { AccountFilesSection } from "@/components/AccountFilesSection";
 import { BackLink as SharedBackLink, LinkedProjectsCard } from "@/components/detail";
 import { EntityComments } from "@/components/EntityComments";
@@ -59,6 +60,7 @@ export function AccountDetailPage() {
   const [showAddContact, setShowAddContact] = useState(false);
   const [showAddOpp, setShowAddOpp] = useState(false);
   const [folderEditing, setFolderEditing] = useState(false);
+  const [showIntelligence, setShowIntelligence] = useState(false);
   const [folderDraft, setFolderDraft] = useState("");
   const navigate = useNavigate();
   const commentInputRef = useRef<HTMLTextAreaElement>(null);
@@ -209,6 +211,14 @@ export function AccountDetailPage() {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setShowIntelligence(true)}
+            className="inline-flex h-[30px] items-center gap-1.5 rounded border border-transparent bg-[#1a1a1a] px-3 text-[13px] font-medium text-white transition-opacity hover:opacity-90"
+          >
+            <ClaudeLogoIcon className="h-3.5 w-3.5 text-[#D97757]" />
+            Account History
+          </button>
           {account.Website ? (
             <a
               href={
@@ -597,7 +607,41 @@ export function AccountDetailPage() {
           onClose={() => setShowAddContact(false)}
         />
       ) : null}
+
+      {showIntelligence ? (
+        <AccountHistoryOverlay
+          account={account}
+          contacts={contacts}
+          opps={opps}
+          activities={activities.map((a) => ({
+            date: a.activity_date ?? undefined,
+            type: a.type,
+            subject: a.subject ?? undefined,
+            snippet: a.email_snippet ?? undefined,
+            owner: a.owner_name ?? undefined,
+          }))}
+          onClose={() => setShowIntelligence(false)}
+        />
+      ) : null}
     </div>
+  );
+}
+
+function ClaudeLogoIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" className={className} aria-hidden="true">
+      {Array.from({ length: 12 }, (_, i) => (
+        <rect
+          key={i}
+          x="11.1"
+          y="2.5"
+          width="1.8"
+          height="8.5"
+          rx="0.9"
+          transform={`rotate(${i * 30} 12 12)`}
+        />
+      ))}
+    </svg>
   );
 }
 
