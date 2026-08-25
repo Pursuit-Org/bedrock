@@ -111,7 +111,19 @@ interface PortfolioTasksProps {
  */
 type Scope = "focus" | "this-month" | "next-90" | "all";
 
+/** View level: filter tasks by which CRM entity level they're linked to. */
+type ViewLevel = "all" | "account" | "opportunity" | "contact";
+
 const SCOPE_STORAGE_KEY = "bedrock-v2:portfolio:tasks:scope";
+const VIEW_LEVEL_STORAGE_KEY = "bedrock-v2:portfolio:tasks:view-level";
+
+function readStoredViewLevel(): ViewLevel {
+  try {
+    const v = localStorage.getItem(VIEW_LEVEL_STORAGE_KEY);
+    if (v === "all" || v === "account" || v === "opportunity" || v === "contact") return v;
+  } catch {}
+  return "all";
+}
 
 function readStoredScope(): Scope {
   try {
@@ -193,6 +205,7 @@ export function PortfolioTasks({
   }
 
   const [scope, setScope] = useState<Scope>(readStoredScope);
+  const [viewLevel, setViewLevel] = useState<ViewLevel>(readStoredViewLevel);
 
   // Persist scope so the user's preference rides through refreshes —
   // mirrors how SectionCard's collapsed state survives. Wrapped in
@@ -201,6 +214,13 @@ export function PortfolioTasks({
     setScope(next);
     try {
       localStorage.setItem(SCOPE_STORAGE_KEY, next);
+    } catch {}
+  }
+
+  function changeViewLevel(next: ViewLevel) {
+    setViewLevel(next);
+    try {
+      localStorage.setItem(VIEW_LEVEL_STORAGE_KEY, next);
     } catch {}
   }
 
@@ -225,11 +245,16 @@ export function PortfolioTasks({
   // Done filter applies first, then scope. "Show done" only makes sense
   // in the "All" view (no point in seeing a completed task during focus).
   const openTasks = showDone ? unifiedTasks : unifiedTasks.filter((t) => !t.done);
-  const filtered =
+  const scopeFiltered =
     scope === "focus"      ? openTasks.filter((t) => isInFocusWindow(t.deadline, t.done))
     : scope === "this-month" ? openTasks.filter((t) => isInThisMonth(t.deadline, t.done))
     : scope === "next-90"    ? openTasks.filter((t) => isInNext90(t.deadline, t.done))
     : openTasks;
+
+  // View level filter: applied after scope so counts reflect current scope window.
+  const filtered =
+    viewLevel === "all" ? scopeFiltered
+    : scopeFiltered.filter((t) => t.parent.kind === viewLevel);
 
   const groups = useMemo(() => groupByParent(filtered), [filtered]);
 
@@ -240,6 +265,11 @@ export function PortfolioTasks({
   const next90Count     = openTasks.filter((t) => isInNext90(t.deadline, t.done)).length;
   const allCount        = openTasks.length;
 
+  // View level counts derived from scopeFiltered so they reflect the active time scope.
+  const accountCount     = scopeFiltered.filter((t) => t.parent.kind === "account").length;
+  const opportunityCount = scopeFiltered.filter((t) => t.parent.kind === "opportunity").length;
+  const contactCount     = scopeFiltered.filter((t) => t.parent.kind === "contact").length;
+
   const isLoading = sfTasksQ.isLoading || projectsLoading;
 
   return (
@@ -247,6 +277,16 @@ export function PortfolioTasks({
       title={`My tasks (${filtered.length})`}
       storageScope="portfolio"
       defaultOpen
+      leftAction={
+        <ViewLevelToggle
+          value={viewLevel}
+          onChange={changeViewLevel}
+          allCount={scopeFiltered.length}
+          accountCount={accountCount}
+          opportunityCount={opportunityCount}
+          contactCount={contactCount}
+        />
+      }
       action={
         <div className="flex items-center gap-3 text-[11.5px]">
           {overdueCount > 0 ? (
@@ -718,6 +758,57 @@ function EmptyState({ children }: { children: React.ReactNode }) {
   );
 }
 
+/** Segmented control for the view level (Account / Opportunity / Contact).
+ *  Sits on the left side of the SectionCard header. */
+function ViewLevelToggle({
+  value,
+  onChange,
+  allCount,
+  accountCount,
+  opportunityCount,
+  contactCount,
+}: {
+  value: ViewLevel;
+  onChange: (next: ViewLevel) => void;
+  allCount: number;
+  accountCount: number;
+  opportunityCount: number;
+  contactCount: number;
+}) {
+  return (
+    <div
+      role="tablist"
+      aria-label="Task view level"
+      className="inline-flex overflow-hidden rounded-md border border-border-strong bg-surface"
+    >
+      <ScopeButton
+        active={value === "all"}
+        onClick={() => onChange("all")}
+        label="All Types"
+        count={allCount}
+      />
+      <ScopeButton
+        active={value === "account"}
+        onClick={() => onChange("account")}
+        label="Account"
+        count={accountCount}
+      />
+      <ScopeButton
+        active={value === "opportunity"}
+        onClick={() => onChange("opportunity")}
+        label="Opportunity"
+        count={opportunityCount}
+      />
+      <ScopeButton
+        active={value === "contact"}
+        onClick={() => onChange("contact")}
+        label="Contact"
+        count={contactCount}
+      />
+    </div>
+  );
+}
+
 /** Segmented control for the tasks scope. Four pills, persistent state
  *  lifted to the parent so we can re-derive counts off the same array.
  *  Pinned counts on each pill let the user know what's behind the click
@@ -764,7 +855,7 @@ function ScopeToggle({
       <ScopeButton
         active={value === "all"}
         onClick={() => onChange("all")}
-        label="All"
+        label="All Periods"
         count={allCount}
       />
     </div>
