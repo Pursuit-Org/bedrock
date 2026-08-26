@@ -104,11 +104,25 @@ export function InlineText({
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value ?? "");
   const [saving, setSaving] = useState(false);
+  const [showSpinner, setShowSpinner] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [optimistic, setOptimistic] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement | HTMLTextAreaElement | null>(null);
-  const startedAtRef = useRef<number>(0);
+  const spinnerTimerRef = useRef<number | null>(null);
   const { flashing: saved, flash } = useSavedFlash();
+
+  useEffect(() => {
+    if (saving) {
+      spinnerTimerRef.current = window.setTimeout(() => setShowSpinner(true), 250);
+    } else {
+      if (spinnerTimerRef.current) window.clearTimeout(spinnerTimerRef.current);
+      spinnerTimerRef.current = null;
+      setShowSpinner(false);
+    }
+    return () => {
+      if (spinnerTimerRef.current) window.clearTimeout(spinnerTimerRef.current);
+    };
+  }, [saving]);
 
   useEffect(() => {
     setDraft(value ?? "");
@@ -136,7 +150,6 @@ export function InlineText({
     setEditing(false);
     setSaving(true);
     setError(null);
-    startedAtRef.current = Date.now();
     try {
       await onSave(next);
       flash();
@@ -154,7 +167,6 @@ export function InlineText({
     setError(null);
   };
 
-  const showSpinner = saving && Date.now() - startedAtRef.current > 250;
   const display = optimistic ?? value;
 
   if (!editing) {
@@ -180,7 +192,7 @@ export function InlineText({
         )}
         title={shownHasValue ? shown : (emptyLabel ?? placeholder)}
       >
-        <span className="min-w-0 flex-1 truncate">
+        <span className={cn("min-w-0 flex-1", multiline ? "break-words whitespace-pre-wrap" : "truncate")}>
           {shownHasValue ? shown : (emptyLabel ?? placeholder)}
         </span>
         <StatusIndicator saving={showSpinner} saved={saved} error={!!error} />
@@ -261,10 +273,24 @@ export function InlineSelect<T extends string>({
   className,
 }: InlineSelectProps<T>) {
   const [saving, setSaving] = useState(false);
+  const [showSpinner, setShowSpinner] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [optimistic, setOptimistic] = useState<T | null>(null);
-  const startedAtRef = useRef<number>(0);
+  const spinnerTimerRef = useRef<number | null>(null);
   const { flashing: saved, flash } = useSavedFlash();
+
+  useEffect(() => {
+    if (saving) {
+      spinnerTimerRef.current = window.setTimeout(() => setShowSpinner(true), 250);
+    } else {
+      if (spinnerTimerRef.current) window.clearTimeout(spinnerTimerRef.current);
+      spinnerTimerRef.current = null;
+      setShowSpinner(false);
+    }
+    return () => {
+      if (spinnerTimerRef.current) window.clearTimeout(spinnerTimerRef.current);
+    };
+  }, [saving]);
 
   useEffect(() => {
     setOptimistic((prev) => (prev != null && prev === value ? null : prev));
@@ -275,7 +301,6 @@ export function InlineSelect<T extends string>({
     setOptimistic(next);
     setSaving(true);
     setError(null);
-    startedAtRef.current = Date.now();
     try {
       await onSave(next);
       flash();
@@ -292,7 +317,6 @@ export function InlineSelect<T extends string>({
   // task owner's UUID) or lowercase codes (e.g. "low") leak into the UI. Falls
   // back to the raw value when no option matches.
   const displayLabel = display != null ? (options.find((o) => o.value === display)?.label ?? display) : null;
-  const showSpinner = saving && Date.now() - startedAtRef.current > 250;
 
   return (
     <div
@@ -382,11 +406,25 @@ export function InlineDate({
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(toIsoDate(value));
   const [saving, setSaving] = useState(false);
+  const [showSpinner, setShowSpinner] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [optimistic, setOptimistic] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
-  const startedAtRef = useRef<number>(0);
+  const spinnerTimerRef = useRef<number | null>(null);
   const { flashing: saved, flash } = useSavedFlash();
+
+  useEffect(() => {
+    if (saving) {
+      spinnerTimerRef.current = window.setTimeout(() => setShowSpinner(true), 250);
+    } else {
+      if (spinnerTimerRef.current) window.clearTimeout(spinnerTimerRef.current);
+      spinnerTimerRef.current = null;
+      setShowSpinner(false);
+    }
+    return () => {
+      if (spinnerTimerRef.current) window.clearTimeout(spinnerTimerRef.current);
+    };
+  }, [saving]);
 
   useEffect(() => {
     setDraft(toIsoDate(value));
@@ -413,7 +451,6 @@ export function InlineDate({
     setEditing(false);
     setSaving(true);
     setError(null);
-    startedAtRef.current = Date.now();
     try {
       await onSave(nextIso);
       flash();
@@ -431,7 +468,6 @@ export function InlineDate({
     setError(null);
   };
 
-  const showSpinner = saving && Date.now() - startedAtRef.current > 250;
   const display = optimistic ?? value;
   const hasValue = display != null && String(display).trim().length > 0;
 

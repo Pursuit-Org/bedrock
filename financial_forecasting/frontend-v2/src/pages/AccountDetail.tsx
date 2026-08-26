@@ -345,6 +345,7 @@ export function AccountDetailPage() {
               <InlineText
                 value={account.Qualification_Explanation__c ?? null}
                 placeholder="—"
+                multiline
                 onSave={(next) => patch("Qualification_Explanation__c", next || null)}
               />
             </DetailRow>
@@ -1478,8 +1479,9 @@ function QualificationStatusPicker({
         { account_status: "On Hold" },
       );
       setDialogOpen(false);
-    } catch (e) {
-      setDialogError(e instanceof Error ? e.message : "Failed to save. Please try again.");
+    } catch (e: unknown) {
+      const axiosDetail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      setDialogError(axiosDetail ?? (e instanceof Error ? e.message : "Failed to save. Please try again."));
     } finally {
       setSaving(false);
     }
@@ -1519,7 +1521,7 @@ function QualificationStatusPicker({
             </button>
             <h2 className="mb-1 text-[15px] font-semibold text-ink">Mark as Not Qualified</h2>
             <p className="mb-4 text-[12.5px] text-ink-3">
-              Salesforce requires an explanation when setting status to Not Qualified.
+              Salesforce requires an explanation when setting status to Not Qualified. Marking this account as not qualified will update account status to &apos;On Hold&apos; and a task will be set for the account owner to review the account&apos;s status in 6 months.
             </p>
             <label className="block text-[11px] font-semibold uppercase tracking-wider text-ink-3 mb-1.5">
               Qualification Explanation <span className="text-red">*</span>
