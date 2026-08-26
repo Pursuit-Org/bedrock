@@ -29,6 +29,25 @@ if these should sit with Avni or Damon instead.
 To undo: `psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/op35/03-rollback.sql` — it stops
 before committing so you can inspect first, then type `COMMIT;` or `ROLLBACK;` yourself.
 
+### No psql? Use `run.py`
+
+`run.py` executes the same three `.sql` files over `asyncpg` (already in
+`financial_forecasting/requirements.txt`), translating the handful of psql-only constructs
+they use. The `.sql` files remain the source of truth — there is no second copy of the logic.
+
+```bash
+cd ~/bedrock
+export DATABASE_URL="$(gcloud secrets versions access latest --secret=jobs-dev-database-url --project=pursuit-ops)"
+
+python3 scripts/op35/run.py preview
+python3 scripts/op35/run.py apply --owner kwame@pursuit.org   # prompts for confirmation
+python3 scripts/op35/run.py rollback
+```
+
+`preview` and `rollback` always roll back. `apply` commits only if every statement succeeds
+and the verification block passes; any error rolls the whole transaction back.
+If asyncpg is missing: `pip3 install asyncpg==0.30.0`.
+
 ## Expected preview output
 
 Validated read-only against the live database on 2026-08-26:

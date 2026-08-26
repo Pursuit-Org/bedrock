@@ -35,7 +35,7 @@ END $$;
 
 -- ── 1 · Add the tag (append-only; existing tags and their order preserved) ───
 UPDATE public.contacts c
-   SET tags = coalesce(c.tags,'{}'::text[]) || 'operation_35_pursuit',
+   SET tags = array_append(coalesce(c.tags,'{}'::text[]), 'operation_35_pursuit'::text),
        updated_at = now()
   FROM op35_targets t
  WHERE c.contact_id = t.contact_id
@@ -90,7 +90,7 @@ BEGIN
   JOIN public.contacts c ON c.contact_id = t.contact_id
   LEFT JOIN bedrock.jobs_contact_membership m ON m.contact_id = t.contact_id
   LEFT JOIN bedrock.jobs_account ja ON ja.account_key = t.account_key
-  WHERE NOT ('operation_35_pursuit' = ANY(coalesce(c.tags,'{}')))
+  WHERE NOT ('operation_35_pursuit' = ANY(coalesce(c.tags,'{}'::text[])))
      OR coalesce(c.is_jobs_contact,false) = false
      OR m.contact_id IS NULL
      OR ja.account_key IS NULL;

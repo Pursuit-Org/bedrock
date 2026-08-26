@@ -23,17 +23,17 @@ WHERE c.contact_id IS NULL OR c.full_name IS DISTINCT FROM t.expect_name;
 \echo ''
 \echo '=== 1 · TAG · contacts that will gain operation_35_pursuit ================='
 SELECT t.tier, t.account, c.contact_id, c.full_name, c.current_title,
-       coalesce(c.tags,'{}') AS tags_before,
-       coalesce(c.tags,'{}') || 'operation_35_pursuit' AS tags_after
+       coalesce(c.tags,'{}'::text[]) AS tags_before,
+       array_append(coalesce(c.tags,'{}'::text[]), 'operation_35_pursuit'::text) AS tags_after
 FROM op35_targets t JOIN public.contacts c ON c.contact_id = t.contact_id
-WHERE NOT ('operation_35_pursuit' = ANY(coalesce(c.tags,'{}')))
+WHERE NOT ('operation_35_pursuit' = ANY(coalesce(c.tags,'{}'::text[])))
 ORDER BY t.tier, t.account;
 
 \echo ''
 \echo '=== 1b · already tagged · will be left untouched ==========================='
 SELECT t.account, c.full_name, c.tags
 FROM op35_targets t JOIN public.contacts c ON c.contact_id = t.contact_id
-WHERE 'operation_35_pursuit' = ANY(coalesce(c.tags,'{}'))
+WHERE 'operation_35_pursuit' = ANY(coalesce(c.tags,'{}'::text[]))
 ORDER BY t.account;
 
 \echo ''
@@ -76,7 +76,7 @@ ORDER BY t.account;
 SELECT
   (SELECT count(*) FROM op35_targets) AS targets,
   (SELECT count(*) FROM op35_targets t JOIN public.contacts c ON c.contact_id=t.contact_id
-     WHERE NOT ('operation_35_pursuit' = ANY(coalesce(c.tags,'{}')))) AS tags_to_add,
+     WHERE NOT ('operation_35_pursuit' = ANY(coalesce(c.tags,'{}'::text[])))) AS tags_to_add,
   (SELECT count(*) FROM op35_targets t JOIN public.contacts c ON c.contact_id=t.contact_id
      WHERE coalesce(c.is_jobs_contact,false)=false) AS jobs_flags_to_set,
   (SELECT count(DISTINCT t.account_key) FROM op35_targets t
