@@ -1807,16 +1807,26 @@ async def update_builder_activity(
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
-    """Update an application's stage inline (applied → interview → accepted, …)."""
+    """Update an application's stage inline (applied → interview → accepted, …).
+    Appends to stage_history (from/to/changed_at/changed_by) so a rejection
+    doesn't erase the fact that they'd interviewed — queryable, no UI for it
+    yet. The `stage` referenced inside stage_history's jsonb_build_object is
+    the PRE-update value: Postgres evaluates an UPDATE's SET expressions
+    against the old row, even for a column also being SET in the same
+    statement, so this is race-safe without a separate SELECT."""
     if body.stage not in VALID_APP_STAGES:
         raise HTTPException(400, f"Invalid stage: {body.stage}")
     result = await conn.execute(
         """
         UPDATE public.job_applications
-        SET stage=$1, updated_at=now()
+        SET stage = $1::varchar,
+            stage_history = COALESCE(stage_history, '[]'::jsonb) || jsonb_build_object(
+                'from', stage, 'to', $1::varchar, 'changed_at', now(), 'changed_by', $3::text
+            ),
+            updated_at = now()
         WHERE job_application_id=$2 AND jobs_opportunity_id IS NOT NULL
         """,
-        body.stage, app_id,
+        body.stage, app_id, _user_email(user),
     )
     if result == "UPDATE 0":
         raise HTTPException(404, "Application not found")
