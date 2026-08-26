@@ -6,7 +6,7 @@ import {
   type SourceBreakdown,
   type BucketKey,
 } from "@/services/revenueSnapshot";
-import { fmtMoney } from "@/lib/format";
+import { fmtMoney, fmtMoneyMD } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { Tooltip } from "@/components/ui/Tooltip";
 
@@ -183,7 +183,7 @@ function StatTile({
         </Tooltip>
       </div>
       <p className={cn("text-2xl font-bold tabular-nums", accent ? "text-accent" : "text-ink")}>
-        {fmtMoney(value)}
+        {fmtMoneyMD(value)}
       </p>
       <div className="mt-3">
         <SourceBar bySource={bySource} total={value} heightCls="h-4" />
@@ -393,7 +393,7 @@ function FutureYearsTable({
                       : "text-ink hover:text-accent",
                   )}
                 >
-                  {fmtMoney(data.total)}
+                  {fmtMoneyMD(data.total)}
                 </button>
               </div>
               <div className="min-w-0 flex-1">
@@ -470,7 +470,7 @@ export function RevenueSnapshotPanel({ year }: { year: number }) {
       )}>
         <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
           <span className="text-[32px] font-bold tabular-nums leading-none text-ink">
-            {fmtMoney(revenue_closed.total)}
+            {fmtMoneyMD(revenue_closed.total)}
           </span>
           <span className="text-[15px] font-medium text-ink-2">raised in {year}</span>
           <Tooltip
