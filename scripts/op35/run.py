@@ -7,7 +7,8 @@ The .sql files stay the source of truth — this only translates the handful of
 psql-specific constructs they use (\\i, \\echo, \\set/\\if, :'owner').
 
     python3 scripts/op35/run.py preview
-    python3 scripts/op35/run.py apply  --owner kwame@pursuit.org
+    python3 scripts/op35/run.py apply-contacts          # tags only; no extra grant needed
+    python3 scripts/op35/run.py apply --owner you@pursuit.org   # needs the jobs-table grant
     python3 scripts/op35/run.py rollback
 
 Reads DATABASE_URL from the environment. Run it from the repo root.
@@ -40,8 +41,11 @@ HERE = Path(__file__).resolve().parent
 SCRIPTS = {
     "preview": "01-preview.sql",
     "apply": "02-apply.sql",
+    "apply-contacts": "02a-apply-contacts.sql",
     "rollback": "03-rollback.sql",
 }
+
+COMMITTING = {"apply", "apply-contacts"}
 
 
 # ── psql translation ─────────────────────────────────────────────────────────
@@ -222,7 +226,7 @@ async def run(mode: str, owner: str, dsn: str) -> int:
         sys.exit(f"missing {path}")
 
     segments = parse(path, owner)
-    commit = mode == "apply"
+    commit = mode in COMMITTING
 
     conn = await asyncpg.connect(dsn)
     conn.add_log_listener(lambda _c, msg: print(f"NOTICE:  {msg}"))
@@ -277,8 +281,12 @@ def main() -> int:
                  '  export DATABASE_URL="$(gcloud secrets versions access latest '
                  '--secret=jobs-dev-database-url --project=pursuit-ops)"')
 
-    if args.mode == "apply":
-        print(f"APPLY — will COMMIT. owner_email = {args.owner}")
+    if args.mode in COMMITTING:
+        scope = ("contacts only — tags + is_jobs_contact"
+                 if args.mode == "apply-contacts" else "full — contacts + jobs pipeline")
+        print(f"APPLY — will COMMIT. scope: {scope}")
+        if args.mode == "apply":
+            print(f"owner_email = {args.owner}")
         if input("Type 'apply' to continue: ").strip() != "apply":
             print("Cancelled.")
             return 1

@@ -111,3 +111,46 @@ Also thin, and worth a look before you lean on them:
 - **Fidelity** → Amy Wick is a *retail branch* VP. Weak anchor for a $1M donor on the PBD list.
 - **BlackRock** → the most senior contact for a $2.27M donor is a VP.
 - **Meta** → an Engineering Manager is the most senior contact on file.
+
+## Why the jobs half needs Jac
+
+`02-apply.sql` inserts into `bedrock.jobs_account` and
+`bedrock.jobs_contact_membership`. Those two tables are **SELECT-only for every
+human role** — `jobs_dev`, `avni_dev`, `damon_dev` and the shared `jobs_team`
+group all have SELECT and nothing else. Only `bedrock_user` (the app's own role)
+and `postgres` can insert. `SET ROLE jobs_team` does not help.
+
+That appears deliberate rather than an oversight: those are the two tables that
+*create* employers and pipeline entries, and rule 2 of ONBOARDING.md requires
+creation to go through the resolve-first API (`GET /api/jobs/accounts/resolve`).
+The app enforces dedup against our DB and Salesforce; a raw INSERT bypasses it.
+Note that ONBOARDING.md's "write: the jobs working tables (the `jobs_*` tables)"
+overstates the actual grant.
+
+So there are two ways to finish the jobs half:
+
+**A · Run it through the app.** Start the backend per ONBOARDING.md step 3 and use
+the existing endpoints, which run as `bedrock_user` and resolve before creating:
+`POST /api/jobs/accounts`, `POST /api/jobs/contacts/{contact_id}/add-to-jobs`.
+This is the path the permissions are designed around.
+
+**B · Ask Jac for the grant**, if the team is meant to script these directly:
+
+```sql
+GRANT INSERT, UPDATE ON bedrock.jobs_account            TO jobs_team;
+GRANT INSERT, UPDATE ON bedrock.jobs_contact_membership TO jobs_team;
+```
+
+Granting to `jobs_team` covers all three of us. Once it lands, `02-apply.sql` is
+idempotent — re-run it and it will add only the jobs rows, leaving the tags alone.
+
+## Splitting the run
+
+`02a-apply-contacts.sql` does only the `public.contacts` half — the tag and
+`is_jobs_contact` — which every dev role already has UPDATE on. Run it to land
+the tagging now, then run the full `02-apply.sql` once the grant exists.
+
+```bash
+python3 scripts/op35/run.py apply-contacts   # works today
+python3 scripts/op35/run.py apply            # after the grant; adds only what's missing
+```
