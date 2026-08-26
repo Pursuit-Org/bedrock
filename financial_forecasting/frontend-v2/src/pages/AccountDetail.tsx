@@ -60,6 +60,7 @@ export function AccountDetailPage() {
   const [showAddOpp, setShowAddOpp] = useState(false);
   const [folderEditing, setFolderEditing] = useState(false);
   const [folderDraft, setFolderDraft] = useState("");
+  const [deprioritizeDialogOpen, setDeprioritizeDialogOpen] = useState(false);
   const navigate = useNavigate();
   const commentInputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -224,25 +225,46 @@ export function AccountDetailPage() {
           {(() => {
             const isActive = account.Active__c !== false;
             return (
-              <button
-                type="button"
-                disabled={updateAccount.isPending}
-                onClick={() =>
-                  updateAccount.mutate({
-                    id: account.Id,
-                    patch: { Active__c: !isActive },
-                    displayPatch: isActive ? { account_status: "Deprioritized" } : undefined,
-                  })
-                }
-                className={cn(
-                  "inline-flex h-[30px] items-center gap-1.5 rounded border px-3 text-[13px] font-medium transition-colors disabled:opacity-50",
-                  isActive
-                    ? "border-border-strong bg-surface text-ink-2 hover:border-red/40 hover:bg-red-soft hover:text-red"
-                    : "border-border-strong bg-surface text-ink-2 hover:border-green/40 hover:bg-green-soft hover:text-green",
+              <>
+                <button
+                  type="button"
+                  disabled={updateAccount.isPending}
+                  onClick={() => {
+                    if (isActive) {
+                      setDeprioritizeDialogOpen(true);
+                    } else {
+                      updateAccount.mutate({
+                        id: account.Id,
+                        patch: { Active__c: true },
+                      });
+                    }
+                  }}
+                  className={cn(
+                    "inline-flex h-[30px] items-center gap-1.5 rounded border px-3 text-[13px] font-medium transition-colors disabled:opacity-50",
+                    isActive
+                      ? "border-border-strong bg-surface text-ink-2 hover:border-red/40 hover:bg-red-soft hover:text-red"
+                      : "border-border-strong bg-surface text-ink-2 hover:border-green/40 hover:bg-green-soft hover:text-green",
+                  )}
+                >
+                  {isActive ? "Deprioritize" : "Reprioritize"}
+                </button>
+                {deprioritizeDialogOpen && (
+                  <ConfirmDeprioritizeDialog
+                    busy={updateAccount.isPending}
+                    onCancel={() => setDeprioritizeDialogOpen(false)}
+                    onConfirm={() => {
+                      updateAccount.mutate(
+                        {
+                          id: account.Id,
+                          patch: { Active__c: false },
+                          displayPatch: { account_status: "Deprioritized" },
+                        },
+                        { onSettled: () => setDeprioritizeDialogOpen(false) },
+                      );
+                    }}
+                  />
                 )}
-              >
-                {isActive ? "Deprioritize" : "Reprioritize"}
-              </button>
+              </>
             );
           })()}
           <Tooltip
@@ -1323,6 +1345,52 @@ function PickerRow({
         ) : null}
       </button>
     </li>
+  );
+}
+
+function ConfirmDeprioritizeDialog({
+  busy,
+  onCancel,
+  onConfirm,
+}: {
+  busy: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+      onClick={(e) => { if (e.target === e.currentTarget) onCancel(); }}
+    >
+      <div className="w-full max-w-md rounded-lg border border-border-strong bg-surface shadow-2xl">
+        <div className="px-5 py-4 text-[13px] text-ink-2">
+          <p>
+            Are you sure you want to Deprioritize this account? Proceeding will update the account
+            status to <strong>'Deprioritized'</strong> and a task will be set with a due date in 6
+            months for the account owner to re-evaluate if this stage still accurately reflects the
+            relationship.
+          </p>
+        </div>
+        <div className="flex items-center justify-end gap-2 border-t border-border-strong px-5 py-3">
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={busy}
+            className="rounded border border-border-strong bg-surface px-3 py-1.5 text-[12.5px] text-ink-2 hover:bg-surface-2 disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={busy}
+            className="rounded border border-border-strong bg-surface px-3 py-1.5 text-[12.5px] font-medium text-ink-2 transition-colors hover:border-red/40 hover:bg-red-soft hover:text-red disabled:opacity-60"
+          >
+            {busy ? "Deprioritizing…" : "Deprioritize"}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
