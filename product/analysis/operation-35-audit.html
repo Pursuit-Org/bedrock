@@ -1,0 +1,571 @@
+<title>Operation 35 Coverage Audit</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&display=swap">
+<style>
+:root{
+  --ground:#FAF9F7; --surface:#FFFFFF; --sunk:#F3F1EC;
+  --ink:#1A1D26; --ink-2:#3E434F; --muted:#6B6F7D;
+  --accent:#B4661E; --accent-soft:#F2E6D8; --accent-line:#E3C9A9;
+  --good:#2F6F5E; --good-soft:#E2EEEA;
+  --line:#E4E0D9; --line-2:#D5D0C6;
+  --shadow:0 1px 2px rgba(26,29,38,.05);
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --ground:#14161C; --surface:#1C1F27; --sunk:#181B22;
+    --ink:#ECEAE5; --ink-2:#C6C9D1; --muted:#9AA0AE;
+    --accent:#E0913F; --accent-soft:#33271A; --accent-line:#5C452A;
+    --good:#5FA894; --good-soft:#1B2E29;
+    --line:#2A2E38; --line-2:#3A3F4B;
+    --shadow:0 1px 2px rgba(0,0,0,.4);
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#14161C; --surface:#1C1F27; --sunk:#181B22;
+  --ink:#ECEAE5; --ink-2:#C6C9D1; --muted:#9AA0AE;
+  --accent:#E0913F; --accent-soft:#33271A; --accent-line:#5C452A;
+  --good:#5FA894; --good-soft:#1B2E29;
+  --line:#2A2E38; --line-2:#3A3F4B;
+  --shadow:0 1px 2px rgba(0,0,0,.4);
+}
+*{box-sizing:border-box}
+body{
+  background:var(--ground); color:var(--ink);
+  font-family:"IBM Plex Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+  font-size:16px; line-height:1.6; margin:0;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:1180px;margin:0 auto;padding:clamp(2rem,5vw,4.5rem) clamp(1.1rem,4vw,3rem) 6rem}
+.measure{max-width:68ch}
+h1,h2,h3{font-family:Newsreader,Georgia,"Times New Roman",serif;font-weight:500;text-wrap:balance;margin:0}
+h1{font-size:clamp(2.1rem,5.2vw,3.3rem);line-height:1.08;letter-spacing:-.015em}
+h2{font-size:clamp(1.45rem,3vw,1.95rem);line-height:1.15;letter-spacing:-.01em}
+h3{font-size:1.12rem;line-height:1.3;font-weight:600}
+p{margin:0}
+a{color:var(--accent);text-decoration-thickness:1px;text-underline-offset:2px}
+a:focus-visible,summary:focus-visible{outline:2px solid var(--accent);outline-offset:3px;border-radius:2px}
+.eyebrow{
+  font-family:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  font-size:.7rem;letter-spacing:.13em;text-transform:uppercase;color:var(--muted);font-weight:500;
+}
+.lede{font-size:1.12rem;color:var(--ink-2);line-height:1.62}
+header.masthead{display:flex;flex-direction:column;gap:1.15rem;padding-bottom:2.2rem;border-bottom:1px solid var(--line-2)}
+.meta{display:flex;flex-wrap:wrap;gap:.45rem 1.4rem;font-family:"IBM Plex Mono",monospace;font-size:.75rem;color:var(--muted)}
+
+/* stat strip */
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(220px,100%),1fr));gap:1px;background:var(--line);
+  border:1px solid var(--line);margin:2.6rem 0 0}
+.stat{background:var(--surface);padding:1.3rem 1.35rem;display:flex;flex-direction:column;gap:.4rem}
+.stat .n{font-family:Newsreader,Georgia,serif;font-size:2.35rem;line-height:1;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+.stat .n.alert{color:var(--accent)}
+.stat .n.ok{color:var(--good)}
+.stat .k{font-size:.86rem;color:var(--muted);line-height:1.45}
+
+section{margin-top:3.6rem}
+.sec-head{display:flex;flex-direction:column;gap:.55rem;margin-bottom:1.5rem}
+
+/* findings */
+ol.findings{list-style:none;counter-reset:f;padding:0;margin:0;display:flex;flex-direction:column;gap:1.7rem}
+ol.findings>li{counter-increment:f;display:grid;grid-template-columns:2.6rem 1fr;gap:0 1rem;align-items:start}
+ol.findings>li::before{
+  content:counter(f,decimal-leading-zero);
+  font-family:"IBM Plex Mono",monospace;font-size:.78rem;color:var(--accent);
+  padding-top:.28rem;font-weight:600;
+}
+ol.findings h3{margin-bottom:.4rem}
+ol.findings p{color:var(--ink-2);max-width:66ch}
+
+/* tables */
+.scroller{overflow-x:auto;border:1px solid var(--line);background:var(--surface);margin-top:1rem}
+table{border-collapse:collapse;width:100%;min-width:820px;font-size:.895rem}
+thead th{
+  font-family:"IBM Plex Mono",monospace;font-size:.68rem;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--muted);font-weight:500;text-align:left;padding:.75rem 1rem;
+  border-bottom:1px solid var(--line-2);background:var(--sunk);white-space:nowrap;
+}
+tbody tr{border-bottom:1px solid var(--line)}
+tbody tr:last-child{border-bottom:0}
+tbody th,tbody td{padding:.85rem 1rem;vertical-align:top;text-align:left;font-weight:400}
+tbody th{font-weight:600;color:var(--ink);white-space:nowrap;font-size:.925rem}
+.who .nm{display:block;font-weight:500}
+.who .ti{display:block;color:var(--muted);font-size:.83rem;line-height:1.42;margin-top:.1rem}
+.who .em{display:block;font-family:"IBM Plex Mono",monospace;font-size:.72rem;margin-top:.22rem;word-break:break-all}
+.who{min-width:210px}
+.note{color:var(--ink-2);font-size:.83rem;line-height:1.5;min-width:280px}
+.signals{min-width:190px}
+.none{color:var(--accent);font-style:italic}
+.chip{
+  display:inline-block;font-family:"IBM Plex Mono",monospace;font-size:.67rem;letter-spacing:.02em;
+  padding:.16rem .42rem;border:1px solid var(--line-2);color:var(--ink-2);
+  white-space:nowrap;margin:0 .12rem .22rem 0;font-variant-numeric:tabular-nums;
+}
+.chip-hire{border-color:var(--good);color:var(--good);background:var(--good-soft)}
+.chip-pbd{border-color:var(--accent-line);color:var(--accent);background:var(--accent-soft)}
+.chip-none{color:var(--muted);border-style:dashed}
+
+.tier{margin-top:2.4rem}
+.tier-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:.5rem .9rem;padding-bottom:.6rem;border-bottom:2px solid var(--ink)}
+.tier-head .p{font-family:"IBM Plex Mono",monospace;font-size:.72rem;font-weight:600;letter-spacing:.1em;color:var(--accent)}
+.tier-head .t{font-family:Newsreader,Georgia,serif;font-size:1.3rem;font-weight:500}
+.tier-head .c{margin-left:auto;font-family:"IBM Plex Mono",monospace;font-size:.75rem;color:var(--muted)}
+.tier>p.sub{margin-top:.75rem;color:var(--ink-2);font-size:.93rem;max-width:70ch}
+
+/* callout */
+.callout{border:1px solid var(--accent-line);background:var(--accent-soft);padding:1.4rem 1.5rem;margin-top:1.2rem}
+.callout p{color:var(--ink-2);max-width:70ch}
+.callout p+p{margin-top:.8rem}
+.callout strong{color:var(--ink)}
+
+ul.plain{margin:0;padding-left:1.15rem;display:flex;flex-direction:column;gap:.7rem;color:var(--ink-2)}
+ul.plain li{max-width:68ch}
+ul.plain strong{color:var(--ink);font-weight:600}
+footer{margin-top:4.5rem;padding-top:1.6rem;border-top:1px solid var(--line);color:var(--muted);font-size:.82rem}
+@media (max-width:640px){
+  ol.findings>li{grid-template-columns:1fr;gap:.3rem}
+  ol.findings>li::before{padding-top:0}
+}
+</style>
+<div class="wrap">
+
+<header class="masthead">
+  <span class="eyebrow">Account coverage audit</span>
+  <h1>Who's missing from Operation&nbsp;35 — Pursuit</h1>
+  <p class="lede measure">The Pursuit set is meant to hold every firm we'd prioritise on warmth and strength of relationship. Salesforce and Bedrock agree it already has the big hirers. What it doesn't have is a third of our commit partners, our largest donors who've never been asked to hire, and almost every frontier-AI and VC account we talk to weekly.</p>
+  <div class="meta">
+    <span>26 Aug 2026</span>
+    <span>Salesforce · Bedrock Postgres</span>
+    <span>89 tagged contacts / ~57 companies reviewed</span>
+    <span>4,700+ accounts scanned</span>
+  </div>
+</header>
+
+<div class="stats">
+  <div class="stat"><span class="n ok">27 of 30</span><span class="k">Accounts with 5+ builder hires are already covered — and all three gaps are defunct or duplicate records</span></div>
+  <div class="stat"><span class="n alert">8 of 21</span><span class="k">Commit partners have no <code>operation_35_pursuit</code> contact at all</span></div>
+  <div class="stat"><span class="n">55</span><span class="k">Accounts recommended for addition, each with the most senior contact currently on file</span></div>
+  <div class="stat"><span class="n alert">5</span><span class="k">Accounts with real hiring history or major giving where the CRM holds no senior contact to tag</span></div>
+</div>
+
+<section>
+  <div class="sec-head">
+    <span class="eyebrow">What the data says</span>
+    <h2>Five findings</h2>
+  </div>
+  <ol class="findings">
+    <li>
+      <h3>The "hired 5+ builders" tranche is already comprehensive</h3>
+      <p>Of the 30 Salesforce accounts with five or more recorded hires, only three are absent — and none is actionable. <strong>Intrepid Pursuits</strong> (6 hires) wound down; <strong>AWS</strong> (6 hires) is covered through Amazon, whose tagged contact David Ham in fact sits in AWS Global Services; <strong>DeepMile</strong> (5 hires) is a Comcast subsidiary and Comcast is covered. No action needed on this dimension.</p>
+    </li>
+    <li>
+      <h3>Eight of twenty-one commit partners are missing</h3>
+      <p>iCapital, SeatGeek, Cedar, Spring Health, Ballistic Ventures, David Energy, Foursquare and Quizlet have no tagged contact. Skillshare is nominally covered, but only by a volunteer-level contact with no title on file — thin for a commit partner.</p>
+    </li>
+    <li>
+      <h3>The real gap sits at two-to-four hires plus an unconverted relationship</h3>
+      <p>These are firms that have already proven they'll hire from us <em>and</em> carry an active giving or PBD relationship nobody has turned into a hiring channel. Deutsche Bank ($925k given, 89 activities, zero hires), Salesforce ($1.05M, PBD portfolio), Alphadyne ($1.18M, CTO already in the thread), MetLife ($551k) and Mizuho (172 activities and a live jobs opportunity) are the clearest cases.</p>
+    </li>
+    <li>
+      <h3>Frontier AI and VC/PE are systematically under-represented</h3>
+      <p>Anthropic, OpenAI, Stripe, a16z, Union Square Ventures, Apollo, KKR, Silver Lake, General Atlantic and AlleyCorp all sit in the 2026 PBD portfolio or carry heavy recent activity, and none is in the Pursuit set. For the funds the value is the portfolio-hiring channel rather than direct headcount.</p>
+    </li>
+    <li>
+      <h3>Five accounts we can't tag yet, because there's nobody senior to tag</h3>
+      <p>Barclays (4 hires), Meta (4 hires), T-Mobile (4 hires) and Palo Alto Networks (83 activities, $201k) have no senior contact on file. <strong>BlackRock is the starkest: a $2.27M lifetime donor on Strategic tier and in the PBD portfolio, whose most senior contact in the CRM is a Vice President.</strong> These need sourcing before tagging is meaningful.</p>
+    </li>
+  </ol>
+</section>
+
+<section>
+  <div class="sec-head">
+    <span class="eyebrow">Method warning</span>
+    <h2>High activity is not the same as a hiring prospect</h2>
+  </div>
+  <div class="callout">
+    <p>Ranking accounts purely on logged activity volume surfaces <strong>Pursuit's own vendors</strong>, not employers. Each of these was checked against the actual email participants and excluded from the recommendations.</p>
+    <p><strong>Justworks</strong> is the single most active account in the CRM — 601 activities in eighteen months — because it is our PEO and 832 of its 1,322 emails come from <code>support@justworks.com</code>. The same pattern holds for <strong>Newmark</strong> and <strong>Cushman&nbsp;&amp;&nbsp;Wakefield</strong> (real-estate brokers), <strong>Wachtell Lipton</strong> and <strong>Cahill Gordon</strong> (outside counsel), <strong>Russell Reynolds</strong> (executive search working for us), <strong>Powered by Professionals</strong> (event production), <strong>VVA</strong> (construction management), <strong>Bolton St. Johns</strong> and <strong>Hudson Ferris</strong> (lobbying and fundraising consultants), and <strong>Acrisure</strong> (insurance broker).</p>
+    <p>Together they account for well over a thousand logged activities. <strong>Recommendation:</strong> add a vendor flag to Salesforce accounts, or this will keep polluting every warmth-ranked list we build.</p>
+  </div>
+</section>
+
+<section>
+  <div class="sec-head">
+    <span class="eyebrow">The list</span>
+    <h2>Recommended additions</h2>
+    <p class="measure" style="color:var(--ink-2)">Fifty-five accounts, each with the most senior contact currently held in Salesforce or Bedrock. Priority is an ordering, not a category: work P1 first.</p>
+  </div>
+
+  <div class="tier">
+    <div class="tier-head"><span class="p">P1</span><span class="t">Commit partners with no tagged contact</span><span class="c">8 accounts</span></div>
+    <p class="sub">Non-negotiable — every commit partner belongs in the set. Several have a warm working-level contact but no executive anchor.</p>
+    <div class="scroller"><table>
+      <thead><tr><th scope="col">Account</th><th scope="col">Signals</th><th scope="col">Most senior contact on file</th><th scope="col">Notes</th></tr></thead>
+      <tbody><tr>
+<th scope="row">iCapital</th>
+<td class="signals"><span class="chip chip-hire">2 hires</span> <span class="chip">$40k given</span> <span class="chip">31 act/18mo</span></td>
+<td class="who"><span class="nm">Paul Solano</span><span class="ti">SVP, Global Head of Talent Acquisition</span><span class="em"><a href="mailto:paul.solano@icapital.com">paul.solano@icapital.com</a></span></td>
+<td class="note">Warmest exec: Dipti Rajwani, Chief of Staff to the CIO (22 activities, prior_commit_partner). Chris Piazza (CTO) left Oct 2024 - relationship needs re-anchoring.</td>
+</tr>
+<tr>
+<th scope="row">SeatGeek</th>
+<td class="signals"><span class="chip chip-hire">3 hires</span> <span class="chip">$48k given</span></td>
+<td class="who"><span class="nm">Brian Murphy</span><span class="ti">Chief Technology Officer</span><span class="em"><a href="mailto:murphy@seatgeek.com">murphy@seatgeek.com</a></span></td>
+<td class="note">Greg Warden (VP Eng) and Frank Cebek (Sr Dir People) also tagged prior_commit_partner.</td>
+</tr>
+<tr>
+<th scope="row">Cedar</th>
+<td class="signals"><span class="chip chip-hire">3 hires</span> <span class="chip">$72k given</span></td>
+<td class="who"><span class="nm">Liz Ratto</span><span class="ti">Head of People</span><span class="em"><a href="mailto:liz@cedar.com">liz@cedar.com</a></span></td>
+<td class="note">No C-level contact on file. Worth sourcing the CEO.</td>
+</tr>
+<tr>
+<th scope="row">Spring Health</th>
+<td class="signals"><span class="chip chip-hire">2 hires</span> <span class="chip">$48k given</span></td>
+<td class="who"><span class="nm">April Koh</span><span class="ti">Co-Founder &amp; CEO</span></td>
+<td class="note">Michelle Rojas (Assoc Dir DEI) is the working-level commit contact.</td>
+</tr>
+<tr>
+<th scope="row">Ballistic Ventures</th>
+<td class="signals"><span class="chip">$75k given</span> <span class="chip">61 act/18mo</span> <span class="chip chip-pbd">PBD 2026</span></td>
+<td class="who"><span class="nm">Jake Seid</span><span class="ti">Co-Founder</span><span class="em"><a href="mailto:jake@ballisticventures.com">jake@ballisticventures.com</a></span></td>
+<td class="note">36 logged activities; PBD portfolio; $75k giving. Portfolio-company hiring channel.</td>
+</tr>
+<tr>
+<th scope="row">David Energy</th>
+<td class="signals"><span class="chip chip-hire">2 hires</span></td>
+<td class="who"><span class="nm">James McGinniss</span><span class="ti">CEO &amp; Co-Founder</span><span class="em"><a href="mailto:james@davidenergy.com">james@davidenergy.com</a></span></td>
+<td class="note">Ahmed Salman (CTO &amp; Co-Founder) tagged prior_commit_partner.</td>
+</tr>
+<tr>
+<th scope="row">Foursquare</th>
+<td class="signals"><span class="chip chip-hire">4 hires</span></td>
+<td class="who"><span class="nm">Michele Morelli</span><span class="ti">SVP Marketing</span><span class="em"><a href="mailto:mmorelli@foursquare.com">mmorelli@foursquare.com</a></span></td>
+<td class="note">4 hires; no senior eng contact on file.</td>
+</tr>
+<tr>
+<th scope="row">Quizlet</th>
+<td class="signals"><span class="chip chip-hire">2 hires</span></td>
+<td class="who"><span class="nm">Tim Miller</span><span class="ti">VP Engineering</span><span class="em"><a href="mailto:tim@quizlet.com">tim@quizlet.com</a></span></td>
+<td class="note"></td>
+</tr></tbody>
+    </table></div>
+  </div>
+
+  <div class="tier">
+    <div class="tier-head"><span class="p">P2</span><span class="t">Hiring history plus a major giving or PBD relationship</span><span class="c">24 accounts</span></div>
+    <p class="sub">Largest employers and deepest relationships. These convert fastest because the relationship already exists — it just isn't pointed at hiring.</p>
+    <div class="scroller"><table>
+      <thead><tr><th scope="col">Account</th><th scope="col">Signals</th><th scope="col">Most senior contact on file</th><th scope="col">Notes</th></tr></thead>
+      <tbody><tr>
+<th scope="row">Deutsche Bank</th>
+<td class="signals"><span class="chip">$925k given</span> <span class="chip">89 act/18mo</span> <span class="chip chip-pbd">PBD 2026</span></td>
+<td class="who"><span class="nm">Alessandra Digiusto</span><span class="ti">Global Head of CSR, Americas</span><span class="em"><a href="mailto:alessandra.digiusto@db.com">alessandra.digiusto@db.com</a></span></td>
+<td class="note">Janet Wong (VP CSR) is warmest - 60 logged emails. Philanthropy-led; no hiring channel opened.</td>
+</tr>
+<tr>
+<th scope="row">Salesforce</th>
+<td class="signals"><span class="chip chip-hire">1 hire</span> <span class="chip">$1050k given</span> <span class="chip">53 act/18mo</span> <span class="chip chip-pbd">PBD 2026</span></td>
+<td class="who"><span class="nm">Suzanne DiBianca</span><span class="ti">EVP Corporate Relations &amp; Chief Philanthropy Officer</span></td>
+<td class="note">Naomi Morenzoni (SVP AI for Impact) is the working exec. One open jobs opportunity (closed lost).</td>
+</tr>
+<tr>
+<th scope="row">BlackRock</th>
+<td class="signals"><span class="chip chip-hire">3 hires</span> <span class="chip">$2272k given</span> <span class="chip chip-pbd">PBD 2026</span></td>
+<td class="who"><span class="nm">Shirin Chen</span><span class="ti">Vice President</span></td>
+<td class="note">$2.27M donor with NO senior contact on file - biggest relationship/contact gap in the CRM.</td>
+</tr>
+<tr>
+<th scope="row">Fidelity</th>
+<td class="signals"><span class="chip chip-hire">2 hires</span> <span class="chip">$1001k given</span> <span class="chip chip-pbd">PBD 2026</span></td>
+<td class="who"><span class="nm">Amy Wick</span><span class="ti">Vice President, Branch Leader</span></td>
+<td class="note">$1M donor, no senior contact. Needs sourcing.</td>
+</tr>
+<tr>
+<th scope="row">Alphadyne Asset Management</th>
+<td class="signals"><span class="chip">$1175k given</span> <span class="chip chip-pbd">PBD 2026</span></td>
+<td class="who"><span class="nm">Tom Debow</span><span class="ti">CTO</span><span class="em"><a href="mailto:thomas.debow@adyne.com">thomas.debow@adyne.com</a></span></td>
+<td class="note">CTO already engaged (5 activities) - direct eng hiring lever.</td>
+</tr>
+<tr>
+<th scope="row">Mizuho</th>
+<td class="signals"><span class="chip">$180k given</span> <span class="chip">172 act/18mo</span></td>
+<td class="who"><span class="nm">John Buchanan</span><span class="ti">CIO, Mizuho Americas</span><span class="em"><a href="mailto:john.buchanan@mizuhogroup.com">john.buchanan@mizuhogroup.com</a></span></td>
+<td class="note">Lesley Palmer (MD Community Relations) is the anchor - 37 emails. Live jobs opportunity in discussions.</td>
+</tr>
+<tr>
+<th scope="row">MetLife</th>
+<td class="signals"><span class="chip">$551k given</span> <span class="chip">79 act/18mo</span> <span class="chip chip-pbd">PBD 2026</span></td>
+<td class="who"><span class="nm">Danielle Vetter</span><span class="ti">AVP, Charitable Contributions &amp; Employee Engagement</span><span class="em"><a href="mailto:danielle.vetter@metlife.com">danielle.vetter@metlife.com</a></span></td>
+<td class="note">Charlie Pettigrew (Dir, MetLife Foundation) has 88 logged activities.</td>
+</tr>
+<tr>
+<th scope="row">Bank of America</th>
+<td class="signals"><span class="chip chip-hire">3 hires</span> <span class="chip">$200k given</span> <span class="chip chip-pbd">PBD 2026</span></td>
+<td class="who"><span class="nm">Jennifer Chandler</span><span class="ti">Head of Philanthropic Solutions</span><span class="em"><a href="mailto:jennifer.chandler@bofa.com">jennifer.chandler@bofa.com</a></span></td>
+<td class="note">Edward Dunlap (SVP Business Ops) tagged hiring partner.</td>
+</tr>
+<tr>
+<th scope="row">Verizon</th>
+<td class="signals"><span class="chip chip-hire">1 hire</span> <span class="chip">$202k given</span> <span class="chip chip-pbd">PBD 2026</span></td>
+<td class="who"><span class="nm">Shankar Arumugavelu</span><span class="ti">Senior Vice President &amp; Global CIO</span><span class="em"><a href="mailto:shankar.arumugavelu@verizon.com">shankar.arumugavelu@verizon.com</a></span></td>
+<td class="note">Global CIO already tagged &#x27;influence&#x27;. Thrive Apprenticeship Program is an existing hiring vehicle.</td>
+</tr>
+<tr>
+<th scope="row">Link Logistics</th>
+<td class="signals"><span class="chip">$200k given</span> <span class="chip">56 act/18mo</span> <span class="chip chip-pbd">PBD 2026</span></td>
+<td class="who"><span class="nm">Grace Beaudin</span><span class="ti">Vice President, Social Impact</span><span class="em"><a href="mailto:gbeaudin@linklogistics.com">gbeaudin@linklogistics.com</a></span></td>
+<td class="note">Blackstone portfolio company - warm path via existing Blackstone relationship.</td>
+</tr>
+<tr>
+<th scope="row">Charter Communications</th>
+<td class="signals"><span class="chip chip-hire">1 hire</span> <span class="chip">$10k given</span> <span class="chip">36 act/18mo</span> <span class="chip chip-pbd">PBD 2026</span></td>
+<td class="who"><span class="nm">Rhonda Crichlow</span><span class="ti">SVP, Community Impact &amp; Engagement</span><span class="em"><a href="mailto:rhonda.crichlow@spectrum.com">rhonda.crichlow@spectrum.com</a></span></td>
+<td class="note">Rahman Khan (VP Community Impact) also active.</td>
+</tr>
+<tr>
+<th scope="row">CBRE</th>
+<td class="signals"><span class="chip">$100k given</span> <span class="chip">35 act/18mo</span> <span class="chip chip-pbd">PBD 2026</span></td>
+<td class="who"><span class="nm">Duncan MacLean</span><span class="ti">Senior Vice President</span></td>
+<td class="note"></td>
+</tr>
+<tr>
+<th scope="row">IBM</th>
+<td class="signals"><span class="chip chip-hire">3 hires</span> <span class="chip chip-pbd">PBD 2026</span></td>
+<td class="who"><span class="nm">Lydia Logan</span><span class="ti">VP, Global Education &amp; Workforce Development</span><span class="em"><a href="mailto:lydia.logan@ibm.com">lydia.logan@ibm.com</a></span></td>
+<td class="note">Already tagged other_hiring_partner.</td>
+</tr>
+<tr>
+<th scope="row">Etsy</th>
+<td class="signals"><span class="chip chip-hire">2 hires</span> <span class="chip">$70k given</span> <span class="chip chip-pbd">PBD 2026</span></td>
+<td class="who"><span class="nm">Josh Silverman</span><span class="ti">Executive Chair</span></td>
+<td class="note">NYC-HQ, prior hires, active PBD relationship.</td>
+</tr>
+<tr>
+<th scope="row">Walmart</th>
+<td class="signals"><span class="chip chip-hire">4 hires</span> <span class="chip">$300k given</span></td>
+<td class="who"><span class="nm">Dave Temkin</span><span class="ti">VP, Platform Infrastructure &amp; Critical Facilities</span></td>
+<td class="note">Walmart Global Tech - large eng org.</td>
+</tr>
+<tr>
+<th scope="row">Barclays</th>
+<td class="signals"><span class="chip chip-hire">4 hires</span></td>
+<td class="who"><span class="nm"><em class="none">none on file</em></span></td>
+<td class="note">4 hires but no senior contact on file - needs sourcing.</td>
+</tr>
+<tr>
+<th scope="row">iHeartMedia</th>
+<td class="signals"><span class="chip chip-hire">4 hires</span> <span class="chip">17 act/18mo</span></td>
+<td class="who"><span class="nm">Colin Davis</span><span class="ti">Director of Android Engineering</span><span class="em"><a href="mailto:colindavis@iheartmedia.com">colindavis@iheartmedia.com</a></span></td>
+<td class="note"></td>
+</tr>
+<tr>
+<th scope="row">Meta</th>
+<td class="signals"><span class="chip chip-hire">4 hires</span> <span class="chip">$117k given</span></td>
+<td class="who"><span class="nm">Ilya Pesahovsky</span><span class="ti">Engineering Manager, Facebook Reels</span></td>
+<td class="note">No senior contact - needs sourcing.</td>
+</tr>
+<tr>
+<th scope="row">T-Mobile</th>
+<td class="signals"><span class="chip chip-hire">4 hires</span></td>
+<td class="who"><span class="nm"><em class="none">none on file</em></span></td>
+<td class="note">No senior contact on file.</td>
+</tr>
+<tr>
+<th scope="row">Apple</th>
+<td class="signals"><span class="chip chip-hire">2 hires</span> <span class="chip">29 act/18mo</span></td>
+<td class="who"><span class="nm">Shannon Sinunu</span><span class="ti">Director of Community Investment</span><span class="em"><a href="mailto:ssinunu@apple.com">ssinunu@apple.com</a></span></td>
+<td class="note"></td>
+</tr>
+<tr>
+<th scope="row">Prudential</th>
+<td class="signals"><span class="chip chip-hire">2 hires</span> <span class="chip">1 act/18mo</span></td>
+<td class="who"><span class="nm">Sarah Keh</span><span class="ti">VP, Inclusive Solutions</span><span class="em"><a href="mailto:sarah.keh@prudential.com">sarah.keh@prudential.com</a></span></td>
+<td class="note"></td>
+</tr>
+<tr>
+<th scope="row">Oscar Health</th>
+<td class="signals"><span class="chip chip-hire">3 hires</span> <span class="chip chip-pbd">PBD 2026</span></td>
+<td class="who"><span class="nm">Rebecca Krouse</span><span class="ti">EVP, Chief People Officer</span></td>
+<td class="note">Neetu Rajpal (CTO) also on file. NYC health-tech.</td>
+</tr>
+<tr>
+<th scope="row">Airbnb</th>
+<td class="signals"><span class="chip chip-hire">2 hires</span> <span class="chip">3 act/18mo</span> <span class="chip chip-pbd">PBD 2026</span></td>
+<td class="who"><span class="nm">Iain Roberts</span><span class="ti">VP, People &amp; Culture</span></td>
+<td class="note"></td>
+</tr>
+<tr>
+<th scope="row">Lyft</th>
+<td class="signals"><span class="chip chip-hire">3 hires</span> <span class="chip">$12k given</span></td>
+<td class="who"><span class="nm">CJ Macklin</span><span class="ti">Director</span></td>
+<td class="note"></td>
+</tr></tbody>
+    </table></div>
+  </div>
+
+  <div class="tier">
+    <div class="tier-head"><span class="p">P3</span><span class="t">Frontier AI, VC/PE portfolio channels, and PBD accounts with no hiring channel</span><span class="c">23 accounts</span></div>
+    <p class="sub">Newer relationships and indirect channels. The funds are worth carrying for portfolio-company hiring even where they will never hire a builder directly.</p>
+    <div class="scroller"><table>
+      <thead><tr><th scope="col">Account</th><th scope="col">Signals</th><th scope="col">Most senior contact on file</th><th scope="col">Notes</th></tr></thead>
+      <tbody><tr>
+<th scope="row">McKinsey (Iguazio)</th>
+<td class="signals"><span class="chip">293 act/18mo</span></td>
+<td class="who"><span class="nm">Anthony Shorris</span><span class="ti">Senior Partner</span><span class="em"><a href="mailto:Anthony_Shorris@mckinsey.com">Anthony_Shorris@mckinsey.com</a></span></td>
+<td class="note">293 activities in 18 months - 3rd most active account. Liliana Tai is the day-to-day (75 emails). Not currently in any Operation 35 tag.</td>
+</tr>
+<tr>
+<th scope="row">Anthropic</th>
+<td class="signals"><span class="chip">104 act/18mo</span> <span class="chip chip-pbd">PBD 2026</span></td>
+<td class="who"><span class="nm">Michael Sellitto</span><span class="ti">Head of Global Affairs</span></td>
+<td class="note">Connor Maxwell is the active thread (16 emails through Aug 2026).</td>
+</tr>
+<tr>
+<th scope="row">OpenAI</th>
+<td class="signals"><span class="chip">$6k given</span> <span class="chip">64 act/18mo</span> <span class="chip chip-pbd">PBD 2026</span></td>
+<td class="who"><span class="nm">Erica Vlahino</span><span class="ti">GTM Director</span><span class="em"><a href="mailto:erica@openai.com">erica@openai.com</a></span></td>
+<td class="note">Alice Lee also active.</td>
+</tr>
+<tr>
+<th scope="row">Stripe</th>
+<td class="signals"><span class="chip chip-pbd">PBD 2026</span></td>
+<td class="who"><span class="nm">William Gaybrick</span><span class="ti">President, Technology and Business</span></td>
+<td class="note">Already tagged operation_35_lt_nick. Active jobs opportunity confirmed.</td>
+</tr>
+<tr>
+<th scope="row">ServiceNow</th>
+<td class="signals"><span class="chip chip-none">no hard signal</span></td>
+<td class="who"><span class="nm">Karen Pavlin</span><span class="ti">Chief Equity and Inclusion Officer</span><span class="em"><a href="mailto:karen.pavlin@servicenow.com">karen.pavlin@servicenow.com</a></span></td>
+<td class="note">Kelly Kent (Chief Transformation Officer) also tagged hiring partner. Live jobs opportunity.</td>
+</tr>
+<tr>
+<th scope="row">Workday</th>
+<td class="signals"><span class="chip">$50k given</span> <span class="chip chip-pbd">PBD 2026</span></td>
+<td class="who"><span class="nm">Ashley Goldsmith</span><span class="ti">Chief People Officer</span><span class="em"><a href="mailto:ashley.goldsmith@workday.com">ashley.goldsmith@workday.com</a></span></td>
+<td class="note">Carrie Varoquiers (Chief Impact Officer) also on file.</td>
+</tr>
+<tr>
+<th scope="row">Visa</th>
+<td class="signals"><span class="chip">1 act/18mo</span> <span class="chip chip-pbd">PBD 2026</span></td>
+<td class="who"><span class="nm">Elizabeth Hurvitz</span><span class="ti">SVP, Global Social Impact</span><span class="em"><a href="mailto:ehurvitz@visa.com">ehurvitz@visa.com</a></span></td>
+<td class="note">Luba Goldberg (SVP Corporate Strategy) also tagged hiring partner.</td>
+</tr>
+<tr>
+<th scope="row">Reddit</th>
+<td class="signals"><span class="chip chip-pbd">PBD 2026</span></td>
+<td class="who"><span class="nm">Chris Slowe</span><span class="ti">CTO, Founding Engineer</span><span class="em"><a href="mailto:chris@reddit.com">chris@reddit.com</a></span></td>
+<td class="note"></td>
+</tr>
+<tr>
+<th scope="row">Palo Alto Networks</th>
+<td class="signals"><span class="chip">$201k given</span> <span class="chip">83 act/18mo</span></td>
+<td class="who"><span class="nm">Rose Crum</span><span class="em"><a href="mailto:rcrum@paloaltonetworks.com">rcrum@paloaltonetworks.com</a></span></td>
+<td class="note">No senior contact on file despite 83 activities - needs sourcing.</td>
+</tr>
+<tr>
+<th scope="row">Apollo Global Management</th>
+<td class="signals"><span class="chip">$6k given</span> <span class="chip chip-pbd">PBD 2026</span></td>
+<td class="who"><span class="nm">Sameer Gupta</span><span class="ti">Chief Data and Analytics Officer</span><span class="em"><a href="mailto:sameergupta@apollo.com">sameergupta@apollo.com</a></span></td>
+<td class="note">64 logged activities; tagged opboard + influence + staff_network. One of the warmest uncovered execs in the CRM.</td>
+</tr>
+<tr>
+<th scope="row">Andreessen Horowitz (a16z)</th>
+<td class="signals"><span class="chip">$300k given</span> <span class="chip chip-pbd">PBD 2026</span></td>
+<td class="who"><span class="nm">David Haber</span><span class="ti">General Partner</span><span class="em"><a href="mailto:dh@a16z.com">dh@a16z.com</a></span></td>
+<td class="note">Cultural Leadership Fund partners (Megan Holston-Alexander, Judene Small Jean-Louis) also on file. Portfolio hiring channel.</td>
+</tr>
+<tr>
+<th scope="row">Union Square Ventures</th>
+<td class="signals"><span class="chip">$864k given</span> <span class="chip chip-pbd">PBD 2026</span></td>
+<td class="who"><span class="nm">Rebecca Kaden</span><span class="ti">General Partner</span><span class="em"><a href="mailto:rebecca@usv.com">rebecca@usv.com</a></span></td>
+<td class="note">Fred Wilson (Partner) also on file with 8 activities.</td>
+</tr>
+<tr>
+<th scope="row">General Atlantic</th>
+<td class="signals"><span class="chip">$14k given</span> <span class="chip">57 act/18mo</span> <span class="chip chip-pbd">PBD 2026</span></td>
+<td class="who"><span class="nm">Jessie Cai</span><span class="ti">Vice President</span><span class="em"><a href="mailto:jcai@generalatlantic.com">jcai@generalatlantic.com</a></span></td>
+<td class="note">57 activities; also a Pursuit volunteer. Jared Cohen (VP) tagged hiring partner.</td>
+</tr>
+<tr>
+<th scope="row">KKR</th>
+<td class="signals"><span class="chip chip-hire">1 hire</span> <span class="chip chip-pbd">PBD 2026</span></td>
+<td class="who"><span class="nm">David Petraeus</span><span class="ti">Partner &amp; Chairman, KKR Global Institute</span><span class="em"><a href="mailto:petrd@kkr.com">petrd@kkr.com</a></span></td>
+<td class="note">Jared Nussbaum (Chief Cyber Security Officer) is the eng-hiring lever.</td>
+</tr>
+<tr>
+<th scope="row">Silver Lake</th>
+<td class="signals"><span class="chip">22 act/18mo</span> <span class="chip chip-pbd">PBD 2026</span></td>
+<td class="who"><span class="nm">Carrie Braddock</span><span class="ti">MD, Head of Stewardship &amp; Impact</span><span class="em"><a href="mailto:carrie.braddock@silverlake.com">carrie.braddock@silverlake.com</a></span></td>
+<td class="note">28 activities; already tagged operation_35_lt_nick. Live jobs opportunity.</td>
+</tr>
+<tr>
+<th scope="row">Clayton, Dubilier &amp; Rice</th>
+<td class="signals"><span class="chip">$50k given</span> <span class="chip chip-pbd">PBD 2026</span></td>
+<td class="who"><span class="nm">Randy Moore</span><span class="ti">President, CD&amp;R Foundation</span><span class="em"><a href="mailto:rmoore@cdr-inc.com">rmoore@cdr-inc.com</a></span></td>
+<td class="note"></td>
+</tr>
+<tr>
+<th scope="row">ICONIQ</th>
+<td class="signals"><span class="chip chip-pbd">PBD 2026</span></td>
+<td class="who"><span class="nm">Katie Hunt-Morr</span><span class="ti">COO &amp; VP Impact Platforms, ICONIQ Impact</span></td>
+<td class="note">Joe Collins (VP Philanthropy) is the active contact.</td>
+</tr>
+<tr>
+<th scope="row">AlleyCorp</th>
+<td class="signals"><span class="chip">59 act/18mo</span></td>
+<td class="who"><span class="nm">Kevin Ryan</span><span class="ti">Founder &amp; CEO</span><span class="em"><a href="mailto:kevin@alleycorp.com">kevin@alleycorp.com</a></span></td>
+<td class="note">NYC studio/VC - portfolio hiring channel. Tagged &#x27;influence&#x27;.</td>
+</tr>
+<tr>
+<th scope="row">Citadel</th>
+<td class="signals"><span class="chip">29 act/18mo</span></td>
+<td class="who"><span class="nm">Daniel Harrison</span><span class="ti">MD, Global Head of Fixed Income &amp; Macro Engineering</span></td>
+<td class="note"></td>
+</tr>
+<tr>
+<th scope="row">Uniswap Labs</th>
+<td class="signals"><span class="chip">55 act/18mo</span></td>
+<td class="who"><span class="nm">Hayden Adams</span><span class="ti">Founder &amp; CEO</span><span class="em"><a href="mailto:hayden@uniswap.org">hayden@uniswap.org</a></span></td>
+<td class="note">NYC, &lt;300 headcount, tagged &#x27;influence&#x27;.</td>
+</tr>
+<tr>
+<th scope="row">LSEG (London Stock Exchange Group)</th>
+<td class="signals"><span class="chip">$69k given</span> <span class="chip">103 act/18mo</span> <span class="chip chip-pbd">PBD 2026</span></td>
+<td class="who"><span class="nm">Patrick Brady</span><span class="em"><a href="mailto:Patrick.Brady@lseg.com">Patrick.Brady@lseg.com</a></span></td>
+<td class="note">LSEG Foundation relationship. No senior named contact - needs sourcing.</td>
+</tr>
+<tr>
+<th scope="row">Primary Venture Partners</th>
+<td class="signals"><span class="chip chip-none">no hard signal</span></td>
+<td class="who"><span class="nm">Brian Schechter</span><span class="ti">Partner</span></td>
+<td class="note"></td>
+</tr>
+<tr>
+<th scope="row">Bain Capital</th>
+<td class="signals"><span class="chip">37 act/18mo</span></td>
+<td class="who"><span class="nm">Giuseppe Mascia</span><span class="ti">Vice President, Special Situations</span></td>
+<td class="note">No C-level contact on file - needs sourcing.</td>
+</tr></tbody>
+    </table></div>
+  </div>
+</section>
+
+<section>
+  <div class="sec-head">
+    <span class="eyebrow">Before this list is used again</span>
+    <h2>Data problems worth fixing</h2>
+  </div>
+  <ul class="plain">
+    <li><strong>Two sources of truth for "hires."</strong> Salesforce reads Uber 35, Citi 49, Blackstone 5 — against the 47, 17 and 18 in the commit-partner list. Reconcile before either number drives targeting.</li>
+    <li><strong>The jobs pipeline can't be joined to Salesforce.</strong> <code>bedrock.jobs_account.sf_account_id</code> is null for all 277 rows, so every match had to fall back to name strings.</li>
+    <li><strong>Duplicate accounts split the signal.</strong> Citi/Citigroup, Verizon ×2, Mastercard ×2, Poll Everywhere ×2, MetLife/MetLife Foundation each divide hire counts, giving totals and activity across records.</li>
+    <li><strong>Contact links are incomplete.</strong> Tagged contacts at Moody's, Thumbtack, Goldman Sachs, JPMC, NYTimes, OpenRouter, Kisi and TPG have no <code>sf_contact_link</code> row, so coverage had to be resolved by name matching as well as by ID.</li>
+    <li><strong>No vendor flag exists.</strong> See the method warning above.</li>
+  </ul>
+</section>
+
+<footer>
+  Built from Salesforce Account and Contact objects and the Bedrock production database. Underlying data in <code>product/analysis/operation-35-pursuit-additions.csv</code>; full method in <code>product/analysis/operation-35-pursuit-audit.md</code>.
+</footer>
+
+</div>
