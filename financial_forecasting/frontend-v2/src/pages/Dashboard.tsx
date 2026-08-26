@@ -4,6 +4,7 @@ import { ChevronDown, ChevronRight, Info } from "lucide-react";
 import { OwnerExpandPanel, OWNER_PANEL_HEIGHT } from "@/components/OwnerExpandPanel";
 import { PageHeader } from "@/components/PageHeader";
 import { PipelineFunnel } from "@/components/dashboard/PipelineFunnel";
+import { RevenueSnapshotPanel } from "@/components/dashboard/RevenueSnapshotPanel";
 import { Tooltip } from "@/components/ui/Tooltip";
 import { fmtMoney } from "@/lib/format";
 import { isOpen, isWon } from "@/lib/stages";
@@ -43,6 +44,9 @@ export function DashboardPage() {
       />
 
       <div className="flex flex-col gap-6">
+        {/* YTD Revenue Snapshot */}
+        <RevenueSnapshotPanel year={fy} />
+
         {/* Record-type filter */}
         <div className="inline-flex flex-wrap gap-1.5">
           {(["all", "philanthropy", "pbc", "capital_grants", "other"] as const).map((b) => (

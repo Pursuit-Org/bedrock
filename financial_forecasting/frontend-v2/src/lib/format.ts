@@ -29,6 +29,21 @@ function trimAbbr(n: number): string {
   return r % 1 === 0 ? r.toString() : r.toFixed(1);
 }
 
+/**
+ * Like fmtMoney but always shows one decimal place for headline figures.
+ * e.g. $11.3M, $3.6M, $951.4K — never drops to whole numbers above 10M.
+ */
+export function fmtMoneyMD(n: number | null | undefined): string {
+  if (n == null || n === 0) return "$0";
+  const sign = n < 0 ? "-" : "";
+  const abs = Math.abs(n);
+  if (abs >= 999_500_000_000) return `${sign}$${(abs / 1_000_000_000_000).toFixed(1)}T`;
+  if (abs >= 999_500_000)     return `${sign}$${(abs / 1_000_000_000).toFixed(1)}B`;
+  if (abs >= 999_500)         return `${sign}$${(abs / 1_000_000).toFixed(1)}M`;
+  if (abs >= 999.5)           return `${sign}$${(abs / 1_000).toFixed(1)}K`;
+  return `${sign}$${Math.round(abs).toLocaleString("en-US")}`;
+}
+
 const _moneyFullFormatter = new Intl.NumberFormat("en-US", {
   style: "currency",
   currency: "USD",
