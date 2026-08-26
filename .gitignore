@@ -202,6 +202,9 @@ financial_forecasting/frontend/test-results/
 # Data files (financial data, exports)
 *.csv
 *.zip
+# ...except curated analysis outputs, which are reviewed deliverables rather than
+# raw exports and are referenced by docs and scripts in the repo.
+!product/analysis/*.csv
 
 # Production environment
 financial_forecasting/frontend/.env.production

@@ -1,0 +1,56 @@
+priority,account,rationale_tier,most_senior_contact,title,email,pursuit_hires,pbd_2026,total_giving_usd,activities_18mo,notes
+1,iCapital,Commit partner missing,Paul Solano,"SVP, Global Head of Talent Acquisition",paul.solano@icapital.com,2,No,40000,31,"Warmest exec: Dipti Rajwani, Chief of Staff to the CIO (22 activities, prior_commit_partner). Chris Piazza (CTO) left Oct 2024 - relationship needs re-anchoring."
+1,SeatGeek,Commit partner missing,Brian Murphy,Chief Technology Officer,murphy@seatgeek.com,3,No,48000,0,"Greg Warden (VP Eng) and Frank Cebek (Sr Dir People) also tagged prior_commit_partner."
+1,Cedar,Commit partner missing,Liz Ratto,Head of People,liz@cedar.com,3,No,72000,0,"No C-level contact on file. Worth sourcing the CEO."
+1,Spring Health,Commit partner missing,April Koh,Co-Founder & CEO,,2,No,48000,0,"Michelle Rojas (Assoc Dir DEI) is the working-level commit contact."
+1,Ballistic Ventures,Commit partner missing,Jake Seid,Co-Founder,jake@ballisticventures.com,0,Yes,75000,61,"36 logged activities; PBD portfolio; $75k giving. Portfolio-company hiring channel."
+1,David Energy,Commit partner missing,James McGinniss,CEO & Co-Founder,james@davidenergy.com,2,No,0,0,"Ahmed Salman (CTO & Co-Founder) tagged prior_commit_partner."
+1,Foursquare,Commit partner missing,Michele Morelli,SVP Marketing,mmorelli@foursquare.com,4,No,0,0,"4 hires; no senior eng contact on file."
+1,Quizlet,Commit partner missing,Tim Miller,VP Engineering,tim@quizlet.com,2,No,0,0,
+2,Deutsche Bank,Major giving + high activity,Alessandra DiGiusto,"Global Head of CSR, Americas",alessandra.digiusto@db.com,0,Yes,925100,89,"Janet Wong (VP CSR) is warmest - 60 logged emails. Philanthropy-led; no hiring channel opened."
+2,Salesforce,Major giving + PBD,Suzanne DiBianca,EVP Corporate Relations & Chief Philanthropy Officer,,1,Yes,1050550,53,"Naomi Morenzoni (SVP AI for Impact) is the working exec. One open jobs opportunity (closed lost)."
+2,BlackRock,Major giving + Strategic tier,Shirin Chen,Vice President,,3,Yes,2272009,0,"$2.27M donor with NO senior contact on file - biggest relationship/contact gap in the CRM."
+2,Fidelity,Major giving + PBD,Amy Wick,"Vice President, Branch Leader",,2,Yes,1001500,0,"$1M donor, no senior contact. Needs sourcing."
+2,Alphadyne Asset Management,Major giving + PBD,Tom Debow,CTO,thomas.debow@adyne.com,0,Yes,1175000,0,"CTO already engaged (5 activities) - direct eng hiring lever."
+2,Mizuho,High activity + live pipeline,John Buchanan,"CIO, Mizuho Americas",john.buchanan@mizuhogroup.com,0,No,180050,172,"Lesley Palmer (MD Community Relations) is the anchor - 37 emails. Live jobs opportunity in discussions."
+2,MetLife,Major giving + PBD,Danielle Vetter,"AVP, Charitable Contributions & Employee Engagement",danielle.vetter@metlife.com,0,Yes,551000,79,"Charlie Pettigrew (Dir, MetLife Foundation) has 88 logged activities."
+2,Bank of America,Hires + PBD + giving,Jennifer Chandler,Head of Philanthropic Solutions,jennifer.chandler@bofa.com,3,Yes,200261,0,"Edward Dunlap (SVP Business Ops) tagged hiring partner."
+2,Verizon,Major giving + PBD,Shankar Arumugavelu,Senior Vice President & Global CIO,shankar.arumugavelu@verizon.com,1,Yes,202000,0,"Global CIO already tagged 'influence'. Thrive Apprenticeship Program is an existing hiring vehicle."
+2,Link Logistics,Major giving + PBD,Grace Beaudin,"Vice President, Social Impact",gbeaudin@linklogistics.com,0,Yes,200000,56,"Blackstone portfolio company - warm path via existing Blackstone relationship."
+2,Charter Communications,PBD + recent activity,Rhonda Crichlow,"SVP, Community Impact & Engagement",rhonda.crichlow@spectrum.com,1,Yes,10000,36,"Rahman Khan (VP Community Impact) also active."
+2,CBRE,PBD + giving,Duncan MacLean,Senior Vice President,,0,Yes,100000,35,
+2,IBM,Hires + PBD,Lydia Logan,"VP, Global Education & Workforce Development",lydia.logan@ibm.com,3,Yes,0,0,"Already tagged other_hiring_partner."
+2,Etsy,Hires + PBD + recent activity,Josh Silverman,Executive Chair,,2,Yes,70000,0,"NYC-HQ, prior hires, active PBD relationship."
+2,Walmart,4 hires + giving,Dave Temkin,"VP, Platform Infrastructure & Critical Facilities",,4,No,300000,0,"Walmart Global Tech - large eng org."
+2,Barclays,4 hires,,,,4,No,0,0,"4 hires but no senior contact on file - needs sourcing."
+2,iHeartMedia,4 hires,Colin Davis,Director of Android Engineering,colindavis@iheartmedia.com,4,No,0,17,
+2,Meta,4 hires + giving,Ilya Pesahovsky,"Engineering Manager, Facebook Reels",,4,No,117604,0,"No senior contact - needs sourcing."
+2,T-Mobile,4 hires,,,,4,No,0,0,"No senior contact on file."
+2,Apple,2 hires + long history,Shannon Sinunu,Director of Community Investment,ssinunu@apple.com,2,No,0,29,
+2,Prudential,2 hires,Sarah Keh,"VP, Inclusive Solutions",sarah.keh@prudential.com,2,No,0,1,
+2,Oscar Health,3 hires + PBD,Rebecca Krouse,"EVP, Chief People Officer",,3,Yes,0,0,"Neetu Rajpal (CTO) also on file. NYC health-tech."
+2,Airbnb,2 hires + PBD,Iain Roberts,"VP, People & Culture",,2,Yes,0,3,
+2,Lyft,3 hires,CJ Macklin,Director,,3,No,12000,0,
+3,McKinsey (Iguazio),Very high activity,Anthony Shorris,Senior Partner,Anthony_Shorris@mckinsey.com,0,No,0,293,"293 activities in 18 months - 3rd most active account. Liliana Tai is the day-to-day (75 emails). Not currently in any Operation 35 tag."
+3,Anthropic,PBD + high recent activity,Michael Sellitto,Head of Global Affairs,,0,Yes,0,104,"Connor Maxwell is the active thread (16 emails through Aug 2026)."
+3,OpenAI,PBD + recent activity,Erica Vlahino,GTM Director,erica@openai.com,0,Yes,6875,64,"Alice Lee also active."
+3,Stripe,PBD + live pipeline,William Gaybrick,"President, Technology and Business",,0,Yes,0,0,"Already tagged operation_35_lt_nick. Active jobs opportunity confirmed."
+3,ServiceNow,Live pipeline,Karen Pavlin,Chief Equity and Inclusion Officer,karen.pavlin@servicenow.com,0,No,0,0,"Kelly Kent (Chief Transformation Officer) also tagged hiring partner. Live jobs opportunity."
+3,Workday,PBD + giving,Ashley Goldsmith,Chief People Officer,ashley.goldsmith@workday.com,0,Yes,50000,0,"Carrie Varoquiers (Chief Impact Officer) also on file."
+3,Visa,PBD,Elizabeth Hurvitz,"SVP, Global Social Impact",ehurvitz@visa.com,0,Yes,0,1,"Luba Goldberg (SVP Corporate Strategy) also tagged hiring partner."
+3,Reddit,PBD,Chris Slowe,"CTO, Founding Engineer",chris@reddit.com,0,Yes,0,0,
+3,Palo Alto Networks,High activity + giving,Rose Crum,,rcrum@paloaltonetworks.com,0,No,201000,83,"No senior contact on file despite 83 activities - needs sourcing."
+3,Apollo Global Management,PBD + very warm exec,Sameer Gupta,Chief Data and Analytics Officer,sameergupta@apollo.com,0,Yes,6000,0,"64 logged activities; tagged opboard + influence + staff_network. One of the warmest uncovered execs in the CRM."
+3,Andreessen Horowitz (a16z),Strategic tier + PBD,David Haber,General Partner,dh@a16z.com,0,Yes,300000,0,"Cultural Leadership Fund partners (Megan Holston-Alexander, Judene Small Jean-Louis) also on file. Portfolio hiring channel."
+3,Union Square Ventures,Strategic tier + PBD,Rebecca Kaden,General Partner,rebecca@usv.com,0,Yes,864000,0,"Fred Wilson (Partner) also on file with 8 activities."
+3,General Atlantic,PBD,Jessie Cai,Vice President,jcai@generalatlantic.com,0,Yes,14000,57,"57 activities; also a Pursuit volunteer. Jared Cohen (VP) tagged hiring partner."
+3,KKR,PBD + hire,David Petraeus,"Partner & Chairman, KKR Global Institute",petrd@kkr.com,1,Yes,0,0,"Jared Nussbaum (Chief Cyber Security Officer) is the eng-hiring lever."
+3,Silver Lake,PBD + live pipeline,Carrie Braddock,"MD, Head of Stewardship & Impact",carrie.braddock@silverlake.com,0,Yes,0,22,"28 activities; already tagged operation_35_lt_nick. Live jobs opportunity."
+3,"Clayton, Dubilier & Rice",PBD + giving,Randy Moore,"President, CD&R Foundation",rmoore@cdr-inc.com,0,Yes,50000,0,
+3,ICONIQ,PBD,Katie Hunt-Morr,"COO & VP Impact Platforms, ICONIQ Impact",,0,Yes,0,0,"Joe Collins (VP Philanthropy) is the active contact."
+3,AlleyCorp,High activity,Kevin Ryan,Founder & CEO,kevin@alleycorp.com,0,No,0,59,"NYC studio/VC - portfolio hiring channel. Tagged 'influence'."
+3,Citadel,Activity + senior eng contact,Daniel Harrison,"MD, Global Head of Fixed Income & Macro Engineering",,0,No,0,29,
+3,Uniswap Labs,Activity,Hayden Adams,Founder & CEO,hayden@uniswap.org,0,No,0,55,"NYC, <300 headcount, tagged 'influence'."
+3,LSEG (London Stock Exchange Group),PBD + giving + activity,Patrick Brady,,Patrick.Brady@lseg.com,0,Yes,69860,103,"LSEG Foundation relationship. No senior named contact - needs sourcing."
+3,Primary Venture Partners,NYC VC portfolio channel,Brian Schechter,Partner,,0,No,0,0,
+3,Bain Capital,Activity,Giuseppe Mascia,"Vice President, Special Situations",,0,No,0,37,"No C-level contact on file - needs sourcing."
