@@ -364,7 +364,7 @@ export function ActivityTimeline({
             </div>
           ) : (
             <div
-              className="overflow-auto"
+              className="overflow-y-auto overflow-x-hidden"
               style={{ maxHeight: `${maxHeight}px` }}
             >
               {pinnedRows.length > 0 ? (
@@ -547,7 +547,7 @@ function ActivityRow({
           onClick={() => isExpandable && setExpanded((v) => !v)}
           disabled={!isExpandable}
           className={cn(
-            "flex flex-1 items-center gap-3 px-5 py-2.5 text-left",
+            "flex min-w-0 flex-1 items-center gap-3 px-5 py-2.5 text-left",
             isExpandable ? "hover:bg-surface-2" : "cursor-default",
           )}
           aria-expanded={isExpandable ? expanded : undefined}

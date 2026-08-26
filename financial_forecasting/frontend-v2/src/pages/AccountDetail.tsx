@@ -622,6 +622,7 @@ function AddContactModal({
     Email: "",
     Phone: "",
     Title: "",
+    LinkedInUrl: "",
   });
   const [error, setError] = useState<string | null>(null);
 
@@ -648,6 +649,7 @@ function AddContactModal({
         Email: form.Email.trim() || undefined,
         Phone: form.Phone.trim() || undefined,
         Title: form.Title.trim() || undefined,
+        LinkedIn_URL__c: form.LinkedInUrl.trim() || undefined,
         Philanthropic_Contact__c: asPrimary || undefined,
       });
       onClose();
@@ -725,6 +727,15 @@ function AddContactModal({
               value={form.Title}
               onChange={set("Title")}
               placeholder="VP of Engineering"
+              className={inputCls}
+            />
+          </Field>
+          <Field label="LinkedIn URL">
+            <input
+              type="url"
+              value={form.LinkedInUrl}
+              onChange={set("LinkedInUrl")}
+              placeholder="https://linkedin.com/in/janedoe"
               className={inputCls}
             />
           </Field>
