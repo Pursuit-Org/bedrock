@@ -45,7 +45,9 @@ export function useAccountsByAccount(dealType?: string) {
   });
 }
 
-export type ProspectActivityType = "call" | "text" | "linkedin";
+/** "email" backfills a send the Gmail sync missed; the API shapes it like a
+ *  synced email so it lands in the same emailed-contacts metric. */
+export type ProspectActivityType = "call" | "text" | "linkedin" | "email";
 
 export interface ProspectActivityBody {
   contact_id: number;

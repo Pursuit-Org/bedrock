@@ -92,15 +92,32 @@ _FT_EXTERNAL = """
 
 def _first_touch_email_cte() -> str:
     """CTE `ext(counterpart, first_touch)`: external recipients of outbound
-    emails sent by the jobs team, with each contact's first-ever touch date."""
+    emails sent by the jobs team, with each contact's first-ever touch date.
+
+    Counts synced mail AND emails logged by hand in the jobs tool, so a send
+    the Gmail sync missed can be entered rather than going uncounted. The two
+    can't double-count a contact: the metric is distinct counterparts, so a
+    manual entry and a later-synced copy of the same send collapse to one row
+    at that contact's earliest date.
+
+    Manual rows skip the team-sender and autoreply gates on purpose. Those
+    exist to sort deliberate outreach out of a synced mailbox; a row someone
+    typed into the jobs tool is deliberate by construction, and the sender
+    gate would otherwise silently drop logs from anyone outside the hardcoded
+    JOBS_TEAM_EMAILS list.
+    """
     sender = " OR ".join(f"a.email_from ILIKE '%{e}%'" for e in JOBS_TEAM_EMAILS)
     return f"""
     WITH outbound AS (
       SELECT lower(e) AS counterpart, a.activity_date
       FROM bedrock.activity a,
            unnest(coalesce(a.email_to,'{{}}') || coalesce(a.email_cc,'{{}}')) e
-      WHERE a.source = 'gmail-sync' AND a.deleted_at IS NULL AND ({sender})
-        AND {_not_autoreply('a')} AND {_jobs_relevant('a')}
+      WHERE a.deleted_at IS NULL
+        AND (
+          (a.source = 'gmail-sync' AND ({sender}) AND {_not_autoreply('a')})
+          OR (a.source = 'manual' AND a.type = 'email')
+        )
+        AND {_jobs_relevant('a')}
     ),
     ext AS (
       SELECT counterpart, min(activity_date) AS first_touch
@@ -5659,6 +5676,7 @@ async def jobs_accounts(
     deal_type: Optional[str] = Query(None),
     scope: str = Query("engaged", pattern="^(engaged|all)$"),
     user=Depends(require_auth),
+    client=Depends(get_mcp_client),
 ):
     """Account-level hub: every company with an opportunity OR a jobs prospect,
     keyed by normalized company name, with its opportunities and prospects nested
@@ -5925,6 +5943,24 @@ async def jobs_accounts(
         prospect_counts[key] = r["n"]
 
     ja = {r["account_key"]: r for r in ja_rows}
+
+    # Fetch Active__c and Qualification_Status__c from Salesforce for all
+    # linked SF accounts so that deprioritized/on-hold statuses are reflected.
+    sf_active_by_id: dict[str, bool] = {}
+    sf_qual_by_id: dict[str, str | None] = {}
+    sf_ids_to_check = [r["sf_account_id"] for r in ja_rows if r["sf_account_id"]]
+    if sf_ids_to_check:
+        try:
+            from security import escape_soql_string
+            id_list = ", ".join(f"'{escape_soql_string(i)}'" for i in sf_ids_to_check)
+            result = await client.salesforce.query_all(
+                f"SELECT Id, Active__c, Qualification_Status__c FROM Account WHERE Id IN ({id_list})"
+            )
+            for rec in (result.get("records") or []):
+                sf_active_by_id[rec["Id"]] = bool(rec.get("Active__c", True))
+                sf_qual_by_id[rec["Id"]] = rec.get("Qualification_Status__c")
+        except Exception:
+            pass  # degraded gracefully — status derivation falls back to playbook
     # Pretty name for an investor key, and the reverse count (how many companies
     # name this account as their investor). Derived from the rows already
     # fetched — no extra query, and no-op before the migration adds the column.
@@ -6026,7 +6062,15 @@ async def jobs_accounts(
         a = acct_act.get(key)
         has_activity = bool(a and (a["last"] or a["recent"]))
         has_flagged = key in flagged_keys
-        if rec and rec["status_override"]:
+        # Deprioritized / On Hold gates: SF field values override playbook logic.
+        sf_acct_id = rec["sf_account_id"] if rec else None
+        sf_active = sf_active_by_id.get(sf_acct_id, True) if sf_acct_id else True
+        sf_qual = sf_qual_by_id.get(sf_acct_id) if sf_acct_id else None
+        if not sf_active:
+            status = "Deprioritized"
+        elif sf_qual == "Not Qualified":
+            status = "On Hold"
+        elif rec and rec["status_override"]:
             status = rec["status_override"]
         elif has_open:
             status = "Pursuing"
@@ -6042,6 +6086,7 @@ async def jobs_accounts(
             status = "Prospect"
         g["account_key"] = key
         g["account_status"] = status
+        g["sf_active"] = sf_active
         g["opp_count"] = len(opps)
         g["prospect_count"] = prospect_counts.get(key, 0)
         # Everyone on file at this company, flagged or not — "no prospects" and
@@ -9471,7 +9516,7 @@ async def match_builder_candidates(
 class ActivityCreate(BaseModel):
     jobs_opportunity_id: Optional[str] = None
     contact_id:          Optional[int] = None   # log against a prospect instead of a deal
-    type:                str                     # call | text | linkedin
+    type:                str                     # call | text | linkedin | email
     description:         str
     activity_date:       Optional[datetime] = None
     subject:             Optional[str] = None
@@ -9484,20 +9529,34 @@ async def log_activity(
     conn=Depends(get_db),
 ):
     user_email = user.get("email") if isinstance(user, dict) else getattr(user, "email", None)
-    if body.type not in ("call", "text", "linkedin"):
+    if body.type not in ("call", "text", "linkedin", "email"):
         raise HTTPException(400, f"Invalid type: {body.type}")
     if not body.jobs_opportunity_id and not body.contact_id:
         raise HTTPException(400, "Provide jobs_opportunity_id or contact_id")
 
     import uuid as _uuid
 
+    # A manually logged EMAIL has to be shaped like a synced one or it silently
+    # falls out of the outreach numbers, in two separate ways:
+    #   1. _jobs_relevant() gates email/meeting rows on the content
+    #      classifier's verdict, and the classifier only ever runs over synced
+    #      mail. A manual email would carry a NULL verdict and be dropped from
+    #      every jobs metric. Whoever typed it into the jobs tool has asserted
+    #      it IS jobs outreach, so record that as the override.
+    #   2. The first-touch email CTE reads sender/recipients, not the contact
+    #      link, so email_from / email_to must be populated for the contact to
+    #      register as emailed.
+    is_email = body.type == "email"
+    relevance = "jobs" if is_email else None
+
     if body.jobs_opportunity_id:
         opp_id = _uuid.UUID(body.jobs_opportunity_id)
         row_id = await conn.fetchval(
             """
             INSERT INTO bedrock.activity
-                (type, subject, description, activity_date, source, jobs_opportunity_id, logged_by)
-            VALUES ($1, $2, $3, COALESCE($4, now()), 'manual', $5, $6)
+                (type, subject, description, activity_date, source, jobs_opportunity_id, logged_by,
+                 email_from, jobs_relevance_override)
+            VALUES ($1, $2, $3, COALESCE($4, now()), 'manual', $5, $6, $7, $8)
             RETURNING id
             """,
             body.type,
@@ -9506,15 +9565,24 @@ async def log_activity(
             body.activity_date,
             opp_id,
             user_email,
+            user_email if is_email else None,
+            relevance,
         )
     else:
         # Prospect-scoped log: tie to the public.contacts row, leave the deal null.
+        # The contact's own address becomes the recipient so the first-touch CTE
+        # (which counts distinct counterparts) can see this touch.
+        contact_email = None
+        if is_email:
+            contact_email = await conn.fetchval(
+                "SELECT lower(email) FROM public.contacts WHERE contact_id = $1", body.contact_id)
         row_id = await conn.fetchval(
             """
             INSERT INTO bedrock.activity
                 (type, subject, description, activity_date, source,
-                 participant_public_contact_id, logged_by)
-            VALUES ($1, $2, $3, COALESCE($4, now()), 'manual', $5, $6)
+                 participant_public_contact_id, logged_by,
+                 email_from, email_to, jobs_relevance_override)
+            VALUES ($1, $2, $3, COALESCE($4, now()), 'manual', $5, $6, $7, $8, $9)
             RETURNING id
             """,
             body.type,
@@ -9523,6 +9591,9 @@ async def log_activity(
             body.activity_date,
             body.contact_id,
             user_email,
+            user_email if is_email else None,
+            [contact_email] if contact_email else None,
+            relevance,
         )
         # A logged touch IS outreach — a still-flagged contact advances to
         # initial_outreach immediately (the nightly pass covers synced email).

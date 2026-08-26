@@ -69,10 +69,77 @@ export function useUploadOpportunityFile(opportunityId: string) {
   });
 }
 
+/** Delete a file linked to an Opportunity. Removes the ContentDocument from Salesforce. */
+export function useDeleteOpportunityFile(opportunityId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (contentDocumentId: string) => {
+      await api.delete(
+        `/api/salesforce/opportunities/${encodeURIComponent(opportunityId)}/files/${encodeURIComponent(contentDocumentId)}`,
+      );
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ["opportunity-files", opportunityId] });
+    },
+  });
+}
+
 /** Convenience: build the SF download URL for a file the user can click. */
 export function fileDownloadUrl(latestVersionId: string | null | undefined): string | null {
   if (!latestVersionId) return null;
   // SF synchronous-download path — works for any user with Files
   // access on the parent record. Opens in a new tab in our UI.
   return `https://joinpursuit.lightning.force.com/sfc/servlet.shepherd/version/download/${encodeURIComponent(latestVersionId)}`;
+}
+
+/** SF Lightning Files attached to an Account via ContentDocumentLink. */
+export function useAccountFiles(accountId: string | null | undefined) {
+  return useQuery({
+    queryKey: ["account-files", accountId],
+    queryFn: async (): Promise<SfFile[]> => {
+      if (!accountId) return [];
+      const { data } = await api.get<SfFile[]>(
+        `/api/salesforce/accounts/${encodeURIComponent(accountId)}/files`,
+      );
+      return data ?? [];
+    },
+    enabled: !!accountId,
+    staleTime: 60_000,
+  });
+}
+
+/** Upload a file to an Account. */
+export function useUploadAccountFile(accountId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ file, title }: { file: File; title?: string }) => {
+      const fd = new FormData();
+      fd.append("file", file);
+      if (title) fd.append("title", title);
+      const { data } = await api.post<UploadResult>(
+        `/api/salesforce/accounts/${encodeURIComponent(accountId)}/files`,
+        fd,
+        { headers: { "Content-Type": undefined } as never },
+      );
+      return data;
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ["account-files", accountId] });
+    },
+  });
+}
+
+/** Delete a file from an Account (removes the ContentDocument from Salesforce). */
+export function useDeleteAccountFile(accountId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (contentDocumentId: string) => {
+      await api.delete(
+        `/api/salesforce/accounts/${encodeURIComponent(accountId)}/files/${encodeURIComponent(contentDocumentId)}`,
+      );
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ["account-files", accountId] });
+    },
+  });
 }

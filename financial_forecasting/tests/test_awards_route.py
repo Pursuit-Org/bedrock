@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 from main import app
 from auth import require_auth
 from db import get_db
+from dependencies import get_mcp_client
 
 app.router.on_startup.clear()
 app.router.on_shutdown.clear()
@@ -66,6 +67,10 @@ def mock_db():
 def client(mock_db):
     app.dependency_overrides[require_auth] = lambda: USER
     app.dependency_overrides[get_db] = lambda: mock_db
+    # GET /awards/{id} depends on get_mcp_client for best-effort SF
+    # enrichment; an empty connected_services makes it a no-op rather than
+    # 503ing when app startup never ran.
+    app.dependency_overrides[get_mcp_client] = lambda: MagicMock(connected_services=set())
     with TestClient(app, raise_server_exceptions=False) as c:
         yield c
     app.dependency_overrides.clear()
@@ -200,3 +205,23 @@ class TestPatchAward:
         )
         assert r.status_code == 200
         assert r.json()["period_end_date"] == "2027-06-30"
+
+    def test_patch_contract_file_link_rejects_non_http_scheme(self, client):
+        # A stored javascript:/data: URI would be a click-to-execute XSS
+        # vector wherever contract_file_link renders as <a href>.
+        r = client.patch(
+            f"/api/awards/{AWARD_ID}",
+            json={"contract_file_link": "javascript:alert(1)"},
+        )
+        assert r.status_code == 400
+
+    def test_patch_contract_file_link_accepts_https(self, client, mock_db):
+        mock_db.fetchrow.return_value = _award_row(
+            contract_file_link="https://drive.example.com/grant.pdf"
+        )
+        r = client.patch(
+            f"/api/awards/{AWARD_ID}",
+            json={"contract_file_link": "https://drive.example.com/grant.pdf"},
+        )
+        assert r.status_code == 200
+        assert r.json()["contract_file_link"] == "https://drive.example.com/grant.pdf"

@@ -7,8 +7,8 @@ sent — this is the in-repo copy. Once you're running, read `JOBS_ONBOARDING.md
 
 ## Get these from Jac first
 
-1. You're added to the GitHub repo `Pursuit-Assets/bedrock` (confirm you can see it
-   at github.com/Pursuit-Assets/bedrock).
+1. You're added to the GitHub repo `Pursuit-Org/bedrock` (confirm you can see it
+   at github.com/Pursuit-Org/bedrock).
 2. Your laptop's IP is whitelisted on the database — run `curl ifconfig.me` in a
    terminal and send Jac the result.
 3. The `DATABASE_URL` value for your `.env` — Jac sends it securely.
@@ -34,10 +34,10 @@ learn, and verify each step works before moving to the next.
 1. Check whether I have git, node (v20+), python3, and the GitHub CLI (gh). Install
    anything missing using Homebrew (install Homebrew first if I don't have it).
 2. Log me into GitHub: run `gh auth login` and walk me through the browser steps
-   (I already have access to the Pursuit-Assets/bedrock repo).
+   (I already have access to the Pursuit-Org/bedrock repo).
 3. Make a projects folder and clone the repo into it:
       mkdir -p ~/dev && cd ~/dev
-      git clone https://github.com/Pursuit-Assets/bedrock.git
+      git clone https://github.com/Pursuit-Org/bedrock.git
       cd bedrock
 4. Switch to the branch we work on (NOT main):
       git checkout feat/jobs-pipeline && git pull

@@ -540,7 +540,7 @@ export function useContactsByAccount(dealType?: string) {
 // Account-level hub: every company (keyed by normalized name) with its
 // opportunities + prospects nested and a derived status (same vocabulary as the
 // portfolio Accounts tab). Backed by GET /api/jobs/accounts.
-export type JobsAccountStatus = "Prospect" | "Activating" | "Pursuing" | "Stewarding" | "Re-activating" | "Dormant";
+export type JobsAccountStatus = "Prospect" | "Activating" | "Pursuing" | "Stewarding" | "Re-activating" | "Dormant" | "Deprioritized" | "On Hold";
 
 export interface JobsAccountOpp {
   id: string;
@@ -608,14 +608,24 @@ export interface JobsAccount {
   fellows_hired?: number | null;
   /** All SF account ids this account resolves to (for joining SF fellow counts). */
   sf_account_ids?: string[];
+  /** Mirrors Salesforce Active__c — false means the account has been deprioritised. */
+  sf_active?: boolean | null;
 }
 
-export function useJobsAccounts(dealType?: string, scope: "engaged" | "all" = "engaged") {
+/** `enabled: false` skips the fetch entirely — this endpoint fans out ~15
+ *  reads across the pool, so pages that only need accounts in one mode (e.g.
+ *  Contacts, when grouped by account) shouldn't pay for it on every load. */
+export function useJobsAccounts(
+  dealType?: string,
+  scope: "engaged" | "all" = "engaged",
+  options?: { enabled?: boolean },
+) {
   const params = new URLSearchParams();
   if (dealType && dealType !== "all") params.set("deal_type", dealType);
   params.set("scope", scope);
   return useQuery<JobsAccount[]>({
     queryKey: ["jobs", "accounts", dealType ?? "all", scope],
+    enabled: options?.enabled ?? true,
     placeholderData: keepPreviousData,
     queryFn: async () => {
       const { data } = await api.get<ApiResponse<JobsAccount[]>>(`/api/jobs/accounts?${params}`);
@@ -2089,6 +2099,7 @@ export interface IntroRequest {
   contact_id: number; contact_name: string | null;
   contact_company: string | null; contact_title: string | null;
   connector_staff_id: number; connector_name: string | null; connector_email: string | null;
+  builder_id: number | null; builder_cohort: string | null;
   requested_by: string | null; requested_by_name?: string | null;
   specific_ask: string | null; context: string | null;
   status: string; response_note: string | null;

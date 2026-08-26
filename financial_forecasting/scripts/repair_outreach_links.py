@@ -21,7 +21,7 @@ from dotenv import load_dotenv
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 load_dotenv(os.path.join(HERE, ".env"))
-load_dotenv("/Users/jacquelinereverand/dev/build/test-pilot-server/.env", override=False)
+load_dotenv("/Users/jacquelinereverand/dev/build/platform/server/.env", override=False)
 
 STAGE_MAP = {
     "Initial Outreach": "initial_outreach", "Active Lead": "active",

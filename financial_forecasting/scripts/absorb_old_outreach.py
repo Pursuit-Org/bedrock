@@ -17,7 +17,7 @@ HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 load_dotenv(os.path.join(HERE, ".env"))
 # public.outreach/contacts writes need the postgres superuser (same as
 # contacts_merge_execute.py) — bedrock_user only owns the bedrock schema.
-load_dotenv("/Users/jacquelinereverand/dev/build/test-pilot-server/.env", override=False)
+load_dotenv("/Users/jacquelinereverand/dev/build/platform/server/.env", override=False)
 
 
 def _su_url():

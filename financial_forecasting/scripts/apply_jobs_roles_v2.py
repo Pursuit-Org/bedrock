@@ -8,7 +8,7 @@ Usage (from financial_forecasting/):
 
 Reads PG_USER/PG_PASSWORD/PG_HOST/PG_PORT/PG_DATABASE from the environment or a
 .env. If they're not in this app's .env, point at the one that has them, e.g.:
-    python -m scripts.apply_jobs_roles_v2 --env ../test-pilot-server/.env
+    python -m scripts.apply_jobs_roles_v2 --env ../platform/server/.env
 """
 import argparse
 import asyncio

@@ -17,7 +17,7 @@ from decimal import Decimal
 from difflib import SequenceMatcher
 import logging
 
-from fastapi import FastAPI, File, Form, HTTPException, Depends, BackgroundTasks, Query, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Depends, BackgroundTasks, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from starlette.middleware.sessions import SessionMiddleware
@@ -66,6 +66,8 @@ from routes.admin_company_match import router as admin_company_match_router
 from routes.activities import router as activities_router
 from routes.platform_intake import router as platform_intake_router
 from routes.awards import router as awards_router
+from routes.commitments import router as commitments_router
+from routes.deliverables import router as deliverables_router
 from routes.saved_views import router as saved_views_router
 from routes.affiliations import router as affiliations_router
 from routes.airtable_jobs import router as airtable_jobs_router
@@ -78,7 +80,7 @@ from routes.jobs_intro import router as jobs_intro_router
 from routes.jobs_sf import router as jobs_sf_router
 from routes.entity_comments import router as entity_comments_router
 from auth import get_current_user_dep, require_auth, IS_PRODUCTION, JWT_SECRET_KEY
-from security import validate_salesforce_id, escape_soql_string
+from security import validate_salesforce_id, escape_soql_string, validate_http_url
 from sf_errors import sf_http_error
 from services import pipeline_review
 from services.crm_parser import refresh_opp_cache as _refresh_opp_cache
@@ -164,6 +166,8 @@ app.include_router(account_enrichment_router)
 app.include_router(activities_router)
 app.include_router(platform_intake_router)
 app.include_router(awards_router)
+app.include_router(commitments_router)
+app.include_router(deliverables_router)
 app.include_router(saved_views_router)
 app.include_router(affiliations_router)
 app.include_router(airtable_jobs_router)
@@ -259,6 +263,15 @@ async def startup_event():
             logger.info("sf_notification_poller started")
         except Exception as e:
             logger.warning(f"sf_notification_poller failed to start: {e}")
+
+    # Builder intro requests written by Sputnik into public.intro_requests.
+    # Postgres-only — no SF dependency, so this starts unconditionally.
+    try:
+        from services.intro_notification_poller import run_forever as _intro_notif_loop
+        asyncio.create_task(_intro_notif_loop())
+        logger.info("intro_notification_poller started")
+    except Exception as e:
+        logger.warning(f"intro_notification_poller failed to start: {e}")
 
     logger.info(f"API started — connected services: {client.connected_services or ['none']}")
 
@@ -529,7 +542,8 @@ async def get_opportunities(
                Ask_Amount_if_different_from_actual__c,
                Philanthropy_Type__c,
                Manager_Probability_Override__c,
-               Priority__c
+               Priority__c,
+               Grant_Start_Date__c, Grant_End_Date__c
         FROM Opportunity
         """
 
@@ -687,6 +701,33 @@ async def update_opportunity(
             # the account between Prospect/Pursuing/Stewarding —
             # bust the accounts cache so the derived status refreshes.
             cache.invalidate_prefix("accounts:")
+
+            # Grant period lives on the Opportunity (source of truth) but the
+            # Awards views read bedrock.award.award_date / period_end_date.
+            # Mirror one-way, opp → award, whenever the grant fields change so
+            # the two never disagree. Best-effort: the SF write already
+            # succeeded, so a mirror failure must not fail the request.
+            updates = update_request.updates
+            if "Grant_Start_Date__c" in updates or "Grant_End_Date__c" in updates:
+                try:
+                    sets, args, n = [], [], 1
+                    for sf_field, col in (("Grant_Start_Date__c", "award_date"),
+                                          ("Grant_End_Date__c", "period_end_date")):
+                        if sf_field in updates:
+                            v = updates[sf_field]
+                            sets.append(f"{col} = ${n}")
+                            args.append(date.fromisoformat(v) if isinstance(v, str) and v else None)
+                            n += 1
+                    await db.execute(
+                        f"UPDATE bedrock.award SET {', '.join(sets)}, updated_at = now() "
+                        f"WHERE opportunity_id = ${n} AND deleted_at IS NULL",
+                        *args, opportunity_id,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Grant date mirror to bedrock.award failed for opp=%s; "
+                        "SF write succeeded, award dates may be stale.", opportunity_id)
+
             logger.info(f"Opportunity {opportunity_id} updated by {user['user_id']}")
             return ApiResponse(success=True, data={"id": opportunity_id, "message": "Opportunity updated successfully"})
         else:
@@ -803,11 +844,12 @@ async def get_accounts(
             query = """
             SELECT Id, Name, Type, Industry, Website, Description,
                    BillingCity, BillingState, OwnerId, Owner.Name,
-                   Account_Tier__c,
+                   Account_Tier__c, Active__c, Qualification_Status__c,
                    npo02__TotalOppAmount__c, npo02__NumberOfClosedOpps__c,
                    Total_Revenue_Generated__c,
                    Last_Activity_Date__c, LastActivityDate,
-                   CreatedDate, LastModifiedDate
+                   CreatedDate, LastModifiedDate,
+                   Drive_Strategy_Folder_URL__c
             FROM Account
             ORDER BY Name ASC
             """
@@ -835,7 +877,10 @@ async def get_accounts(
                    npsp__Matching_Gift_Phone__c, npsp__Matching_Gift_Comments__c,
                    npsp__Matching_Gift_Info_Updated__c, npsp__Matching_Gift_Request_Deadline__c,
                    Total_Revenue_Generated__c,
-                   Last_Activity_Date__c, Date_of_First_Pursuit_Hire__c
+                   Last_Activity_Date__c, Date_of_First_Pursuit_Hire__c,
+                   Qualification_Status__c, Qualification_Date_Updated__c,
+                   Qualification_Explanation__c,
+                   Drive_Strategy_Folder_URL__c
             FROM Account
             ORDER BY Name ASC
             """
@@ -945,6 +990,8 @@ async def _attach_account_status(accounts: list, salesforce) -> None:
             opps_by_account,
             awards_by_opp,
             latest_activity_by_account,
+            is_active=bool(a.get("Active__c", True)),
+            qualification_status=a.get("Qualification_Status__c"),
         )
 
 
@@ -1439,6 +1486,196 @@ async def upload_opportunity_file(
     except Exception as e:
         logger.error(f"Error uploading file to opp {opportunity_id}: {e}", exc_info=True)
         raise sf_http_error(e, "file")
+
+
+@app.delete("/api/salesforce/opportunities/{opportunity_id}/files/{content_document_id}")
+async def delete_opportunity_file(
+    opportunity_id: str,
+    content_document_id: str,
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
+    user=Depends(require_auth),
+):
+    """Unlink a file from this opportunity.
+
+    Deletes the ContentDocumentLink only — never the ContentDocument. The same
+    document can be linked to other records (an Account, a Contact, another
+    Opportunity); removing it here must not make it vanish everywhere. The
+    document itself lives on in Salesforce Files, owned by its uploader.
+    """
+    validate_salesforce_id(opportunity_id, "opportunity_id")
+    validate_salesforce_id(content_document_id, "content_document_id")
+    try:
+        salesforce = client.salesforce
+        # Resolve the link row for THIS record — doubles as the guard that the
+        # file actually belongs here (no unlinking arbitrary documents by id).
+        link_check = await salesforce.query(
+            f"SELECT Id FROM ContentDocumentLink "
+            f"WHERE ContentDocumentId = '{escape_soql_string(content_document_id)}' "
+            f"AND LinkedEntityId = '{escape_soql_string(opportunity_id)}'"
+        )
+        links = link_check.get("records") or []
+        if not links:
+            raise HTTPException(status_code=404, detail="File not found on this opportunity")
+        success = await salesforce.delete_record("ContentDocumentLink", links[0]["Id"])
+        if not success:
+            raise HTTPException(status_code=400, detail="Salesforce rejected the unlink request")
+        return Response(status_code=204)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error unlinking file {content_document_id} from opportunity {opportunity_id}: {e}")
+        raise sf_http_error(e, "file")
+
+
+
+
+# ---------------------------------------------------------------------------
+# Salesforce Files (ContentDocument / ContentDocumentLink) on Account
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/salesforce/accounts/{account_id}/files")
+async def list_account_files(
+    account_id: str,
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
+    user=Depends(require_auth),
+):
+    """List SF Files attached to an Account via ContentDocumentLink."""
+    validate_salesforce_id(account_id, "account_id")
+    try:
+        salesforce = client.salesforce
+        soql = (
+            "SELECT ContentDocumentId, ContentDocument.Title, "
+            "ContentDocument.FileExtension, ContentDocument.ContentSize, "
+            "ContentDocument.LatestPublishedVersionId, "
+            "ContentDocument.CreatedDate, ContentDocument.CreatedBy.Name "
+            "FROM ContentDocumentLink "
+            f"WHERE LinkedEntityId = '{escape_soql_string(account_id)}' "
+            "ORDER BY ContentDocument.CreatedDate DESC"
+        )
+        result = await salesforce.query(soql)
+        records = result.get("records", []) or []
+        return [
+            {
+                "content_document_id": r.get("ContentDocumentId"),
+                "title": (r.get("ContentDocument") or {}).get("Title"),
+                "extension": (r.get("ContentDocument") or {}).get("FileExtension"),
+                "size_bytes": (r.get("ContentDocument") or {}).get("ContentSize"),
+                "latest_version_id": (r.get("ContentDocument") or {}).get("LatestPublishedVersionId"),
+                "created_date": (r.get("ContentDocument") or {}).get("CreatedDate"),
+                "created_by": ((r.get("ContentDocument") or {}).get("CreatedBy") or {}).get("Name"),
+            }
+            for r in records
+        ]
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error listing files for account {account_id}: {e}")
+        raise sf_http_error(e, "files")
+
+
+@app.post("/api/salesforce/accounts/{account_id}/files")
+async def upload_account_file(
+    account_id: str,
+    file: UploadFile = File(...),
+    title: Optional[str] = Form(None),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
+    user=Depends(require_auth),
+):
+    """Upload a file and attach it to an Account.
+
+    Creates a ContentVersion with FirstPublishLocationId = account_id.
+    SF handles the ContentDocument + ContentDocumentLink creation
+    server-side, so this is a single API call.
+    """
+    import base64
+    validate_salesforce_id(account_id, "account_id")
+    try:
+        body = await file.read()
+        if len(body) > _MAX_FILE_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"File too large ({len(body)} bytes; max {_MAX_FILE_BYTES})",
+            )
+        if len(body) == 0:
+            raise HTTPException(status_code=400, detail="Empty file")
+
+        path_on_client = file.filename or "file"
+        display_title = title or (path_on_client.rsplit(".", 1)[0] if "." in path_on_client else path_on_client)
+
+        salesforce = client.salesforce
+        result = await salesforce.create_record(
+            "ContentVersion",
+            {
+                "Title": display_title,
+                "PathOnClient": path_on_client,
+                "VersionData": base64.b64encode(body).decode("ascii"),
+                "FirstPublishLocationId": account_id,
+            },
+        )
+        content_version_id = result.get("id") or result.get("Id")
+
+        version_q = await salesforce.query(
+            f"SELECT ContentDocumentId FROM ContentVersion WHERE Id = '{escape_soql_string(content_version_id)}'"
+        )
+        records = version_q.get("records", []) or []
+        content_document_id = records[0].get("ContentDocumentId") if records else None
+
+        return ApiResponse(
+            success=True,
+            data={
+                "content_version_id": content_version_id,
+                "content_document_id": content_document_id,
+                "title": display_title,
+                "size_bytes": len(body),
+                "filename": path_on_client,
+            },
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error uploading file to account {account_id}: {e}", exc_info=True)
+        raise sf_http_error(e, "file")
+
+
+@app.delete("/api/salesforce/accounts/{account_id}/files/{content_document_id}")
+async def delete_account_file(
+    account_id: str,
+    content_document_id: str,
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
+    user=Depends(require_auth),
+):
+    """Unlink a file from this account.
+
+    Deletes the ContentDocumentLink only — never the ContentDocument. The same
+    document can be linked to other records; removing it here must not make it
+    vanish everywhere. The document lives on in Salesforce Files.
+    """
+    validate_salesforce_id(account_id, "account_id")
+    validate_salesforce_id(content_document_id, "content_document_id")
+    try:
+        salesforce = client.salesforce
+        # Resolve the link row for THIS record — doubles as the guard that the
+        # file actually belongs here (no unlinking arbitrary documents by id).
+        link_check = await salesforce.query(
+            f"SELECT Id FROM ContentDocumentLink "
+            f"WHERE ContentDocumentId = '{escape_soql_string(content_document_id)}' "
+            f"AND LinkedEntityId = '{escape_soql_string(account_id)}'"
+        )
+        links = link_check.get("records") or []
+        if not links:
+            raise HTTPException(status_code=404, detail="File not found on this account")
+        success = await salesforce.delete_record("ContentDocumentLink", links[0]["Id"])
+        if not success:
+            raise HTTPException(status_code=400, detail="Salesforce rejected the unlink request")
+        return Response(status_code=204)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error unlinking file {content_document_id} from account {account_id}: {e}")
+        raise sf_http_error(e, "file")
+
+
 
 
 @app.get("/api/salesforce/opportunities/{opportunity_id}/payments")
@@ -2062,12 +2299,38 @@ async def update_account(
             perms = user.get("_permissions", {})
             if not perms.get("manage_users_roles", False) and not perms.get("reassign_accounts", False):
                 raise HTTPException(status_code=403, detail="You don't have permission to reassign accounts")
+        # Drive_Strategy_Folder_URL__c renders back as an <a href> on the
+        # account detail page — reject non-http(s) schemes (stored XSS vector).
+        # Empty/None clears the field and is allowed.
+        if update_request.updates.get("Drive_Strategy_Folder_URL__c"):
+            validate_http_url(
+                update_request.updates["Drive_Strategy_Folder_URL__c"],
+                "Drive_Strategy_Folder_URL__c",
+            )
         success = await salesforce.update_record("Account", account_id, update_request.updates)
         if not success:
             raise HTTPException(400, "Salesforce rejected the update")
+        # For Active__c writes, read the field back immediately so the frontend
+        # receives the server-authoritative value rather than assuming the write
+        # persisted (Salesforce field-level security can silently ignore writes).
+        confirmed: dict = {"id": account_id, "message": "Account updated"}
+        if "Active__c" in update_request.updates:
+            try:
+                # get_record fetches by id only (no field list) — a SOQL select
+                # is the cheap way to read one field back. The previous
+                # three-arg get_record call raised TypeError on every request
+                # and the bare except made the read-back silently dead.
+                rec = await salesforce.query(
+                    f"SELECT Active__c FROM Account WHERE Id = '{escape_soql_string(account_id)}' LIMIT 1"
+                )
+                records = rec.get("records") or []
+                if records:
+                    confirmed["Active__c"] = records[0].get("Active__c")
+            except Exception:
+                logger.warning("Active__c read-back failed for %s", account_id)
         cache.invalidate_prefix("accounts:")
         logger.info(f"Account {account_id} updated by {user['user_id']}")
-        return ApiResponse(success=True, data={"id": account_id, "message": "Account updated"})
+        return ApiResponse(success=True, data=confirmed)
     except HTTPException:
         raise
     except Exception as e:

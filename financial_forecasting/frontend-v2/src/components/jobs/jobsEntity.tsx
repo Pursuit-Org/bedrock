@@ -216,7 +216,10 @@ export function ContactActivityTab({ contactId }: { contactId: number }) {
   if (isLoading) return <div className="px-4 py-6 text-[12.5px] text-ink-3">Loading…</div>;
   return (
     <div className="flex flex-col">
-      <div className="flex justify-end px-3 pt-2">
+      {/* Left-aligned so it reads as the tab's primary action rather than a
+          trailing afterthought — px-3 matches the search input directly below,
+          so their left edges line up. */}
+      <div className="flex justify-start px-3 pt-2">
         {logging ? null : (
           <button type="button" onClick={() => setLogging(true)}
             className="inline-flex items-center gap-1 rounded border border-border-strong px-2 py-0.5 text-[11px] font-medium text-ink-3 hover:border-accent hover:text-accent">
