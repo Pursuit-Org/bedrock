@@ -20,7 +20,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from auth import require_auth
 from db import get_db, get_pool
@@ -1423,7 +1423,7 @@ async def roles_board(
                         THEN NULLIF(trim(split_part(ja.notes, ':', 1)), '') END,
                    'Builder #' || ja.builder_id
                ) AS builder,
-               ja.stage, ja.date_applied
+               ja.stage, ja.date_applied, ja.updated_at
         FROM public.job_applications ja
         LEFT JOIN LATERAL bedrock.builder_by_id(ja.builder_id) b ON true
         WHERE ja.jobs_role_id IS NOT NULL
@@ -1437,6 +1437,7 @@ async def roles_board(
             "builder": a["builder"],
             "stage": a["stage"],
             "date_applied": a["date_applied"].isoformat() if a["date_applied"] else None,
+            "updated_at": a["updated_at"].isoformat() if a["updated_at"] else None,
         })
 
     out = []
@@ -1450,7 +1451,11 @@ async def roles_board(
 
 
 class RolesBoardOrder(BaseModel):
-    role_ids: list[str]   # full visible-board order, top to bottom
+    # full visible-board order, top to bottom. Pydantic validates each as a
+    # UUID (a malformed id 422s cleanly instead of raising ValueError mid-loop);
+    # max_length is a generous ceiling — no real board is anywhere near this
+    # size — just a backstop against an abusive payload.
+    role_ids: list[UUID] = Field(..., max_length=2000)
 
 
 @router.put("/roles/board/order")
@@ -1479,7 +1484,7 @@ async def set_roles_board_order(
                       updated_at = now(),
                       updated_by = EXCLUDED.updated_by
                 """,
-                UUID(role_id), i, who,
+                role_id, i, who,
             )
     return {"success": True, "data": {"updated": len(body.role_ids)}}
 
@@ -1833,6 +1838,14 @@ async def create_role_application(
     )
     if not role:
         raise HTTPException(404, "Role not found")
+    # user_id normally comes from the UI's builder-search picker, never
+    # hand-typed — but the API itself didn't verify it, so a bad payload
+    # (bypassing the picker, or a stale/mistyped id) would either 500 on the
+    # builder_id FK or, worse, silently succeed against some other real user
+    # row. Confirm it resolves to an actual builder first.
+    builder = await conn.fetchrow("SELECT user_id FROM bedrock.builder_by_id($1)", body.user_id)
+    if not builder:
+        raise HTTPException(404, "Builder not found")
 
     notes = f"{body.builder_name}: logged via Placement Roles" if body.builder_name else None
     app_id = await conn.fetchval(
@@ -1904,7 +1917,7 @@ async def builder_sourced_applications(
         """
         WITH combined AS (
             SELECT ja.job_application_id, ja.builder_id, ja.company_name, ja.role_title,
-                   ja.date_applied, ja.stage,
+                   ja.date_applied, ja.stage, ja.updated_at,
                    COALESCE(
                        NULLIF(trim(b.full_name), ''),
                        CASE WHEN ja.notes LIKE '%:%'
@@ -1940,7 +1953,7 @@ async def builder_sourced_applications(
             SELECT ja.job_application_id, ja.builder_id,
                    COALESCE(o.account_name, ja.company_name) AS company_name,
                    COALESCE(r.title, ja.role_title) AS role_title,
-                   ja.date_applied, ja.stage,
+                   ja.date_applied, ja.stage, ja.updated_at,
                    COALESCE(
                        NULLIF(trim(b.full_name), ''),
                        CASE WHEN ja.notes LIKE '%:%'
@@ -1953,6 +1966,12 @@ async def builder_sourced_applications(
             JOIN bedrock.jobs_opportunity o ON o.id = r.opportunity_id
             LEFT JOIN public.job_applications ja ON ja.jobs_role_id = ro.jobs_role_id
             LEFT JOIN LATERAL bedrock.builder_by_id(ja.builder_id) b ON true
+            -- Same two exclusions as roles_board: a soft-deleted opportunity's
+            -- role shouldn't linger here forever, and once someone's actually
+            -- hired full-time there's nothing left to track (mirrors the
+            -- ft_placed skip in roles_board — see _placement_status_sql).
+            WHERE o.deleted_at IS NULL
+              AND NOT (r.filled_by_user_id IS NOT NULL AND COALESCE(r.is_trial, false) = false)
         )
         SELECT * FROM combined
         ORDER BY
@@ -2006,6 +2025,7 @@ async def _annotate_suggested_matches(conn, rows) -> list[dict]:
             "company_name": r["company_name"],
             "role_title": r["role_title"],
             "date_applied": r["date_applied"].isoformat() if r["date_applied"] else None,
+            "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None,
             "stage": r["stage"],
             "jobs_role_id": str(r["jobs_role_id"]) if r["jobs_role_id"] else None,
             "suggested_match": None,
@@ -2061,7 +2081,7 @@ async def staff_sourced_applications(
     rows = await conn.fetch(
         """
         SELECT ja.job_application_id, ja.builder_id, ja.company_name, ja.role_title,
-               ja.date_applied, ja.stage,
+               ja.date_applied, ja.stage, ja.updated_at,
                COALESCE(
                    NULLIF(trim(b.full_name), ''),
                    CASE WHEN ja.notes LIKE '%:%'
@@ -2094,6 +2114,7 @@ async def staff_sourced_applications(
             "builder": r["builder"],
             "stage": r["stage"],
             "date_applied": r["date_applied"].isoformat() if r["date_applied"] else None,
+            "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None,
         })
 
     roles = await conn.fetch(
@@ -2172,8 +2193,33 @@ async def mark_application_self_sourced(
     return {"success": True, "data": {"job_application_id": app_id, "source_type": None}}
 
 
+@router.post("/job-applications/{app_id}/mark-staff-sourced")
+async def mark_application_staff_sourced(
+    app_id: int,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Reclassify a Builder-Sourced application as staff-sourced: the mirror
+    of mark_application_self_sourced. Covers manually-logged applications
+    that were never tagged with a source_type at creation (so they defaulted
+    to Builder-Sourced) even though staff actually sourced them. One-way,
+    same as the other direction."""
+    result = await conn.execute(
+        """
+        UPDATE public.job_applications
+        SET source_type = 'staff_sourced', updated_at = now()
+        WHERE job_application_id = $1
+          AND (source_type IS NULL OR source_type NOT IN ('Pursuit_referred', 'staff_sourced'))
+        """,
+        app_id,
+    )
+    if result == "UPDATE 0":
+        raise HTTPException(404, "Application not found or already staff-sourced")
+    return {"success": True, "data": {"job_application_id": app_id, "source_type": "staff_sourced"}}
+
+
 class MatchConfirm(BaseModel):
-    jobs_role_id: str
+    jobs_role_id: UUID
 
 
 @router.post("/job-applications/{app_id}/confirm-match")
@@ -2186,7 +2232,7 @@ async def confirm_job_application_match(
     """Link an application to a role. Only fires on an explicit staff confirm
     click in the UI — matches from match-suggestions are suggested, never
     auto-applied."""
-    role_id = UUID(body.jobs_role_id)
+    role_id = body.jobs_role_id
     role = await conn.fetchrow("SELECT opportunity_id FROM bedrock.jobs_role WHERE id=$1", role_id)
     if not role:
         raise HTTPException(404, "Role not found")
@@ -7543,7 +7589,11 @@ async def search_opportunities(
     """Lightweight opportunity picker (by employer/account name or deal title) —
     used by the Roles board's Add Role flow to attach a new role to an existing
     opportunity instead of always creating one from scratch."""
-    like = f"%{q.strip().lower()}%"
+    # Escape LIKE metacharacters in the raw query — unescaped, a search for
+    # e.g. "50%" or "a_b" is interpreted as a wildcard pattern instead of a
+    # literal string, matching far more (or differently) than intended.
+    escaped = q.strip().lower().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    like = f"%{escaped}%"
     rows = await conn.fetch(
         """
         SELECT id, account_name, title, stage
