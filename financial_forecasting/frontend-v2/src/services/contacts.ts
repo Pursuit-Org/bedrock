@@ -162,11 +162,23 @@ export function useUpdateContact() {
       );
       return { snapshots };
     },
+    onSuccess: (_data, { id, patch, displayPatch }) => {
+      // Re-apply the saved values after the API confirms success. The
+      // onMutate optimistic patch may have been overwritten by a background
+      // refetch racing the mutation, so this ensures the cache reflects what
+      // actually persisted.
+      const merged = { ...patch, ...(displayPatch ?? {}) };
+      qc.setQueriesData<SfContact[]>({ queryKey: ["contacts"] }, (old) =>
+        old?.map((c) => (c.Id === id ? ({ ...c, ...merged } as SfContact) : c)),
+      );
+    },
     onError: (_err, _vars, ctx) => {
       ctx?.snapshots?.forEach(({ key, data }) => qc.setQueryData(key, data));
     },
     onSettled: () => {
-      setTimeout(() => qc.invalidateQueries({ queryKey: ["contacts"] }), 2000);
+      // 3.5 s gives Salesforce time to propagate the write before the
+      // refetch — a 2 s window was too tight and caused values to revert.
+      setTimeout(() => qc.invalidateQueries({ queryKey: ["contacts"] }), 3500);
     },
   });
 }

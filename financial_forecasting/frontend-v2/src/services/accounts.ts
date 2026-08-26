@@ -246,14 +246,12 @@ export function useUpdateAccount() {
     },
     onSettled: (_data, error) => {
       if (error) return;
-      // Delayed refetch: give Salesforce a moment to propagate, then take the
-      // server's answer as truth. (The previous version re-applied the client
-      // patch over the refetched data, which hid silently-ignored SF writes —
-      // exactly the failure the read-back exists to surface.)
+      // 3.5 s gives Salesforce time to propagate the write before the
+      // refetch — a 2 s window was too tight and caused values to revert.
       setTimeout(() => {
         void qc.refetchQueries({ queryKey: ["accounts"] });
         void qc.invalidateQueries({ queryKey: ["jobs", "accounts"] });
-      }, 2000);
+      }, 3500);
     },
   });
 }

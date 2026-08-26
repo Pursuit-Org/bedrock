@@ -845,6 +845,7 @@ async def get_accounts(
             SELECT Id, Name, Type, Industry, Website, Description,
                    BillingCity, BillingState, OwnerId, Owner.Name,
                    Account_Tier__c, Active__c, Qualification_Status__c,
+                   Qualification_Explanation__c,
                    npo02__TotalOppAmount__c, npo02__NumberOfClosedOpps__c,
                    Total_Revenue_Generated__c,
                    Last_Activity_Date__c, LastActivityDate,
@@ -2335,10 +2336,7 @@ async def update_account(
         raise
     except Exception as e:
         logger.error(f"Error updating account {account_id}: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=400,
-            detail="Failed to update account. Check server logs or contact support.",
-        )
+        raise sf_http_error(e, "account")
 
 
 @app.delete("/api/salesforce/accounts/{account_id}")
