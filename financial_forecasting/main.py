@@ -543,7 +543,8 @@ async def get_opportunities(
                Philanthropy_Type__c,
                Manager_Probability_Override__c,
                Priority__c,
-               Grant_Start_Date__c, Grant_End_Date__c
+               Grant_Start_Date__c, Grant_End_Date__c,
+               npsp__Closed_Lost_Reason__c, Withdrawn_Reason__c
         FROM Opportunity
         """
 
