@@ -28,6 +28,7 @@ import { JobsPage } from "./pages/Jobs";
 import { JobsPerformancePage } from "./pages/jobs/JobsPerformance";
 import { JobsPipelinePage } from "./pages/jobs/JobsPipeline";
 import { JobsPlacementPage } from "./pages/jobs/JobsPlacement";
+import { JobsCampaignsPage } from "./pages/jobs/JobsCampaigns";
 import { JobsContactsPage } from "./pages/jobs/JobsContacts";
 import { JobsAccountsPage } from "./pages/jobs/JobsAccountHub";
 import { JobsCandidatesPage } from "./pages/jobs/JobsCandidates";
@@ -75,6 +76,7 @@ export default function App() {
         <Route path="/portfolio/:identifier" element={<PortfolioPage />} />
         <Route path="/jobs" element={<JobsPage />} />
         <Route path="/jobs/performance" element={<JobsPerformancePage />} />
+        <Route path="/jobs/campaigns" element={<JobsCampaignsPage />} />
         <Route path="/jobs/contacts" element={<JobsContactsPage />} />
         <Route path="/jobs/accounts" element={<JobsAccountsPage />} />
         <Route path="/jobs/pipeline" element={<JobsPipelinePage />} />

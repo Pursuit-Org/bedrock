@@ -22,6 +22,7 @@ import {
   Home,
   Network,
   MessageSquarePlus,
+  Megaphone,
   Receipt,
 } from "lucide-react";
 
@@ -58,6 +59,7 @@ const NAV_GROUPS = [
     items: [
       { to: "/jobs", label: "Jobs Home", icon: Briefcase },
       { to: "/jobs/performance", label: "Dashboard", icon: BarChart3 },
+      { to: "/jobs/campaigns", label: "Campaigns", icon: Megaphone },
       { to: "/jobs/contacts", label: "Contacts", icon: Users },
       { to: "/jobs/accounts", label: "Accounts", icon: Building2 },
       { to: "/jobs/pipeline", label: "Pipeline", icon: Kanban },
