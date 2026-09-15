@@ -8186,6 +8186,17 @@ def _campaign_activity_cte(slug_param: str = "$1") -> str:
         pipe AS (SELECT * FROM camp WHERE is_jobs_contact),
         act AS (
           SELECT a.id, a.activity_date, a.type,
+                 -- Who did it. A synced email carries the sender, but as a raw
+                 -- From header ("Devika Gopal Agge <devika@pursuit.org>"), so
+                 -- the address is pulled out of the angle brackets — otherwise
+                 -- the same person reads as two different actors depending on
+                 -- whether the touch was synced or hand-logged. A hand-logged
+                 -- touch carries logged_by and no email_from at all.
+                 lower(coalesce(
+                   nullif(substring(a.email_from from '<([^>]+)>'), ''),
+                   nullif(a.email_from, ''),
+                   a.logged_by)) AS actor,
+                 a.subject,
                  a.participant_public_contact_id AS cid,
                  a.email_to, a.email_cc, a.meeting_attendees
           FROM bedrock.activity a
@@ -8196,16 +8207,16 @@ def _campaign_activity_cte(slug_param: str = "$1") -> str:
                  OR a.source = 'manual')
         ),
         linked AS (
-          SELECT a.id, a.activity_date, a.type, p.contact_id, p.company
+          SELECT a.id, a.activity_date, a.type, a.actor, a.subject, p.contact_id, p.company
           FROM act a JOIN pipe p ON p.contact_id = a.cid
           UNION
-          SELECT a.id, a.activity_date, a.type, p.contact_id, p.company
+          SELECT a.id, a.activity_date, a.type, a.actor, a.subject, p.contact_id, p.company
           FROM act a
           CROSS JOIN LATERAL unnest(coalesce(a.email_to, '{{}}') || coalesce(a.email_cc, '{{}}')) AS e
           JOIN pipe p ON p.email = lower(e)
           WHERE a.type = 'email'
           UNION
-          SELECT a.id, a.activity_date, a.type, p.contact_id, p.company
+          SELECT a.id, a.activity_date, a.type, a.actor, a.subject, p.contact_id, p.company
           FROM act a
           CROSS JOIN LATERAL jsonb_array_elements(coalesce(a.meeting_attendees, '[]'::jsonb)) AS att
           JOIN pipe p ON p.email = lower(att->>'email')
@@ -8378,6 +8389,126 @@ async def tag_campaign_stats(
             "emails": int(r["emails"]), "meetings": int(r["meetings"]),
             "other": int(r["other"]), "total": int(r["total"]),
         } for r in trend_rows],
+    }}
+
+
+# Effective owner of a campaign contact. `owner_email` is the real field but is
+# set on almost nobody (7 of Operation 35's 113 memberships as of 2026-09), so
+# an Owner column reading off it alone would be blank and its filter useless.
+# Falling back to whoever first reached out, then whoever put the contact in the
+# pipeline, fills 99 of those 113. The UI says which field answered.
+_EFFECTIVE_OWNER = "coalesce(m.owner_email, m.first_outreach_by, m.assigned_by)"
+
+
+@router.get("/tag-campaigns/{key}/activity")
+async def tag_campaign_activity(
+    key: str,
+    date_from: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    date_to: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    owner: Optional[str] = Query(None, description="Filter to one effective owner"),
+    limit: int = Query(300, ge=1, le=1000),
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """What happened to this campaign's contacts, newest first.
+
+    Three event sources, deliberately separate because they answer different
+    questions and only one of them is outreach:
+      * `touch`  — an outbound email/meeting/call/text/LinkedIn/note.
+      * `stage`  — a membership stage change (set to Not a fit, Revisit, …),
+                   read off jobs_membership_stage_history.
+      * `added`  — the contact entering the jobs pipeline.
+
+    Every row carries both the contact's OWNER and the ACTOR who did the thing,
+    because they routinely differ: Kwame moving a contact Avni owns is the case
+    this view exists to make visible. `owner` filters on the owner, not the actor.
+    """
+    cat = await conn.fetch("SELECT slug FROM bedrock.contact_tag_catalog WHERE active")
+    slugs = [r["slug"] for r in cat if _campaign_key(r["slug"]) == key]
+    if not slugs:
+        raise HTTPException(404, f"Unknown campaign: {key}")
+
+    today = date.today()
+    d_to = date.fromisoformat(date_to) if date_to else today
+    d_from = date.fromisoformat(date_from) if date_from else d_to - timedelta(weeks=12)
+    if d_from > d_to:
+        raise HTTPException(400, "date_from must not be after date_to")
+
+    cte = _campaign_activity_cte()
+    rows = await conn.fetch(f"""
+        WITH {cte},
+        own AS (
+          SELECT p.contact_id, {_EFFECTIVE_OWNER} AS owner,
+                 (m.owner_email IS NOT NULL) AS owner_is_explicit
+          FROM pipe p
+          LEFT JOIN bedrock.jobs_contact_membership m ON m.contact_id = p.contact_id
+        ),
+        ev AS (
+          SELECT l.activity_date AS at, 'touch'::text AS kind, l.type AS subkind,
+                 l.contact_id, l.company, l.actor, l.subject,
+                 NULL::text AS from_stage, NULL::text AS to_stage
+          FROM linked l
+          WHERE l.activity_date >= $2::date AND l.activity_date < ($3::date + 1)
+          UNION ALL
+          SELECT h.changed_at, 'stage', NULL, h.contact_id, p.company,
+                 lower(h.changed_by), h.note,
+                 {canon_membership_sql('h.from_stage')}, {canon_membership_sql('h.to_stage')}
+          FROM bedrock.jobs_membership_stage_history h
+          JOIN pipe p ON p.contact_id = h.contact_id
+          WHERE h.changed_at >= $2::date AND h.changed_at < ($3::date + 1)
+          UNION ALL
+          SELECT m.assigned_at, 'added', NULL, m.contact_id, p.company,
+                 lower(m.assigned_by), NULL, NULL, NULL
+          FROM bedrock.jobs_contact_membership m
+          JOIN pipe p ON p.contact_id = m.contact_id
+          WHERE m.assigned_at >= $2::date AND m.assigned_at < ($3::date + 1)
+        )
+        SELECT ev.at, ev.kind, ev.subkind, ev.contact_id, ev.company, ev.actor,
+               ev.subject, ev.from_stage, ev.to_stage,
+               c.full_name, own.owner, own.owner_is_explicit
+        FROM ev
+        JOIN public.contacts c ON c.contact_id = ev.contact_id
+        LEFT JOIN own ON own.contact_id = ev.contact_id
+        WHERE $4::text IS NULL OR own.owner = $4
+        ORDER BY ev.at DESC, c.full_name
+        LIMIT $5
+    """, slugs, d_from, d_to, owner, limit)
+
+    # Owner list for the filter. Built over the whole campaign rather than the
+    # returned page, so picking an owner can never empty the dropdown it came
+    # from, and it survives the `limit` cutoff. Deliberately does NOT reuse the
+    # activity CTE — none of the join work it does is needed to list owners.
+    owner_rows = await conn.fetch(f"""
+        WITH pipe AS (
+          SELECT DISTINCT c.contact_id
+          FROM public.contacts c
+          CROSS JOIN LATERAL unnest(c.tags) AS t
+          WHERE t = ANY($1::text[]) AND c.is_jobs_contact
+        )
+        SELECT {_EFFECTIVE_OWNER} AS owner, count(*) AS n
+        FROM pipe p
+        JOIN bedrock.jobs_contact_membership m ON m.contact_id = p.contact_id
+        WHERE {_EFFECTIVE_OWNER} IS NOT NULL
+        GROUP BY 1 ORDER BY 2 DESC, 1
+    """, slugs)
+
+    return {"success": True, "data": {
+        "period": {"from": d_from.isoformat(), "to": d_to.isoformat()},
+        "owners": [{"email": r["owner"], "contacts": int(r["n"])} for r in owner_rows],
+        "events": [{
+            "at": r["at"].isoformat() if r["at"] else None,
+            "kind": r["kind"],
+            "subkind": r["subkind"],
+            "contact_id": r["contact_id"],
+            "contact_name": r["full_name"],
+            "company": r["company"],
+            "owner": r["owner"],
+            "owner_is_explicit": bool(r["owner_is_explicit"]),
+            "actor": r["actor"],
+            "subject": r["subject"],
+            "from_stage": r["from_stage"],
+            "to_stage": r["to_stage"],
+        } for r in rows],
     }}
 
 

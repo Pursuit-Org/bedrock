@@ -52,12 +52,41 @@ accounts / 113 with an email; 93 contacts and 82 accounts activated; stages
 13 not_a_fit, 4 revisit. Trailing 12 weeks: 56 emails, 4 meetings, 5 calls,
 10 texts, 1 LinkedIn; 48 contacts and 46 accounts reached.
 
-### Phase 3 — Not started
-- [ ] Stage-entry history per campaign (period flow, like `outreach-pipeline-rework.md`)
+### Phase 3 — Nesting, period, activity feed ✅ DONE (2026-09-15)
+Kwame's second round.
+- [x] Campaigns nests **under Overview** as a sub-tab (`?tab=exec&sub=campaigns`),
+      not beside it. Overview and Campaigns answer the same question at different
+      altitudes; Outreach and Pipeline are different books.
+- [x] `Campaigns · coverage` removed from the Outreach tab. One home.
+- [x] Shared `PeriodBar` on the campaign detail, same control as Outreach and
+      Pipeline. Drives outreach volume, the trend and the activity feed.
+      Activation and the stage funnel stay ALL-TIME and say so — activation is a
+      state, and period-scoping it would read as contacts un-activating.
+- [x] New `GET /tag-campaigns/{key}/activity` — touches, stage changes and
+      additions for the campaign's contacts, newest first, with `owner` filter.
+- [x] Activity feed with **Owner** and **Changed by** as separate columns, plus
+      an owner filter. Bulk work collapses on (day, kind, stage, actor, owner),
+      so eight contacts marked Not a fit in one sitting read as one line.
+
+**Verified against production for Operation 35:** stage history 202 rows (170
+with an actor), memberships 113 (92 with assigned_by). Effective owners —
+Avni 42, Kwame 38, Damon 10, Devika 7, Nick 1, Victoria 1.
+
+### Phase 4 — Not started
 - [ ] Drill from a trend point into the underlying activity list
 - [ ] Contact table on the detail view (the `/records` endpoint already serves it)
+- [ ] Stage-entry period flow, like `outreach-pipeline-rework.md`
 
 ### Known gaps, flagged not fixed
+- **`owner_email` is set on almost nobody.** 7 of Operation 35's 113 memberships.
+  An Owner column reading it alone would be blank and its filter useless, so the
+  effective owner falls back `owner_email → first_outreach_by → assigned_by`,
+  which fills 99 of 113. Inferred owners are marked with an asterisk and a
+  tooltip. The real fix is assigning owners in the tool, not in this query.
+- **Tag additions have no history table.** "Added to the campaign" is read off
+  `jobs_contact_membership.assigned_at`, which is when the contact entered the
+  jobs pipeline, not when the tag was applied. They usually coincide; when a tag
+  is added to an existing pipeline contact, the feed will not show it.
 - **Direction is inferred, not stored.** `bedrock.activity` has no direction
   column, so outbound = Pursuit sender (email) or hand-logged (everything else).
   A campaign contact emailed from a personal address would be missed.

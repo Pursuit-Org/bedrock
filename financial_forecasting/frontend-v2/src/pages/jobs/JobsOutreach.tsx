@@ -28,7 +28,6 @@ import {
   type MembershipStage,
 } from "@/services/jobs";
 import { InlineSelect } from "@/components/ui/InlineEdit";
-import { TagCampaigns } from "@/components/jobs/TagCampaigns";
 import { useContactStageChange } from "@/lib/useContactStageChange";
 import { JobsFunnels } from "@/components/jobs/JobsFunnels";
 import { Panel, BreakdownBars } from "./JobsOpportunitiesOverview";
@@ -1513,12 +1512,10 @@ export function JobsOutreach() {
       {/* Requiring attention closes the page (moved below the trend band
           2026-08-04): it's the action list you leave the review with, so it
           reads better as the last thing than wedged mid-scroll. */}
+      {/* "Campaigns · coverage" lived here until 2026-09-15. Campaigns is now
+          its own view under Dashboard → Overview → Campaigns, with a picker,
+          period bar and activity feed this strip never had. One home. */}
       <RequiringAttention owner={owner || undefined} nameOf={nameOf} staffEmails={staffEmails} />
-
-      <div className="flex flex-col gap-3">
-        <SectionHead title="Campaigns · coverage" />
-        <TagCampaigns />
-      </div>
     </div>
   );
 }

@@ -1701,7 +1701,9 @@ export function useTagCampaignRecords(key: string | null) {
   });
 }
 
-export type CampaignGranularity = "day" | "week" | "month";
+/** Same three buckets the Outreach and Pipeline period bar works in. Aliased
+ *  rather than redeclared so the shared PeriodBar can drive this page too. */
+export type CampaignGranularity = OutreachGranularity;
 
 export interface CampaignTrendPoint {
   bucket: string; emails: number; meetings: number; other: number; total: number;
@@ -1750,6 +1752,59 @@ export function useTagCampaignStats(
       if (to) p.set("date_to", to);
       const { data } = await api.get<ApiResponse<TagCampaignStats>>(
         `/api/jobs/tag-campaigns/${encodeURIComponent(key as string)}/stats?${p}`);
+      return data.data;
+    },
+    staleTime: 60_000,
+  });
+}
+
+export type CampaignEventKind = "touch" | "stage" | "added";
+
+export interface CampaignEvent {
+  at: string | null;
+  kind: CampaignEventKind;
+  /** Activity type for a touch (email, meeting, call, text, linkedin, note). */
+  subkind: string | null;
+  contact_id: number;
+  contact_name: string | null;
+  company: string | null;
+  /** The contact's owner. Falls back through first_outreach_by → assigned_by
+   *  when owner_email is unset, which is most of the time. */
+  owner: string | null;
+  /** True when `owner` came from the real owner_email field rather than a
+   *  fallback — the UI marks the difference rather than implying certainty. */
+  owner_is_explicit: boolean;
+  /** Who performed the event. Routinely differs from `owner`. */
+  actor: string | null;
+  subject: string | null;
+  from_stage: MembershipStage | null;
+  to_stage: MembershipStage | null;
+}
+
+export interface CampaignActivity {
+  period: { from: string; to: string };
+  owners: { email: string; contacts: number }[];
+  events: CampaignEvent[];
+}
+
+/** Contact-level event feed for a campaign: touches, stage changes, and
+ *  additions, newest first. `owner` filters on the contact's owner, not on who
+ *  performed the event. */
+export function useTagCampaignActivity(
+  key: string | null,
+  opts: { from?: string; to?: string; owner?: string } = {},
+) {
+  const { from, to, owner } = opts;
+  return useQuery<CampaignActivity>({
+    queryKey: ["jobs", "tag-campaign-activity", key ?? "", from ?? "", to ?? "", owner ?? ""],
+    enabled: !!key,
+    queryFn: async () => {
+      const p = new URLSearchParams();
+      if (from) p.set("date_from", from);
+      if (to) p.set("date_to", to);
+      if (owner) p.set("owner", owner);
+      const { data } = await api.get<ApiResponse<CampaignActivity>>(
+        `/api/jobs/tag-campaigns/${encodeURIComponent(key as string)}/activity?${p}`);
       return data.data;
     },
     staleTime: 60_000,

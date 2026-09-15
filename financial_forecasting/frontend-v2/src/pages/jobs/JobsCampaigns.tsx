@@ -1,5 +1,5 @@
 /**
- * Jobs · Dashboard → Campaigns.
+ * Jobs · Dashboard → Overview → Campaigns.
  *
  * A campaign is a curated contact tag from `bedrock.contact_tag_catalog`, whose
  * `sort_order` is the outreach priority and `owner_email` the accountable
@@ -9,24 +9,35 @@
  *
  * Two views, one page. No campaign picked shows the portfolio: rollup stats
  * over every campaign plus the prioritised list. Picking one shows its detail:
- * activation against the whole tagged set, the stage funnel, outbound volume by
- * channel, and the outreach trend.
+ * activation, the stage funnel, outbound volume, the outreach trend, and the
+ * event feed.
  *
- * Population note, because these two numbers differ and the gap matters:
- * `contacts` is every tagged contact, while every funnel and outreach number
- * counts only those flagged as jobs prospects (`in_pipeline`). The page labels
- * which is which rather than quietly picking one.
+ * Which numbers honour the period, because mixing the two would mislead:
+ *   * Activation and the stage funnel are ALL-TIME. Activation is a state — a
+ *     contact reached last March is still activated today.
+ *   * Outreach volume, the trend and the activity feed honour the period bar.
+ *
+ * Population note: `contacts` is every tagged contact, while every funnel and
+ * outreach number counts only those flagged as jobs prospects (`in_pipeline`).
+ * The page labels which is which rather than quietly picking one.
  */
 import { useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as ReTooltip, ResponsiveContainer,
 } from "recharts";
-import { Check, ChevronDown, Loader2, Mail, Calendar, Phone, Linkedin, MessageSquare, FileText } from "lucide-react";
+import { format } from "date-fns";
+import {
+  ArrowRight, Calendar, Check, ChevronDown, FileText, Linkedin, Loader2, Mail,
+  MessageSquare, Phone, Plus, StickyNote,
+} from "lucide-react";
 
 import { TagCampaigns } from "@/components/jobs/TagCampaigns";
+import { PeriodBar, defaultPeriod } from "@/components/jobs/PeriodBar";
 import {
-  useTagCampaigns, useTagCampaignStats,
+  useTagCampaigns, useTagCampaignStats, useTagCampaignActivity, MEMBERSHIP_STAGE_LABELS,
   type TagCampaign, type TagCampaignStats, type CampaignGranularity, type MembershipStage,
+  type CampaignEvent,
 } from "@/services/jobs";
 import { relDay } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -34,6 +45,7 @@ import { cn } from "@/lib/utils";
 const EMPTY_FUNNEL = { not_yet: 0, assigned: 0, contacted: 0, call_booked: 0, converted: 0, not_a_fit: 0, on_hold: 0 };
 const EMAIL_COLOR = "#4242EA";
 const MEETING_COLOR = "#C7C7F5";
+const ACTIVITY_PAGE = 25;
 
 /** Funnel order, worked-first, shared by the stage bar and its legend so the
  *  two can never drift. `on_hold` is absent by design: the backend folds it
@@ -49,6 +61,15 @@ const STAGE_ORDER: { key: MembershipStage; label: string; cls: string }[] = [
 
 function pct(n: number, d: number): number | null {
   return d > 0 ? Math.round((100 * n) / d) : null;
+}
+
+/** first.last@pursuit.org → "First". Falls back to the raw value so an
+ *  unrecognised actor is still identifiable rather than blank. */
+function shortName(email: string | null | undefined): string {
+  if (!email) return "—";
+  const local = email.split("@")[0] ?? email;
+  const first = local.split(/[._]/)[0] ?? local;
+  return first.charAt(0).toUpperCase() + first.slice(1);
 }
 
 // ── Campaign picker ─────────────────────────────────────────────────────────
@@ -148,7 +169,7 @@ function Option({ label, sub, selected, onClick }: {
   );
 }
 
-// ── Stat tile ───────────────────────────────────────────────────────────────
+// ── Shared chrome ───────────────────────────────────────────────────────────
 function Stat({ label, value, sub, tone = "ink", hint }: {
   label: string; value: string; sub?: string;
   tone?: "ink" | "accent" | "green" | "amber"; hint?: string;
@@ -249,25 +270,17 @@ function OutreachStats({ stats }: { stats: TagCampaignStats }) {
   );
 }
 
-const GRANULARITIES: { key: CampaignGranularity; label: string }[] = [
-  { key: "day", label: "Day" },
-  { key: "week", label: "Week" },
-  { key: "month", label: "Month" },
-];
-
 function TrendChart({ stats }: { stats: TagCampaignStats }) {
   const data = useMemo(() => stats.trend.map((p) => ({
     label: p.bucket.slice(5),   // MM-DD; the year is never in question here
     Emails: p.emails,
     Meetings: p.meetings,
-    total: p.total,
   })), [stats.trend]);
 
-  const empty = stats.trend.every((p) => p.total === 0);
-  if (empty) {
+  if (stats.trend.every((p) => p.total === 0)) {
     return (
       <div className="grid h-[200px] place-items-center rounded-lg border border-dashed border-border-strong text-[12.5px] text-ink-3">
-        No outreach to this campaign in the selected window.
+        No outreach to this campaign in the selected period.
       </div>
     );
   }
@@ -303,12 +316,214 @@ function Legend({ color, label }: { color: string; label: string }) {
   );
 }
 
-function CampaignDetail({ campaignKey, granularity, onGranularity }: {
-  campaignKey: string;
-  granularity: CampaignGranularity;
-  onGranularity: (g: CampaignGranularity) => void;
+// ── Activity feed ───────────────────────────────────────────────────────────
+const TOUCH_META: Record<string, { label: string; icon: React.ReactNode }> = {
+  email: { label: "Email", icon: <Mail size={11} /> },
+  meeting: { label: "Meeting", icon: <Calendar size={11} /> },
+  call: { label: "Call", icon: <Phone size={11} /> },
+  text: { label: "Text", icon: <MessageSquare size={11} /> },
+  linkedin: { label: "LinkedIn", icon: <Linkedin size={11} /> },
+  note: { label: "Note", icon: <StickyNote size={11} /> },
+};
+
+/** Bulk work arrives as many identical rows — one staffer marking eight Red
+ *  Canary contacts Not a fit in a sitting. Collapsing them on
+ *  (day, kind, stage, actor, owner) turns a wall into one legible line, and the
+ *  owner stays in the key so a collapsed row never has to show two owners. */
+interface EventGroup {
+  key: string;
+  at: string | null;
+  kind: CampaignEvent["kind"];
+  subkind: string | null;
+  to_stage: MembershipStage | null;
+  actor: string | null;
+  owner: string | null;
+  owner_is_explicit: boolean;
+  events: CampaignEvent[];
+}
+
+function groupEvents(events: CampaignEvent[]): EventGroup[] {
+  const out: EventGroup[] = [];
+  const index = new Map<string, EventGroup>();
+  for (const e of events) {
+    const day = e.at ? e.at.slice(0, 10) : "";
+    const key = [day, e.kind, e.subkind ?? "", e.to_stage ?? "", e.actor ?? "", e.owner ?? ""].join("|");
+    const existing = index.get(key);
+    if (existing) { existing.events.push(e); continue; }
+    const g: EventGroup = {
+      key, at: e.at, kind: e.kind, subkind: e.subkind, to_stage: e.to_stage,
+      actor: e.actor, owner: e.owner, owner_is_explicit: e.owner_is_explicit, events: [e],
+    };
+    index.set(key, g);
+    out.push(g);
+  }
+  return out;
+}
+
+function groupLabel(g: EventGroup): { label: string; icon: React.ReactNode; color: string } {
+  if (g.kind === "added") return { label: "Added", icon: <Plus size={11} />, color: "var(--accent)" };
+  if (g.kind === "stage") {
+    return {
+      label: g.to_stage ? MEMBERSHIP_STAGE_LABELS[g.to_stage] ?? "Moved" : "Moved",
+      icon: <ArrowRight size={11} />,
+      color: g.to_stage === "converted_to_opportunity" ? "var(--green)"
+        : g.to_stage === "not_a_fit" ? "var(--ink-3)"
+        : g.to_stage === "revisit" ? "var(--amber)" : "var(--sky)",
+    };
+  }
+  const m = TOUCH_META[g.subkind ?? ""] ?? { label: "Touch", icon: <Mail size={11} /> };
+  return { ...m, color: "var(--accent)" };
+}
+
+function OwnerFilter({ owners, value, onChange }: {
+  owners: { email: string; contacts: number }[];
+  value: string | null;
+  onChange: (v: string | null) => void;
 }) {
-  const { data: stats, isLoading, isError } = useTagCampaignStats(campaignKey, { granularity });
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        className={cn(
+          "flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[12px] font-medium transition-colors",
+          value ? "border-accent text-accent" : "border-border-strong text-ink-2 hover:bg-surface-2",
+        )}
+      >
+        Owner: {value ? shortName(value) : "All"}
+        <ChevronDown size={12} className={cn("transition-transform", open && "rotate-180")} />
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-20" onClick={() => setOpen(false)} />
+          <div className="absolute right-0 z-30 mt-1 max-h-[300px] w-[260px] overflow-y-auto rounded-lg border border-border-strong bg-surface p-1 shadow-lg">
+            <button
+              type="button"
+              onClick={() => { onChange(null); setOpen(false); }}
+              className={cn("flex w-full items-center rounded px-2 py-1.5 text-[12.5px] hover:bg-surface-2",
+                value === null ? "font-semibold text-accent" : "text-ink")}
+            >
+              All owners
+            </button>
+            {owners.map((o) => (
+              <button
+                key={o.email}
+                type="button"
+                onClick={() => { onChange(o.email); setOpen(false); }}
+                className={cn("flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[12.5px] hover:bg-surface-2",
+                  value === o.email ? "font-semibold text-accent" : "text-ink")}
+              >
+                <span className="min-w-0 flex-1 truncate" title={o.email}>{o.email}</span>
+                <span className="shrink-0 tabular-nums text-[11px] text-ink-4">{o.contacts}</span>
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function ActivityFeed({ campaignKey, from, to }: { campaignKey: string; from: string; to: string }) {
+  const [owner, setOwner] = useState<string | null>(null);
+  const [showAll, setShowAll] = useState(false);
+  const { data, isLoading } = useTagCampaignActivity(campaignKey, { from, to, owner: owner ?? undefined });
+  const groups = useMemo(() => groupEvents(data?.events ?? []), [data?.events]);
+  const shown = showAll ? groups : groups.slice(0, ACTIVITY_PAGE);
+
+  return (
+    <Section
+      title="Activity"
+      note="Every touch, stage change and addition for this campaign's contacts, newest first. Owner is who the contact belongs to; Changed by is who did it."
+      action={<OwnerFilter owners={data?.owners ?? []} value={owner} onChange={setOwner} />}
+    >
+      {isLoading ? (
+        <div className="flex items-center gap-2 py-6 text-[12.5px] text-ink-3">
+          <Loader2 size={14} className="animate-spin" /> Loading activity…
+        </div>
+      ) : groups.length === 0 ? (
+        <div className="flex items-center justify-center rounded-lg border border-dashed border-border-strong px-4 py-8 text-[12px] text-ink-4">
+          No activity in this period{owner ? ` for ${shortName(owner)}` : ""}.
+        </div>
+      ) : (
+        <div className="flex flex-col">
+          <div className="flex items-center gap-3 border-b border-border-strong pb-1.5 text-[10.5px] font-semibold uppercase tracking-wider text-ink-4">
+            <span className="w-[92px] shrink-0">Event</span>
+            <span className="min-w-0 flex-1">Contact</span>
+            <span className="w-[86px] shrink-0">Owner</span>
+            <span className="w-[86px] shrink-0">Changed by</span>
+            <span className="w-[52px] shrink-0 text-right">When</span>
+          </div>
+          {shown.map((g) => {
+            const m = groupLabel(g);
+            const n = g.events.length;
+            const names = g.events.map((e) => e.contact_name ?? "—");
+            const companies = Array.from(new Set(g.events.map((e) => e.company).filter(Boolean)));
+            const first = g.events[0];
+            return (
+              <div key={g.key} className="flex items-center gap-3 border-b border-border-strong py-2 last:border-b-0">
+                <span
+                  className="inline-flex w-[92px] shrink-0 items-center gap-1 rounded-full bg-surface-2 px-2 py-0.5 text-[10.5px] font-semibold"
+                  style={{ color: m.color }}
+                >
+                  {m.icon}<span className="truncate">{m.label}</span>
+                </span>
+                <div className="min-w-0 flex-1 truncate" title={n > 1 ? names.join(", ") : undefined}>
+                  {n === 1 ? (
+                    <Link to={`/jobs/contacts/${first.contact_id}`} className="text-[13px] font-semibold text-ink hover:text-accent">
+                      {first.contact_name ?? "—"}
+                    </Link>
+                  ) : (
+                    <span className="text-[13px] font-semibold text-ink">{n} contacts</span>
+                  )}
+                  <span className="ml-2 text-[12px] text-ink-3">
+                    {companies.slice(0, 2).join(", ") || "—"}
+                    {companies.length > 2 ? ` +${companies.length - 2}` : ""}
+                  </span>
+                </div>
+                <span
+                  className="w-[86px] shrink-0 truncate text-[11px] text-ink-4"
+                  title={g.owner
+                    ? `${g.owner}${g.owner_is_explicit ? "" : " (inferred — no owner set on the membership)"}`
+                    : "No owner"}
+                >
+                  {shortName(g.owner)}{g.owner && !g.owner_is_explicit ? "*" : ""}
+                </span>
+                <span className="w-[86px] shrink-0 truncate text-[11px] text-ink-4" title={g.actor ?? undefined}>
+                  {shortName(g.actor)}
+                </span>
+                <span className="w-[52px] shrink-0 text-right text-[11px] text-ink-4">
+                  {g.at ? format(new Date(g.at), "MMM d") : "—"}
+                </span>
+              </div>
+            );
+          })}
+          <div className="mt-2 flex items-center justify-between gap-3">
+            {groups.length > ACTIVITY_PAGE ? (
+              <button type="button" onClick={() => setShowAll((v) => !v)}
+                className="text-[12px] font-medium text-accent hover:underline">
+                {showAll ? "Show less" : `Show ${groups.length - ACTIVITY_PAGE} more`}
+              </button>
+            ) : <span />}
+            <span className="text-[11px] text-ink-4">
+              * owner inferred from who first reached out or who added the contact
+            </span>
+          </div>
+        </div>
+      )}
+    </Section>
+  );
+}
+
+function CampaignDetail({ campaignKey, from, to, granularity }: {
+  campaignKey: string;
+  from: string;
+  to: string;
+  granularity: CampaignGranularity;
+}) {
+  const { data: stats, isLoading, isError } = useTagCampaignStats(campaignKey, { granularity, from, to });
 
   if (isLoading) {
     return (
@@ -335,7 +550,7 @@ function CampaignDetail({ campaignKey, granularity, onGranularity }: {
     <div className="flex flex-col gap-4">
       <Section
         title="Activation"
-        note={`${t.in_pipeline.toLocaleString()} of ${t.contacts.toLocaleString()} tagged contacts are in the jobs pipeline. Everything below counts that set.${
+        note={`All-time, not period-scoped. ${t.in_pipeline.toLocaleString()} of ${t.contacts.toLocaleString()} tagged contacts are in the jobs pipeline, and everything here counts that set.${
           stats.slugs.length > 1 ? ` Aggregated across ${stats.slugs.length} tags.` : ""
         }`}
       >
@@ -375,34 +590,19 @@ function CampaignDetail({ campaignKey, granularity, onGranularity }: {
 
       <Section
         title="Outreach"
-        note={`Outbound touches between ${stats.period.from} and ${stats.period.to}. Synced email counts only when Pursuit sent it.`}
+        note="Outbound touches in the selected period. Synced email counts only when Pursuit sent it."
       >
         <OutreachStats stats={stats} />
       </Section>
 
       <Section
         title="Outreach over time"
-        note={`${stats.outreach.total.toLocaleString()} touches in the window, by ${granularity}.`}
-        action={
-          <div className="flex items-center gap-1 rounded-lg border border-border-strong bg-surface-2 p-1">
-            {GRANULARITIES.map((g) => (
-              <button
-                key={g.key}
-                type="button"
-                onClick={() => onGranularity(g.key)}
-                className={cn(
-                  "rounded-md px-2.5 py-1 text-[12px] font-medium transition-colors",
-                  granularity === g.key ? "bg-surface text-ink shadow-sm" : "text-ink-3 hover:text-ink-2",
-                )}
-              >
-                {g.label}
-              </button>
-            ))}
-          </div>
-        }
+        note={`${stats.outreach.total.toLocaleString()} touches in the period, bucketed by ${granularity}.`}
       >
         <TrendChart stats={stats} />
       </Section>
+
+      <ActivityFeed campaignKey={campaignKey} from={from} to={to} />
     </div>
   );
 }
@@ -460,12 +660,29 @@ export function JobsCampaigns() {
   const { data: campaigns = [], isLoading } = useTagCampaigns();
   const [selected, setSelected] = useState<string | null>(null);
   const [granularity, setGranularity] = useState<CampaignGranularity>("week");
+  const [[from, to], setRange] = useState<[string, string]>(defaultPeriod);
 
   return (
-    <div className="flex flex-col gap-5">
-      <CampaignSelect campaigns={campaigns} value={selected} onChange={setSelected} loading={isLoading} />
+    <div className="flex flex-col gap-4">
+      <div className="flex flex-wrap items-end gap-3">
+        <CampaignSelect campaigns={campaigns} value={selected} onChange={setSelected} loading={isLoading} />
+        {/* The period only drives the detail view — the portfolio rollup is an
+            all-time snapshot, so showing a date range over it would lie. */}
+        {selected ? (
+          <div className="min-w-0 flex-1">
+            <PeriodBar
+              from={from}
+              to={to}
+              onChange={(f, t) => setRange([f, t])}
+              granularity={granularity}
+              onGranularityChange={setGranularity}
+              clampToToday
+            />
+          </div>
+        ) : null}
+      </div>
       {selected
-        ? <CampaignDetail campaignKey={selected} granularity={granularity} onGranularity={setGranularity} />
+        ? <CampaignDetail campaignKey={selected} from={from} to={to} granularity={granularity} />
         : <Portfolio campaigns={campaigns} loading={isLoading} />}
     </div>
   );
