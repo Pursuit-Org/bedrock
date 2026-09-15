@@ -421,14 +421,13 @@ async def metric_drilldown(
                 "counted": "✓" if r["id"] in counted_ids else "—",
             })
         # (2) committed active trials — builder in a trial (converts to the open FT req below)
-        trials = await conn.fetch("""
+        trials = await conn.fetch(f"""
             SELECT r.id, r.approx_salary, r.opportunity_id::text AS opp_id, o.account_name, r.title,
                    r.filled_by_user_id, s.builder
             FROM bedrock.jobs_role r
             JOIN bedrock.jobs_opportunity o ON o.id = r.opportunity_id
             LEFT JOIN bedrock.secured_jobs() s ON s.id = r.employment_record_id
-            WHERE o.deleted_at IS NULL AND r.commitment = 'committed' AND r.is_trial = true
-              AND r.filled_by_user_id IS NOT NULL AND r.status <> 'cancelled'
+            WHERE o.deleted_at IS NULL AND {_trial_running()}
             ORDER BY o.account_name
         """)
         # A trial HAS a builder, so it does have a cohort — scoped, not dropped.
@@ -717,11 +716,10 @@ async def get_placements(
     # its FT conversion is a separate role that stays open until they convert). This
     # is the "Committed: trial active" status — surfaced so a trial like Fowler/Ethan
     # is neither counted as FT-placed nor invisible (fixes the Home vs Accounts gap).
-    trial_rows = await conn.fetch("""
+    trial_rows = await conn.fetch(f"""
         SELECT DISTINCT r.filled_by_user_id AS uid FROM bedrock.jobs_role r
         JOIN bedrock.jobs_opportunity o ON o.id = r.opportunity_id
-        WHERE o.deleted_at IS NULL AND r.commitment = 'committed' AND r.is_trial = true
-          AND r.filled_by_user_id IS NOT NULL AND r.status <> 'cancelled'
+        WHERE o.deleted_at IS NULL AND {_trial_running()}
     """)
     trial_uids = {r["uid"] for r in trial_rows}
     if seg_uids is not None:
@@ -6425,6 +6423,19 @@ _MEMBERSHIP_STAGES = ('assigned', 'initial_outreach', 'call_booked',
 
 # TKT-161: placements whose linked opportunity was soft-deleted (data-entry
 # errors) must not count anywhere. Self-sourced placements (no opp link) stay.
+def _trial_running(a: str = "r") -> str:
+    """A committed trial actually under way: a builder is in it and it hasn't
+    ended. Putting an end date on the role is how staff close a trial out — the
+    role stays `filled`, since it was — so a past end date is what marks it
+    finished. Without this the count only ever went up (Ethan Davey / Fowler).
+    A future end date still reads as running: the trial is scheduled to end, not
+    ended.
+    """
+    return (f"{a}.commitment = 'committed' AND {a}.is_trial = true "
+            f"AND {a}.filled_by_user_id IS NOT NULL AND {a}.status <> 'cancelled' "
+            f"AND ({a}.end_date IS NULL OR {a}.end_date >= CURRENT_DATE)")
+
+
 def _live_placement(a: str = "") -> str:
     col = f"{a}.opportunity_id" if a else "opportunity_id"
     return (f"({col} IS NULL OR NOT EXISTS (SELECT 1 FROM bedrock.jobs_opportunity dop "
