@@ -23,24 +23,50 @@ same RMs. Promoting costs a route; inventing costs a data model.
 | `PUT /api/jobs/tag-campaigns/order` | drag-to-reorder priority |
 | `PUT /api/jobs/tag-campaigns/owner` | assign staff owner |
 
-### Phase 1 — Promote (existing endpoints)
-- [ ] `src/pages/jobs/JobsCampaigns.tsx` — new page
-- [ ] Route `/jobs/campaigns` in `App.tsx`
-- [ ] Nav entry in the Jobs group, `AppShell.tsx`
-- [ ] Portfolio summary strip: campaigns, contacts in pipeline, contacted, converted, overall conversion
-- [ ] Reuse `TagCampaigns` list unchanged (drag priority, owner, funnel bar)
-- [ ] OPEN: does the block leave the Outreach tab, or render in both? Recommend
-      leave — `JOBS_UX_LOG.md` lesson is don't duplicate existing UI.
+### Phase 1 — Promote ✅ DONE
+- [x] `src/pages/jobs/JobsCampaigns.tsx` — new page
+- [x] Portfolio summary strip: campaigns, in pipeline, reached, converted
+- [x] Reuse `TagCampaigns` list unchanged (drag priority, owner, funnel bar)
 
-### Phase 2 — Expand (existing endpoints)
-- [ ] Campaign detail `/jobs/campaigns/:key`
-- [ ] Full contact table off `/records`: sortable stage / touches / last touch, owner filter, search
-- [ ] Accounts table with contacted-vs-total coverage
-- [ ] Per-campaign stat header + funnel
+### Phase 2 — Campaign detail ✅ DONE (2026-09-15)
+Kwame's round: campaigns move under Dashboard as a tab; a picker at the top;
+summary card; outreach stats; trend line.
+- [x] Campaigns is a **Dashboard tab** (`/jobs/performance?tab=campaigns`), second
+      after Overview. Standalone `/jobs/campaigns` redirects; sidebar entry removed
+      so there is one home, per the `JOBS_UX_LOG.md` no-duplicate-UI lesson.
+- [x] `_campaign_key` groups `operation_35_*` (5 slugs) into one **Operation 35**,
+      the same way `alumni_*` already collapsed. Prefix match is `== p` or
+      `startswith(p + "_")` so a future `board_advisors` can't fold into `board`.
+- [x] **Funnel bug fixed** — `call_booked` and `not_a_fit` were absent from
+      `/tag-campaigns`, and `not_yet` is derived as the remainder, so 27 worked
+      Operation 35 contacts were being reported as never contacted. `on_hold` now
+      folds into `revisit`, matching `canon_membership_stage()`.
+- [x] New `GET /tag-campaigns/{key}/stats` — one round trip: all-time totals +
+      stage funnel + activation, period outbound volume by channel, zero-filled
+      trend. Params `granularity` (day|week|month), `date_from`, `date_to`.
+- [x] Campaign picker dropdown, activation card, stage bar, channel stats, trend chart
 
-### Phase 3 — Needs backend (not started)
-- [ ] Progress over time per campaign (stage-entry history, like the period-flow
-      work in `outreach-pipeline-rework.md`). New query in `routes/jobs.py`.
+**Verified against production (read-only) for Operation 35:** 449 contacts / 389
+accounts / 113 with an email; 93 contacts and 82 accounts activated; stages
+336 none, 35 assigned, 35 initial_outreach, 10 call_booked, 16 converted,
+13 not_a_fit, 4 revisit. Trailing 12 weeks: 56 emails, 4 meetings, 5 calls,
+10 texts, 1 LinkedIn; 48 contacts and 46 accounts reached.
+
+### Phase 3 — Not started
+- [ ] Stage-entry history per campaign (period flow, like `outreach-pipeline-rework.md`)
+- [ ] Drill from a trend point into the underlying activity list
+- [ ] Contact table on the detail view (the `/records` endpoint already serves it)
+
+### Known gaps, flagged not fixed
+- **Direction is inferred, not stored.** `bedrock.activity` has no direction
+  column, so outbound = Pursuit sender (email) or hand-logged (everything else).
+  A campaign contact emailed from a personal address would be missed.
+- **"Calls booked" is ambiguous.** `call_booked` is a membership stage (10 for
+  Operation 35) while `type='call'` is a hand-logged phone call (5, and 171
+  org-wide). Meetings (719 all-time) are the real booked-call volume. The UI
+  shows all three separately rather than picking one.
+- **Only 113 of 449 Operation 35 contacts have an email address.** Surfaced as
+  "Reachable by email", amber below 50%.
 
 ## 2. Outreach view updates
 

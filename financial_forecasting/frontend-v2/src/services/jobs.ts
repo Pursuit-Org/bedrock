@@ -1653,7 +1653,13 @@ export interface TagCampaign {
   key: string; label: string; slugs: string[]; sort_order: number;
   contacts: number; accounts: number; in_pipeline: number;
   owner_email: string | null;
-  funnel: { not_yet: number; assigned: number; contacted: number; converted: number; on_hold: number };
+  /** Disjoint over in_pipeline: every stage plus not_yet (no stage at all).
+   *  call_booked and not_a_fit were added 2026-09 — before that they fell into
+   *  not_yet, reporting worked contacts as never contacted. */
+  funnel: {
+    not_yet: number; assigned: number; contacted: number;
+    call_booked: number; converted: number; not_a_fit: number; on_hold: number;
+  };
 }
 
 /** Tags as prioritizable outreach campaigns (Performance) — counts + order. */
@@ -1689,6 +1695,61 @@ export function useTagCampaignRecords(key: string | null) {
     queryFn: async () => {
       const { data } = await api.get<ApiResponse<{ contacts: TagCampaignContact[]; accounts: TagCampaignAccount[] }>>(
         `/api/jobs/tag-campaigns/${encodeURIComponent(key as string)}/records`);
+      return data.data;
+    },
+    staleTime: 60_000,
+  });
+}
+
+export type CampaignGranularity = "day" | "week" | "month";
+
+export interface CampaignTrendPoint {
+  bucket: string; emails: number; meetings: number; other: number; total: number;
+}
+
+export interface TagCampaignStats {
+  key: string;
+  label: string;
+  /** Every catalog slug the campaign aggregates — five for Operation 35. */
+  slugs: string[];
+  owner_email: string | null;
+  period: { from: string; to: string; granularity: CampaignGranularity };
+  /** All-time. Activation is a state, so it never honours the period. */
+  totals: {
+    contacts: number; accounts_all: number;
+    in_pipeline: number; accounts: number; with_email: number;
+    activated_contacts: number; activated_accounts: number;
+    no_stage: number; worked: number;
+    /** Partial: the backend canonicalises on_hold into revisit, so that key
+     *  never comes back. Read through a coalescing helper, not directly. */
+    stages: Partial<Record<MembershipStage, number>>;
+  };
+  /** Period-scoped outbound volume. */
+  outreach: {
+    emails: number; meetings: number; calls: number; texts: number;
+    linkedin: number; notes: number; total: number;
+    contacts_reached: number; accounts_reached: number;
+    last_touch: string | null;
+  };
+  trend: CampaignTrendPoint[];
+}
+
+/** One round trip for the campaign detail view: reach, funnel, outbound volume
+ *  and the trend. Disabled until a campaign is picked. */
+export function useTagCampaignStats(
+  key: string | null,
+  opts: { granularity?: CampaignGranularity; from?: string; to?: string } = {},
+) {
+  const { granularity = "week", from, to } = opts;
+  return useQuery<TagCampaignStats>({
+    queryKey: ["jobs", "tag-campaign-stats", key ?? "", granularity, from ?? "", to ?? ""],
+    enabled: !!key,
+    queryFn: async () => {
+      const p = new URLSearchParams({ granularity });
+      if (from) p.set("date_from", from);
+      if (to) p.set("date_to", to);
+      const { data } = await api.get<ApiResponse<TagCampaignStats>>(
+        `/api/jobs/tag-campaigns/${encodeURIComponent(key as string)}/stats?${p}`);
       return data.data;
     },
     staleTime: 60_000,

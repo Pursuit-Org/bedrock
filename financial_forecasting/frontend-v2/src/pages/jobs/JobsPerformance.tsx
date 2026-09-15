@@ -1,16 +1,18 @@
 import { useSearchParams } from "react-router-dom";
-import { BarChart3, GraduationCap, Kanban, Send } from "lucide-react";
+import { BarChart3, GraduationCap, Kanban, Megaphone, Send } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { ComingSoon } from "@/components/jobs/ComingSoon";
 import { cn } from "@/lib/utils";
 import { JobsLeadership } from "./JobsLeadership";
+import { JobsCampaigns } from "./JobsCampaigns";
 import { JobsOutreach } from "./JobsOutreach";
 import { JobsOpportunitiesOverview } from "./JobsOpportunitiesOverview";
 
-type TabKey = "exec" | "outreach" | "pipeline" | "placement";
+type TabKey = "exec" | "campaigns" | "outreach" | "pipeline" | "placement";
 
 const TABS: { key: TabKey; label: string; icon: typeof BarChart3 }[] = [
   { key: "exec", label: "Overview", icon: BarChart3 },
+  { key: "campaigns", label: "Campaigns", icon: Megaphone },
   { key: "outreach", label: "Outreach", icon: Send },
   { key: "pipeline", label: "Pipeline", icon: Kanban },
   { key: "placement", label: "Placement", icon: GraduationCap },
@@ -22,6 +24,7 @@ const VALID_TABS = new Set<string>(TABS.map((t) => t.key));
 const TAB_META: Record<TabKey, { title: string; subtitle: string }> = {
   // The URL keeps ?tab=exec so existing links and bookmarks still resolve.
   exec: { title: "Overview", subtitle: "The outcomes the leadership team tracks." },
+  campaigns: { title: "Campaigns", subtitle: "Each tag as a prioritized outreach push — who owns it, how far it's been worked, and what's left." },
   outreach: { title: "Outreach", subtitle: "The contacts funnel, the week's queue, and what needs a decision." },
   pipeline: { title: "Pipeline", subtitle: "The employer-deal pipeline — volume, conversion and where it's stuck." },
   placement: { title: "Placement", subtitle: "Placement performance reporting." },
@@ -70,6 +73,7 @@ export function JobsPerformancePage() {
 
       <div className="mt-1">
         {activeTab === "exec" && <JobsLeadership />}
+        {activeTab === "campaigns" && <JobsCampaigns />}
         {activeTab === "outreach" && <JobsOutreach />}
         {activeTab === "pipeline" && <JobsOpportunitiesOverview />}
         {activeTab === "placement" && (

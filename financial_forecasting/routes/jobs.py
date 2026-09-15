@@ -7960,20 +7960,52 @@ async def contact_tag_catalog(
 
 
 # ── Tag campaigns (Performance → prioritize outreach) ─────────────────────────
-# A "campaign" is one prioritizable tag; all alumni cohorts collapse into a
-# single "Fellow Alumni" campaign (key 'alumni'). Priority = catalog.sort_order.
+# A "campaign" is one prioritizable tag, except where the catalog splits a single
+# real-world push across several slugs. Those collapse to one campaign so the
+# funnel reads at the altitude the team actually runs the push at: all alumni
+# cohorts are one "Fellow Alumni", and the five operation_35_* segments (LT,
+# LT_Nick, Staff, Pursuit, Other) are one "Operation 35". The segments stay
+# visible in the drill — this only changes what the top-level row aggregates.
+# Priority = catalog.sort_order (the minimum across a group's slugs).
+#
+# Keys are matched as `slug == prefix` or `slug` starting with `prefix + "_"`,
+# never a bare prefix match, so adding a future tag like `board_advisors` can
+# never silently swallow itself into `board`.
+_CAMPAIGN_GROUPS: tuple[tuple[str, str], ...] = (
+    ("alumni", "Fellow Alumni"),
+    ("operation_35", "Operation 35"),
+)
+_CAMPAIGN_GROUP_LABELS = dict(_CAMPAIGN_GROUPS)
+
+
 def _campaign_key(slug: str) -> str:
-    return "alumni" if slug.startswith("alumni") else slug
+    for prefix, _ in _CAMPAIGN_GROUPS:
+        if slug == prefix or slug.startswith(prefix + "_"):
+            return prefix
+    return slug
+
+
+def _campaign_group_sql(col: str) -> str:
+    """The same grouping as an SQL expression, for GROUP BY in the counts query.
+
+    Underscores inside a prefix are escaped because `_` is LIKE's single-char
+    wildcard — unescaped, 'operation_35\\_%' would also match 'operationX35_foo'.
+    """
+    whens = " ".join(
+        f"WHEN {col} = '{p}' OR {col} LIKE '{p.replace('_', chr(92) + '_')}{chr(92)}_%' THEN '{p}'"
+        for p, _ in _CAMPAIGN_GROUPS
+    )
+    return f"(CASE {whens} ELSE {col} END)"
 
 
 @router.get("/tag-campaigns")
 async def tag_campaigns(user=Depends(require_auth), conn=Depends(get_db)):
     """Each tag as a prioritizable campaign with contact + account counts,
     ordered by priority. Alumni cohorts are merged into one 'Fellow Alumni' row."""
-    rows = await conn.fetch("""
+    rows = await conn.fetch(f"""
         WITH tagged AS (
           SELECT c.contact_id, c.is_jobs_contact,
-                 CASE WHEN t LIKE 'alumni%' THEN 'alumni' ELSE t END AS campaign,
+                 {_campaign_group_sql('t')} AS campaign,
                  nullif(lower(trim(c.current_company)), '') AS company,
                  (SELECT m.stage FROM bedrock.jobs_contact_membership m WHERE m.contact_id = c.contact_id) AS stage
           FROM public.contacts c, unnest(c.tags) t
@@ -7985,12 +8017,17 @@ async def tag_campaigns(user=Depends(require_auth), conn=Depends(get_db)):
                -- membership. accounts/in_pipeline reflect that population.
                count(DISTINCT company) FILTER (WHERE is_jobs_contact) AS accounts,
                count(DISTINCT contact_id) FILTER (WHERE is_jobs_contact) AS in_pipeline,
-               -- disjoint funnel stages; 'assigned' is a real stage a user sets
-               -- (no stage at all = blank/not-yet, computed on the client):
+               -- Disjoint funnel stages. Every stage the membership table can
+               -- hold is counted, because not_yet is derived as the remainder
+               -- below: a stage missing here would report worked contacts as
+               -- never contacted. call_booked and not_a_fit were doing exactly
+               -- that (27 of Operation 35's contacts, 2026-09).
                count(DISTINCT contact_id) FILTER (WHERE is_jobs_contact AND stage = 'assigned') AS assigned,
                count(DISTINCT contact_id) FILTER (WHERE is_jobs_contact AND stage = 'initial_outreach') AS contacted,
+               count(DISTINCT contact_id) FILTER (WHERE is_jobs_contact AND stage = 'call_booked') AS call_booked,
                count(DISTINCT contact_id) FILTER (WHERE is_jobs_contact AND stage = 'converted_to_opportunity') AS converted,
-               count(DISTINCT contact_id) FILTER (WHERE is_jobs_contact AND stage = 'on_hold') AS on_hold
+               count(DISTINCT contact_id) FILTER (WHERE is_jobs_contact AND stage = 'not_a_fit') AS not_a_fit,
+               count(DISTINCT contact_id) FILTER (WHERE is_jobs_contact AND stage IN ('on_hold', 'revisit')) AS on_hold
         FROM tagged GROUP BY campaign
     """)
     counts = {r["campaign"]: r for r in rows}
@@ -7999,7 +8036,8 @@ async def tag_campaigns(user=Depends(require_auth), conn=Depends(get_db)):
     camps: dict = {}
     for r in cat:
         key = _campaign_key(r["slug"])
-        c = camps.setdefault(key, {"key": key, "label": "Fellow Alumni" if key == "alumni" else r["label"],
+        c = camps.setdefault(key, {"key": key,
+                                   "label": _CAMPAIGN_GROUP_LABELS.get(key, r["label"]),
                                    "slugs": [], "sort_order": r["sort_order"], "owner_email": r["owner_email"]})
         c["slugs"].append(r["slug"])
         c["sort_order"] = min(c["sort_order"], r["sort_order"])
@@ -8011,20 +8049,25 @@ async def tag_campaigns(user=Depends(require_auth), conn=Depends(get_db)):
         in_pipeline = r["in_pipeline"] if r else 0
         assigned = r["assigned"] if r else 0
         contacted = r["contacted"] if r else 0
+        call_booked = r["call_booked"] if r else 0
         converted = r["converted"] if r else 0
+        not_a_fit = r["not_a_fit"] if r else 0
         on_hold = r["on_hold"] if r else 0
         out.append({**c,
                     "contacts": contacts,
                     "accounts": r["accounts"] if r else 0,
                     "in_pipeline": in_pipeline,
                     # funnel over the in-pipeline (jobs-prospect) population, DISJOINT:
-                    # not_yet (no stage) + assigned + contacted + converted + on_hold
-                    # = in_pipeline.
+                    # not_yet (no stage) + assigned + contacted + call_booked +
+                    # converted + not_a_fit + on_hold = in_pipeline.
                     "funnel": {
-                        "not_yet":   max(0, in_pipeline - assigned - contacted - converted - on_hold),
+                        "not_yet":   max(0, in_pipeline - assigned - contacted - call_booked
+                                         - converted - not_a_fit - on_hold),
                         "assigned":  assigned,
                         "contacted": contacted,
+                        "call_booked": call_booked,
                         "converted": converted,
+                        "not_a_fit": not_a_fit,
                         "on_hold":   on_hold,
                     }})
     out.sort(key=lambda x: (x["sort_order"], x["label"]))
@@ -8102,6 +8145,240 @@ async def tag_campaign_records(
     accounts = sorted(by_company.values(), key=lambda a: (-a["contacts"], a["company"]))
 
     return {"success": True, "data": {"contacts": contacts, "accounts": accounts}}
+
+
+# Membership stages a campaign contact can sit in, in funnel order. Sourced from
+# the frontend's MEMBERSHIP_STAGE_LABELS so the two can't drift; 'on_hold' is
+# folded into 'revisit' to match canon_membership_stage().
+_CAMPAIGN_STAGES = ("assigned", "initial_outreach", "call_booked",
+                    "converted_to_opportunity", "revisit", "not_a_fit")
+
+# A contact counts as WORKED once they've reached any stage past 'assigned'.
+# 'assigned' means claimed by a staffer, not yet reached, so it stays out.
+_WORKED_STAGES = ("initial_outreach", "call_booked", "converted_to_opportunity",
+                  "revisit", "not_a_fit")
+
+
+def _campaign_activity_cte(slug_param: str = "$1") -> str:
+    """CTE chain resolving a campaign's slug set to its contacts and the
+    outbound touches against them.
+
+    Activities link to a contact three ways and none is complete on its own:
+    the participant FK (set by the jobs tool), the email recipient list (synced
+    mail, where the FK is often null), and the meeting attendee list. Unioned on
+    activity id so a touch that matches two ways still counts once.
+
+    OUTBOUND ONLY. There is no direction column on bedrock.activity, so it is
+    inferred: a synced email counts only when Pursuit sent it, while meetings
+    and hand-logged touches (call/text/linkedin/note) are outreach by
+    construction — nobody logs a call they didn't make.
+    """
+    return f"""
+        camp AS (
+          SELECT DISTINCT c.contact_id,
+                 lower(nullif(trim(c.email), '')) AS email,
+                 nullif(lower(trim(c.current_company)), '') AS company,
+                 c.is_jobs_contact
+          FROM public.contacts c
+          CROSS JOIN LATERAL unnest(c.tags) AS t
+          WHERE t = ANY({slug_param}::text[])
+        ),
+        pipe AS (SELECT * FROM camp WHERE is_jobs_contact),
+        act AS (
+          SELECT a.id, a.activity_date, a.type,
+                 a.participant_public_contact_id AS cid,
+                 a.email_to, a.email_cc, a.meeting_attendees
+          FROM bedrock.activity a
+          WHERE a.deleted_at IS NULL
+            AND {_not_autoreply('a')} AND {_jobs_relevant('a')}
+            AND (a.type <> 'email'
+                 OR coalesce(a.email_from, '') ILIKE '%@pursuit.org%'
+                 OR a.source = 'manual')
+        ),
+        linked AS (
+          SELECT a.id, a.activity_date, a.type, p.contact_id, p.company
+          FROM act a JOIN pipe p ON p.contact_id = a.cid
+          UNION
+          SELECT a.id, a.activity_date, a.type, p.contact_id, p.company
+          FROM act a
+          CROSS JOIN LATERAL unnest(coalesce(a.email_to, '{{}}') || coalesce(a.email_cc, '{{}}')) AS e
+          JOIN pipe p ON p.email = lower(e)
+          WHERE a.type = 'email'
+          UNION
+          SELECT a.id, a.activity_date, a.type, p.contact_id, p.company
+          FROM act a
+          CROSS JOIN LATERAL jsonb_array_elements(coalesce(a.meeting_attendees, '[]'::jsonb)) AS att
+          JOIN pipe p ON p.email = lower(att->>'email')
+          WHERE a.type = 'meeting'
+        )
+    """
+
+
+@router.get("/tag-campaigns/{key}/stats")
+async def tag_campaign_stats(
+    key: str,
+    granularity: str = Query("week", pattern="^(day|week|month)$"),
+    date_from: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    date_to: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Everything the campaign detail view needs in one round trip: reach against
+    the whole campaign, the stage funnel, outbound volume by channel, and the
+    outreach trend.
+
+    Two populations, deliberately distinct — conflating them is what makes a
+    campaign look better worked than it is:
+      * `totals.contacts` — every tagged contact, the denominator for coverage.
+      * `totals.in_pipeline` — those flagged as jobs prospects. Every funnel,
+        activation and outreach number below counts THIS set, matching
+        /tag-campaigns so the summary and the list can't disagree.
+
+    `totals` is all-time (activation is a state, not a window). `outreach` and
+    `trend` honour the period, defaulting to a trailing 12 buckets.
+    """
+    cat = await conn.fetch(
+        "SELECT slug, label, sort_order, owner_email FROM bedrock.contact_tag_catalog WHERE active")
+    group = [r for r in cat if _campaign_key(r["slug"]) == key]
+    if not group:
+        raise HTTPException(404, f"Unknown campaign: {key}")
+    slugs = [r["slug"] for r in group]
+    label = _CAMPAIGN_GROUP_LABELS.get(key, group[0]["label"])
+    owner_email = next((r["owner_email"] for r in group if r["owner_email"]), None)
+
+    # Period: an explicit from+to wins; otherwise a trailing window sized to the
+    # granularity, so the default view always has roughly a dozen buckets.
+    step = {"day": timedelta(days=1), "week": timedelta(weeks=1), "month": timedelta(days=30)}[granularity]
+    today = date.today()
+    d_to = date.fromisoformat(date_to) if date_to else today
+    d_from = date.fromisoformat(date_from) if date_from else d_to - step * 12
+    if d_from > d_to:
+        raise HTTPException(400, "date_from must not be after date_to")
+
+    cte = _campaign_activity_cte()
+
+    # ── all-time totals: population, stages, activation ──────────────────────
+    stage_filters = ",\n               ".join(
+        f"count(*) FILTER (WHERE stage = '{s}') AS st_{s}" for s in _CAMPAIGN_STAGES
+    )
+    totals_row = await conn.fetchrow(f"""
+        WITH {cte},
+        touched AS (SELECT DISTINCT contact_id, company FROM linked),
+        member AS (
+          SELECT p.contact_id, p.company, p.email,
+                 {canon_membership_sql('m.stage')} AS stage,
+                 (t.contact_id IS NOT NULL) AS is_touched
+          FROM pipe p
+          LEFT JOIN bedrock.jobs_contact_membership m ON m.contact_id = p.contact_id
+          LEFT JOIN touched t ON t.contact_id = p.contact_id
+        )
+        SELECT (SELECT count(*) FROM camp) AS contacts_all,
+               (SELECT count(DISTINCT company) FROM camp WHERE company IS NOT NULL) AS accounts_all,
+               count(*) AS in_pipeline,
+               count(DISTINCT company) FILTER (WHERE company IS NOT NULL) AS accounts,
+               count(*) FILTER (WHERE email IS NOT NULL) AS with_email,
+               count(*) FILTER (WHERE is_touched) AS activated_contacts,
+               count(DISTINCT company) FILTER (WHERE is_touched AND company IS NOT NULL) AS activated_accounts,
+               count(*) FILTER (WHERE stage IS NULL) AS st_none,
+               {stage_filters}
+        FROM member
+    """, slugs)
+
+    stages = {s: int(totals_row[f"st_{s}"] or 0) for s in _CAMPAIGN_STAGES}
+    worked = sum(stages[s] for s in _WORKED_STAGES)
+    in_pipeline = int(totals_row["in_pipeline"] or 0)
+
+    # ── period outreach volume by channel ────────────────────────────────────
+    out_row = await conn.fetchrow(f"""
+        WITH {cte},
+        win AS (
+          SELECT * FROM linked
+          WHERE activity_date >= $2::date AND activity_date < ($3::date + 1)
+        )
+        SELECT count(DISTINCT id) FILTER (WHERE type = 'email') AS emails,
+               count(DISTINCT id) FILTER (WHERE type = 'meeting') AS meetings,
+               count(DISTINCT id) FILTER (WHERE type = 'call') AS calls,
+               count(DISTINCT id) FILTER (WHERE type = 'text') AS texts,
+               count(DISTINCT id) FILTER (WHERE type = 'linkedin') AS linkedin,
+               count(DISTINCT id) FILTER (WHERE type = 'note') AS notes,
+               count(DISTINCT id) AS total,
+               count(DISTINCT contact_id) AS contacts_reached,
+               count(DISTINCT company) FILTER (WHERE company IS NOT NULL) AS accounts_reached,
+               -- Deliberately off `linked`, not `win`: "last touch" answers when
+               -- this campaign was last worked at all. Scoped to the window it
+               -- would just restate the window's end on any active campaign, and
+               -- read as never-touched on a quiet one.
+               (SELECT max(activity_date) FROM linked) AS last_touch
+        FROM win
+    """, slugs, d_from, d_to)
+
+    # ── trend, zero-filled so a quiet week reads as a zero, not a gap ────────
+    trend_rows = await conn.fetch(f"""
+        WITH {cte},
+        buckets AS (
+          SELECT generate_series(
+            date_trunc('{granularity}', $2::timestamptz),
+            date_trunc('{granularity}', $3::timestamptz),
+            '1 {granularity}'::interval) AS bucket
+        ),
+        win AS (
+          SELECT DISTINCT id, activity_date, type FROM linked
+          WHERE activity_date >= $2::date AND activity_date < ($3::date + 1)
+        ),
+        agg AS (
+          SELECT date_trunc('{granularity}', activity_date) AS bucket,
+                 count(*) FILTER (WHERE type = 'email') AS emails,
+                 count(*) FILTER (WHERE type = 'meeting') AS meetings,
+                 count(*) FILTER (WHERE type NOT IN ('email', 'meeting')) AS other,
+                 count(*) AS total
+          FROM win GROUP BY 1
+        )
+        SELECT b.bucket,
+               coalesce(a.emails, 0) AS emails,
+               coalesce(a.meetings, 0) AS meetings,
+               coalesce(a.other, 0) AS other,
+               coalesce(a.total, 0) AS total
+        FROM buckets b LEFT JOIN agg a ON a.bucket = b.bucket
+        ORDER BY b.bucket
+    """, slugs, d_from, d_to)
+
+    last_touch = out_row["last_touch"]
+    return {"success": True, "data": {
+        "key": key,
+        "label": label,
+        "slugs": sorted(slugs),
+        "owner_email": owner_email,
+        "period": {"from": d_from.isoformat(), "to": d_to.isoformat(), "granularity": granularity},
+        "totals": {
+            "contacts": int(totals_row["contacts_all"] or 0),
+            "accounts_all": int(totals_row["accounts_all"] or 0),
+            "in_pipeline": in_pipeline,
+            "accounts": int(totals_row["accounts"] or 0),
+            "with_email": int(totals_row["with_email"] or 0),
+            "activated_contacts": int(totals_row["activated_contacts"] or 0),
+            "activated_accounts": int(totals_row["activated_accounts"] or 0),
+            "no_stage": int(totals_row["st_none"] or 0),
+            "worked": worked,
+            "stages": stages,
+        },
+        "outreach": {
+            "emails": int(out_row["emails"] or 0),
+            "meetings": int(out_row["meetings"] or 0),
+            "calls": int(out_row["calls"] or 0),
+            "texts": int(out_row["texts"] or 0),
+            "linkedin": int(out_row["linkedin"] or 0),
+            "notes": int(out_row["notes"] or 0),
+            "total": int(out_row["total"] or 0),
+            "contacts_reached": int(out_row["contacts_reached"] or 0),
+            "accounts_reached": int(out_row["accounts_reached"] or 0),
+            "last_touch": last_touch.isoformat() if last_touch else None,
+        },
+        "trend": [{
+            "bucket": r["bucket"].date().isoformat(),
+            "emails": int(r["emails"]), "meetings": int(r["meetings"]),
+            "other": int(r["other"]), "total": int(r["total"]),
+        } for r in trend_rows],
+    }}
 
 
 class CampaignOrder(BaseModel):
