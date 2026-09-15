@@ -996,6 +996,14 @@ async def link_opp_placement(
 # accepts it so a record filed in error can be walked back.
 _ENGAGEMENT_STAGES = ("active", "pipeline", "completed", "ended")
 
+# Stages that mean the builder is out of the role. Both require an end date —
+# see update_placement. 'completed' vs 'ended' has no dd_metrics definition yet.
+_TERMINAL_STAGES = ("completed", "ended")
+
+# Matches employment_records_end_reason_check (db/migrations/2026-09-15-...).
+_END_REASONS = ("contract_ended", "new_role", "laid_off", "terminated",
+                "personal", "unknown")
+
 
 class PlacementUpdate(BaseModel):
     influenced: Optional[bool] = None  # true / false / null (unclassify)
@@ -1003,6 +1011,8 @@ class PlacementUpdate(BaseModel):
     role_title: Optional[str] = None   # edit the title (syncs the linked role)
     engagement_stage: Optional[str] = None  # active | pipeline | completed | ended
     end_date: Optional[date] = None         # when the engagement stopped
+    end_reason: Optional[str] = None        # one of _END_REASONS
+    end_note: Optional[str] = None          # optional free text alongside the reason
 
 
 @router.patch("/placements/{placement_id}")
@@ -1023,13 +1033,44 @@ async def update_placement(
     """
     sets, params, i = [], [], 1
     fields = body.model_dump(exclude_unset=True)
+    stage = body.engagement_stage
     if "engagement_stage" in fields:
-        if body.engagement_stage not in _ENGAGEMENT_STAGES:
+        if stage not in _ENGAGEMENT_STAGES:
             raise HTTPException(
                 422, f"engagement_stage must be one of: {', '.join(_ENGAGEMENT_STAGES)}")
-        sets.append(f"engagement_stage=${i}"); params.append(body.engagement_stage); i += 1
+        # An end date is required on the way out, not optional. Without it the
+        # record says someone left but not when, which is precisely the hole
+        # that makes retention uncomputable today. 'unknown' is an allowed
+        # reason, so nobody is forced to invent a cause — only a date, which an
+        # approximation still answers usefully.
+        if stage in _TERMINAL_STAGES:
+            known_end = body.end_date if "end_date" in fields else await conn.fetchval(
+                "SELECT end_date FROM public.employment_records WHERE id=$1", placement_id)
+            if known_end is None:
+                raise HTTPException(
+                    422, f"end_date is required when engagement_stage is '{stage}'")
+        sets.append(f"engagement_stage=${i}"); params.append(stage); i += 1
     if "end_date" in fields:
         sets.append(f"end_date=${i}"); params.append(body.end_date); i += 1
+    # Reason/note describe an ending, so returning to 'active' clears them along
+    # with the date rather than leaving a stale explanation on a live placement.
+    reopening = "engagement_stage" in fields and stage not in _TERMINAL_STAGES
+    if reopening and "end_date" not in fields:
+        sets.append("end_date=NULL")
+    if "end_reason" in fields and body.end_reason is not None:
+        if body.end_reason not in _END_REASONS:
+            raise HTTPException(422, f"end_reason must be one of: {', '.join(_END_REASONS)}")
+    # Columns arrive with db/migrations/2026-09-15-employment-records-end-reason.sql;
+    # writes are skipped until then rather than 42703-ing the whole update.
+    if await _has_column("public", "employment_records", "end_reason"):
+        if "end_reason" in fields:
+            sets.append(f"end_reason=${i}"); params.append(body.end_reason); i += 1
+        elif reopening:
+            sets.append("end_reason=NULL")
+        if "end_note" in fields:
+            sets.append(f"end_note=${i}"); params.append(body.end_note); i += 1
+        elif reopening:
+            sets.append("end_note=NULL")
     if "influenced" in fields:
         sets.append(f"influenced=${i}"); params.append(body.influenced); i += 1
     if "salary" in fields:

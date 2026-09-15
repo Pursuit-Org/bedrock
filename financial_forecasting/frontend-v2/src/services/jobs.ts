@@ -1059,11 +1059,40 @@ export function useUpdatePlacementSalary() {
   });
 }
 
+// Mirrors employment_records_end_reason_check. Neutral by design — people leave
+// for good reasons, and the column explains a number rather than grading anyone.
+export const END_REASON_LABELS = {
+  contract_ended: "Contract ran its term",
+  new_role: "Left for another role",
+  laid_off: "Laid off / role eliminated",
+  terminated: "Let go",
+  personal: "Personal reasons",
+  unknown: "Unknown",
+} as const;
+export type EndReason = keyof typeof END_REASON_LABELS;
+
 export function useUpdatePlacementStage() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async ({ id, engagement_stage }: { id: string; engagement_stage: string }) => {
-      await api.patch(`/api/jobs/placements/${id}`, { engagement_stage });
+    mutationFn: async ({
+      id,
+      engagement_stage,
+      end_date,
+      end_reason,
+      end_note,
+    }: {
+      id: string;
+      engagement_stage: string;
+      end_date?: string;
+      end_reason?: EndReason;
+      end_note?: string;
+    }) => {
+      await api.patch(`/api/jobs/placements/${id}`, {
+        engagement_stage,
+        ...(end_date !== undefined ? { end_date } : {}),
+        ...(end_reason !== undefined ? { end_reason } : {}),
+        ...(end_note !== undefined ? { end_note } : {}),
+      });
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["jobs", "placements"] });
