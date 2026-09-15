@@ -879,6 +879,7 @@ export interface PlacementsSummary {
   influenced_any: number;
   committed_ft_roles: number;
   committed_trial_active: number;
+  ft_no_longer_in_role: number;
   ft_roles_secured: number;
   avg_salary_ft_placed: number | null;
   avg_salary_ft_secured: number | null;
@@ -1179,11 +1180,13 @@ export function useJobRoles() {
   });
 }
 
-export function useMetricDrill(metricKey: string | null) {
+export function useMetricDrill(metricKey: string | null, segment?: string) {
   return useQuery<MetricDrill>({
-    queryKey: ["jobs", "metric", metricKey],
+    queryKey: ["jobs", "metric", metricKey, segment ?? "all"],
     queryFn: async () => {
-      const { data } = await api.get<ApiResponse<MetricDrill>>(`/api/jobs/metrics/${metricKey}`);
+      const { data } = await api.get<ApiResponse<MetricDrill>>(`/api/jobs/metrics/${metricKey}`, {
+        params: segment && segment !== "all" ? { segment } : undefined,
+      });
       return data.data;
     },
     enabled: metricKey !== null,

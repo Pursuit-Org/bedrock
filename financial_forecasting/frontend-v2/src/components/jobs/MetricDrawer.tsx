@@ -56,12 +56,15 @@ type EditableSelect = {
 
 export function MetricDrawer({
   metricKey,
+  segment,
   onClose,
 }: {
   metricKey: string | null;
+  /** L3 cohort the card was scoped to, so the drill matches the number. */
+  segment?: string;
   onClose: () => void;
 }) {
-  const { data, isLoading } = useMetricDrill(metricKey);
+  const { data, isLoading } = useMetricDrill(metricKey, segment);
   const updateOpportunity = useUpdateOpportunity();
   const updatePlacementSalary = useUpdatePlacementSalary();
   const updatePlacementTitle = useUpdatePlacementTitle();
