@@ -1059,6 +1059,21 @@ export function useUpdatePlacementSalary() {
   });
 }
 
+export function useUpdatePlacementStage() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, engagement_stage }: { id: string; engagement_stage: string }) => {
+      await api.patch(`/api/jobs/placements/${id}`, { engagement_stage });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["jobs", "placements"] });
+      qc.invalidateQueries({ queryKey: ["jobs", "metric"] });
+      toast.success("Status updated");
+    },
+    onError: () => toast.error("Update failed"),
+  });
+}
+
 export function useSetActivityRelevance() {
   const qc = useQueryClient();
   return useMutation({

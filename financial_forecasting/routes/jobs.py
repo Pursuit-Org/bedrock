@@ -413,6 +413,9 @@ async def metric_drilldown(
                 "builder": r["builder"] or "—",
                 "status": ("Full-time placed" if r["engagement_stage"] == "active"
                            else "Full-time placed — no longer in role"),
+                # Raw value so the drill can render an editable stage dropdown;
+                # `status` stays the human sentence for the read-only rows.
+                "engagement_stage": r["engagement_stage"],
                 "role": r["role_title"] or "—",
                 "salary": str(int(r["payment_amount"])) if r["payment_amount"] else "",
                 "counted": "✓" if r["id"] in counted_ids else "—",
@@ -988,10 +991,18 @@ async def link_opp_placement(
     return {"success": True, "data": {"id": str(placement_id), "opportunity_id": str(opp_id)}}
 
 
+# Mirrors employment_records_engagement_stage_check. 'pipeline' is a
+# pre-placement state and isn't offered in the placements UI, but the API
+# accepts it so a record filed in error can be walked back.
+_ENGAGEMENT_STAGES = ("active", "pipeline", "completed", "ended")
+
+
 class PlacementUpdate(BaseModel):
     influenced: Optional[bool] = None  # true / false / null (unclassify)
     salary: Optional[int] = None       # edit payment_amount (the secured-jobs SoT)
     role_title: Optional[str] = None   # edit the title (syncs the linked role)
+    engagement_stage: Optional[str] = None  # active | pipeline | completed | ended
+    end_date: Optional[date] = None         # when the engagement stopped
 
 
 @router.patch("/placements/{placement_id}")
@@ -1001,9 +1012,24 @@ async def update_placement(
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
-    """Edit a secured job: influence attribution and/or salary (payment_amount)."""
+    """Edit a secured job: influence attribution, salary, or engagement stage.
+
+    Stage is what records that a placed builder is no longer in the role. They
+    stay counted as placed — the metric is that they WERE placed — so nothing
+    here changes the headline; it drives the "N no longer in role" breakdown and
+    is the only way end dates ever get captured for retention. The linked role
+    is deliberately NOT reopened on an end: whether that seat is still live is a
+    separate call for the team.
+    """
     sets, params, i = [], [], 1
     fields = body.model_dump(exclude_unset=True)
+    if "engagement_stage" in fields:
+        if body.engagement_stage not in _ENGAGEMENT_STAGES:
+            raise HTTPException(
+                422, f"engagement_stage must be one of: {', '.join(_ENGAGEMENT_STAGES)}")
+        sets.append(f"engagement_stage=${i}"); params.append(body.engagement_stage); i += 1
+    if "end_date" in fields:
+        sets.append(f"end_date=${i}"); params.append(body.end_date); i += 1
     if "influenced" in fields:
         sets.append(f"influenced=${i}"); params.append(body.influenced); i += 1
     if "salary" in fields:

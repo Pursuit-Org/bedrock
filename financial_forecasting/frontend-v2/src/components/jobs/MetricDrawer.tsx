@@ -6,6 +6,7 @@ import {
   useMetricDrill,
   useUpdateOpportunity,
   useUpdatePlacementSalary,
+  useUpdatePlacementStage,
   useUpdatePlacementTitle,
   STAGES_ORDERED,
   STAGE_LABELS,
@@ -67,6 +68,7 @@ export function MetricDrawer({
   const { data, isLoading } = useMetricDrill(metricKey, segment);
   const updateOpportunity = useUpdateOpportunity();
   const updatePlacementSalary = useUpdatePlacementSalary();
+  const updatePlacementStage = useUpdatePlacementStage();
   const updatePlacementTitle = useUpdatePlacementTitle();
   const updateRole = useUpdateRole();
   const queryClient = useQueryClient();
@@ -133,6 +135,25 @@ export function MetricDrawer({
       };
     }
 
+
+    // Marking a placed builder as having left. Only real placement records are
+    // editable — trial and committed-req rows have no employment record behind
+    // them. 'pipeline' is left out: it means "not placed yet", which isn't a
+    // thing you'd say about a row in this list.
+    if (entity === "placement" && colKey === "status" && row.kind === "placed") {
+      return {
+        value: row.engagement_stage ?? "active",
+        options: [
+          { value: "active", label: "In role" },
+          { value: "completed", label: "Completed" },
+          { value: "ended", label: "No longer in role" },
+        ],
+        onChange: async (newValue) => {
+          await updatePlacementStage.mutateAsync({ id, engagement_stage: newValue });
+          queryClient.invalidateQueries({ queryKey: ["jobs"] });
+        },
+      };
+    }
 
     return null;
   }
