@@ -8197,6 +8197,11 @@ def _campaign_activity_cte(slug_param: str = "$1") -> str:
                    nullif(a.email_from, ''),
                    a.logged_by)) AS actor,
                  a.subject,
+                 -- Preview text for the activity drill. Gmail sync fills this on
+                 -- ~90% of emails; the description is what a hand-logged touch
+                 -- carries instead. Truncated here rather than in the feed so a
+                 -- long thread can't bloat the response.
+                 left(nullif(btrim(coalesce(a.email_snippet, a.description, '')), ''), 400) AS snippet,
                  a.participant_public_contact_id AS cid,
                  a.email_to, a.email_cc, a.meeting_attendees
           FROM bedrock.activity a
@@ -8207,16 +8212,16 @@ def _campaign_activity_cte(slug_param: str = "$1") -> str:
                  OR a.source = 'manual')
         ),
         linked AS (
-          SELECT a.id, a.activity_date, a.type, a.actor, a.subject, p.contact_id, p.company
+          SELECT a.id, a.activity_date, a.type, a.actor, a.subject, a.snippet, p.contact_id, p.company
           FROM act a JOIN pipe p ON p.contact_id = a.cid
           UNION
-          SELECT a.id, a.activity_date, a.type, a.actor, a.subject, p.contact_id, p.company
+          SELECT a.id, a.activity_date, a.type, a.actor, a.subject, a.snippet, p.contact_id, p.company
           FROM act a
           CROSS JOIN LATERAL unnest(coalesce(a.email_to, '{{}}') || coalesce(a.email_cc, '{{}}')) AS e
           JOIN pipe p ON p.email = lower(e)
           WHERE a.type = 'email'
           UNION
-          SELECT a.id, a.activity_date, a.type, a.actor, a.subject, p.contact_id, p.company
+          SELECT a.id, a.activity_date, a.type, a.actor, a.subject, a.snippet, p.contact_id, p.company
           FROM act a
           CROSS JOIN LATERAL jsonb_array_elements(coalesce(a.meeting_attendees, '[]'::jsonb)) AS att
           JOIN pipe p ON p.email = lower(att->>'email')
@@ -8307,8 +8312,13 @@ async def tag_campaign_stats(
           WHERE activity_date >= $2::date AND activity_date < ($3::date + 1)
         )
         SELECT count(DISTINCT id) FILTER (WHERE type = 'email') AS emails,
-               count(DISTINCT id) FILTER (WHERE type = 'meeting') AS meetings,
-               count(DISTINCT id) FILTER (WHERE type = 'call') AS calls,
+               -- One "calls booked" channel. A calendar meeting and a
+               -- hand-logged call are the same event to the team — a live
+               -- conversation that got booked — and splitting them only made
+               -- the smaller number look like a failure. Volume is
+               -- overwhelmingly calendar: 719 meetings vs 5 logged calls for
+               -- Operation 35 all-time.
+               count(DISTINCT id) FILTER (WHERE type IN ('meeting', 'call')) AS calls_booked,
                count(DISTINCT id) FILTER (WHERE type = 'text') AS texts,
                count(DISTINCT id) FILTER (WHERE type = 'linkedin') AS linkedin,
                count(DISTINCT id) FILTER (WHERE type = 'note') AS notes,
@@ -8339,14 +8349,14 @@ async def tag_campaign_stats(
         agg AS (
           SELECT date_trunc('{granularity}', activity_date) AS bucket,
                  count(*) FILTER (WHERE type = 'email') AS emails,
-                 count(*) FILTER (WHERE type = 'meeting') AS meetings,
-                 count(*) FILTER (WHERE type NOT IN ('email', 'meeting')) AS other,
+                 count(*) FILTER (WHERE type IN ('meeting', 'call')) AS calls_booked,
+                 count(*) FILTER (WHERE type NOT IN ('email', 'meeting', 'call')) AS other,
                  count(*) AS total
           FROM win GROUP BY 1
         )
         SELECT b.bucket,
                coalesce(a.emails, 0) AS emails,
-               coalesce(a.meetings, 0) AS meetings,
+               coalesce(a.calls_booked, 0) AS calls_booked,
                coalesce(a.other, 0) AS other,
                coalesce(a.total, 0) AS total
         FROM buckets b LEFT JOIN agg a ON a.bucket = b.bucket
@@ -8374,8 +8384,7 @@ async def tag_campaign_stats(
         },
         "outreach": {
             "emails": int(out_row["emails"] or 0),
-            "meetings": int(out_row["meetings"] or 0),
-            "calls": int(out_row["calls"] or 0),
+            "calls_booked": int(out_row["calls_booked"] or 0),
             "texts": int(out_row["texts"] or 0),
             "linkedin": int(out_row["linkedin"] or 0),
             "notes": int(out_row["notes"] or 0),
@@ -8386,18 +8395,25 @@ async def tag_campaign_stats(
         },
         "trend": [{
             "bucket": r["bucket"].date().isoformat(),
-            "emails": int(r["emails"]), "meetings": int(r["meetings"]),
+            "emails": int(r["emails"]), "calls_booked": int(r["calls_booked"]),
             "other": int(r["other"]), "total": int(r["total"]),
         } for r in trend_rows],
     }}
 
 
-# Effective owner of a campaign contact. `owner_email` is the real field but is
-# set on almost nobody (7 of Operation 35's 113 memberships as of 2026-09), so
-# an Owner column reading off it alone would be blank and its filter useless.
-# Falling back to whoever first reached out, then whoever put the contact in the
-# pipeline, fills 99 of those 113. The UI says which field answered.
-_EFFECTIVE_OWNER = "coalesce(m.owner_email, m.first_outreach_by, m.assigned_by)"
+# Who a campaign contact belongs to: the person assigned to the CONTACT, else
+# the person assigned to their ACCOUNT. Nothing else. An earlier version fell
+# back to whoever first reached out or added the record, which filled more rows
+# but answered a different question — "who touched this" is the Editor column,
+# and conflating the two made the Owner column unreadable.
+#
+# Contact ownership is barely used (7 of Operation 35's 449) while account
+# ownership is well populated (269 of 282 jobs_account rows), so the account is
+# what actually answers this most of the time. No owner means no owner: the
+# column stays blank rather than inventing one.
+_OWNER_SQL = "coalesce(m.owner_email, ja.owner_email)"
+_OWNER_SOURCE_SQL = ("CASE WHEN m.owner_email IS NOT NULL THEN 'contact' "
+                     "WHEN ja.owner_email IS NOT NULL THEN 'account' END")
 
 
 @router.get("/tag-campaigns/{key}/activity")
@@ -8438,34 +8454,37 @@ async def tag_campaign_activity(
     rows = await conn.fetch(f"""
         WITH {cte},
         own AS (
-          SELECT p.contact_id, {_EFFECTIVE_OWNER} AS owner,
-                 (m.owner_email IS NOT NULL) AS owner_is_explicit
+          SELECT p.contact_id, {_OWNER_SQL} AS owner, {_OWNER_SOURCE_SQL} AS owner_source
           FROM pipe p
           LEFT JOIN bedrock.jobs_contact_membership m ON m.contact_id = p.contact_id
+          -- jobs_account keys on the same normalised company string `pipe.company`
+          -- already carries: lower(btrim(current_company)).
+          LEFT JOIN bedrock.jobs_account ja ON ja.account_key = p.company
         ),
         ev AS (
           SELECT l.activity_date AS at, 'touch'::text AS kind, l.type AS subkind,
-                 l.contact_id, l.company, l.actor, l.subject,
+                 l.contact_id, l.company, l.actor, l.subject, l.snippet,
                  NULL::text AS from_stage, NULL::text AS to_stage
           FROM linked l
           WHERE l.activity_date >= $2::date AND l.activity_date < ($3::date + 1)
           UNION ALL
           SELECT h.changed_at, 'stage', NULL, h.contact_id, p.company,
-                 lower(h.changed_by), h.note,
+                 lower(h.changed_by), NULL, h.note,
                  {canon_membership_sql('h.from_stage')}, {canon_membership_sql('h.to_stage')}
           FROM bedrock.jobs_membership_stage_history h
           JOIN pipe p ON p.contact_id = h.contact_id
           WHERE h.changed_at >= $2::date AND h.changed_at < ($3::date + 1)
           UNION ALL
           SELECT m.assigned_at, 'added', NULL, m.contact_id, p.company,
-                 lower(m.assigned_by), NULL, NULL, NULL
+                 lower(m.assigned_by), NULL, m.activation_note, NULL, NULL
           FROM bedrock.jobs_contact_membership m
           JOIN pipe p ON p.contact_id = m.contact_id
           WHERE m.assigned_at >= $2::date AND m.assigned_at < ($3::date + 1)
         )
-        SELECT ev.at, ev.kind, ev.subkind, ev.contact_id, ev.company, ev.actor,
-               ev.subject, ev.from_stage, ev.to_stage,
-               c.full_name, own.owner, own.owner_is_explicit
+        SELECT ev.at, ev.kind, ev.subkind, ev.contact_id, ev.actor,
+               ev.subject, ev.snippet, ev.from_stage, ev.to_stage,
+               c.full_name, c.current_company AS account,
+               own.owner, own.owner_source
         FROM ev
         JOIN public.contacts c ON c.contact_id = ev.contact_id
         LEFT JOIN own ON own.contact_id = ev.contact_id
@@ -8480,15 +8499,17 @@ async def tag_campaign_activity(
     # activity CTE — none of the join work it does is needed to list owners.
     owner_rows = await conn.fetch(f"""
         WITH pipe AS (
-          SELECT DISTINCT c.contact_id
+          SELECT DISTINCT c.contact_id,
+                 nullif(lower(btrim(coalesce(c.current_company, ''))), '') AS company
           FROM public.contacts c
           CROSS JOIN LATERAL unnest(c.tags) AS t
           WHERE t = ANY($1::text[]) AND c.is_jobs_contact
         )
-        SELECT {_EFFECTIVE_OWNER} AS owner, count(*) AS n
+        SELECT {_OWNER_SQL} AS owner, count(*) AS n
         FROM pipe p
-        JOIN bedrock.jobs_contact_membership m ON m.contact_id = p.contact_id
-        WHERE {_EFFECTIVE_OWNER} IS NOT NULL
+        LEFT JOIN bedrock.jobs_contact_membership m ON m.contact_id = p.contact_id
+        LEFT JOIN bedrock.jobs_account ja ON ja.account_key = p.company
+        WHERE {_OWNER_SQL} IS NOT NULL
         GROUP BY 1 ORDER BY 2 DESC, 1
     """, slugs)
 
@@ -8499,13 +8520,17 @@ async def tag_campaign_activity(
             "at": r["at"].isoformat() if r["at"] else None,
             "kind": r["kind"],
             "subkind": r["subkind"],
+            # Which segment button shows this row. A touch is outreach; stage
+            # moves and additions are funnel.
+            "category": "outreach" if r["kind"] == "touch" else "funnel",
             "contact_id": r["contact_id"],
             "contact_name": r["full_name"],
-            "company": r["company"],
+            "account": r["account"],
             "owner": r["owner"],
-            "owner_is_explicit": bool(r["owner_is_explicit"]),
-            "actor": r["actor"],
+            "owner_source": r["owner_source"],
+            "editor": r["actor"],
             "subject": r["subject"],
+            "snippet": r["snippet"],
             "from_stage": r["from_stage"],
             "to_stage": r["to_stage"],
         } for r in rows],

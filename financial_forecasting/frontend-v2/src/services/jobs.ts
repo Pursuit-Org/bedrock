@@ -1706,7 +1706,7 @@ export function useTagCampaignRecords(key: string | null) {
 export type CampaignGranularity = OutreachGranularity;
 
 export interface CampaignTrendPoint {
-  bucket: string; emails: number; meetings: number; other: number; total: number;
+  bucket: string; emails: number; calls_booked: number; other: number; total: number;
 }
 
 export interface TagCampaignStats {
@@ -1726,9 +1726,11 @@ export interface TagCampaignStats {
      *  never comes back. Read through a coalescing helper, not directly. */
     stages: Partial<Record<MembershipStage, number>>;
   };
-  /** Period-scoped outbound volume. */
+  /** Period-scoped outbound volume. Calendar meetings and hand-logged calls
+   *  are one `calls_booked` channel — both are a live conversation that got
+   *  booked, and splitting them made the smaller number look like a failure. */
   outreach: {
-    emails: number; meetings: number; calls: number; texts: number;
+    emails: number; calls_booked: number; texts: number;
     linkedin: number; notes: number; total: number;
     contacts_reached: number; accounts_reached: number;
     last_touch: string | null;
@@ -1760,23 +1762,26 @@ export function useTagCampaignStats(
 
 export type CampaignEventKind = "touch" | "stage" | "added";
 
+export type CampaignEventCategory = "outreach" | "funnel";
+
 export interface CampaignEvent {
   at: string | null;
   kind: CampaignEventKind;
   /** Activity type for a touch (email, meeting, call, text, linkedin, note). */
   subkind: string | null;
+  /** Which segment filter shows this row. */
+  category: CampaignEventCategory;
   contact_id: number;
   contact_name: string | null;
-  company: string | null;
-  /** The contact's owner. Falls back through first_outreach_by → assigned_by
-   *  when owner_email is unset, which is most of the time. */
+  account: string | null;
+  /** Assigned owner of the contact, else of their account. Null when nobody is
+   *  assigned — never inferred from who happened to touch the record. */
   owner: string | null;
-  /** True when `owner` came from the real owner_email field rather than a
-   *  fallback — the UI marks the difference rather than implying certainty. */
-  owner_is_explicit: boolean;
-  /** Who performed the event. Routinely differs from `owner`. */
-  actor: string | null;
+  owner_source: "contact" | "account" | null;
+  /** Who actually made the change in Bedrock. Routinely differs from `owner`. */
+  editor: string | null;
   subject: string | null;
+  snippet: string | null;
   from_stage: MembershipStage | null;
   to_stage: MembershipStage | null;
 }

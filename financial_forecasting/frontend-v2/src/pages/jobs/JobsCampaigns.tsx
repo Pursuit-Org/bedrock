@@ -14,7 +14,8 @@
  *
  * Which numbers honour the period, because mixing the two would mislead:
  *   * Activation and the stage funnel are ALL-TIME. Activation is a state — a
- *     contact reached last March is still activated today.
+ *     contact reached last March is still activated today, and period-scoping
+ *     it would read as contacts un-activating when you step the window back.
  *   * Outreach volume, the trend and the activity feed honour the period bar.
  *
  * Population note: `contacts` is every tagged contact, while every funnel and
@@ -28,23 +29,24 @@ import {
 } from "recharts";
 import { format } from "date-fns";
 import {
-  ArrowRight, Calendar, Check, ChevronDown, FileText, Linkedin, Loader2, Mail,
-  MessageSquare, Phone, Plus, StickyNote,
+  ArrowRight, Calendar, Check, ChevronDown, ChevronRight, FileText, Linkedin,
+  Loader2, Mail, MessageSquare, Plus, StickyNote,
 } from "lucide-react";
 
 import { TagCampaigns } from "@/components/jobs/TagCampaigns";
-import { PeriodBar, defaultPeriod } from "@/components/jobs/PeriodBar";
+import { PeriodBar, PERIOD_PRESETS } from "@/components/jobs/PeriodBar";
 import {
-  useTagCampaigns, useTagCampaignStats, useTagCampaignActivity, MEMBERSHIP_STAGE_LABELS,
+  useTagCampaigns, useTagCampaignStats, useTagCampaignActivity, useStaffNameResolver,
+  MEMBERSHIP_STAGE_LABELS,
   type TagCampaign, type TagCampaignStats, type CampaignGranularity, type MembershipStage,
-  type CampaignEvent,
+  type CampaignEvent, type CampaignEventCategory,
 } from "@/services/jobs";
 import { relDay } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 const EMPTY_FUNNEL = { not_yet: 0, assigned: 0, contacted: 0, call_booked: 0, converted: 0, not_a_fit: 0, on_hold: 0 };
 const EMAIL_COLOR = "#4242EA";
-const MEETING_COLOR = "#C7C7F5";
+const CALL_COLOR = "#14b8a6";
 const ACTIVITY_PAGE = 25;
 
 /** Funnel order, worked-first, shared by the stage bar and its legend so the
@@ -61,15 +63,6 @@ const STAGE_ORDER: { key: MembershipStage; label: string; cls: string }[] = [
 
 function pct(n: number, d: number): number | null {
   return d > 0 ? Math.round((100 * n) / d) : null;
-}
-
-/** first.last@pursuit.org → "First". Falls back to the raw value so an
- *  unrecognised actor is still identifiable rather than blank. */
-function shortName(email: string | null | undefined): string {
-  if (!email) return "—";
-  const local = email.split("@")[0] ?? email;
-  const first = local.split(/[._]/)[0] ?? local;
-  return first.charAt(0).toUpperCase() + first.slice(1);
 }
 
 // ── Campaign picker ─────────────────────────────────────────────────────────
@@ -170,20 +163,6 @@ function Option({ label, sub, selected, onClick }: {
 }
 
 // ── Shared chrome ───────────────────────────────────────────────────────────
-function Stat({ label, value, sub, tone = "ink", hint }: {
-  label: string; value: string; sub?: string;
-  tone?: "ink" | "accent" | "green" | "amber"; hint?: string;
-}) {
-  const toneCls = { ink: "text-ink", accent: "text-accent", green: "text-green", amber: "text-amber" }[tone];
-  return (
-    <div className="flex flex-col items-start gap-1 rounded-xl border border-border-strong bg-surface px-4 py-3" title={hint}>
-      <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-4">{label}</span>
-      <span className={cn("text-[26px] font-semibold leading-none tabular-nums", toneCls)}>{value}</span>
-      {sub ? <span className="text-[11px] leading-snug text-ink-3">{sub}</span> : null}
-    </div>
-  );
-}
-
 function Section({ title, note, action, children }: {
   title: string; note?: string; action?: React.ReactNode; children: React.ReactNode;
 }) {
@@ -201,7 +180,51 @@ function Section({ title, note, action, children }: {
   );
 }
 
-// ── Campaign detail ─────────────────────────────────────────────────────────
+/** A named group in the activation row. Contacts and accounts stack, so one
+ *  glance answers "how many people and how many companies" without comparing
+ *  two tiles side by side. */
+function ActivationGroup({ label, hint, tone, primary, secondary, footer }: {
+  label: string;
+  hint?: string;
+  tone: "accent" | "amber" | "green";
+  primary: { n: number; of?: number; unit: string };
+  secondary: { n: number; of?: number; unit: string };
+  footer?: string;
+}) {
+  const toneCls = { accent: "text-accent", amber: "text-amber", green: "text-green" }[tone];
+  const Row = ({ v }: { v: { n: number; of?: number; unit: string } }) => {
+    const p = v.of !== undefined ? pct(v.n, v.of) : null;
+    return (
+      <div className="flex items-baseline gap-2">
+        <span className={cn("text-[28px] font-semibold leading-none tabular-nums", toneCls)}>
+          {v.n.toLocaleString()}
+        </span>
+        <span className="text-[11.5px] text-ink-3">
+          {v.unit}
+          {v.of !== undefined ? (
+            <span className="text-ink-4"> of {v.of.toLocaleString()}{p !== null ? ` · ${p}%` : ""}</span>
+          ) : null}
+        </span>
+      </div>
+    );
+  };
+  return (
+    <div className="flex flex-col gap-3 rounded-xl border border-border-strong bg-surface px-4 py-3.5" title={hint}>
+      <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-4">{label}</span>
+      <div className="flex flex-col gap-2.5">
+        <Row v={primary} />
+        <div className="border-t border-border-strong/70" />
+        <Row v={secondary} />
+      </div>
+      {footer ? <span className="text-[11px] leading-snug text-ink-3">{footer}</span> : null}
+    </div>
+  );
+}
+
+// ── Stage funnel bar ────────────────────────────────────────────────────────
+/** Half again as tall as it was, with the count rendered inside each band and
+ *  the labels moved to a legend below. Labels used to sit beside the numbers in
+ *  the legend row and wrapped into each other at this width. */
 function StageBar({ stats }: { stats: TagCampaignStats }) {
   const st = stats.totals.stages;
   const parts = [
@@ -210,20 +233,35 @@ function StageBar({ stats }: { stats: TagCampaignStats }) {
   ];
   const denom = parts.reduce((a, p) => a + p.n, 0) || 1;
   return (
-    <div className="flex flex-col gap-2.5">
+    <div className="flex flex-col gap-3">
       <div
-        className="flex h-4 w-full overflow-hidden rounded-full bg-surface-2"
+        className="flex h-6 w-full overflow-hidden rounded-lg bg-surface-2"
         title={parts.map((p) => `${p.label}: ${p.n.toLocaleString()}`).join("  ·  ")}
       >
-        {parts.map((p) => p.n > 0 && (
-          <div key={p.label} className={cn("h-full", p.cls)} style={{ width: `${(100 * p.n) / denom}%` }} />
-        ))}
+        {parts.map((p) => {
+          const share = (100 * p.n) / denom;
+          return p.n > 0 && (
+            <div
+              key={p.label}
+              className={cn("flex h-full items-center justify-center", p.cls)}
+              style={{ width: `${share}%` }}
+            >
+              {/* Below ~4% the band is narrower than two digits, so the number
+                  would clip rather than inform. The legend still carries it. */}
+              {share >= 4 ? (
+                <span className="px-1 text-[11px] font-semibold tabular-nums text-white drop-shadow-sm">
+                  {p.n.toLocaleString()}
+                </span>
+              ) : null}
+            </div>
+          );
+        })}
       </div>
-      <div className="flex flex-wrap gap-x-4 gap-y-1.5">
+      <div className="flex flex-wrap gap-x-5 gap-y-2">
         {parts.map((p) => (
           <span key={p.label} className="flex items-center gap-1.5 text-[11.5px] text-ink-3">
-            <span className={cn("inline-block h-2.5 w-2.5 rounded-sm", p.cls)} />
-            {p.label}
+            <span className={cn("inline-block h-2.5 w-2.5 shrink-0 rounded-sm", p.cls)} />
+            <span className="whitespace-nowrap">{p.label}</span>
             <span className="font-semibold tabular-nums text-ink-2">{p.n.toLocaleString()}</span>
           </span>
         ))}
@@ -232,10 +270,10 @@ function StageBar({ stats }: { stats: TagCampaignStats }) {
   );
 }
 
+// ── Outreach volume ─────────────────────────────────────────────────────────
 const CHANNELS: { key: keyof TagCampaignStats["outreach"]; label: string; Icon: typeof Mail }[] = [
   { key: "emails", label: "Emails sent", Icon: Mail },
-  { key: "meetings", label: "Meetings", Icon: Calendar },
-  { key: "calls", label: "Calls logged", Icon: Phone },
+  { key: "calls_booked", label: "Calls booked", Icon: Calendar },
   { key: "linkedin", label: "LinkedIn", Icon: Linkedin },
   { key: "texts", label: "Texts", Icon: MessageSquare },
   { key: "notes", label: "Notes", Icon: FileText },
@@ -245,7 +283,7 @@ function OutreachStats({ stats }: { stats: TagCampaignStats }) {
   const o = stats.outreach;
   return (
     <div className="flex flex-col gap-4">
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
         {CHANNELS.map(({ key, label, Icon }) => (
           <div key={key} className="flex flex-col gap-1 rounded-lg border border-border-strong bg-surface-2/40 px-3 py-2.5">
             <span className="flex items-center gap-1.5 text-[10.5px] font-semibold uppercase tracking-wider text-ink-4">
@@ -274,7 +312,7 @@ function TrendChart({ stats }: { stats: TagCampaignStats }) {
   const data = useMemo(() => stats.trend.map((p) => ({
     label: p.bucket.slice(5),   // MM-DD; the year is never in question here
     Emails: p.emails,
-    Meetings: p.meetings,
+    "Calls booked": p.calls_booked,
   })), [stats.trend]);
 
   if (stats.trend.every((p) => p.total === 0)) {
@@ -296,12 +334,12 @@ function TrendChart({ stats }: { stats: TagCampaignStats }) {
             contentStyle={{ fontSize: 12, borderRadius: 8, border: "1px solid var(--color-border)" }}
           />
           <Line type="monotone" dataKey="Emails" stroke={EMAIL_COLOR} strokeWidth={2} dot={{ r: 2.5 }} activeDot={{ r: 4 }} />
-          <Line type="monotone" dataKey="Meetings" stroke={MEETING_COLOR} strokeWidth={2} dot={{ r: 2.5 }} activeDot={{ r: 4 }} />
+          <Line type="monotone" dataKey="Calls booked" stroke={CALL_COLOR} strokeWidth={2} dot={{ r: 2.5 }} activeDot={{ r: 4 }} />
         </LineChart>
       </ResponsiveContainer>
       <div className="mt-1 flex flex-wrap items-center gap-4 pl-1">
         <Legend color={EMAIL_COLOR} label="Emails sent" />
-        <Legend color={MEETING_COLOR} label="Meetings" />
+        <Legend color={CALL_COLOR} label="Calls booked" />
       </div>
     </>
   );
@@ -319,26 +357,33 @@ function Legend({ color, label }: { color: string; label: string }) {
 // ── Activity feed ───────────────────────────────────────────────────────────
 const TOUCH_META: Record<string, { label: string; icon: React.ReactNode }> = {
   email: { label: "Email", icon: <Mail size={11} /> },
-  meeting: { label: "Meeting", icon: <Calendar size={11} /> },
-  call: { label: "Call", icon: <Phone size={11} /> },
+  meeting: { label: "Call booked", icon: <Calendar size={11} /> },
+  call: { label: "Call booked", icon: <Calendar size={11} /> },
   text: { label: "Text", icon: <MessageSquare size={11} /> },
   linkedin: { label: "LinkedIn", icon: <Linkedin size={11} /> },
   note: { label: "Note", icon: <StickyNote size={11} /> },
 };
 
+const SEGMENTS: { key: "all" | CampaignEventCategory; label: string; title: string }[] = [
+  { key: "all", label: "All activity", title: "Everything below, newest first" },
+  { key: "outreach", label: "Outreach", title: "Emails, calls booked, texts, LinkedIn and notes" },
+  { key: "funnel", label: "Funnel", title: "Stage changes and contacts added to the pipeline" },
+];
+
 /** Bulk work arrives as many identical rows — one staffer marking eight Red
  *  Canary contacts Not a fit in a sitting. Collapsing them on
- *  (day, kind, stage, actor, owner) turns a wall into one legible line, and the
- *  owner stays in the key so a collapsed row never has to show two owners. */
+ *  (day, kind, stage, editor, owner) turns a wall into one legible line, and
+ *  the owner stays in the key so a collapsed row never shows two owners. */
 interface EventGroup {
   key: string;
   at: string | null;
   kind: CampaignEvent["kind"];
   subkind: string | null;
+  from_stage: MembershipStage | null;
   to_stage: MembershipStage | null;
-  actor: string | null;
+  editor: string | null;
   owner: string | null;
-  owner_is_explicit: boolean;
+  owner_source: CampaignEvent["owner_source"];
   events: CampaignEvent[];
 }
 
@@ -347,12 +392,14 @@ function groupEvents(events: CampaignEvent[]): EventGroup[] {
   const index = new Map<string, EventGroup>();
   for (const e of events) {
     const day = e.at ? e.at.slice(0, 10) : "";
-    const key = [day, e.kind, e.subkind ?? "", e.to_stage ?? "", e.actor ?? "", e.owner ?? ""].join("|");
+    const key = [day, e.kind, e.subkind ?? "", e.from_stage ?? "", e.to_stage ?? "",
+      e.editor ?? "", e.owner ?? ""].join("|");
     const existing = index.get(key);
     if (existing) { existing.events.push(e); continue; }
     const g: EventGroup = {
-      key, at: e.at, kind: e.kind, subkind: e.subkind, to_stage: e.to_stage,
-      actor: e.actor, owner: e.owner, owner_is_explicit: e.owner_is_explicit, events: [e],
+      key, at: e.at, kind: e.kind, subkind: e.subkind,
+      from_stage: e.from_stage, to_stage: e.to_stage,
+      editor: e.editor, owner: e.owner, owner_source: e.owner_source, events: [e],
     };
     index.set(key, g);
     out.push(g);
@@ -360,11 +407,13 @@ function groupEvents(events: CampaignEvent[]): EventGroup[] {
   return out;
 }
 
-function groupLabel(g: EventGroup): { label: string; icon: React.ReactNode; color: string } {
+const stageLabel = (s: MembershipStage | null) => (s ? MEMBERSHIP_STAGE_LABELS[s] ?? s : null);
+
+function groupBadge(g: EventGroup): { label: string; icon: React.ReactNode; color: string } {
   if (g.kind === "added") return { label: "Added", icon: <Plus size={11} />, color: "var(--accent)" };
   if (g.kind === "stage") {
     return {
-      label: g.to_stage ? MEMBERSHIP_STAGE_LABELS[g.to_stage] ?? "Moved" : "Moved",
+      label: stageLabel(g.to_stage) ?? "Moved",
       icon: <ArrowRight size={11} />,
       color: g.to_stage === "converted_to_opportunity" ? "var(--green)"
         : g.to_stage === "not_a_fit" ? "var(--ink-3)"
@@ -375,10 +424,24 @@ function groupLabel(g: EventGroup): { label: string; icon: React.ReactNode; colo
   return { ...m, color: "var(--accent)" };
 }
 
-function OwnerFilter({ owners, value, onChange }: {
+/** The line that says what happened, in the team's own words. A stage move
+ *  names both ends — "Assigned → Initial outreach" — because the destination
+ *  alone loses whether the contact moved forward or backward. */
+function groupDetail(g: EventGroup): string {
+  if (g.kind === "stage") {
+    const from = stageLabel(g.from_stage);
+    const to = stageLabel(g.to_stage) ?? "—";
+    return from ? `${from} → ${to}` : `Set to ${to}`;
+  }
+  if (g.kind === "added") return "Added to the pipeline";
+  return g.events[0]?.subject ?? "";
+}
+
+function OwnerFilter({ owners, value, onChange, nameOf }: {
   owners: { email: string; contacts: number }[];
   value: string | null;
   onChange: (v: string | null) => void;
+  nameOf: (e: string | null | undefined) => string;
 }) {
   const [open, setOpen] = useState(false);
   return (
@@ -392,7 +455,7 @@ function OwnerFilter({ owners, value, onChange }: {
           value ? "border-accent text-accent" : "border-border-strong text-ink-2 hover:bg-surface-2",
         )}
       >
-        Owner: {value ? shortName(value) : "All"}
+        Owner: {value ? nameOf(value) : "All"}
         <ChevronDown size={12} className={cn("transition-transform", open && "rotate-180")} />
       </button>
       {open && (
@@ -415,7 +478,7 @@ function OwnerFilter({ owners, value, onChange }: {
                 className={cn("flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[12.5px] hover:bg-surface-2",
                   value === o.email ? "font-semibold text-accent" : "text-ink")}
               >
-                <span className="min-w-0 flex-1 truncate" title={o.email}>{o.email}</span>
+                <span className="min-w-0 flex-1 truncate" title={o.email}>{nameOf(o.email)}</span>
                 <span className="shrink-0 tabular-nums text-[11px] text-ink-4">{o.contacts}</span>
               </button>
             ))}
@@ -426,18 +489,81 @@ function OwnerFilter({ owners, value, onChange }: {
   );
 }
 
+/** Expanded detail: every contact behind the row, named explicitly, with the
+ *  email subject and preview where there is one. This is the answer to "it says
+ *  2 contacts — who at Vertech did we actually reach?". */
+function GroupDetail({ g }: { g: EventGroup }) {
+  return (
+    <div className="border-b border-border-strong bg-surface-2/40 px-3 py-2">
+      <div className="flex flex-col gap-1.5">
+        {g.events.map((e, i) => (
+          <div key={`${e.contact_id}-${i}`} className="flex items-start gap-3">
+            <Link
+              to={`/jobs/contacts/${e.contact_id}`}
+              className="w-[180px] shrink-0 truncate text-[12.5px] font-medium text-ink hover:text-accent"
+            >
+              {e.contact_name ?? "—"}
+            </Link>
+            <span className="w-[160px] shrink-0 truncate text-[12px] text-ink-3" title={e.account ?? undefined}>
+              {e.account ?? "—"}
+            </span>
+            <div className="min-w-0 flex-1">
+              {e.subject ? (
+                <div className="truncate text-[12px] text-ink-2" title={e.subject}>{e.subject}</div>
+              ) : null}
+              {e.snippet ? (
+                <div className="line-clamp-2 text-[11.5px] leading-snug text-ink-4">{e.snippet}</div>
+              ) : null}
+              {!e.subject && !e.snippet && e.kind === "stage" ? (
+                <div className="text-[11.5px] text-ink-4">{groupDetail({ ...g, events: [e] })}</div>
+              ) : null}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function ActivityFeed({ campaignKey, from, to }: { campaignKey: string; from: string; to: string }) {
   const [owner, setOwner] = useState<string | null>(null);
+  const [segment, setSegment] = useState<"all" | CampaignEventCategory>("all");
   const [showAll, setShowAll] = useState(false);
+  const [openKey, setOpenKey] = useState<string | null>(null);
+  const nameOf = useStaffNameResolver();
   const { data, isLoading } = useTagCampaignActivity(campaignKey, { from, to, owner: owner ?? undefined });
-  const groups = useMemo(() => groupEvents(data?.events ?? []), [data?.events]);
+
+  const groups = useMemo(() => {
+    const events = (data?.events ?? []).filter((e) => segment === "all" || e.category === segment);
+    return groupEvents(events);
+  }, [data?.events, segment]);
   const shown = showAll ? groups : groups.slice(0, ACTIVITY_PAGE);
 
   return (
     <Section
       title="Activity"
-      note="Every touch, stage change and addition for this campaign's contacts, newest first. Owner is who the contact belongs to; Changed by is who did it."
-      action={<OwnerFilter owners={data?.owners ?? []} value={owner} onChange={setOwner} />}
+      note="Owner is who the contact or their account is assigned to in Bedrock. Editor is who made the change. Click a row for the contacts behind it."
+      action={
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex items-center gap-1 rounded-lg border border-border-strong bg-surface-2 p-1">
+            {SEGMENTS.map((sgm) => (
+              <button
+                key={sgm.key}
+                type="button"
+                title={sgm.title}
+                onClick={() => { setSegment(sgm.key); setShowAll(false); }}
+                className={cn(
+                  "rounded-md px-2.5 py-1 text-[12px] font-medium transition-colors",
+                  segment === sgm.key ? "bg-surface text-ink shadow-sm" : "text-ink-3 hover:text-ink-2",
+                )}
+              >
+                {sgm.label}
+              </button>
+            ))}
+          </div>
+          <OwnerFilter owners={data?.owners ?? []} value={owner} onChange={setOwner} nameOf={nameOf} />
+        </div>
+      }
     >
       {isLoading ? (
         <div className="flex items-center gap-2 py-6 text-[12.5px] text-ink-3">
@@ -445,78 +571,84 @@ function ActivityFeed({ campaignKey, from, to }: { campaignKey: string; from: st
         </div>
       ) : groups.length === 0 ? (
         <div className="flex items-center justify-center rounded-lg border border-dashed border-border-strong px-4 py-8 text-[12px] text-ink-4">
-          No activity in this period{owner ? ` for ${shortName(owner)}` : ""}.
+          No activity in this period{owner ? ` for ${nameOf(owner)}` : ""}.
         </div>
       ) : (
         <div className="flex flex-col">
-          <div className="flex items-center gap-3 border-b border-border-strong pb-1.5 text-[10.5px] font-semibold uppercase tracking-wider text-ink-4">
+          <div className="flex items-center gap-3 border-b border-border-strong px-3 pb-1.5 text-[10.5px] font-semibold uppercase tracking-wider text-ink-4">
+            <span className="w-[14px] shrink-0" />
             <span className="w-[92px] shrink-0">Event</span>
-            <span className="min-w-0 flex-1">Contact</span>
-            <span className="w-[86px] shrink-0">Owner</span>
-            <span className="w-[86px] shrink-0">Changed by</span>
+            <span className="w-[170px] shrink-0">Contact</span>
+            <span className="w-[150px] shrink-0">Account</span>
+            <span className="min-w-0 flex-1">Detail</span>
+            <span className="w-[92px] shrink-0">Owner</span>
+            <span className="w-[92px] shrink-0">Editor</span>
             <span className="w-[52px] shrink-0 text-right">When</span>
           </div>
           {shown.map((g) => {
-            const m = groupLabel(g);
+            const badge = groupBadge(g);
             const n = g.events.length;
-            const names = g.events.map((e) => e.contact_name ?? "—");
-            const companies = Array.from(new Set(g.events.map((e) => e.company).filter(Boolean)));
             const first = g.events[0];
+            const accounts = Array.from(new Set(g.events.map((e) => e.account).filter(Boolean)));
+            const open = openKey === g.key;
             return (
-              <div key={g.key} className="flex items-center gap-3 border-b border-border-strong py-2 last:border-b-0">
-                <span
-                  className="inline-flex w-[92px] shrink-0 items-center gap-1 rounded-full bg-surface-2 px-2 py-0.5 text-[10.5px] font-semibold"
-                  style={{ color: m.color }}
+              <div key={g.key} className="border-b border-border-strong last:border-b-0">
+                <button
+                  type="button"
+                  onClick={() => setOpenKey(open ? null : g.key)}
+                  aria-expanded={open}
+                  className="flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-surface-2/50"
                 >
-                  {m.icon}<span className="truncate">{m.label}</span>
-                </span>
-                <div className="min-w-0 flex-1 truncate" title={n > 1 ? names.join(", ") : undefined}>
-                  {n === 1 ? (
-                    <Link to={`/jobs/contacts/${first.contact_id}`} className="text-[13px] font-semibold text-ink hover:text-accent">
-                      {first.contact_name ?? "—"}
-                    </Link>
-                  ) : (
-                    <span className="text-[13px] font-semibold text-ink">{n} contacts</span>
-                  )}
-                  <span className="ml-2 text-[12px] text-ink-3">
-                    {companies.slice(0, 2).join(", ") || "—"}
-                    {companies.length > 2 ? ` +${companies.length - 2}` : ""}
+                  {open
+                    ? <ChevronDown size={14} className="w-[14px] shrink-0 text-ink-4" />
+                    : <ChevronRight size={14} className="w-[14px] shrink-0 text-ink-4" />}
+                  <span
+                    className="inline-flex w-[92px] shrink-0 items-center gap-1 rounded-full bg-surface-2 px-2 py-0.5 text-[10.5px] font-semibold"
+                    style={{ color: badge.color }}
+                  >
+                    {badge.icon}<span className="truncate">{badge.label}</span>
                   </span>
-                </div>
-                <span
-                  className="w-[86px] shrink-0 truncate text-[11px] text-ink-4"
-                  title={g.owner
-                    ? `${g.owner}${g.owner_is_explicit ? "" : " (inferred — no owner set on the membership)"}`
-                    : "No owner"}
-                >
-                  {shortName(g.owner)}{g.owner && !g.owner_is_explicit ? "*" : ""}
-                </span>
-                <span className="w-[86px] shrink-0 truncate text-[11px] text-ink-4" title={g.actor ?? undefined}>
-                  {shortName(g.actor)}
-                </span>
-                <span className="w-[52px] shrink-0 text-right text-[11px] text-ink-4">
-                  {g.at ? format(new Date(g.at), "MMM d") : "—"}
-                </span>
+                  <span className="w-[170px] shrink-0 truncate text-[13px] font-semibold text-ink">
+                    {n === 1 ? (first.contact_name ?? "—") : `${n} contacts`}
+                  </span>
+                  <span className="w-[150px] shrink-0 truncate text-[12px] text-ink-3"
+                    title={accounts.join(", ")}>
+                    {accounts[0] ?? "—"}
+                    {accounts.length > 1 ? <span className="text-ink-4"> +{accounts.length - 1}</span> : null}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate text-[12px] text-ink-3">{groupDetail(g)}</span>
+                  <span
+                    className="w-[92px] shrink-0 truncate text-[11px] text-ink-4"
+                    title={g.owner
+                      ? `${g.owner}${g.owner_source === "account" ? " (account owner)" : " (contact owner)"}`
+                      : "Nobody assigned"}
+                  >
+                    {g.owner ? nameOf(g.owner) : "—"}
+                  </span>
+                  <span className="w-[92px] shrink-0 truncate text-[11px] text-ink-4" title={g.editor ?? undefined}>
+                    {g.editor ? nameOf(g.editor) : "—"}
+                  </span>
+                  <span className="w-[52px] shrink-0 text-right text-[11px] text-ink-4">
+                    {g.at ? format(new Date(g.at), "MMM d") : "—"}
+                  </span>
+                </button>
+                {open ? <GroupDetail g={g} /> : null}
               </div>
             );
           })}
-          <div className="mt-2 flex items-center justify-between gap-3">
-            {groups.length > ACTIVITY_PAGE ? (
-              <button type="button" onClick={() => setShowAll((v) => !v)}
-                className="text-[12px] font-medium text-accent hover:underline">
-                {showAll ? "Show less" : `Show ${groups.length - ACTIVITY_PAGE} more`}
-              </button>
-            ) : <span />}
-            <span className="text-[11px] text-ink-4">
-              * owner inferred from who first reached out or who added the contact
-            </span>
-          </div>
+          {groups.length > ACTIVITY_PAGE ? (
+            <button type="button" onClick={() => setShowAll((v) => !v)}
+              className="mt-2 self-start text-[12px] font-medium text-accent hover:underline">
+              {showAll ? "Show less" : `Show all ${groups.length}`}
+            </button>
+          ) : null}
         </div>
       )}
     </Section>
   );
 }
 
+// ── Campaign detail ─────────────────────────────────────────────────────────
 function CampaignDetail({ campaignKey, from, to, granularity }: {
   campaignKey: string;
   from: string;
@@ -541,10 +673,11 @@ function CampaignDetail({ campaignKey, from, to, granularity }: {
   }
 
   const t = stats.totals;
-  const contactPct = pct(t.activated_contacts, t.in_pipeline);
-  const accountPct = pct(t.activated_accounts, t.accounts);
-  const emailPct = pct(t.with_email, t.in_pipeline);
   const converted = t.stages.converted_to_opportunity ?? 0;
+  // Idle is the complement of activated over the same populations, so the two
+  // groups always sum to the whole and can't drift apart.
+  const idleContacts = Math.max(0, t.in_pipeline - t.activated_contacts);
+  const idleAccounts = Math.max(0, t.accounts - t.activated_accounts);
 
   return (
     <div className="flex flex-col gap-4">
@@ -554,50 +687,44 @@ function CampaignDetail({ campaignKey, from, to, granularity }: {
           stats.slugs.length > 1 ? ` Aggregated across ${stats.slugs.length} tags.` : ""
         }`}
       >
-        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-          <Stat
-            label="Contacts activated"
-            value={t.activated_contacts.toLocaleString()}
-            sub={contactPct === null ? "none in pipeline" : `${contactPct}% of ${t.in_pipeline.toLocaleString()} in pipeline`}
+        <div className="grid gap-3 md:grid-cols-3">
+          <ActivationGroup
+            label="Activated"
             tone="accent"
-            hint="Contacts with at least one outbound touch from Pursuit — email, meeting, call, text or LinkedIn."
+            hint="At least one outbound touch from Pursuit — email, call booked, text or LinkedIn."
+            primary={{ n: t.activated_contacts, of: t.in_pipeline, unit: "contacts" }}
+            secondary={{ n: t.activated_accounts, of: t.accounts, unit: "accounts" }}
           />
-          <Stat
-            label="Accounts activated"
-            value={t.activated_accounts.toLocaleString()}
-            sub={accountPct === null ? "no accounts" : `${accountPct}% of ${t.accounts.toLocaleString()} accounts`}
-            tone="accent"
-            hint="Distinct companies where at least one campaign contact has been touched."
+          <ActivationGroup
+            label="Not yet activated"
+            tone="amber"
+            hint="In the pipeline but with no outbound touch on record. The backlog the priority order exists to burn down."
+            primary={{ n: idleContacts, of: t.in_pipeline, unit: "contacts" }}
+            secondary={{ n: idleAccounts, of: t.accounts, unit: "accounts" }}
           />
-          <Stat
+          <ActivationGroup
             label="Converted to oppty"
-            value={converted.toLocaleString()}
-            sub={`${t.worked.toLocaleString()} contacts worked past assigned`}
-            tone={converted > 0 ? "green" : "ink"}
-          />
-          <Stat
-            label="Reachable by email"
-            value={t.with_email.toLocaleString()}
-            sub={emailPct === null ? "—" : `${emailPct}% have an email on file`}
-            tone={emailPct !== null && emailPct < 50 ? "amber" : "ink"}
-            hint="Contacts with an email address. The rest cannot be emailed at all until the record is enriched."
+            tone="green"
+            hint="Contacts whose membership reached converted_to_opportunity."
+            primary={{ n: converted, unit: "contacts" }}
+            secondary={{ n: t.worked, unit: "worked past assigned" }}
           />
         </div>
-        <div className="mt-4">
+        <div className="mt-5">
           <StageBar stats={stats} />
         </div>
       </Section>
 
       <Section
         title="Outreach"
-        note="Outbound touches in the selected period. Synced email counts only when Pursuit sent it."
+        note="Outbound touches in the selected period. Synced email counts only when Pursuit sent it. Calls booked covers calendar meetings and hand-logged calls."
       >
         <OutreachStats stats={stats} />
       </Section>
 
       <Section
         title="Outreach over time"
-        note={`${stats.outreach.total.toLocaleString()} touches in the period, bucketed by ${granularity}.`}
+        note={`${stats.outreach.total.toLocaleString()} touches in the period, one point per ${granularity}.`}
       >
         <TrendChart stats={stats} />
       </Section>
@@ -608,6 +735,19 @@ function CampaignDetail({ campaignKey, from, to, granularity }: {
 }
 
 // ── Portfolio (no campaign picked) ──────────────────────────────────────────
+function Stat({ label, value, sub, tone = "ink" }: {
+  label: string; value: string; sub?: string; tone?: "ink" | "accent" | "green" | "amber";
+}) {
+  const toneCls = { ink: "text-ink", accent: "text-accent", green: "text-green", amber: "text-amber" }[tone];
+  return (
+    <div className="flex flex-col items-start gap-1 rounded-xl border border-border-strong bg-surface px-4 py-3">
+      <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-4">{label}</span>
+      <span className={cn("text-[26px] font-semibold leading-none tabular-nums", toneCls)}>{value}</span>
+      {sub ? <span className="text-[11px] leading-snug text-ink-3">{sub}</span> : null}
+    </div>
+  );
+}
+
 function rollup(camps: TagCampaign[]) {
   let inPipeline = 0, contacted = 0, converted = 0, unworked = 0;
   for (const c of camps) {
@@ -656,11 +796,18 @@ function Portfolio({ campaigns, loading }: { campaigns: TagCampaign[]; loading: 
   );
 }
 
+/** A month of dates in daily buckets — roughly 30 points, which is what makes
+ *  the trend readable as a trend. The Daily preset (yesterday alone) would draw
+ *  a single dot, and Weekly buckets over a month draws four. */
+function campaignDefaultPeriod(): [string, string] {
+  return PERIOD_PRESETS[2].get();
+}
+
 export function JobsCampaigns() {
   const { data: campaigns = [], isLoading } = useTagCampaigns();
   const [selected, setSelected] = useState<string | null>(null);
-  const [granularity, setGranularity] = useState<CampaignGranularity>("week");
-  const [[from, to], setRange] = useState<[string, string]>(defaultPeriod);
+  const [granularity, setGranularity] = useState<CampaignGranularity>("day");
+  const [[from, to], setRange] = useState<[string, string]>(campaignDefaultPeriod);
 
   return (
     <div className="flex flex-col gap-4">

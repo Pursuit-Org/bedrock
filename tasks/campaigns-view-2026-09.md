@@ -72,17 +72,46 @@ Kwame's second round.
 with an actor), memberships 113 (92 with assigned_by). Effective owners —
 Avni 42, Kwame 38, Damon 10, Devika 7, Nick 1, Victoria 1.
 
-### Phase 4 — Not started
+### Phase 4 — Activation layout, daily trend, activity drill ✅ DONE (2026-09-15)
+Kwame's third round.
+- [x] **Activation card rebuilt** into three groups. Activated (contacts over
+      accounts, stacked) · Not yet activated · Converted to oppty. "Reachable by
+      email" removed. Idle is the complement of activated over the same
+      populations, so the two groups always sum to the whole.
+- [x] **Stage bar 50% taller** (h-4 → h-6), counts rendered inside each band,
+      labels moved to a legend below. Bands under ~4% width omit the inline
+      number (it would clip); the legend still carries it.
+- [x] **Trend defaults to daily points** over a trailing month — ~30 points.
+      The Daily preset alone draws one dot and Weekly over a month draws four.
+- [x] **Meetings + logged calls merged into one "Calls booked"** channel, in the
+      stat grid, the trend line and the activity badges.
+- [x] **Activity**: 25 rows then "Show all N"; All / Outreach / Funnel segment
+      buttons (All default); Account as its own column; rows expand to list the
+      contacts explicitly with email subject and preview; stage moves read
+      "Assigned → Initial outreach" rather than just the destination.
+- [x] **Owner is now the real assignment** — contact owner, else account owner,
+      else blank. The inferred fallback is gone. Renamed the actor column to
+      **Editor**. Owner dropdown shows display names, not emails.
+
+**Verified against production for Operation 35:** owner coverage 96 of 449
+(contact 7, account 90) — `bedrock.jobs_account.owner_email` is populated on 269
+of 282 accounts, which is what makes the column usable. Trailing 30 days in
+daily buckets: 31 points, 43 emails, 8 calls booked, 8 other. All six owner
+emails resolve to display names via `/api/jobs/staff`.
+
+### Phase 5 — Not started
 - [ ] Drill from a trend point into the underlying activity list
 - [ ] Contact table on the detail view (the `/records` endpoint already serves it)
 - [ ] Stage-entry period flow, like `outreach-pipeline-rework.md`
 
 ### Known gaps, flagged not fixed
-- **`owner_email` is set on almost nobody.** 7 of Operation 35's 113 memberships.
-  An Owner column reading it alone would be blank and its filter useless, so the
-  effective owner falls back `owner_email → first_outreach_by → assigned_by`,
-  which fills 99 of 113. Inferred owners are marked with an asterisk and a
-  tooltip. The real fix is assigning owners in the tool, not in this query.
+- **Contact-level ownership is barely used.** 7 of Operation 35's 449 contacts
+  have `jobs_contact_membership.owner_email` set. Account ownership carries the
+  column instead (`bedrock.jobs_account.owner_email`, 269 of 282 rows), giving
+  96 of 449. The inference fallback was REMOVED per Kwame — "who touched this"
+  is the Editor column, and conflating the two made Owner unreadable. Blank now
+  means genuinely unassigned, which is the honest answer and a prompt to fix it
+  in the tool.
 - **Tag additions have no history table.** "Added to the campaign" is read off
   `jobs_contact_membership.assigned_at`, which is when the contact entered the
   jobs pipeline, not when the tag was applied. They usually coincide; when a tag
@@ -90,10 +119,12 @@ Avni 42, Kwame 38, Damon 10, Devika 7, Nick 1, Victoria 1.
 - **Direction is inferred, not stored.** `bedrock.activity` has no direction
   column, so outbound = Pursuit sender (email) or hand-logged (everything else).
   A campaign contact emailed from a personal address would be missed.
-- **"Calls booked" is ambiguous.** `call_booked` is a membership stage (10 for
-  Operation 35) while `type='call'` is a hand-logged phone call (5, and 171
-  org-wide). Meetings (719 all-time) are the real booked-call volume. The UI
-  shows all three separately rather than picking one.
+- **"Calls booked" resolved (2026-09-15).** Calendar meetings and hand-logged
+  calls are now one channel: both are a live conversation that got booked, and
+  splitting them made the smaller number look like a failure. Volume is
+  overwhelmingly calendar (719 meetings vs 5 logged calls for Operation 35).
+  The `call_booked` membership STAGE stays separate in the funnel — it is
+  pipeline state, not outreach volume.
 - **Only 113 of 449 Operation 35 contacts have an email address.** Surfaced as
   "Reachable by email", amber below 50%.
 
