@@ -52,23 +52,33 @@ ANNUAL_TARGET = 20_000_000
 
 # Map raw Salesforce Account.Type values to four display categories.
 # Unknown/null types fall into "Other".
+#
+# THESE KEYS MUST MATCH THE ORG'S Account.Type PICKLIST EXACTLY. They are
+# interpolated into SOQL by _source_filter() and matched verbatim by _src(),
+# so a key that doesn't exist in Salesforce isn't an approximation — it is a
+# category that silently reports $0 while its revenue lands in "Other", with
+# a self-consistent drilldown that makes the loss invisible.
+#
+# Verified against the live picklist 2026-09-16 (all 11 non-null values, by
+# account count): Household 13871, Corporate 4610,
+# "Foundation / Corporate Foundation" 368, "Nonprofit / Community
+# Organization" 180, Government 145, Nonprofit 109, "Academic Institution" 39,
+# Organization 16, "Donor Advised Fund" 8, Partner 2, Prospect 1.
+# Re-check with:
+#   SELECT Type, COUNT(Id) FROM Account GROUP BY Type ORDER BY COUNT(Id) DESC
 _SOURCE_MAP: dict[str, str] = {
-    "Foundation": "Foundation",
-    "Private Foundation": "Foundation",
-    "Community Foundation": "Foundation",
-    "Educational Foundation": "Foundation",
+    "Foundation / Corporate Foundation": "Foundation",
     "Corporate": "Corporate",
-    "Corporation": "Corporate",
-    "Business": "Corporate",
-    "Individual": "Individual",
     "Household": "Individual",
-    "Household Account": "Individual",
-    "Person Account": "Individual",
     "Government": "Government",
-    "Government Agency": "Government",
-    "Federal Government": "Government",
-    "State/Local Government": "Government",
-    "Public": "Government",
+    # Deliberately NOT mapped, so they roll up to "Other":
+    #   Nonprofit, Nonprofit / Community Organization, Academic Institution,
+    #   Organization, Donor Advised Fund, Partner, Prospect
+    # These are real revenue but none of them is foundation, corporate or
+    # individual giving, and folding them in would overstate whichever bucket
+    # they were forced into. Donor Advised Fund is the one genuine judgement
+    # call (donor-directed, so arguably Individual) — left in Other pending a
+    # call from finance rather than guessed at here.
 }
 _CATEGORIES = ["Foundation", "Corporate", "Individual", "Government", "Other"]
 
@@ -87,6 +97,20 @@ def _source_filter(source: str, type_field: str) -> str:
     types = _SOURCE_TYPES.get(source, [])
     quoted = ", ".join(f"'{t}'" for t in types)
     return f"{type_field} IN ({quoted})"
+
+
+def _probability(opp: dict) -> float:
+    """Weighting for a pipeline payment, as a percentage.
+
+    The manager override wins when it is set — including when it is set to 0.
+    A plain `override or probability` treats 0 as absent and falls back to the
+    stage default, which silently ignores the single most consequential value
+    a manager can enter ("this is dead but I'm not closing it").
+    """
+    override = opp.get("Manager_Probability_Override__c")
+    if override is not None:
+        return float(override)
+    return float(opp.get("Probability") or 0)
 
 
 def _src(account_type: str | None) -> str:
@@ -208,11 +232,7 @@ async def get_revenue_snapshot(
         for r in pipeline_res.get("records", []):
             amt = r.get("npe01__Payment_Amount__c") or 0
             opp = r.get("npe01__Opportunity__r") or {}
-            prob = (
-                opp.get("Manager_Probability_Override__c")
-                or opp.get("Probability")
-                or 0
-            )
+            prob = _probability(opp)
             acct = (opp.get("Account") or {})
             pipeline[_src(acct.get("Type"))] += amt * (prob / 100.0)
 
@@ -404,7 +424,7 @@ async def get_revenue_snapshot_detail(
             for r in pipeline_res.get("records", []):
                 opp = r.get("npe01__Opportunity__r") or {}
                 amt = r.get("npe01__Payment_Amount__c") or 0
-                prob = opp.get("Manager_Probability_Override__c") or opp.get("Probability") or 0
+                prob = _probability(opp)
                 records.append({
                     "id": r["Id"],
                     "opp_id": opp.get("Id"),
