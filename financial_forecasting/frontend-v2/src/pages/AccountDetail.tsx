@@ -17,7 +17,7 @@ import { StageChip } from "@/components/ui/StageChip";
 import { Tag } from "@/components/ui/Tag";
 import { Tooltip } from "@/components/ui/Tooltip";
 import { accountStatusVariant } from "@/lib/accountStatus";
-import { fmtDate, fmtMoney, fmtMoneyFull, initials } from "@/lib/format";
+import { fmtDate, fmtMoney, fmtMoneyFull, initials, toExternalHref } from "@/lib/format";
 import { useCollapsible } from "@/lib/collapsible";
 import { isLost, isOpen, isWon, SF_STAGE_OPTIONS, stageStatus } from "@/lib/stages";
 import { cn } from "@/lib/utils";
@@ -573,6 +573,22 @@ export function AccountDetailPage() {
                   </td>
                   <td className="mono px-5 py-2.5 text-right text-[11.5px] text-ink-3">
                     {fmtDate(c.Last_Activity_Date__c ?? c.LastActivityDate)}
+                  </td>
+                  <td className="px-5 py-2.5 text-[12.5px]">
+                    {toExternalHref(c.LinkedIn_URL__c) ? (
+                      <a
+                        href={toExternalHref(c.LinkedIn_URL__c)!}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={(e) => e.stopPropagation()}
+                        className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-semibold text-[#0A66C2] hover:underline"
+                        title={c.LinkedIn_URL__c ?? undefined}
+                      >
+                        in <ExternalLink size={11} />
+                      </a>
+                    ) : (
+                      <span className="text-ink-4">—</span>
+                    )}
                   </td>
                 </tr>
               ))}
