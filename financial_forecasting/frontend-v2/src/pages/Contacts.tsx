@@ -21,7 +21,7 @@ import { SortableHeader } from "@/components/ui/SortableHeader";
 import { Toolbar } from "@/components/ui/Toolbar";
 import { totalWidth, useColumnWidths } from "@/lib/columnWidths";
 import { useColumnVisibility } from "@/lib/columnVisibility";
-import { fmtDate, initials } from "@/lib/format";
+import { fmtDate, initials, toExternalHref } from "@/lib/format";
 import { sortBy, useSort } from "@/lib/sort";
 import { cn } from "@/lib/utils";
 import {
@@ -690,14 +690,14 @@ const ContactRow = memo(function ContactRow({
         {fmtDate(c.Last_Activity_Date__c ?? c.LastActivityDate)}
       </span>
     ),
-    linkedin: c.LinkedIn_URL__c ? (
+    linkedin: toExternalHref(c.LinkedIn_URL__c) ? (
       <a
-        href={c.LinkedIn_URL__c}
+        href={toExternalHref(c.LinkedIn_URL__c)!}
         target="_blank"
         rel="noopener noreferrer"
         onClick={(e) => e.stopPropagation()}
         className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-semibold text-[#0A66C2] hover:underline"
-        title={c.LinkedIn_URL__c}
+        title={c.LinkedIn_URL__c ?? undefined}
       >
         in <ExternalLink size={11} />
       </a>

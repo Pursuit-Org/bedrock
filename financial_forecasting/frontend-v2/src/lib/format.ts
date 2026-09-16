@@ -138,3 +138,24 @@ export const relDay = (iso: string | null | undefined): string | null => {
   const d = Math.floor((Date.now() - new Date(iso).getTime()) / 86400000);
   return d <= 0 ? "today" : d === 1 ? "1d" : d < 30 ? `${d}d` : d < 365 ? `${Math.floor(d / 30)}mo` : `${Math.floor(d / 365)}y`;
 };
+
+/** Normalize a user-entered URL for use in an `href`.
+ *
+ *  Salesforce holds plenty of scheme-less values (`www.linkedin.com/in/x`,
+ *  `linkedin.com/in/y`) — dropped into an href those are *relative*, so the
+ *  router swallows the click and lands on an in-app 404 instead of the
+ *  profile. Same normalization the Website links already do inline
+ *  (AccountDetail, CleanupAccountsTab), centralised so the next one gets it
+ *  for free.
+ *
+ *  Returns null for anything that can't be a URL — empty, or containing
+ *  whitespace (SF has a few rows holding a bare name) — so callers can render
+ *  nothing rather than a link that goes somewhere wrong. A non-http scheme is
+ *  prefixed rather than passed through, which renders `javascript:` inert.
+ */
+export function toExternalHref(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const v = raw.trim();
+  if (!v || /\s/.test(v)) return null;
+  return /^https?:\/\//i.test(v) ? v : `https://${v.replace(/^\/+/, "")}`;
+}
