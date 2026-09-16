@@ -81,6 +81,11 @@ interface UnifiedTask {
      *  resolvable. */
     label: string;
   };
+  /** True when the task points at a Contact (SF WhoId), independent of
+   *  `parent.kind`. A task logged against an opportunity *with* a contact
+   *  groups under the opportunity — correct — but is still contact work,
+   *  and the Contact filter has to be able to find it. */
+  hasContact: boolean;
   /** Carrier-specific tail used by the inline editor — kept here so the
    *  mutation hook can hand the right argument shape back. */
   meta: { projectId?: string };
@@ -112,7 +117,7 @@ interface PortfolioTasksProps {
 type Scope = "focus" | "this-month" | "next-90" | "all";
 
 /** View level: filter tasks by which CRM entity level they're linked to. */
-type ViewLevel = "all" | "account" | "opportunity" | "contact";
+type ViewLevel = "all" | "account" | "opportunity" | "contact" | "other";
 
 const SCOPE_STORAGE_KEY = "bedrock-v2:portfolio:tasks:scope";
 const VIEW_LEVEL_STORAGE_KEY = "bedrock-v2:portfolio:tasks:view-level";
@@ -120,7 +125,7 @@ const VIEW_LEVEL_STORAGE_KEY = "bedrock-v2:portfolio:tasks:view-level";
 function readStoredViewLevel(): ViewLevel {
   try {
     const v = localStorage.getItem(VIEW_LEVEL_STORAGE_KEY);
-    if (v === "all" || v === "account" || v === "opportunity" || v === "contact") return v;
+    if (v === "all" || v === "account" || v === "opportunity" || v === "contact" || v === "other") return v;
   } catch {}
   return "all";
 }
@@ -253,8 +258,7 @@ export function PortfolioTasks({
 
   // View level filter: applied after scope so counts reflect current scope window.
   const filtered =
-    viewLevel === "all" ? scopeFiltered
-    : scopeFiltered.filter((t) => t.parent.kind === viewLevel);
+    viewLevel === "all" ? scopeFiltered : scopeFiltered.filter((t) => matchesViewLevel(t, viewLevel));
 
   const groups = useMemo(() => groupByParent(filtered), [filtered]);
 
@@ -266,9 +270,10 @@ export function PortfolioTasks({
   const allCount        = openTasks.length;
 
   // View level counts derived from scopeFiltered so they reflect the active time scope.
-  const accountCount     = scopeFiltered.filter((t) => t.parent.kind === "account").length;
-  const opportunityCount = scopeFiltered.filter((t) => t.parent.kind === "opportunity").length;
-  const contactCount     = scopeFiltered.filter((t) => t.parent.kind === "contact").length;
+  const accountCount     = scopeFiltered.filter((t) => matchesViewLevel(t, "account")).length;
+  const opportunityCount = scopeFiltered.filter((t) => matchesViewLevel(t, "opportunity")).length;
+  const contactCount     = scopeFiltered.filter((t) => matchesViewLevel(t, "contact")).length;
+  const otherCount       = scopeFiltered.filter((t) => matchesViewLevel(t, "other")).length;
 
   const isLoading = sfTasksQ.isLoading || projectsLoading;
 
@@ -285,6 +290,7 @@ export function PortfolioTasks({
           accountCount={accountCount}
           opportunityCount={opportunityCount}
           contactCount={contactCount}
+          otherCount={otherCount}
         />
       }
       action={
@@ -391,6 +397,7 @@ function normalizeSfTask(t: SfTask): UnifiedTask {
     deadline: t.ActivityDate ?? null,
     done: isSfDone(t),
     parent: resolveSfParent(t),
+    hasContact: Boolean(t.WhoId),
     meta: {},
   };
 }
@@ -404,6 +411,7 @@ function normalizeProjectTask(t: ProjectTaskRaw, projectId: string, projectName:
     deadline: t.deadline,
     done: t.status === "Done",
     parent: { kind: "project", id: projectId, label: projectName },
+    hasContact: false,
     meta: { projectId },
   };
 }
@@ -424,6 +432,23 @@ function resolveSfParent(t: SfTask): UnifiedTask["parent"] {
   if (prefix === "001") return { kind: "account", id, label: name };
   if (prefix === "003") return { kind: "contact", id, label: name };
   return { kind: "other", id, label: name };
+}
+
+/** Does this task belong in the given view level?
+ *
+ *  Account / Opportunity / Other partition the list by the parent the task is
+ *  grouped under, so those three counts sum to All Types. Contact is
+ *  deliberately NOT part of that partition: SF tasks routinely carry a WhatId
+ *  (the opportunity) *and* a WhoId (the person), and matching on the grouped
+ *  kind alone found only tasks with a Who and no What — 4 of the 43
+ *  contact-linked open tasks in production. So Contact overlaps the other
+ *  pills by design, and its count is "tasks involving a contact", not a slice
+ *  of a partition.
+ */
+function matchesViewLevel(t: UnifiedTask, level: Exclude<ViewLevel, "all">): boolean {
+  if (level === "contact") return t.hasContact;
+  if (level === "other") return t.parent.kind === "project" || t.parent.kind === "other";
+  return t.parent.kind === level;
 }
 
 // ── Grouping & sorting ───────────────────────────────────────────────────
@@ -767,6 +792,7 @@ function ViewLevelToggle({
   accountCount,
   opportunityCount,
   contactCount,
+  otherCount,
 }: {
   value: ViewLevel;
   onChange: (next: ViewLevel) => void;
@@ -774,6 +800,7 @@ function ViewLevelToggle({
   accountCount: number;
   opportunityCount: number;
   contactCount: number;
+  otherCount: number;
 }) {
   return (
     <div
@@ -804,6 +831,14 @@ function ViewLevelToggle({
         onClick={() => onChange("contact")}
         label="Contact"
         count={contactCount}
+      />
+      {/* Project tasks and SF tasks with no parent were previously reachable
+          only via All Types, with no pill and nothing saying so. */}
+      <ScopeButton
+        active={value === "other"}
+        onClick={() => onChange("other")}
+        label="Other"
+        count={otherCount}
       />
     </div>
   );
