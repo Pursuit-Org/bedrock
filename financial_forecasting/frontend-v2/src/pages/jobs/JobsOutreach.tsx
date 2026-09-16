@@ -1,11 +1,12 @@
 import { Fragment, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { ChevronRight, ChevronDown, Loader2, Users } from "lucide-react";
+import { BarChart3, ChevronRight, ChevronDown, Loader2, Send, Users } from "lucide-react";
 
 import { toast } from "sonner";
 import {
   useOutreachScorecard,
   useOutreachSummary,
+  useOutreachActivity,
   useOutreachDrill,
   useOutreachTargetingMix,
   useJobsStaff,
@@ -33,6 +34,7 @@ import { useContactStageChange } from "@/lib/useContactStageChange";
 import { JobsFunnels } from "@/components/jobs/JobsFunnels";
 import { Panel, BreakdownBars } from "./JobsOpportunitiesOverview";
 import { ActivityTrends } from "@/components/jobs/ActivityTrends";
+import { ActivityFeed } from "@/components/jobs/ActivityFeed";
 import { PeriodBar, ScopeButtons, defaultPeriod } from "@/components/jobs/PeriodBar";
 import { relDay } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -40,9 +42,9 @@ import { cn } from "@/lib/utils";
 const DRILL_PAGE = 25;
 
 type OutreachSub = "overview" | "detail";
-const OUTREACH_SUBS: { key: OutreachSub; label: string; title: string }[] = [
-  { key: "overview", label: "Overview", title: "The Monday review — funnel, queue, trends and what needs a decision" },
-  { key: "detail", label: "Outbound Detail", title: "Activity volume against target, by metric and sender" },
+const OUTREACH_SUBS: { key: OutreachSub; label: string; icon: typeof BarChart3; title: string }[] = [
+  { key: "overview", label: "Overview", icon: BarChart3, title: "The Monday review — funnel, queue and what needs a decision" },
+  { key: "detail", label: "Outbound Detail", icon: Send, title: "What went out: volume against target, trends and the send feed" },
 ];
 /** Touches shown before "Show n older" in a contact's inline touch log. */
 const TOUCH_LOG_CAP = 5;
@@ -913,7 +915,30 @@ function ActivityPipelineBlock({ activityPipeline, granularity, scope, owner, ra
   );
 }
 
-/** Accounts activated · calls booked · conversions, over the page's own window
+/** The send feed, same component the campaign view uses. No owner control of
+ *  its own: the page's sender filter already scopes it, and two owner controls
+ *  over one list would just fight. */
+function OutboundActivityFeed({ granularity, scope, owner, range }: {
+  granularity: OutreachGranularity;
+  scope: OutreachScopeKind;
+  owner?: string;
+  range?: OutreachDateRange;
+}) {
+  const { data, isLoading } = useOutreachActivity(granularity, scope, owner, range);
+  return (
+    <ActivityFeed
+      events={data?.events ?? []}
+      owners={[]}
+      isLoading={isLoading}
+      title="Outreach activity"
+      note="Every email, LinkedIn message and text sent in this period. Owner is who the contact belongs to; Editor is who sent it. Click a row for the contacts behind it."
+      showSegments={false}
+    />
+  );
+}
+
+/** Accounts activated · outreach activity · calls booked · conversions, over
+ *  the page's own window
  *  and sender scope. Shown on both sub-tabs: Overview needs the headline, and
  *  Outbound Detail needs it as the footing for the table below it. */
 function OutreachSummaryCards({ granularity, scope, owner, range }: {
@@ -926,13 +951,19 @@ function OutreachSummaryCards({ granularity, scope, owner, range }: {
   const cards: { tone: "accent" | "ink" | "green"; label: string; value?: number; sub: string }[] = [
     {
       tone: "accent", label: "Accounts activated", value: data?.accounts_activated,
-      sub: data ? `first touch in this period · ${data.accounts_reached.toLocaleString()} reached in total` : "first touch in this period",
+      sub: data
+        ? `quiet ${data.dormant_days}+ days, touched this period · ${data.accounts_reached.toLocaleString()} reached in all`
+        : "reopened after going quiet",
+    },
+    {
+      tone: "ink", label: "Outreach activity", value: data?.outreach_activity,
+      sub: "emails, LinkedIn and texts sent",
     },
     { tone: "ink", label: "Calls booked", value: data?.calls_booked, sub: "meetings and logged calls" },
     { tone: "green", label: "Converted to oppty", value: data?.converted, sub: "contacts that became an opportunity" },
   ];
   return (
-    <div className="grid grid-cols-1 items-stretch gap-4 sm:grid-cols-3">
+    <div className="grid grid-cols-2 items-stretch gap-4 lg:grid-cols-4">
       {cards.map((c) => (
         <div key={c.label} className="rounded-2xl border border-border-strong bg-surface px-5 py-4">
           <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">{c.label}</div>
@@ -1473,6 +1504,27 @@ export function JobsOutreach() {
 
   return (
     <div className="flex flex-col gap-6 pt-3">
+      {/* Above the period bar on purpose: you pick the view first, then the
+          window you want to see it over. Same chrome as Overview → Campaigns. */}
+      <div className="-mt-1 flex items-center gap-1 border-b border-border-strong">
+        {OUTREACH_SUBS.map((t) => {
+          const Icon = t.icon;
+          return (
+            <button
+              key={t.key}
+              onClick={() => setSub(t.key)}
+              title={t.title}
+              className={cn(
+                "-mb-px flex items-center gap-1.5 border-b-2 px-3 py-2 text-[13px] font-medium transition-colors",
+                sub === t.key ? "border-accent text-accent" : "border-transparent text-ink-3 hover:text-ink-2",
+              )}
+            >
+              <Icon size={13} />
+              {t.label}
+            </button>
+          );
+        })}
+      </div>
       {/* ── ZONE 1 · the selected period ──────────────────────────────────
              This bar governs everything down to the Current state boundary,
              and nothing below it. It used to float above the whole page, which
@@ -1498,22 +1550,6 @@ export function JobsOutreach() {
               .map((st) => <option key={st.email} value={st.email}>{st.name || st.email}</option>)}
           </select>
         </PeriodBar>
-
-      <div className="flex items-center gap-1 border-b border-border-strong">
-        {OUTREACH_SUBS.map((t) => (
-          <button
-            key={t.key}
-            onClick={() => setSub(t.key)}
-            title={t.title}
-            className={cn(
-              "-mb-px border-b-2 px-3 py-2 text-[13px] font-medium transition-colors",
-              sub === t.key ? "border-accent text-accent" : "border-transparent text-ink-3 hover:text-ink-2",
-            )}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
 
       {/* ── Daily digest (the morning Slack) ── */}
       {!onDetail && <DailyDigestBlock periodEnd={to} />}
@@ -1542,6 +1578,11 @@ export function JobsOutreach() {
           <ActivityPipelineBlock activityPipeline={sc?.activity_pipeline}
             granularity={granularity} scope={scope} owner={owner || undefined}
             range={range} nameOf={nameOf} />
+          {/* Outreach Trends moved here from Overview on 2026-09-16 — it
+              answers "what went out over time", which is this page's question. */}
+          <ActivityTrends scope={scope} owner={owner || undefined} range={range} />
+          <OutboundActivityFeed granularity={granularity} scope={scope}
+            owner={owner || undefined} range={range} />
         </>
       ) : (
       <>
@@ -1576,17 +1617,12 @@ export function JobsOutreach() {
              half-width would squeeze the trend line into noise. ── */}
       <div className="mt-6 flex items-center gap-3">
         <div className="h-px flex-1 bg-border-strong" />
-        <span className="text-[11px] font-bold uppercase tracking-[.12em] text-ink-3">Segments &amp; activity over time</span>
+        <span className="text-[11px] font-bold uppercase tracking-[.12em] text-ink-3">Segments</span>
         <div className="h-px flex-1 bg-border-strong" />
       </div>
-      <div className="grid grid-cols-1 gap-5 lg:grid-cols-2 lg:gap-0">
-        <div className="min-w-0 lg:h-full lg:pr-5">
-          <TargetingPanel granularity={granularity} scope={scope} owner={owner || undefined} range={range} />
-        </div>
-        <div className="min-w-0 lg:h-full lg:border-l lg:border-border-strong lg:pl-5">
-          <ActivityTrends scope={scope} owner={owner || undefined} range={range} />
-        </div>
-      </div>
+      {/* Targeting had a trend chart beside it until 2026-09-16; that chart now
+          lives on Outbound Detail, so this runs full width. */}
+      <TargetingPanel granularity={granularity} scope={scope} owner={owner || undefined} range={range} />
       </>
       )}
       </section>
@@ -1596,8 +1632,8 @@ export function JobsOutreach() {
              correct: these are live queues and rollups, not history. Making the
              boundary explicit was the fix for the period control appearing to
              govern the whole page when it governs only the half above it.
-             The divider is deliberately heavier than the "Segments & activity"
-             rule above, which separates two period-scoped panels — this one
+             The divider is deliberately heavier than the "Segments" rule
+             above, which heads a period-scoped panel — this one
              separates two different notions of time. ── */}
       {!onDetail && (
         <>

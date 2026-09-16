@@ -133,7 +133,41 @@ FIRST-EVER team touch lands in the window, since activation is a transition —
 counting any touch would re-activate the same account every period it gets a
 follow-up. The wider "reached" number rides in the card's sub-line.
 
-### Phase 6 — Not started
+### Phase 6 — Outbound Detail build-out ✅ DONE (2026-09-16)
+Kwame's fifth round.
+
+**Outreach tab**
+- [x] Sub-tabs get icons + the underline chrome Overview → Campaigns uses, and
+      move ABOVE the period bar: pick the view, then the window
+- [x] Fourth card **Outreach activity** between Accounts activated and Calls
+      booked — send volume (email + LinkedIn + text). Meetings and calls stay
+      out: they are the Calls booked card, and counting them here would inflate
+      an effort number with outcomes
+- [x] **Accounts activated redefined** to Kwame's spec: touched in the window
+      after going quiet for 90+ days. Replaces "first-ever touch", which
+      undercounted because most of this book has been contacted at some point
+- [x] Outreach Trends chart moved from Overview to Outbound Detail, below the
+      Activity Pipeline table
+- [x] New send feed on Outbound Detail via `GET /outreach/activity`, scoped by
+      the page's sender control rather than a filter of its own
+- [x] Divider renamed "Segments & activity over time" → **"Segments"**;
+      Targeting now runs full width there
+
+**Campaigns**
+- [x] Activation rows relaid out: bar shortened to 84px, then the percentage,
+      then `n / total` to its right
+- [x] "Worked past assigned" removed from the Converted card
+
+**Shared**
+- [x] Activity feed extracted to `components/jobs/ActivityFeed.tsx` and used by
+      both Campaigns and Outbound Detail. Segments and the owner control are
+      both optional, so the sends-only feed shows neither.
+
+**Verified against production (jobs team, trailing 30 days):** 48 accounts
+activated (90-day dormancy; the old first-ever rule gave 44), 79 reached,
+104 outreach activity, 31 calls booked.
+
+### Phase 7 — Not started
 - [ ] Drill from a trend point into the underlying activity list
 - [ ] Contact table on the detail view (the `/records` endpoint already serves it)
 - [ ] Stage-entry period flow, like `outreach-pipeline-rework.md`

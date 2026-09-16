@@ -1331,12 +1331,18 @@ function outreachParams(granularity: OutreachGranularity, scope: OutreachScopeKi
 
 export interface OutreachSummary {
   period: { from: string; to: string };
-  /** Accounts whose FIRST-EVER team touch lands in the window. Activation is a
-   *  transition, so counting it any other way would re-activate the same
-   *  account every period it gets a follow-up. */
+  /** How long an account must go quiet before a touch counts as activation. */
+  dormant_days: number;
+  /** Accounts touched in the window that had gone quiet for `dormant_days`
+   *  before it — a first-ever touch or a genuine restart. Counting any touch
+   *  would re-activate the same account every period it got a follow-up. */
   accounts_activated: number;
   /** The wider number: any touch in the window. */
   accounts_reached: number;
+  /** Send volume — emails, LinkedIn messages and texts. Meetings and calls are
+   *  excluded: those are `calls_booked`, and counting them here would inflate
+   *  the effort number with outcomes. */
+  outreach_activity: number;
   calls_booked: number;
   converted: number;
 }
@@ -1353,6 +1359,24 @@ export function useOutreachSummary(
     queryFn: async () => {
       const { data } = await api.get<ApiResponse<OutreachSummary>>(
         `/api/jobs/outreach/summary?${outreachParams(granularity, scope, owner, range)}`);
+      return data.data;
+    },
+    staleTime: 60_000,
+  });
+}
+
+/** The outbound feed for Outreach → Outbound Detail: sends only, scoped by the
+ *  page's own sender control rather than a filter of its own. */
+export function useOutreachActivity(
+  granularity: OutreachGranularity, scope: OutreachScopeKind,
+  owner?: string, range?: OutreachDateRange,
+) {
+  const rangeKey = range ? `${range.from}..${range.to}` : "";
+  return useQuery<CampaignActivity>({
+    queryKey: ["jobs", "outreach-activity", granularity, scope, owner ?? "", rangeKey],
+    queryFn: async () => {
+      const { data } = await api.get<ApiResponse<CampaignActivity>>(
+        `/api/jobs/outreach/activity?${outreachParams(granularity, scope, owner, range)}`);
       return data.data;
     },
     staleTime: 60_000,

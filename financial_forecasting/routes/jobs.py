@@ -4805,21 +4805,32 @@ async def outreach_summary(
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
-    """Three headline numbers for the Outreach tab: accounts activated, calls
-    booked, and conversions — over the same window and sender scope the rest of
-    the page uses.
+    """Four headline numbers for the Outreach tab: accounts activated, outreach
+    activity, calls booked, and conversions — over the same window and sender
+    scope the rest of the page uses.
 
-    "Activated" is a TRANSITION, so it counts accounts whose first-ever team
-    touch lands inside the window, the same new-vs-existing split the trend
-    chart draws. `accounts_reached` is the wider number (any touch in the
-    window) and rides along so the card can show both without a second call —
-    reporting only the wider one would make a quiet week of follow-ups look
-    like new ground broken.
+    "Activated" means an account we had gone COLD on is warm again: it received
+    a touch inside the window, and nothing for the 90 days before it. That
+    covers both a first-ever touch and a genuine restart, which "first ever"
+    alone missed — most of this book has been contacted at some point, so a
+    first-touch-only count would read near zero while the team was actively
+    reopening dormant accounts. `accounts_reached` (any touch in the window)
+    rides along as the wider denominator.
+
+    "Outreach activity" is send volume — emails, LinkedIn messages and texts.
+    Meetings and calls are deliberately excluded: they are the `calls_booked`
+    card, and counting them twice would inflate the effort number with
+    outcomes.
     """
+    # How long an account must go quiet before a new touch counts as
+    # re-activation rather than follow-up. Kwame's ask was "2 or 3 months".
+    DORMANT_DAYS = 90
     this_start, this_end, _last_start, _last_end = _outreach_windows(granularity, date_from, date_to)
     actor = _actor_sql("a", owner, scope)
     chan = ("CASE WHEN a.source='calendar-sync' OR a.type='meeting' THEN 'meeting' "
             "WHEN a.type='call' THEN 'call' "
+            "WHEN a.type='linkedin' THEN 'linkedin' "
+            "WHEN a.type='text' THEN 'text' "
             "WHEN a.type IN ('email') OR a.source='gmail-sync' THEN 'email' ELSE 'other' END")
 
     row = await conn.fetchrow(f"""
@@ -4850,18 +4861,27 @@ async def outreach_summary(
           JOIN public.contacts c ON c.contact_id = tc.contact_id
           WHERE coalesce(trim(c.current_company), '') <> ''
         ),
-        acct_first AS (
-          SELECT company, min(activity_date) AS first_touch FROM acct_touch GROUP BY company
+        acct_win AS (   -- accounts touched inside the window
+          SELECT DISTINCT company FROM acct_touch
+          WHERE activity_date >= $1 AND activity_date < ($2::date + 1)
+        ),
+        acct_prior AS ( -- and when we last touched them BEFORE it
+          SELECT company, max(activity_date) AS last_prior FROM acct_touch
+          WHERE activity_date < $1 GROUP BY company
         )
         SELECT
-          (SELECT count(*) FROM acct_first
-            WHERE first_touch >= $1 AND first_touch < ($2::date + 1)) AS accounts_activated,
-          (SELECT count(DISTINCT company) FROM acct_touch
-            WHERE activity_date >= $1 AND activity_date < ($2::date + 1)) AS accounts_reached,
+          (SELECT count(*) FROM acct_win w
+             LEFT JOIN acct_prior p ON p.company = w.company
+            WHERE p.last_prior IS NULL
+               OR p.last_prior < ($1::date - $3::int)) AS accounts_activated,
+          (SELECT count(*) FROM acct_win) AS accounts_reached,
+          (SELECT count(DISTINCT id) FROM acct_touch
+            WHERE channel IN ('email', 'linkedin', 'text')
+              AND activity_date >= $1 AND activity_date < ($2::date + 1)) AS outreach_activity,
           (SELECT count(DISTINCT id) FROM acct_touch
             WHERE channel IN ('meeting', 'call')
               AND activity_date >= $1 AND activity_date < ($2::date + 1)) AS calls_booked
-    """, this_start, this_end)
+    """, this_start, this_end, DORMANT_DAYS)
 
     # Conversions come off the membership stamp rather than the activity table —
     # converting is a pipeline decision someone records, not a touch.
@@ -4873,10 +4893,104 @@ async def outreach_summary(
 
     return {"success": True, "data": {
         "period": {"from": this_start.date().isoformat(), "to": this_end.date().isoformat()},
+        "dormant_days": DORMANT_DAYS,
         "accounts_activated": int(row["accounts_activated"] or 0),
         "accounts_reached": int(row["accounts_reached"] or 0),
+        "outreach_activity": int(row["outreach_activity"] or 0),
         "calls_booked": int(row["calls_booked"] or 0),
         "converted": int(conv["n"] or 0),
+    }}
+
+
+@router.get("/outreach/activity")
+async def outreach_activity_feed(
+    granularity: str = Query("week", pattern="^(day|week|month)$"),
+    scope: str = Query("team", pattern="^(pursuit|team|staff)$"),
+    owner: Optional[str] = Query(None, description="Sender whose touches to show"),
+    date_from: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    date_to: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    limit: int = Query(300, ge=1, le=1000),
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Every outbound touch to a jobs contact in the window, newest first —
+    the same feed the campaign view shows, without the tag filter.
+
+    SENDS ONLY. Meetings and calls belong to the calls-booked card, so this
+    feed answers "what did we put out" rather than "what came back".
+
+    `owner` here is the SENDER, matching the page's own sender control, not the
+    contact's assigned owner — on this page the question is whose outbound work
+    this is. The contact's owner still rides on each row so the table can show
+    both, the way the campaign feed does.
+    """
+    this_start, this_end, _ls, _le = _outreach_windows(granularity, date_from, date_to)
+    actor = _actor_sql("a", owner, scope)
+
+    rows = await conn.fetch(f"""
+        WITH act AS (
+          SELECT a.id, a.activity_date, a.type,
+                 lower(coalesce(
+                   nullif(substring(a.email_from from '<([^>]+)>'), ''),
+                   nullif(a.email_from, ''),
+                   a.logged_by)) AS editor,
+                 a.subject,
+                 left(nullif(btrim(coalesce(a.email_snippet, a.description, '')), ''), 400) AS snippet,
+                 a.participant_public_contact_id AS cid,
+                 a.email_to, a.email_cc
+          FROM bedrock.activity a
+          WHERE a.deleted_at IS NULL AND {actor}
+            AND {_not_autoreply('a')} AND {_jobs_relevant('a')}
+            AND a.type IN ('email', 'linkedin', 'text')
+            AND a.activity_date >= $1 AND a.activity_date < ($2::date + 1)
+        ),
+        linked AS (
+          SELECT a.id, a.activity_date, a.type, a.editor, a.subject, a.snippet, c.contact_id
+          FROM act a JOIN public.contacts c ON c.contact_id = a.cid
+          WHERE c.is_jobs_contact
+          UNION
+          SELECT a.id, a.activity_date, a.type, a.editor, a.subject, a.snippet, c.contact_id
+          FROM act a
+          CROSS JOIN LATERAL unnest(coalesce(a.email_to, '{{}}') || coalesce(a.email_cc, '{{}}')) AS e
+          JOIN public.contacts c ON lower(c.email) = lower(e)
+          WHERE a.type = 'email' AND c.is_jobs_contact
+        )
+        SELECT l.activity_date AS at, l.type AS subkind, l.editor, l.subject, l.snippet,
+               c.contact_id, c.full_name, c.current_company AS account,
+               coalesce(m.owner_email, ja.owner_email) AS owner,
+               CASE WHEN m.owner_email IS NOT NULL THEN 'contact'
+                    WHEN ja.owner_email IS NOT NULL THEN 'account' END AS owner_source
+        FROM linked l
+        JOIN public.contacts c ON c.contact_id = l.contact_id
+        LEFT JOIN bedrock.jobs_contact_membership m ON m.contact_id = c.contact_id
+        LEFT JOIN bedrock.jobs_account ja
+          ON ja.account_key = nullif(lower(btrim(coalesce(c.current_company, ''))), '')
+        ORDER BY l.activity_date DESC, c.full_name
+        LIMIT $3
+    """, this_start, this_end, limit)
+
+    return {"success": True, "data": {
+        "period": {"from": this_start.date().isoformat(), "to": this_end.date().isoformat()},
+        # No owner picker of its own — the page's sender control already scopes
+        # this feed, and a second owner control on the same page would be two
+        # filters fighting over one list.
+        "owners": [],
+        "events": [{
+            "at": r["at"].isoformat() if r["at"] else None,
+            "kind": "touch",
+            "subkind": r["subkind"],
+            "category": "outreach",
+            "contact_id": r["contact_id"],
+            "contact_name": r["full_name"],
+            "account": r["account"],
+            "owner": r["owner"],
+            "owner_source": r["owner_source"],
+            "editor": r["editor"],
+            "subject": r["subject"],
+            "snippet": r["snippet"],
+            "from_stage": None,
+            "to_stage": None,
+        } for r in rows],
     }}
 
 
