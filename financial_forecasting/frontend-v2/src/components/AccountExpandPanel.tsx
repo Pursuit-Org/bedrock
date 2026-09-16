@@ -417,8 +417,11 @@ function AccountContacts({ accountId }: { accountId: string }) {
   return (
     <div className="px-4 py-3">
       <div className="mb-2 flex items-center text-[11px] uppercase tracking-wider text-ink-3">
+        {/* On error `contacts` is [], so a plain count renders "0 contacts"
+            directly above "Could not load contacts" — asserting a fact we
+            don't have. Show nothing countable until we actually have data. */}
         <span>
-          {isLoading ? "…" : contacts.length} contact{contacts.length === 1 ? "" : "s"}
+          {isLoading ? "…" : isError ? "contacts" : `${contacts.length} contact${contacts.length === 1 ? "" : "s"}`}
         </span>
       </div>
 
