@@ -633,6 +633,24 @@ function AddContactModal({
     e.preventDefault();
     if (!form.LastName.trim()) return;
     setError(null);
+    // type="url" is browser-side only, and it accepts any absolute URL —
+    // "javascript:…" passes it. This value is written to Salesforce and later
+    // rendered as a link elsewhere in the app, so pin it to http(s) here,
+    // where we can still tell the user, rather than storing something the
+    // render side has to defend against.
+    const linkedIn = form.LinkedInUrl.trim();
+    if (linkedIn && !/^https?:\/\//i.test(linkedIn) && /^[a-z][a-z0-9+.-]*:/i.test(linkedIn)) {
+      setError("LinkedIn URL must start with https:// (or be a plain linkedin.com address).");
+      return;
+    }
+    if (linkedIn && /\s/.test(linkedIn)) {
+      setError("LinkedIn URL can't contain spaces.");
+      return;
+    }
+    // Store scheme-less input as a real URL so consumers get a usable href.
+    const linkedInUrl = linkedIn
+      ? (/^https?:\/\//i.test(linkedIn) ? linkedIn : `https://${linkedIn.replace(/^\/+/, "")}`)
+      : undefined;
     try {
       // Demote the previous primary first so we never have two flagged
       // at once even momentarily.
@@ -649,7 +667,7 @@ function AddContactModal({
         Email: form.Email.trim() || undefined,
         Phone: form.Phone.trim() || undefined,
         Title: form.Title.trim() || undefined,
-        LinkedIn_URL__c: form.LinkedInUrl.trim() || undefined,
+        LinkedIn_URL__c: linkedInUrl,
         Philanthropic_Contact__c: asPrimary || undefined,
       });
       onClose();
