@@ -79,6 +79,7 @@ from routes.jobs_comments import router as jobs_comments_router
 from routes.jobs_intro import router as jobs_intro_router
 from routes.jobs_sf import router as jobs_sf_router
 from routes.entity_comments import router as entity_comments_router
+from routes.revenue_snapshot import router as revenue_snapshot_router
 from auth import get_current_user_dep, require_auth, IS_PRODUCTION, JWT_SECRET_KEY
 from security import validate_salesforce_id, escape_soql_string, validate_http_url
 from sf_errors import sf_http_error
@@ -179,6 +180,7 @@ app.include_router(jobs_comments_router)
 app.include_router(jobs_intro_router)
 app.include_router(jobs_sf_router)
 app.include_router(entity_comments_router)
+app.include_router(revenue_snapshot_router)
 
 # Service singletons — shared with dependencies.py so route files can use
 # Depends(require_sf_mcp_client) without circular imports.
@@ -4217,7 +4219,7 @@ if __name__ == "__main__":
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
-        port=8000,
+        port=int(os.getenv("PORT", "8000")),
         reload=True,
         log_level="info"
     )
