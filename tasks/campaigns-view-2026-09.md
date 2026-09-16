@@ -99,7 +99,41 @@ of 282 accounts, which is what makes the column usable. Trailing 30 days in
 daily buckets: 31 points, 43 emails, 8 calls booked, 8 other. All six owner
 emails resolve to display names via `/api/jobs/staff`.
 
-### Phase 5 — Not started
+### Phase 5 — Trim + Outreach sub-tabs ✅ DONE (2026-09-16)
+Kwame's fourth round.
+
+**Campaigns**
+- [x] Portfolio rollup cards removed; the prioritised list is the whole view now
+- [x] Picker slimmed to one line and `h-full` inside an `items-stretch` row, so
+      it matches the period bar's height; in-pipeline badge dropped from the
+      closed control (the list rows keep their counts)
+- [x] Activation: note text gone, "Not yet activated" gone, and the two figures
+      restyled — accounts over contacts, each with its own share bar and a rule
+      between them, rather than two numbers sitting flush
+- [x] Outreach card: Notes channel, note text and the reached/last-touch footer
+      all removed
+- [x] "Outreach over time" → **"Outreach trends"**, subtitle removed
+- [x] Activity feed paginates at 10, not 25
+
+**Outreach tab** — now mirrors Overview's two-level nav
+- [x] Sub-tabs **Overview** and **Outbound Detail**, under the shared period bar
+      (period, scope and sender govern both)
+- [x] Activity Pipeline table lifted out of `ThisWeekBlock` into its own
+      `ActivityPipelineBlock` and moved to Outbound Detail
+- [x] New `OutreachSummaryCards` — accounts activated · calls booked · converted
+      — on BOTH sub-tabs; on Overview it occupies the space the Activity
+      Pipeline table vacated
+- [x] New `GET /outreach/summary`, honouring the page's window and sender scope
+
+**Verified against production (jobs team, trailing 30 days):** 44 accounts
+activated, 79 reached, 31 calls booked, 12 converted.
+
+**Definition worth confirming:** "accounts activated" counts accounts whose
+FIRST-EVER team touch lands in the window, since activation is a transition —
+counting any touch would re-activate the same account every period it gets a
+follow-up. The wider "reached" number rides in the card's sub-line.
+
+### Phase 6 — Not started
 - [ ] Drill from a trend point into the underlying activity list
 - [ ] Contact table on the detail view (the `/records` endpoint already serves it)
 - [ ] Stage-entry period flow, like `outreach-pipeline-rework.md`

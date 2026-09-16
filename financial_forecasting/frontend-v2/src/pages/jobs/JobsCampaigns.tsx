@@ -7,10 +7,9 @@
  * LT_Nick, Staff, Pursuit, Other) and the alumni cohorts are twelve — so the
  * picker offers the campaign, and the backend aggregates its slugs.
  *
- * Two views, one page. No campaign picked shows the portfolio: rollup stats
- * over every campaign plus the prioritised list. Picking one shows its detail:
- * activation, the stage funnel, outbound volume, the outreach trend, and the
- * event feed.
+ * Two views, one page. No campaign picked shows the prioritised list of every
+ * campaign. Picking one shows its detail: activation, the stage funnel,
+ * outbound volume, the outreach trend, and the event feed.
  *
  * Which numbers honour the period, because mixing the two would mislead:
  *   * Activation and the stage funnel are ALL-TIME. Activation is a state — a
@@ -29,7 +28,7 @@ import {
 } from "recharts";
 import { format } from "date-fns";
 import {
-  ArrowRight, Calendar, Check, ChevronDown, ChevronRight, FileText, Linkedin,
+  ArrowRight, Calendar, Check, ChevronDown, ChevronRight, Linkedin,
   Loader2, Mail, MessageSquare, Plus, StickyNote,
 } from "lucide-react";
 
@@ -41,13 +40,11 @@ import {
   type TagCampaign, type TagCampaignStats, type CampaignGranularity, type MembershipStage,
   type CampaignEvent, type CampaignEventCategory,
 } from "@/services/jobs";
-import { relDay } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
-const EMPTY_FUNNEL = { not_yet: 0, assigned: 0, contacted: 0, call_booked: 0, converted: 0, not_a_fit: 0, on_hold: 0 };
 const EMAIL_COLOR = "#4242EA";
 const CALL_COLOR = "#14b8a6";
-const ACTIVITY_PAGE = 25;
+const ACTIVITY_PAGE = 10;
 
 /** Funnel order, worked-first, shared by the stage bar and its legend so the
  *  two can never drift. `on_hold` is absent by design: the backend folds it
@@ -66,9 +63,10 @@ function pct(n: number, d: number): number | null {
 }
 
 // ── Campaign picker ─────────────────────────────────────────────────────────
-/** Single-select over campaigns, with "All campaigns" as the reset. Each row
- *  carries its in-pipeline count, so you can tell a 449-contact push from a
- *  4-contact one before committing to the click. */
+/** Single-select over campaigns, with "All campaigns" as the reset. The list
+ *  rows still carry their counts — sizing a push before you open it is worth a
+ *  line there — but the closed control shows the name alone, so it stays one
+ *  line tall and matches the period bar beside it. */
 function CampaignSelect({ campaigns, value, onChange, loading }: {
   campaigns: TagCampaign[];
   value: string | null;
@@ -84,22 +82,18 @@ function CampaignSelect({ campaigns, value, onChange, loading }: {
         onClick={() => setOpen((o) => !o)}
         aria-expanded={open}
         aria-haspopup="listbox"
+        // h-full + the parent's items-stretch is what keeps this the same
+        // height as the period bar beside it. One line of content, so it never
+        // drives the row taller than the bar does.
         className={cn(
-          "flex min-w-[260px] items-center gap-2 rounded-xl border bg-surface px-4 py-2.5 text-left transition-colors",
+          "flex h-full min-w-[260px] items-center gap-2 rounded-xl border bg-surface-2 px-3 py-2 text-left transition-colors",
           open ? "border-accent ring-1 ring-accent/30" : "border-border-strong hover:bg-surface-2/60",
         )}
       >
-        <div className="min-w-0 flex-1">
-          <div className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-4">Campaign</div>
-          <div className="truncate text-[15px] font-semibold text-ink">
-            {loading ? "Loading…" : current ? current.label : "All campaigns"}
-          </div>
-        </div>
-        {current ? (
-          <span className="shrink-0 rounded-full bg-surface-2 px-2 py-0.5 text-[11px] font-medium tabular-nums text-ink-3">
-            {current.in_pipeline.toLocaleString()}
-          </span>
-        ) : null}
+        <span className="shrink-0 text-[11px] font-semibold uppercase tracking-wider text-ink-3">Campaign</span>
+        <span className="min-w-0 flex-1 truncate text-[13px] font-semibold text-ink">
+          {loading ? "Loading…" : current ? current.label : "All campaigns"}
+        </span>
         <ChevronDown size={15} className={cn("shrink-0 text-ink-4 transition-transform", open && "rotate-180")} />
       </button>
 
@@ -180,43 +174,48 @@ function Section({ title, note, action, children }: {
   );
 }
 
-/** A named group in the activation row. Contacts and accounts stack, so one
- *  glance answers "how many people and how many companies" without comparing
- *  two tiles side by side. */
-function ActivationGroup({ label, hint, tone, primary, secondary, footer }: {
+/** One activation figure: accounts over contacts, separated by a rule and each
+ *  with its own share bar. The two numbers used to sit flush on top of each
+ *  other, which read as one broken number rather than two related ones. */
+function ActivationGroup({ label, hint, tone, rows }: {
   label: string;
   hint?: string;
-  tone: "accent" | "amber" | "green";
-  primary: { n: number; of?: number; unit: string };
-  secondary: { n: number; of?: number; unit: string };
-  footer?: string;
+  tone: "accent" | "green";
+  rows: { n: number; of?: number; unit: string }[];
 }) {
-  const toneCls = { accent: "text-accent", amber: "text-amber", green: "text-green" }[tone];
-  const Row = ({ v }: { v: { n: number; of?: number; unit: string } }) => {
-    const p = v.of !== undefined ? pct(v.n, v.of) : null;
-    return (
-      <div className="flex items-baseline gap-2">
-        <span className={cn("text-[28px] font-semibold leading-none tabular-nums", toneCls)}>
-          {v.n.toLocaleString()}
-        </span>
-        <span className="text-[11.5px] text-ink-3">
-          {v.unit}
-          {v.of !== undefined ? (
-            <span className="text-ink-4"> of {v.of.toLocaleString()}{p !== null ? ` · ${p}%` : ""}</span>
-          ) : null}
-        </span>
-      </div>
-    );
-  };
+  const bar = { accent: "bg-accent", green: "bg-green" }[tone];
+  const ink = { accent: "text-accent", green: "text-green" }[tone];
   return (
-    <div className="flex flex-col gap-3 rounded-xl border border-border-strong bg-surface px-4 py-3.5" title={hint}>
+    <div className="flex flex-col gap-3 rounded-xl border border-border-strong bg-surface px-5 py-4" title={hint}>
       <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-4">{label}</span>
-      <div className="flex flex-col gap-2.5">
-        <Row v={primary} />
-        <div className="border-t border-border-strong/70" />
-        <Row v={secondary} />
+      <div className="flex flex-col gap-3.5">
+        {rows.map((r, i) => {
+          const p = r.of !== undefined ? pct(r.n, r.of) : null;
+          return (
+            <div key={r.unit} className={cn("flex flex-col gap-1.5", i > 0 && "border-t border-border-strong/70 pt-3.5")}>
+              <div className="flex items-baseline justify-between gap-3">
+                <span className="text-[11px] font-medium uppercase tracking-wide text-ink-3">{r.unit}</span>
+                <span className="flex items-baseline gap-1.5">
+                  <span className={cn("text-[24px] font-semibold leading-none tabular-nums", ink)}>
+                    {r.n.toLocaleString()}
+                  </span>
+                  {r.of !== undefined ? (
+                    <span className="text-[11.5px] tabular-nums text-ink-4">/ {r.of.toLocaleString()}</span>
+                  ) : null}
+                </span>
+              </div>
+              {p !== null ? (
+                <div className="flex items-center gap-2">
+                  <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-surface-2">
+                    <div className={cn("h-full rounded-full", bar)} style={{ width: `${p}%` }} />
+                  </div>
+                  <span className="w-8 shrink-0 text-right text-[11px] tabular-nums text-ink-4">{p}%</span>
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
       </div>
-      {footer ? <span className="text-[11px] leading-snug text-ink-3">{footer}</span> : null}
     </div>
   );
 }
@@ -276,14 +275,13 @@ const CHANNELS: { key: keyof TagCampaignStats["outreach"]; label: string; Icon: 
   { key: "calls_booked", label: "Calls booked", Icon: Calendar },
   { key: "linkedin", label: "LinkedIn", Icon: Linkedin },
   { key: "texts", label: "Texts", Icon: MessageSquare },
-  { key: "notes", label: "Notes", Icon: FileText },
 ];
 
 function OutreachStats({ stats }: { stats: TagCampaignStats }) {
   const o = stats.outreach;
   return (
     <div className="flex flex-col gap-4">
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
         {CHANNELS.map(({ key, label, Icon }) => (
           <div key={key} className="flex flex-col gap-1 rounded-lg border border-border-strong bg-surface-2/40 px-3 py-2.5">
             <span className="flex items-center gap-1.5 text-[10.5px] font-semibold uppercase tracking-wider text-ink-4">
@@ -294,15 +292,6 @@ function OutreachStats({ stats }: { stats: TagCampaignStats }) {
             </span>
           </div>
         ))}
-      </div>
-      <div className="flex flex-wrap gap-x-6 gap-y-1 text-[11.5px] text-ink-3">
-        <span>
-          <span className="font-semibold tabular-nums text-ink-2">{o.contacts_reached.toLocaleString()}</span> contacts reached
-        </span>
-        <span>
-          <span className="font-semibold tabular-nums text-ink-2">{o.accounts_reached.toLocaleString()}</span> accounts reached
-        </span>
-        <span>Last touch {o.last_touch ? relDay(o.last_touch) : "—"}</span>
       </div>
     </div>
   );
@@ -674,40 +663,28 @@ function CampaignDetail({ campaignKey, from, to, granularity }: {
 
   const t = stats.totals;
   const converted = t.stages.converted_to_opportunity ?? 0;
-  // Idle is the complement of activated over the same populations, so the two
-  // groups always sum to the whole and can't drift apart.
-  const idleContacts = Math.max(0, t.in_pipeline - t.activated_contacts);
-  const idleAccounts = Math.max(0, t.accounts - t.activated_accounts);
 
   return (
     <div className="flex flex-col gap-4">
-      <Section
-        title="Activation"
-        note={`All-time, not period-scoped. ${t.in_pipeline.toLocaleString()} of ${t.contacts.toLocaleString()} tagged contacts are in the jobs pipeline, and everything here counts that set.${
-          stats.slugs.length > 1 ? ` Aggregated across ${stats.slugs.length} tags.` : ""
-        }`}
-      >
-        <div className="grid gap-3 md:grid-cols-3">
+      <Section title="Activation">
+        <div className="grid gap-3 md:grid-cols-2">
           <ActivationGroup
             label="Activated"
             tone="accent"
             hint="At least one outbound touch from Pursuit — email, call booked, text or LinkedIn."
-            primary={{ n: t.activated_contacts, of: t.in_pipeline, unit: "contacts" }}
-            secondary={{ n: t.activated_accounts, of: t.accounts, unit: "accounts" }}
-          />
-          <ActivationGroup
-            label="Not yet activated"
-            tone="amber"
-            hint="In the pipeline but with no outbound touch on record. The backlog the priority order exists to burn down."
-            primary={{ n: idleContacts, of: t.in_pipeline, unit: "contacts" }}
-            secondary={{ n: idleAccounts, of: t.accounts, unit: "accounts" }}
+            rows={[
+              { n: t.activated_accounts, of: t.accounts, unit: "accounts" },
+              { n: t.activated_contacts, of: t.in_pipeline, unit: "contacts" },
+            ]}
           />
           <ActivationGroup
             label="Converted to oppty"
             tone="green"
-            hint="Contacts whose membership reached converted_to_opportunity."
-            primary={{ n: converted, unit: "contacts" }}
-            secondary={{ n: t.worked, unit: "worked past assigned" }}
+            hint="Contacts whose membership reached converted_to_opportunity, and how many have been worked past assigned."
+            rows={[
+              { n: converted, unit: "converted" },
+              { n: t.worked, unit: "worked past assigned" },
+            ]}
           />
         </div>
         <div className="mt-5">
@@ -715,17 +692,11 @@ function CampaignDetail({ campaignKey, from, to, granularity }: {
         </div>
       </Section>
 
-      <Section
-        title="Outreach"
-        note="Outbound touches in the selected period. Synced email counts only when Pursuit sent it. Calls booked covers calendar meetings and hand-logged calls."
-      >
+      <Section title="Outreach">
         <OutreachStats stats={stats} />
       </Section>
 
-      <Section
-        title="Outreach over time"
-        note={`${stats.outreach.total.toLocaleString()} touches in the period, one point per ${granularity}.`}
-      >
+      <Section title="Outreach trends">
         <TrendChart stats={stats} />
       </Section>
 
@@ -735,65 +706,12 @@ function CampaignDetail({ campaignKey, from, to, granularity }: {
 }
 
 // ── Portfolio (no campaign picked) ──────────────────────────────────────────
-function Stat({ label, value, sub, tone = "ink" }: {
-  label: string; value: string; sub?: string; tone?: "ink" | "accent" | "green" | "amber";
-}) {
-  const toneCls = { ink: "text-ink", accent: "text-accent", green: "text-green", amber: "text-amber" }[tone];
-  return (
-    <div className="flex flex-col items-start gap-1 rounded-xl border border-border-strong bg-surface px-4 py-3">
-      <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-4">{label}</span>
-      <span className={cn("text-[26px] font-semibold leading-none tabular-nums", toneCls)}>{value}</span>
-      {sub ? <span className="text-[11px] leading-snug text-ink-3">{sub}</span> : null}
-    </div>
-  );
-}
-
-function rollup(camps: TagCampaign[]) {
-  let inPipeline = 0, contacted = 0, converted = 0, unworked = 0;
-  for (const c of camps) {
-    const f = c.funnel ?? EMPTY_FUNNEL;
-    inPipeline += c.in_pipeline ?? 0;
-    contacted += (f.contacted ?? 0) + (f.call_booked ?? 0);
-    converted += f.converted ?? 0;
-    unworked += (f.not_yet ?? 0) + (f.assigned ?? 0);
-  }
-  const reached = contacted + converted;
-  return {
-    campaigns: camps.length, inPipeline, converted, unworked, reached,
-    conversionPct: reached >= 5 ? Math.round((100 * converted) / reached) : null,
-    coveragePct: pct(reached, inPipeline),
-    unowned: camps.filter((c) => !c.owner_email).length,
-  };
-}
-
-function Portfolio({ campaigns, loading }: { campaigns: TagCampaign[]; loading: boolean }) {
-  const r = useMemo(() => rollup(campaigns), [campaigns]);
-  return (
-    <div className="flex flex-col gap-5">
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-        <Stat
-          label="Campaigns"
-          value={loading ? "—" : r.campaigns.toLocaleString()}
-          sub={r.unowned > 0 ? `${r.unowned} with no owner` : "all owned"}
-          tone={r.unowned > 0 ? "amber" : "ink"}
-        />
-        <Stat label="In pipeline" value={loading ? "—" : r.inPipeline.toLocaleString()} sub="tagged contacts flagged as jobs prospects" />
-        <Stat
-          label="Reached"
-          value={loading ? "—" : r.reached.toLocaleString()}
-          sub={r.coveragePct === null ? "no contacts in pipeline" : `${r.coveragePct}% of the pipeline · ${r.unworked.toLocaleString()} not yet contacted`}
-          tone="accent"
-        />
-        <Stat
-          label="Converted"
-          value={loading ? "—" : r.converted.toLocaleString()}
-          sub={r.conversionPct === null ? "too few reached to rate" : `${r.conversionPct}% of those reached`}
-          tone={r.converted > 0 ? "green" : "ink"}
-        />
-      </div>
-      <TagCampaigns />
-    </div>
-  );
+/** Just the prioritised list. The rollup cards that used to sit above it
+ *  (campaigns · in pipeline · reached · converted) were removed on 2026-09-16:
+ *  they averaged over campaigns with nothing in common, so the one number that
+ *  matters — how a given push is doing — was always a click away anyway. */
+function Portfolio() {
+  return <TagCampaigns />;
 }
 
 /** A month of dates in daily buckets — roughly 30 points, which is what makes
@@ -811,7 +729,7 @@ export function JobsCampaigns() {
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex flex-wrap items-end gap-3">
+      <div className="flex flex-wrap items-stretch gap-3">
         <CampaignSelect campaigns={campaigns} value={selected} onChange={setSelected} loading={isLoading} />
         {/* The period only drives the detail view — the portfolio rollup is an
             all-time snapshot, so showing a date range over it would lie. */}
@@ -830,7 +748,7 @@ export function JobsCampaigns() {
       </div>
       {selected
         ? <CampaignDetail campaignKey={selected} from={from} to={to} granularity={granularity} />
-        : <Portfolio campaigns={campaigns} loading={isLoading} />}
+        : <Portfolio />}
     </div>
   );
 }

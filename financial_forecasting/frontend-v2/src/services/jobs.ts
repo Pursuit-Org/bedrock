@@ -1329,6 +1329,36 @@ function outreachParams(granularity: OutreachGranularity, scope: OutreachScopeKi
   return p;
 }
 
+export interface OutreachSummary {
+  period: { from: string; to: string };
+  /** Accounts whose FIRST-EVER team touch lands in the window. Activation is a
+   *  transition, so counting it any other way would re-activate the same
+   *  account every period it gets a follow-up. */
+  accounts_activated: number;
+  /** The wider number: any touch in the window. */
+  accounts_reached: number;
+  calls_booked: number;
+  converted: number;
+}
+
+/** The three headline numbers on the Outreach tab, over the page's own window
+ *  and sender scope. */
+export function useOutreachSummary(
+  granularity: OutreachGranularity, scope: OutreachScopeKind,
+  owner?: string, range?: OutreachDateRange,
+) {
+  const rangeKey = range ? `${range.from}..${range.to}` : "";
+  return useQuery<OutreachSummary>({
+    queryKey: ["jobs", "outreach-summary", granularity, scope, owner ?? "", rangeKey],
+    queryFn: async () => {
+      const { data } = await api.get<ApiResponse<OutreachSummary>>(
+        `/api/jobs/outreach/summary?${outreachParams(granularity, scope, owner, range)}`);
+      return data.data;
+    },
+    staleTime: 60_000,
+  });
+}
+
 export function useOutreachScorecard(granularity: OutreachGranularity, scope: OutreachScopeKind, owner?: string, range?: OutreachDateRange) {
   const rangeKey = range ? `${range.from}..${range.to}` : "";
   return useQuery<OutreachScorecard>({

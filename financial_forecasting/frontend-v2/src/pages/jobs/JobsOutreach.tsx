@@ -5,6 +5,7 @@ import { ChevronRight, ChevronDown, Loader2, Users } from "lucide-react";
 import { toast } from "sonner";
 import {
   useOutreachScorecard,
+  useOutreachSummary,
   useOutreachDrill,
   useOutreachTargetingMix,
   useJobsStaff,
@@ -37,6 +38,12 @@ import { relDay } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 const DRILL_PAGE = 25;
+
+type OutreachSub = "overview" | "detail";
+const OUTREACH_SUBS: { key: OutreachSub; label: string; title: string }[] = [
+  { key: "overview", label: "Overview", title: "The Monday review — funnel, queue, trends and what needs a decision" },
+  { key: "detail", label: "Outbound Detail", title: "Activity volume against target, by metric and sender" },
+];
 /** Touches shown before "Show n older" in a contact's inline touch log. */
 const TOUCH_LOG_CAP = 5;
 /** Contacts shown per touch-depth bucket before "Show n more". */
@@ -701,10 +708,8 @@ function ContactCellDrill({ label, contacts, whenLabel }: {
   );
 }
 
-function ThisWeekBlock({ nameOf, activityPipeline, granularity, scope, owner, range, onSelectOwner }: {
+function ThisWeekBlock({ nameOf, scope, owner, range, onSelectOwner }: {
   nameOf: (email: string) => string;
-  activityPipeline?: ScorecardRow[];
-  granularity: OutreachGranularity;
   scope: OutreachScopeKind;
   owner?: string;
   range?: OutreachDateRange;
@@ -885,13 +890,63 @@ function ThisWeekBlock({ nameOf, activityPipeline, granularity, scope, owner, ra
         </table>
       </div>
 
-      {/* Activity pipeline lives here now: it answers "what did we do this
-          period", the same question as the queue above. */}
-      {activityPipeline && activityPipeline.length > 0 && (
-        <ScorecardTable title="Activity Pipeline" firstColHeader="Activity" rows={activityPipeline}
-          idPrefix="act" drillKind="activity" granularity={granularity} scope={scope}
-          owner={owner} range={range} nameOf={nameOf} />
-      )}
+    </div>
+  );
+}
+
+/** The Activity Pipeline table, lifted out of ThisWeekBlock on 2026-09-16 so it
+ *  can live on the Outbound Detail sub-tab. Overview shows the summary card in
+ *  the space it used to occupy. */
+function ActivityPipelineBlock({ activityPipeline, granularity, scope, owner, range, nameOf }: {
+  activityPipeline?: ScorecardRow[];
+  granularity: OutreachGranularity;
+  scope: OutreachScopeKind;
+  owner?: string;
+  range?: OutreachDateRange;
+  nameOf: (email: string) => string;
+}) {
+  if (!activityPipeline || activityPipeline.length === 0) return null;
+  return (
+    <ScorecardTable title="Activity Pipeline" firstColHeader="Activity" rows={activityPipeline}
+      idPrefix="act" drillKind="activity" granularity={granularity} scope={scope}
+      owner={owner} range={range} nameOf={nameOf} />
+  );
+}
+
+/** Accounts activated · calls booked · conversions, over the page's own window
+ *  and sender scope. Shown on both sub-tabs: Overview needs the headline, and
+ *  Outbound Detail needs it as the footing for the table below it. */
+function OutreachSummaryCards({ granularity, scope, owner, range }: {
+  granularity: OutreachGranularity;
+  scope: OutreachScopeKind;
+  owner?: string;
+  range?: OutreachDateRange;
+}) {
+  const { data, isLoading } = useOutreachSummary(granularity, scope, owner, range);
+  const cards: { tone: "accent" | "ink" | "green"; label: string; value?: number; sub: string }[] = [
+    {
+      tone: "accent", label: "Accounts activated", value: data?.accounts_activated,
+      sub: data ? `first touch in this period · ${data.accounts_reached.toLocaleString()} reached in total` : "first touch in this period",
+    },
+    { tone: "ink", label: "Calls booked", value: data?.calls_booked, sub: "meetings and logged calls" },
+    { tone: "green", label: "Converted to oppty", value: data?.converted, sub: "contacts that became an opportunity" },
+  ];
+  return (
+    <div className="grid grid-cols-1 items-stretch gap-4 sm:grid-cols-3">
+      {cards.map((c) => (
+        <div key={c.label} className="rounded-2xl border border-border-strong bg-surface px-5 py-4">
+          <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">{c.label}</div>
+          {isLoading ? (
+            <div className="mt-2 h-8 w-16 animate-pulse rounded bg-surface-2" />
+          ) : (
+            <div className={cn("mt-1.5 text-[30px] font-bold leading-none tabular-nums",
+              c.tone === "accent" ? "text-accent" : c.tone === "green" ? "text-green" : "text-ink")}>
+              {c.value ?? 0}
+            </div>
+          )}
+          <div className="mt-2 text-[11.5px] text-ink-4">{c.sub}</div>
+        </div>
+      ))}
     </div>
   );
 }
@@ -1410,6 +1465,12 @@ export function JobsOutreach() {
 
   const staffEmails = useMemo(() => new Set(staff.map((s) => s.email.toLowerCase())), [staff]);
 
+  // Two views over one period bar. Overview is the Monday review; Outbound
+  // Detail is the activity table that used to sit mid-scroll on it. The period,
+  // scope and sender controls govern both, so they stay above the sub-tabs.
+  const [sub, setSub] = useState<OutreachSub>("overview");
+  const onDetail = sub === "detail";
+
   return (
     <div className="flex flex-col gap-6 pt-3">
       {/* ── ZONE 1 · the selected period ──────────────────────────────────
@@ -1438,8 +1499,24 @@ export function JobsOutreach() {
           </select>
         </PeriodBar>
 
+      <div className="flex items-center gap-1 border-b border-border-strong">
+        {OUTREACH_SUBS.map((t) => (
+          <button
+            key={t.key}
+            onClick={() => setSub(t.key)}
+            title={t.title}
+            className={cn(
+              "-mb-px border-b-2 px-3 py-2 text-[13px] font-medium transition-colors",
+              sub === t.key ? "border-accent text-accent" : "border-transparent text-ink-3 hover:text-ink-2",
+            )}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
       {/* ── Daily digest (the morning Slack) ── */}
-      <DailyDigestBlock periodEnd={to} />
+      {!onDetail && <DailyDigestBlock periodEnd={to} />}
 
       {/* The window these numbers cover, right-aligned just above the first
           chart that uses it. At the top of the zone it read as a heading for
@@ -1458,10 +1535,25 @@ export function JobsOutreach() {
       {/* ── Monday agenda: contacts funnel → this week (+ activity pipeline)
              → requiring attention → campaigns → scorecard → targeting.
              Activity over time now sits below the sender-segment divider. ── */}
+      {onDetail ? (
+        <>
+          <OutreachSummaryCards granularity={granularity} scope={scope}
+            owner={owner || undefined} range={range} />
+          <ActivityPipelineBlock activityPipeline={sc?.activity_pipeline}
+            granularity={granularity} scope={scope} owner={owner || undefined}
+            range={range} nameOf={nameOf} />
+        </>
+      ) : (
+      <>
       <JobsFunnels only="prospects" period={range} periodLabel={rangeLabel || undefined} />
 
-      <ThisWeekBlock nameOf={nameOf} activityPipeline={sc?.activity_pipeline}
-        granularity={granularity} scope={scope} owner={owner || undefined} range={range}
+      {/* The Activity Pipeline table lived here until 2026-09-16; it now opens
+          Outbound Detail, and these three numbers take its place. */}
+      <OutreachSummaryCards granularity={granularity} scope={scope}
+        owner={owner || undefined} range={range} />
+
+      <ThisWeekBlock nameOf={nameOf}
+        scope={scope} owner={owner || undefined} range={range}
         onSelectOwner={(email) => {
           // The table keys owners lowercased; resolve back to the canonical
           // staff email so exact-match server filters still hit (one staff
@@ -1495,6 +1587,8 @@ export function JobsOutreach() {
           <ActivityTrends scope={scope} owner={owner || undefined} range={range} />
         </div>
       </div>
+      </>
+      )}
       </section>
 
       {/* ── ZONE 2 · current state ────────────────────────────────────────
@@ -1505,6 +1599,8 @@ export function JobsOutreach() {
              The divider is deliberately heavier than the "Segments & activity"
              rule above, which separates two period-scoped panels — this one
              separates two different notions of time. ── */}
+      {!onDetail && (
+        <>
       <ZoneBoundary />
 
       <TouchDepthPanel scope={scope} owner={owner || undefined} nameOf={nameOf} />
@@ -1516,6 +1612,8 @@ export function JobsOutreach() {
           its own view under Dashboard → Overview → Campaigns, with a picker,
           period bar and activity feed this strip never had. One home. */}
       <RequiringAttention owner={owner || undefined} nameOf={nameOf} staffEmails={staffEmails} />
+        </>
+      )}
     </div>
   );
 }

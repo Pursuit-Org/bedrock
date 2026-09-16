@@ -4795,6 +4795,91 @@ _TARGETING_DIMS = [
 ]
 
 
+@router.get("/outreach/summary")
+async def outreach_summary(
+    granularity: str = Query("week", pattern="^(day|week|month)$"),
+    scope: str = Query("team", pattern="^(pursuit|team|staff)$"),
+    owner: Optional[str] = Query(None, description="Scope to one staff sender (overrides scope)"),
+    date_from: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    date_to: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Three headline numbers for the Outreach tab: accounts activated, calls
+    booked, and conversions — over the same window and sender scope the rest of
+    the page uses.
+
+    "Activated" is a TRANSITION, so it counts accounts whose first-ever team
+    touch lands inside the window, the same new-vs-existing split the trend
+    chart draws. `accounts_reached` is the wider number (any touch in the
+    window) and rides along so the card can show both without a second call —
+    reporting only the wider one would make a quiet week of follow-ups look
+    like new ground broken.
+    """
+    this_start, this_end, _last_start, _last_end = _outreach_windows(granularity, date_from, date_to)
+    actor = _actor_sql("a", owner, scope)
+    chan = ("CASE WHEN a.source='calendar-sync' OR a.type='meeting' THEN 'meeting' "
+            "WHEN a.type='call' THEN 'call' "
+            "WHEN a.type IN ('email') OR a.source='gmail-sync' THEN 'email' ELSE 'other' END")
+
+    row = await conn.fetchrow(f"""
+        WITH team_act AS (
+          SELECT a.id, a.activity_date, a.participant_public_contact_id AS cid,
+                 a.email_to, a.email_cc, a.meeting_attendees, {chan} AS channel
+          FROM bedrock.activity a
+          WHERE a.deleted_at IS NULL AND {actor}
+            AND {_not_autoreply('a')} AND {_jobs_relevant('a')}
+        ),
+        touch_contact AS (
+          SELECT id, activity_date, channel, cid AS contact_id FROM team_act WHERE cid IS NOT NULL
+          UNION
+          SELECT t.id, t.activity_date, t.channel, c.contact_id
+          FROM team_act t, unnest(coalesce(t.email_to,'{{}}') || coalesce(t.email_cc,'{{}}')) e
+          JOIN public.contacts c ON lower(c.email) = lower(e)
+          WHERE t.channel = 'email'
+          UNION
+          SELECT t.id, t.activity_date, t.channel, c.contact_id
+          FROM team_act t, jsonb_array_elements(coalesce(t.meeting_attendees, '[]'::jsonb)) att
+          JOIN public.contacts c ON lower(c.email) = lower(att->>'email')
+          WHERE t.channel = 'meeting'
+        ),
+        acct_touch AS (
+          SELECT DISTINCT tc.id, tc.activity_date, tc.channel,
+                 lower(trim(c.current_company)) AS company
+          FROM touch_contact tc
+          JOIN public.contacts c ON c.contact_id = tc.contact_id
+          WHERE coalesce(trim(c.current_company), '') <> ''
+        ),
+        acct_first AS (
+          SELECT company, min(activity_date) AS first_touch FROM acct_touch GROUP BY company
+        )
+        SELECT
+          (SELECT count(*) FROM acct_first
+            WHERE first_touch >= $1 AND first_touch < ($2::date + 1)) AS accounts_activated,
+          (SELECT count(DISTINCT company) FROM acct_touch
+            WHERE activity_date >= $1 AND activity_date < ($2::date + 1)) AS accounts_reached,
+          (SELECT count(DISTINCT id) FROM acct_touch
+            WHERE channel IN ('meeting', 'call')
+              AND activity_date >= $1 AND activity_date < ($2::date + 1)) AS calls_booked
+    """, this_start, this_end)
+
+    # Conversions come off the membership stamp rather than the activity table —
+    # converting is a pipeline decision someone records, not a touch.
+    conv = await conn.fetchrow("""
+        SELECT count(*) AS n
+        FROM bedrock.jobs_contact_membership
+        WHERE converted_at >= $1 AND converted_at < ($2::date + 1)
+    """, this_start, this_end)
+
+    return {"success": True, "data": {
+        "period": {"from": this_start.date().isoformat(), "to": this_end.date().isoformat()},
+        "accounts_activated": int(row["accounts_activated"] or 0),
+        "accounts_reached": int(row["accounts_reached"] or 0),
+        "calls_booked": int(row["calls_booked"] or 0),
+        "converted": int(conv["n"] or 0),
+    }}
+
+
 @router.get("/outreach/targeting-mix")
 async def outreach_targeting_mix(
     granularity: str = Query("week", pattern="^(day|week|month)$"),
