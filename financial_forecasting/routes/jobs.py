@@ -8476,7 +8476,13 @@ async def tag_campaign_records(
         "contact_id": r["contact_id"],
         "full_name": r["full_name"],
         "company": r["company"],
-        "stage": canon_stage(r["stage"]),
+        # canon_MEMBERSHIP_stage, not canon_stage. The latter is the OPPORTUNITY
+        # vocabulary and rewrites membership 'initial_outreach' into
+        # 'active_in_discussions', which is not a membership stage at all — so
+        # every consumer matching on it (the drill's stage label, the pipeline
+        # buckets) silently found nothing for those contacts. 35 of Operation
+        # 35's on 2026-09-17.
+        "stage": canon_membership_stage(r["stage"]),
         "stage_entered_at": r["stage_entered_at"].isoformat() if r["stage_entered_at"] else None,
         "owner": r["owner_email"],
         "touches": int(r["touches"] or 0),

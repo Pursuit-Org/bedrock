@@ -259,7 +259,32 @@ band; tallest extent 259px inside the 300px box.
 - [x] Daily digest moved from Outreach → Overview to Outreach → Outbound
       Detail, first card under the period bar.
 
-### Phase 11 — Not started
+### Phase 11 — Fix: /records applied the wrong stage vocabulary ✅ (2026-09-17)
+**Bug:** clicking "In outreach 35" on the Sankey opened "No contacts in this
+bucket."
+
+**Cause:** `tag_campaign_records` canonicalised a MEMBERSHIP stage through
+`canon_stage()`, the OPPORTUNITY map, which rewrites `initial_outreach` into
+`active_in_discussions`. That is not a membership stage at all, so every
+consumer matching on membership vocabulary silently found nothing for those
+contacts.
+
+**Fix:** use `canon_membership_stage()`. One line.
+
+**Blast radius beyond the new panel:** `TagCampaigns.tsx:259` renders the
+drill's stage via `MEMBERSHIP_STAGE_LABELS[stage]`, so those same contacts had
+been showing a blank stage in the campaign list drill since before this branch.
+Fixed by the same change.
+
+**Checked the other four `canon_stage()` call sites** — `/opportunities/overview`
+(x2), `/roles` and the job-applications join all read `jobs_opportunity.stage`,
+where the opportunity map is correct. `/records` was the only mis-application.
+
+**Verified against production for Operation 35:** 336 no stage · 35 assigned ·
+35 initial_outreach · 19 converted · 13 not_a_fit · 7 call_booked · 4 revisit
+= 449, matching every Sankey label and every `inBucket()` case.
+
+### Phase 12 — Not started
 - [ ] Drill from a trend point into the underlying activity list
 - [ ] Contact table on the detail view (the `/records` endpoint already serves it)
 - [ ] Stage-entry period flow, like `outreach-pipeline-rework.md`
