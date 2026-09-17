@@ -284,7 +284,29 @@ where the opportunity map is correct. `/records` was the only mis-application.
 35 initial_outreach · 19 converted · 13 not_a_fit · 7 call_booked · 4 revisit
 = 449, matching every Sankey label and every `inBucket()` case.
 
-### Phase 12 — Not started
+### Phase 12 — Pinned campaigns ✅ (2026-09-17)
+- [x] `src/lib/pinnedCampaigns.ts` — localStorage-backed pin set, following the
+      `collapsible.ts` house pattern, every read and write wrapped so a private
+      window or cleared site data costs a click rather than a crash.
+- [x] Pin icon on every picker row; pinned campaigns list first under a
+      "Pinned" heading, the rest under "All campaigns".
+- [x] Pinned keep the CATALOG's order among themselves, not pin-click order —
+      the list is still the team's queue, just filtered to the top.
+
+**Why localStorage and not `catalog.sort_order`:** that field is the team's
+shared outreach priority, edited by dragging the campaign list. One person
+opening Operation 35 twenty times a day is not a reason to reorder everyone
+else's queue.
+
+### Auth note (not a code change)
+Kwame lost his session again. Ruled out both mechanisms that would make it
+recur: there is no 401 interceptor in `lib/api.ts` (nothing logs you out
+programmatically), and `main.py:13` runs `load_dotenv(override=True)` well
+before the route imports, so `JWT_SECRET_KEY` comes from `.env` and survives
+every backend restart. The cookie was simply cleared browser-side. Permanent
+fix remains `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` from Jac.
+
+### Phase 13 — Not started
 - [ ] Drill from a trend point into the underlying activity list
 - [ ] Contact table on the detail view (the `/records` endpoint already serves it)
 - [ ] Stage-entry period flow, like `outreach-pipeline-rework.md`

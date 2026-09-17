@@ -26,7 +26,7 @@ import { Link } from "react-router-dom";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as ReTooltip, ResponsiveContainer,
 } from "recharts";
-import { Calendar, Check, ChevronDown, Linkedin, Loader2, Mail, MessageSquare } from "lucide-react";
+import { Calendar, Check, ChevronDown, Linkedin, Loader2, Mail, MessageSquare, Pin } from "lucide-react";
 
 import { TagCampaigns } from "@/components/jobs/TagCampaigns";
 import { PeriodBar, PERIOD_PRESETS } from "@/components/jobs/PeriodBar";
@@ -40,6 +40,7 @@ import {
   type TagCampaign, type TagCampaignStats, type CampaignGranularity,
   type CampaignEvent,
 } from "@/services/jobs";
+import { usePinnedCampaigns } from "@/lib/pinnedCampaigns";
 import { cn } from "@/lib/utils";
 
 const EMAIL_COLOR = "#4242EA";
@@ -51,10 +52,12 @@ function pct(n: number, d: number): number | null {
 }
 
 // ── Campaign picker ─────────────────────────────────────────────────────────
-/** Single-select over campaigns, with "All campaigns" as the reset. The list
- *  rows still carry their counts — sizing a push before you open it is worth a
- *  line there — but the closed control shows the name alone, so it stays one
- *  line tall and matches the period bar beside it. */
+/** Single-select over campaigns, with "All campaigns" as the reset. Pinned
+ *  campaigns are listed first under their own heading — with 13 campaigns and
+ *  one you open constantly, scrolling past the other twelve every time is the
+ *  whole friction. The list rows carry their counts, since sizing a push before
+ *  you open it is worth a line there, but the closed control shows the name
+ *  alone so it stays one line tall and matches the period bar beside it. */
 function CampaignSelect({ campaigns, value, onChange, loading }: {
   campaigns: TagCampaign[];
   value: string | null;
@@ -62,7 +65,28 @@ function CampaignSelect({ campaigns, value, onChange, loading }: {
   loading: boolean;
 }) {
   const [open, setOpen] = useState(false);
+  const { isPinned, toggle } = usePinnedCampaigns();
   const current = campaigns.find((c) => c.key === value);
+
+  // Pinned keep the catalog's priority order among themselves rather than
+  // pin-click order: the list is still the team's queue, just filtered.
+  const pinnedRows = campaigns.filter((c) => isPinned(c.key));
+  const restRows = campaigns.filter((c) => !isPinned(c.key));
+
+  const row = (c: TagCampaign) => (
+    <Option
+      key={c.key}
+      label={c.label}
+      sub={`${c.in_pipeline.toLocaleString()} in pipeline · ${c.accounts.toLocaleString()} accounts${
+        c.slugs.length > 1 ? ` · ${c.slugs.length} tags` : ""
+      }`}
+      selected={value === c.key}
+      pinned={isPinned(c.key)}
+      onTogglePin={() => toggle(c.key)}
+      onClick={() => { onChange(c.key); setOpen(false); }}
+    />
+  );
+
   return (
     <div className="relative">
       <button
@@ -92,7 +116,7 @@ function CampaignSelect({ campaigns, value, onChange, loading }: {
           <div className="fixed inset-0 z-20" onClick={() => setOpen(false)} />
           <div
             role="listbox"
-            className="absolute left-0 z-30 mt-1.5 max-h-[380px] w-[340px] overflow-y-auto rounded-xl border border-border-strong bg-surface p-1.5 shadow-xl"
+            className="absolute left-0 z-30 mt-1.5 max-h-[420px] w-[360px] overflow-y-auto rounded-xl border border-border-strong bg-surface p-1.5 shadow-xl"
           >
             <Option
               label="All campaigns"
@@ -100,18 +124,18 @@ function CampaignSelect({ campaigns, value, onChange, loading }: {
               selected={value === null}
               onClick={() => { onChange(null); setOpen(false); }}
             />
-            <div className="my-1 border-t border-border-strong" />
-            {campaigns.map((c) => (
-              <Option
-                key={c.key}
-                label={c.label}
-                sub={`${c.in_pipeline.toLocaleString()} in pipeline · ${c.accounts.toLocaleString()} accounts${
-                  c.slugs.length > 1 ? ` · ${c.slugs.length} tags` : ""
-                }`}
-                selected={value === c.key}
-                onClick={() => { onChange(c.key); setOpen(false); }}
-              />
-            ))}
+            {pinnedRows.length > 0 && (
+              <>
+                <GroupHeading label="Pinned" />
+                {pinnedRows.map(row)}
+              </>
+            )}
+            {restRows.length > 0 && (
+              <>
+                <GroupHeading label={pinnedRows.length > 0 ? "All campaigns" : ""} />
+                {restRows.map(row)}
+              </>
+            )}
           </div>
         </>
       )}
@@ -119,28 +143,61 @@ function CampaignSelect({ campaigns, value, onChange, loading }: {
   );
 }
 
-function Option({ label, sub, selected, onClick }: {
+function GroupHeading({ label }: { label: string }) {
+  return label ? (
+    <div className="mt-1.5 border-t border-border-strong px-2.5 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider text-ink-4">
+      {label}
+    </div>
+  ) : (
+    <div className="my-1 border-t border-border-strong" />
+  );
+}
+
+function Option({ label, sub, selected, onClick, pinned, onTogglePin }: {
   label: string; sub: string; selected: boolean; onClick: () => void;
+  pinned?: boolean; onTogglePin?: () => void;
 }) {
   return (
-    <button
-      type="button"
-      role="option"
-      aria-selected={selected}
-      onClick={onClick}
+    <div
       className={cn(
-        "flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left transition-colors",
+        "group flex w-full items-center gap-1 rounded-lg pr-1 transition-colors",
         selected ? "bg-accent/10" : "hover:bg-surface-2",
       )}
     >
-      <div className="min-w-0 flex-1">
-        <div className={cn("truncate text-[13px]", selected ? "font-semibold text-accent" : "font-medium text-ink")}>
-          {label}
+      <button
+        type="button"
+        role="option"
+        aria-selected={selected}
+        onClick={onClick}
+        className="flex min-w-0 flex-1 items-center gap-2 px-2.5 py-2 text-left"
+      >
+        <div className="min-w-0 flex-1">
+          <div className={cn("truncate text-[13px]", selected ? "font-semibold text-accent" : "font-medium text-ink")}>
+            {label}
+          </div>
+          <div className="truncate text-[11px] text-ink-4">{sub}</div>
         </div>
-        <div className="truncate text-[11px] text-ink-4">{sub}</div>
-      </div>
-      {selected ? <Check size={14} className="shrink-0 text-accent" /> : null}
-    </button>
+        {selected ? <Check size={14} className="shrink-0 text-accent" /> : null}
+      </button>
+      {onTogglePin ? (
+        <button
+          type="button"
+          aria-label={pinned ? `Unpin ${label}` : `Pin ${label}`}
+          title={pinned ? "Unpin from the top" : "Pin to the top"}
+          // Stops the row's select handler: pinning is a different intent from
+          // opening, and the two sit a few pixels apart.
+          onClick={(e) => { e.stopPropagation(); onTogglePin(); }}
+          className={cn(
+            "shrink-0 rounded p-1.5 transition-colors",
+            pinned
+              ? "text-accent hover:bg-accent/10"
+              : "text-ink-4 opacity-0 hover:bg-surface-2 hover:text-ink-2 focus:opacity-100 group-hover:opacity-100",
+          )}
+        >
+          {pinned ? <Pin size={13} className="fill-current" /> : <Pin size={13} />}
+        </button>
+      ) : null}
+    </div>
   );
 }
 
