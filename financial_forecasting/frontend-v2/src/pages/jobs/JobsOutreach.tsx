@@ -1573,8 +1573,7 @@ export function JobsOutreach() {
           </select>
         </PeriodBar>
 
-      {/* ── Daily digest (the morning Slack) ── */}
-      {!onDetail && <DailyDigestBlock periodEnd={to} />}
+
 
       {/* The window these numbers cover, right-aligned just above the first
           chart that uses it. At the top of the zone it read as a heading for
@@ -1595,6 +1594,9 @@ export function JobsOutreach() {
              Activity over time now sits below the sender-segment divider. ── */}
       {onDetail ? (
         <>
+          {/* Daily digest (the morning Slack) moved here from Overview on
+              2026-09-17: it lists what went out, which is this page's subject. */}
+          <DailyDigestBlock periodEnd={to} />
           <OutreachSummaryCards granularity={granularity} scope={scope}
             owner={owner || undefined} range={range} />
           <ActivityPipelineBlock activityPipeline={sc?.activity_pipeline}

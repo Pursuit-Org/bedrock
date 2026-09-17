@@ -245,7 +245,21 @@ written by hand and deterministic.
 assigned y=81; col2 Contacted above Awaiting; every child inside its parent's
 band; tallest extent 259px inside the 300px box.
 
-### Phase 10 — Not started
+### Phase 10 — Sankey reverted to recharts, digest moved ✅ DONE (2026-09-17)
+- [x] **Reverted to the recharts Sankey.** The hand-laid version from Phase 9
+      pinned the node order correctly but read worse, and Kwame preferred the
+      original. Recharts' crossing-minimisation is back, so "Assigned" sits
+      mid-column again — that position is the library balancing the picture,
+      not the data. Noted in the file header so nobody re-litigates it.
+- [x] Kept everything Phase 9 added that was independent of the layout: the
+      per-node palette (grey only for All contacts / Not assigned / Awaiting
+      contact) and the clickable labels with their bucket panel.
+- [x] Clicking a node dims the rest of the flow; clicking it again clears.
+      `bucket` rides on each node object so recharts hands it to the renderer.
+- [x] Daily digest moved from Outreach → Overview to Outreach → Outbound
+      Detail, first card under the period bar.
+
+### Phase 11 — Not started
 - [ ] Drill from a trend point into the underlying activity list
 - [ ] Contact table on the detail view (the `/records` endpoint already serves it)
 - [ ] Stage-entry period flow, like `outreach-pipeline-rework.md`

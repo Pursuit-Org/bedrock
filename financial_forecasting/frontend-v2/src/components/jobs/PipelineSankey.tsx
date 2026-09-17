@@ -1,26 +1,30 @@
 /**
- * The campaign pipeline as a Sankey, laid out by hand rather than by recharts.
+ * The campaign pipeline as a Sankey: every contact flows left to right and each
+ * column splits the one before it.
  *
  *   All contacts → assigned / not assigned
  *                → contacted / awaiting contact
  *                → converted · call booked · in outreach · revisit · not a fit
  *
- * Why not recharts' Sankey: it runs a crossing-minimisation pass that nudges
- * nodes vertically and gives no way to pin their order, so "Assigned" floated
- * to the middle of the column while the dead-end branch beside it drifted. In a
- * funnel the ordering IS the message — the branch that keeps moving belongs on
- * top, the ones that stop belong below it — so the layout is deterministic here
- * and children are stacked in declared order, anchored to their parent's band.
+ * Why a Sankey rather than a stacked bar or a column flowchart: those show the
+ * same seven numbers, but neither shows what splits into what. Ribbon width
+ * carries the share, so a branch that collapses between columns is visible
+ * without reading a single figure.
  *
- * Every node is a tree node with exactly one parent, which is what makes the
- * layout a single pass: a node's height is its value, and its children stack
- * inside that height starting at its top edge. A branch that terminates early
- * simply leaves the columns to its right empty, which is the shape of the
- * funnel rather than a gap in it.
+ * Layout is recharts', deliberately. It nudges nodes vertically to minimise
+ * ribbon crossings, which is why "Assigned" does not sit flush at the top of
+ * its column — the position is the library balancing the picture, not the data
+ * saying anything. A hand-laid version that pinned the order read worse, so the
+ * ordering question is answered by the colours and the labels instead.
+ *
+ * Zero-value branches are dropped, not drawn at zero height. A campaign with
+ * nobody at Revisit should not show a Revisit label attached to an invisible
+ * ribbon, and recharts lays out degenerate links badly anyway.
  */
-import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useMemo } from "react";
+import { Sankey, Tooltip as ReTooltip, ResponsiveContainer, Layer, Rectangle } from "recharts";
 
-import type { TagCampaignStats } from "@/services/jobs";
+import type { TagCampaignStats, MembershipStage } from "@/services/jobs";
 import { cn } from "@/lib/utils";
 
 /** Bucket ids double as the filter the detail panel applies to the contact
@@ -29,28 +33,45 @@ export type PipelineBucket =
   | "all" | "assigned" | "unassigned" | "contacted" | "awaiting"
   | "converted" | "call_booked" | "in_outreach" | "revisit" | "not_a_fit";
 
-interface NodeDef {
-  id: PipelineBucket;
-  label: string;
-  parent: PipelineBucket | null;
-  /** Node fill. Grey means "no progress claimed": the whole population, and the
-   *  two branches that are waiting rather than advancing. Everything that
-   *  represents a step forward or a decision gets its own hue. */
-  color: string;
-}
-
+/** Grey means "no progress claimed" — the whole population, and the two
+ *  branches that are waiting rather than advancing. Everything representing a
+ *  step forward or a decision gets its own hue, so the eye can follow one
+ *  outcome from its ribbon to its label. */
 const GREY = "#9aa1ab";
-const NODES: NodeDef[] = [
-  { id: "all", label: "All contacts", parent: null, color: GREY },
-  { id: "assigned", label: "Assigned", parent: "all", color: "#0ea5e9" },
-  { id: "unassigned", label: "Not assigned", parent: "all", color: GREY },
-  { id: "contacted", label: "Contacted", parent: "assigned", color: "#4242EA" },
-  { id: "awaiting", label: "Awaiting contact", parent: "assigned", color: GREY },
-  { id: "converted", label: "Converted to oppty", parent: "contacted", color: "#16a34a" },
-  { id: "call_booked", label: "Call booked", parent: "contacted", color: "#0d9488" },
-  { id: "in_outreach", label: "In outreach", parent: "contacted", color: "#8b5cf6" },
-  { id: "revisit", label: "Revisit", parent: "contacted", color: "#f59e0b" },
-  { id: "not_a_fit", label: "Not a fit", parent: "contacted", color: "#fb7185" },
+const COLORS: Record<PipelineBucket, string> = {
+  all: GREY,
+  assigned: "#0ea5e9",
+  unassigned: GREY,
+  contacted: "#4242EA",
+  awaiting: GREY,
+  converted: "#16a34a",
+  call_booked: "#0d9488",
+  in_outreach: "#8b5cf6",
+  revisit: "#f59e0b",
+  not_a_fit: "#fb7185",
+};
+
+const LABELS: Record<PipelineBucket, string> = {
+  all: "All contacts",
+  assigned: "Assigned",
+  unassigned: "Not assigned",
+  contacted: "Contacted",
+  awaiting: "Awaiting contact",
+  converted: "Converted to oppty",
+  call_booked: "Call booked",
+  in_outreach: "In outreach",
+  revisit: "Revisit",
+  not_a_fit: "Not a fit",
+};
+
+export const BUCKET_LABELS = LABELS;
+
+const TERMINALS: { id: PipelineBucket; stage: MembershipStage }[] = [
+  { id: "converted", stage: "converted_to_opportunity" },
+  { id: "call_booked", stage: "call_booked" },
+  { id: "in_outreach", stage: "initial_outreach" },
+  { id: "revisit", stage: "revisit" },
+  { id: "not_a_fit", stage: "not_a_fit" },
 ];
 
 /** Counts per bucket, derived once so the chart and the detail panel agree. */
@@ -74,74 +95,129 @@ export function pipelineCounts(stats: TagCampaignStats): Record<PipelineBucket, 
   };
 }
 
-interface Placed extends NodeDef {
-  value: number; depth: number; x: number; y: number; h: number;
-}
+/** `bucket` rides on each node so the click handler knows what was clicked —
+ *  recharts hands the renderer whatever is on the node object. */
+interface SankeyNode { name: string; value: number; bucket: PipelineBucket; color: string }
+interface SankeyLink { source: number; target: number; value: number; bucket: PipelineBucket; fill: string }
 
-const NODE_W = 10;
-const GAP = 5;          // between siblings
-const LABEL_W = 132;    // room for the rightmost column's labels
-const PAD_Y = 16;
-/** Floor on a node's drawn height — a 4-of-449 branch would otherwise be a
- *  hairline, and an invisible branch reads as a missing one. */
-const MIN_H = 3;
+export function buildPipelineSankey(stats: TagCampaignStats): {
+  nodes: SankeyNode[]; links: SankeyLink[];
+} | null {
+  const counts = pipelineCounts(stats);
 
-function layout(counts: Record<PipelineBucket, number>, width: number, height: number) {
-  // Drop empty buckets, and any node orphaned by a dropped parent. A campaign
-  // with nobody at Revisit should show no Revisit label, not one attached to a
-  // zero-height ribbon.
-  const live = new Map<PipelineBucket, NodeDef>();
-  for (const n of NODES) {
-    if (counts[n.id] <= 0) continue;
-    if (n.parent && !live.has(n.parent)) continue;
-    live.set(n.id, n);
-  }
-  if (!live.has("all")) return null;
+  const EDGES: { from: PipelineBucket; to: PipelineBucket }[] = [
+    { from: "all", to: "assigned" },
+    { from: "all", to: "unassigned" },
+    { from: "assigned", to: "contacted" },
+    { from: "assigned", to: "awaiting" },
+    ...TERMINALS.map((t) => ({ from: "contacted" as PipelineBucket, to: t.id })),
+  ];
+  const edges = EDGES.filter((e) => counts[e.to] > 0 && counts[e.from] > 0);
 
-  const childrenOf = (id: PipelineBucket) => NODES.filter((n) => n.parent === id && live.has(n.id));
-  const depthOf = (n: NodeDef): number => (n.parent ? depthOf(NODES.find((x) => x.id === n.parent) as NodeDef) + 1 : 0);
-  const leaves = [...live.values()].filter((n) => childrenOf(n.id).length === 0).length;
-  const maxDepth = Math.max(...[...live.values()].map(depthOf));
+  if (edges.length === 0) return null;
 
-  const usableH = Math.max(40, height - PAD_Y * 2 - Math.max(0, leaves - 1) * GAP);
-  const scale = usableH / Math.max(1, counts.all);
-  const colStep = maxDepth > 0 ? (width - LABEL_W - NODE_W) / maxDepth : 0;
-
-  const placed: Placed[] = [];
-  const place = (n: NodeDef, top: number) => {
-    const d = depthOf(n);
-    const h = Math.max(MIN_H, counts[n.id] * scale);
-    placed.push({ ...n, value: counts[n.id], depth: d, x: d * colStep, y: top, h });
-    let cursor = top;
-    for (const c of childrenOf(n.id)) {
-      place(c, cursor);
-      cursor += Math.max(MIN_H, counts[c.id] * scale) + GAP;
-    }
+  // Only nodes an edge actually touches, indexed in first-seen order so the
+  // link indices below stay valid.
+  const order: PipelineBucket[] = [];
+  const idx = new Map<PipelineBucket, number>();
+  const seen = (id: PipelineBucket) => {
+    if (!idx.has(id)) { idx.set(id, order.length); order.push(id); }
+    return idx.get(id) as number;
   };
-  place(live.get("all") as NodeDef, PAD_Y);
-
-  const byId = new Map(placed.map((p) => [p.id, p]));
-  const ribbons = placed
-    .filter((p) => p.parent)
-    .map((p) => ({ id: p.id, from: byId.get(p.parent as PipelineBucket) as Placed, to: p }));
-
-  return { placed, ribbons, maxDepth };
+  const links = edges.map((e) => ({
+    source: seen(e.from),
+    target: seen(e.to),
+    value: counts[e.to],
+    bucket: e.to,
+    // The ribbon carries the colour of what it feeds, so an outcome reads as
+    // one hue from the split that produced it all the way to its label.
+    fill: COLORS[e.to],
+  }));
+  return {
+    nodes: order.map((id) => ({
+      name: LABELS[id], value: counts[id], bucket: id, color: COLORS[id],
+    })),
+    links,
+  };
 }
 
-/** Width from the DOM, height fixed by the caller — the chart has to fill the
- *  card it sits in, and the card's width is whatever the grid gives it. */
-function useWidth() {
-  const ref = useRef<HTMLDivElement>(null);
-  const [w, setW] = useState(0);
-  useLayoutEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const ro = new ResizeObserver(([e]) => setW(e.contentRect.width));
-    ro.observe(el);
-    setW(el.getBoundingClientRect().width);
-    return () => ro.disconnect();
-  }, []);
-  return [ref, w] as const;
+type NodePayload = { name?: string; value?: number; bucket?: PipelineBucket; color?: string };
+
+function SankeyNodeShape(props: {
+  x?: number; y?: number; width?: number; height?: number;
+  payload?: NodePayload; containerWidth?: number;
+  selected?: PipelineBucket | null;
+  onSelect?: (b: PipelineBucket | null) => void;
+}) {
+  const {
+    x = 0, y = 0, width = 0, height = 0, payload, containerWidth = 0,
+    selected = null, onSelect,
+  } = props;
+  const bucket = payload?.bucket;
+  const color = payload?.color ?? GREY;
+  const value = payload?.value ?? 0;
+  const active = selected !== null && selected === bucket;
+  const dim = selected !== null && selected !== "all" && !active;
+
+  // Last column labels to the right of the node; everything else labels above
+  // it, where there is no ribbon to collide with.
+  const terminal = x + width > containerWidth - 140;
+  const labelX = terminal ? x + width + 8 : x;
+  const labelY = terminal ? y + height / 2 : y - 6;
+
+  return (
+    <Layer
+      opacity={dim ? 0.45 : 1}
+      className={onSelect ? "cursor-pointer" : undefined}
+      onClick={() => bucket && onSelect?.(active ? null : bucket)}
+    >
+      <Rectangle x={x} y={y} width={width} height={height} fill={color} radius={2} />
+      <text
+        x={labelX}
+        y={labelY}
+        textAnchor="start"
+        dominantBaseline={terminal ? "middle" : "auto"}
+        fontSize={11}
+        fill={active ? color : "var(--color-ink-2)"}
+        fontWeight={active ? 600 : 400}
+        className="select-none"
+      >
+        {payload?.name}
+        <tspan fontWeight={600} dx={6}>{value.toLocaleString()}</tspan>
+      </text>
+      {/* Generous hit target over the label, so the text is clickable without
+          demanding pixel accuracy on a thin node. */}
+      <rect
+        x={labelX - 3}
+        y={terminal ? y + height / 2 - 9 : y - 18}
+        width={136}
+        height={18}
+        fill="transparent"
+      />
+    </Layer>
+  );
+}
+
+function SankeyLinkShape(props: {
+  sourceX?: number; targetX?: number; sourceY?: number; targetY?: number;
+  sourceControlX?: number; targetControlX?: number; linkWidth?: number;
+  payload?: { fill?: string; bucket?: PipelineBucket };
+  selected?: PipelineBucket | null;
+}) {
+  const {
+    sourceX = 0, targetX = 0, sourceY = 0, targetY = 0,
+    sourceControlX = 0, targetControlX = 0, linkWidth = 0, payload, selected = null,
+  } = props;
+  const dim = selected !== null && selected !== "all" && selected !== payload?.bucket;
+  return (
+    <path
+      d={`M${sourceX},${sourceY}C${sourceControlX},${sourceY} ${targetControlX},${targetY} ${targetX},${targetY}`}
+      stroke={payload?.fill ?? GREY}
+      strokeWidth={Math.max(1, linkWidth)}
+      strokeOpacity={dim ? 0.1 : 0.32}
+      fill="none"
+    />
+  );
 }
 
 export function PipelineSankey({ stats, height = 300, selected, onSelect }: {
@@ -150,77 +226,32 @@ export function PipelineSankey({ stats, height = 300, selected, onSelect }: {
   selected: PipelineBucket | null;
   onSelect: (b: PipelineBucket | null) => void;
 }) {
-  const [ref, width] = useWidth();
-  const counts = useMemo(() => pipelineCounts(stats), [stats]);
-  const model = useMemo(
-    () => (width > 260 ? layout(counts, width, height) : null),
-    [counts, width, height],
-  );
+  const data = useMemo(() => buildPipelineSankey(stats), [stats]);
 
+  if (!data) {
+    return (
+      <div className="grid h-[220px] place-items-center rounded-lg border border-dashed border-border-strong text-[12.5px] text-ink-3">
+        Nobody in this campaign's pipeline yet.
+      </div>
+    );
+  }
   return (
-    <div ref={ref} className="w-full">
-      {counts.all === 0 ? (
-        <div className="grid h-[220px] place-items-center rounded-lg border border-dashed border-border-strong text-[12.5px] text-ink-3">
-          Nobody in this campaign's pipeline yet.
-        </div>
-      ) : !model ? (
-        <div style={{ height }} />
-      ) : (
-        <svg width={width} height={height} role="img" aria-label="Campaign pipeline">
-          {model.ribbons.map(({ id, from, to }) => {
-            const x1 = from.x + NODE_W;
-            const x2 = to.x;
-            const mid = (x1 + x2) / 2;
-            // Ribbon spans the child's full height on both ends: each child has
-            // exactly one parent, so there is nothing to apportion.
-            const d = `M${x1},${to.y} C${mid},${to.y} ${mid},${to.y} ${x2},${to.y}
-                       L${x2},${to.y + to.h} C${mid},${to.y + to.h} ${mid},${to.y + to.h} ${x1},${to.y + to.h} Z`;
-            const dim = selected !== null && selected !== "all" && selected !== id;
-            return (
-              <path key={id} d={d} fill={to.color} opacity={dim ? 0.12 : 0.28} />
-            );
-          })}
-          {model.placed.map((n) => {
-            const terminal = n.depth === model.maxDepth;
-            const active = selected === n.id;
-            const dim = selected !== null && selected !== "all" && !active;
-            const labelX = terminal ? n.x + NODE_W + 8 : n.x;
-            const labelY = terminal ? n.y + n.h / 2 : n.y - 6;
-            return (
-              <g
-                key={n.id}
-                onClick={() => onSelect(active ? null : n.id)}
-                className="cursor-pointer"
-                opacity={dim ? 0.45 : 1}
-              >
-                <rect x={n.x} y={n.y} width={NODE_W} height={n.h} fill={n.color} rx={2} />
-                <text
-                  x={labelX}
-                  y={labelY}
-                  textAnchor="start"
-                  dominantBaseline={terminal ? "middle" : "auto"}
-                  fontSize={11}
-                  fill={active ? n.color : "var(--color-ink-2)"}
-                  fontWeight={active ? 600 : 400}
-                  className="select-none"
-                >
-                  {n.label}
-                  <tspan fontWeight={600} dx={6}>{n.value.toLocaleString()}</tspan>
-                </text>
-                {/* Generous hit target over the label, so the text is clickable
-                    without demanding pixel accuracy. */}
-                <rect
-                  x={labelX - 2}
-                  y={terminal ? n.y + n.h / 2 - 9 : n.y - 18}
-                  width={LABEL_W}
-                  height={18}
-                  fill="transparent"
-                />
-              </g>
-            );
-          })}
-        </svg>
-      )}
+    <div className="w-full">
+      <ResponsiveContainer width="100%" height={height}>
+        <Sankey
+          data={data}
+          nodeWidth={9}
+          nodePadding={18}
+          // Right margin holds the terminal labels; top holds the above-node ones.
+          margin={{ top: 16, right: 132, bottom: 6, left: 4 }}
+          node={<SankeyNodeShape selected={selected} onSelect={onSelect} />}
+          link={<SankeyLinkShape selected={selected} />}
+        >
+          <ReTooltip
+            contentStyle={{ fontSize: 12, borderRadius: 8, border: "1px solid var(--color-border)" }}
+          />
+        </Sankey>
+      </ResponsiveContainer>
       <p className={cn("mt-1 text-[11px]", selected ? "text-accent" : "text-ink-4")}>
         {selected ? "Showing that bucket — click it again to clear" : "Click a label to list its contacts"}
       </p>
@@ -244,6 +275,3 @@ export function inBucket(bucket: PipelineBucket, stage: string | null): boolean 
     case "not_a_fit": return stage === "not_a_fit";
   }
 }
-
-export const BUCKET_LABELS: Record<PipelineBucket, string> =
-  Object.fromEntries(NODES.map((n) => [n.id, n.label])) as Record<PipelineBucket, string>;
