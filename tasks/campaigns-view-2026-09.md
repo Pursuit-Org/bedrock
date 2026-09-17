@@ -216,7 +216,36 @@ Operation 35 (10 nodes / 9 links, no invalid), an all-zero campaign (renders an
 empty state rather than a broken chart), an untouched-only campaign (2 nodes),
 and one with no outcomes yet (4 nodes).
 
-### Phase 9 — Not started
+### Phase 9 — Sankey rebuilt, hand-laid ✅ DONE (2026-09-17)
+Kwame asked why "Assigned" floated to the middle of its column.
+
+**Answer: recharts was choosing, not the data.** Its Sankey runs a
+crossing-minimisation pass that nudges nodes vertically and exposes no way to
+pin their order, so the node with children got centred while the dead-end
+branch drifted. In a funnel the ordering IS the message, so the layout is now
+written by hand and deterministic.
+
+- [x] Custom SVG layout replaces recharts' `Sankey`. Single pass: each node's
+      height is its value, children stack in declared order anchored to the
+      parent's top edge. Working branch on top, dead ends below.
+- [x] Per-node colours. Grey now means only "no progress claimed" — All
+      contacts, Not assigned, Awaiting contact. Assigned (sky), Contacted
+      (indigo), Converted (green), Call booked (teal), In outreach (violet),
+      Revisit (amber), Not a fit (rose).
+- [x] Every label is clickable and opens a panel to the right of the chart,
+      inside the same card, 8 rows then Show all. Derived from `/records`,
+      which already carries every in-pipeline contact with its stage — no new
+      endpoint.
+- [x] `inBucket()` mirrors `pipelineCounts()` exactly, so a label's number and
+      the list it opens can never disagree.
+- [x] `MIN_H` floor of 3px: Revisit at 4 of 449 was a sub-pixel hairline, and
+      an invisible branch reads as a missing one.
+
+**Layout verified for Operation 35 at 760×300:** col1 Assigned y=16 above Not
+assigned y=81; col2 Contacted above Awaiting; every child inside its parent's
+band; tallest extent 259px inside the 300px box.
+
+### Phase 10 — Not started
 - [ ] Drill from a trend point into the underlying activity list
 - [ ] Contact table on the detail view (the `/records` endpoint already serves it)
 - [ ] Stage-entry period flow, like `outreach-pipeline-rework.md`

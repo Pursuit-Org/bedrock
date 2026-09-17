@@ -22,6 +22,7 @@
  * The page labels which is which rather than quietly picking one.
  */
 import { useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as ReTooltip, ResponsiveContainer,
 } from "recharts";
@@ -31,9 +32,11 @@ import { TagCampaigns } from "@/components/jobs/TagCampaigns";
 import { PeriodBar, PERIOD_PRESETS } from "@/components/jobs/PeriodBar";
 import { ActivityFeed } from "@/components/jobs/ActivityFeed";
 import { DrillList, type DrillRow } from "@/components/jobs/DrillList";
-import { PipelineSankey } from "@/components/jobs/PipelineSankey";
 import {
-  useTagCampaigns, useTagCampaignStats, useTagCampaignActivity,
+  PipelineSankey, inBucket, BUCKET_LABELS, type PipelineBucket,
+} from "@/components/jobs/PipelineSankey";
+import {
+  useTagCampaigns, useTagCampaignStats, useTagCampaignActivity, useTagCampaignRecords,
   type TagCampaign, type TagCampaignStats, type CampaignGranularity,
   type CampaignEvent,
 } from "@/services/jobs";
@@ -41,6 +44,7 @@ import { cn } from "@/lib/utils";
 
 const EMAIL_COLOR = "#4242EA";
 const CALL_COLOR = "#14b8a6";
+const BUCKET_PAGE = 8;
 
 function pct(n: number, d: number): number | null {
   return d > 0 ? Math.round((100 * n) / d) : null;
@@ -210,6 +214,67 @@ function ActivationGroup({ label, hint, tone, rows }: {
 /** Half again as tall as it was, with the count rendered inside each band and
  *  the labels moved to a legend below. Labels used to sit beside the numbers in
  *  the legend row and wrapped into each other at this width. */
+/** The contacts behind one Sankey bucket. Sits to the right of the chart and
+ *  matches its height, so opening a bucket never reflows the card — it fills
+ *  space that was already reserved. Derived from /records rather than a new
+ *  endpoint: that response already carries every in-pipeline contact with its
+ *  stage, which is exactly what the buckets partition on. */
+function BucketPanel({ campaignKey, bucket, onClose }: {
+  campaignKey: string;
+  bucket: PipelineBucket;
+  onClose: () => void;
+}) {
+  const [showAll, setShowAll] = useState(false);
+  const { data, isLoading } = useTagCampaignRecords(campaignKey);
+  const rows = useMemo(
+    () => (data?.contacts ?? []).filter((c) => inBucket(bucket, c.stage)),
+    [data?.contacts, bucket],
+  );
+  const shown = showAll ? rows : rows.slice(0, BUCKET_PAGE);
+
+  return (
+    <div className="flex w-full shrink-0 flex-col rounded-lg border border-border-strong bg-surface-2/40 xl:w-[268px]">
+      <div className="flex items-baseline justify-between gap-2 border-b border-border-strong px-3 py-2">
+        <span className="min-w-0 truncate text-[12px] font-semibold text-ink">
+          {BUCKET_LABELS[bucket]}
+          <span className="ml-1.5 tabular-nums text-ink-4">{rows.length.toLocaleString()}</span>
+        </span>
+        <button type="button" onClick={onClose}
+          className="shrink-0 text-[11px] font-medium text-accent hover:underline">Close</button>
+      </div>
+      {isLoading ? (
+        <div className="flex items-center gap-2 px-3 py-4 text-[12px] text-ink-3">
+          <Loader2 size={13} className="animate-spin" /> Loading…
+        </div>
+      ) : rows.length === 0 ? (
+        <div className="px-3 py-4 text-[12px] text-ink-4">No contacts in this bucket.</div>
+      ) : (
+        <div className="flex max-h-[276px] flex-col overflow-y-auto px-3 py-1.5">
+          {shown.map((c) => (
+            <Link
+              key={c.contact_id}
+              to={`/jobs/contacts/${c.contact_id}`}
+              className="flex flex-col gap-0.5 border-b border-border-strong py-1.5 last:border-b-0 hover:text-accent"
+            >
+              <span className="truncate text-[12.5px] font-medium text-ink">{c.full_name ?? "—"}</span>
+              <span className="truncate text-[11px] text-ink-4">
+                {c.company ?? "—"}
+                {c.owner ? ` · ${c.owner.split("@")[0]}` : ""}
+              </span>
+            </Link>
+          ))}
+          {rows.length > BUCKET_PAGE ? (
+            <button type="button" onClick={() => setShowAll((v) => !v)}
+              className="self-start py-1.5 text-[11.5px] font-medium text-accent hover:underline">
+              {showAll ? "Show less" : `Show all ${rows.length}`}
+            </button>
+          ) : null}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Outreach volume ─────────────────────────────────────────────────────────
 /** `types` is what the tile opens: the activity types whose events make up
  *  this count, so the drill can never list something the number didn't count.
@@ -427,6 +492,7 @@ function CampaignDetail({ campaignKey, from, to, granularity }: {
   // matches, which is fine — this one must stay unfiltered either way.
   const { data: activity, isLoading: loadingEvents } = useTagCampaignActivity(campaignKey, { from, to });
   const events = activity?.events ?? [];
+  const [bucket, setBucket] = useState<PipelineBucket | null>(null);
 
   if (isLoading) {
     return (
@@ -448,10 +514,6 @@ function CampaignDetail({ campaignKey, from, to, granularity }: {
   return (
     <div className="flex flex-col gap-4">
       <Section title="Activation">
-        {/* Activated keeps the left third; the pipeline Sankey takes the rest,
-            because a four-column flow needs the width more than a two-row stat
-            does. It replaces both the Converted stat that sat here and the
-            column flowchart that sat below — the Sankey carries both. */}
         <div className="grid gap-4 lg:grid-cols-3">
           <ActivationGroup
             label="Activated"
@@ -462,11 +524,18 @@ function CampaignDetail({ campaignKey, from, to, granularity }: {
               { n: t.activated_contacts, of: t.in_pipeline, unit: "contacts" },
             ]}
           />
-          <div className="flex flex-col gap-1 rounded-xl border border-border-strong bg-surface px-4 py-3.5 lg:col-span-2">
+          <div className="flex flex-col gap-2 rounded-xl border border-border-strong bg-surface px-4 py-3.5 lg:col-span-2">
             <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-4">
               Pipeline · {t.in_pipeline.toLocaleString()} contacts
             </span>
-            <PipelineSankey stats={stats} />
+            <div className="flex flex-col gap-4 xl:flex-row">
+              <div className="min-w-0 flex-1">
+                <PipelineSankey stats={stats} selected={bucket} onSelect={setBucket} />
+              </div>
+              {bucket ? (
+                <BucketPanel campaignKey={campaignKey} bucket={bucket} onClose={() => setBucket(null)} />
+              ) : null}
+            </div>
           </div>
         </div>
       </Section>
