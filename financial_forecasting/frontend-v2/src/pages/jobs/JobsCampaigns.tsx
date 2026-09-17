@@ -8,11 +8,11 @@
  * picker offers the campaign, and the backend aggregates its slugs.
  *
  * Two views, one page. No campaign picked shows the prioritised list of every
- * campaign. Picking one shows its detail: activation, the stage funnel,
+ * campaign. Picking one shows its detail: activation and the pipeline Sankey,
  * outbound volume, the outreach trend, and the event feed.
  *
  * Which numbers honour the period, because mixing the two would mislead:
- *   * Activation and the stage funnel are ALL-TIME. Activation is a state — a
+ *   * Activation and the pipeline Sankey are ALL-TIME. Activation is a state — a
  *     contact reached last March is still activated today, and period-scoping
  *     it would read as contacts un-activating when you step the window back.
  *   * Outreach volume, the trend and the activity feed honour the period bar.
@@ -31,9 +31,10 @@ import { TagCampaigns } from "@/components/jobs/TagCampaigns";
 import { PeriodBar, PERIOD_PRESETS } from "@/components/jobs/PeriodBar";
 import { ActivityFeed } from "@/components/jobs/ActivityFeed";
 import { DrillList, type DrillRow } from "@/components/jobs/DrillList";
+import { PipelineSankey } from "@/components/jobs/PipelineSankey";
 import {
   useTagCampaigns, useTagCampaignStats, useTagCampaignActivity,
-  type TagCampaign, type TagCampaignStats, type CampaignGranularity, type MembershipStage,
+  type TagCampaign, type TagCampaignStats, type CampaignGranularity,
   type CampaignEvent,
 } from "@/services/jobs";
 import { cn } from "@/lib/utils";
@@ -209,92 +210,6 @@ function ActivationGroup({ label, hint, tone, rows }: {
 /** Half again as tall as it was, with the count rendered inside each band and
  *  the labels moved to a legend below. Labels used to sit beside the numbers in
  *  the legend row and wrapped into each other at this width. */
-/** The pipeline as a flow, left to right, each column splitting the one before
- *  it. Reading it: every contact is either assigned to someone or not; every
- *  assigned contact has either been contacted or not; every contacted contact
- *  sits at an outcome. The stacked bar this replaced showed the same seven
- *  numbers but not what splits into what, which is the question the funnel is
- *  actually asked.
- *
- *  Column widths are fixed rather than proportional: at 449-to-4 the smallest
- *  branches would round to nothing. Share is carried by the percentage and the
- *  inline bar on each node instead. */
-function FunnelNode({ label, n, of, tone, muted }: {
-  label: string; n: number; of: number;
-  tone: string; muted?: boolean;
-}) {
-  const p = pct(n, of);
-  return (
-    <div className={cn(
-      "flex flex-col gap-1.5 rounded-lg border px-3 py-2.5",
-      muted ? "border-border-strong bg-surface-2/40" : "border-border-strong bg-surface",
-    )}>
-      <div className="flex items-baseline justify-between gap-2">
-        <span className="truncate text-[11px] font-medium text-ink-2" title={label}>{label}</span>
-        <span className="shrink-0 text-[15px] font-semibold tabular-nums text-ink">{n.toLocaleString()}</span>
-      </div>
-      <div className="flex items-center gap-2">
-        <div className="h-1.5 min-w-[28px] flex-1 overflow-hidden rounded-full bg-surface-2">
-          <div className="h-full rounded-full" style={{ width: `${p ?? 0}%`, background: tone }} />
-        </div>
-        <span className="w-8 shrink-0 text-right text-[10.5px] tabular-nums text-ink-4">{p ?? 0}%</span>
-      </div>
-    </div>
-  );
-}
-
-function FunnelColumn({ heading, sub, children }: {
-  heading: string; sub: string; children: React.ReactNode;
-}) {
-  return (
-    <div className="flex min-w-[168px] flex-1 flex-col gap-2">
-      <div>
-        <div className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">{heading}</div>
-        <div className="text-[10.5px] text-ink-4">{sub}</div>
-      </div>
-      <div className="flex flex-col gap-2">{children}</div>
-    </div>
-  );
-}
-
-function StageFunnel({ stats }: { stats: TagCampaignStats }) {
-  const st = stats.totals.stages;
-  const total = stats.totals.in_pipeline;
-  const notAssigned = stats.totals.no_stage;
-  const assigned = Math.max(0, total - notAssigned);
-  const awaitingContact = st.assigned ?? 0;
-  const contacted = Math.max(0, assigned - awaitingContact);
-
-  const outcomes: { key: MembershipStage; label: string; tone: string }[] = [
-    { key: "converted_to_opportunity", label: "Converted to oppty", tone: "var(--green)" },
-    { key: "call_booked", label: "Call booked", tone: "#14b8a6" },
-    { key: "initial_outreach", label: "Contacted, no outcome yet", tone: "var(--accent)" },
-    { key: "revisit", label: "Revisit", tone: "var(--amber)" },
-    { key: "not_a_fit", label: "Not a fit", tone: "#fda4af" },
-  ];
-
-  return (
-    <div className="flex flex-col gap-3 overflow-x-auto lg:flex-row lg:items-stretch">
-      <FunnelColumn heading="In pipeline" sub="every tagged prospect">
-        <FunnelNode label="All contacts" n={total} of={total} tone="var(--ink-3)" />
-      </FunnelColumn>
-      <FunnelColumn heading="Assigned?" sub={`of ${total.toLocaleString()} contacts`}>
-        <FunnelNode label="Assigned to someone" n={assigned} of={total} tone="var(--sky)" />
-        <FunnelNode label="Not assigned" n={notAssigned} of={total} tone="var(--ink-4)" muted />
-      </FunnelColumn>
-      <FunnelColumn heading="Contacted?" sub={`of ${assigned.toLocaleString()} assigned`}>
-        <FunnelNode label="Contacted" n={contacted} of={assigned || 1} tone="var(--accent)" />
-        <FunnelNode label="Assigned, not yet contacted" n={awaitingContact} of={assigned || 1} tone="var(--ink-4)" muted />
-      </FunnelColumn>
-      <FunnelColumn heading="Outcome" sub={`of ${contacted.toLocaleString()} contacted`}>
-        {outcomes.map((o) => (
-          <FunnelNode key={o.key} label={o.label} n={st[o.key] ?? 0} of={contacted || 1} tone={o.tone} />
-        ))}
-      </FunnelColumn>
-    </div>
-  );
-}
-
 // ── Outreach volume ─────────────────────────────────────────────────────────
 /** `types` is what the tile opens: the activity types whose events make up
  *  this count, so the drill can never list something the number didn't count.
@@ -529,12 +444,15 @@ function CampaignDetail({ campaignKey, from, to, granularity }: {
   }
 
   const t = stats.totals;
-  const converted = t.stages.converted_to_opportunity ?? 0;
 
   return (
     <div className="flex flex-col gap-4">
       <Section title="Activation">
-        <div className="grid gap-3 md:grid-cols-2">
+        {/* Activated keeps the left third; the pipeline Sankey takes the rest,
+            because a four-column flow needs the width more than a two-row stat
+            does. It replaces both the Converted stat that sat here and the
+            column flowchart that sat below — the Sankey carries both. */}
+        <div className="grid gap-4 lg:grid-cols-3">
           <ActivationGroup
             label="Activated"
             tone="accent"
@@ -544,15 +462,12 @@ function CampaignDetail({ campaignKey, from, to, granularity }: {
               { n: t.activated_contacts, of: t.in_pipeline, unit: "contacts" },
             ]}
           />
-          <ActivationGroup
-            label="Converted to oppty"
-            tone="green"
-            hint="Contacts whose membership reached converted_to_opportunity."
-            rows={[{ n: converted, unit: "converted" }]}
-          />
-        </div>
-        <div className="mt-5">
-          <StageFunnel stats={stats} />
+          <div className="flex flex-col gap-1 rounded-xl border border-border-strong bg-surface px-4 py-3.5 lg:col-span-2">
+            <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-4">
+              Pipeline · {t.in_pipeline.toLocaleString()} contacts
+            </span>
+            <PipelineSankey stats={stats} />
+          </div>
         </div>
       </Section>
 

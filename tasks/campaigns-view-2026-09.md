@@ -199,7 +199,24 @@ Kwame's sixth round.
 point's, not an exact date match — otherwise weekly and monthly buckets would
 open empty.
 
-### Phase 8 — Not started
+### Phase 8 — Pipeline Sankey ✅ DONE (2026-09-17)
+- [x] `components/jobs/PipelineSankey.tsx` — the campaign pipeline as a Sankey,
+      built on recharts 3.8's `Sankey` with custom node and link renderers to
+      match Kwame's reference: neutral slate nodes, grey ribbons, colour kept
+      only for Converted (green), Call booked (teal) and Not a fit (rose).
+- [x] It replaces BOTH the Converted stat that sat top-right and the column
+      flowchart below it — the Sankey carries both. Activated keeps the left
+      third; the Sankey takes two thirds, since a four-column flow needs the
+      width more than a two-row stat does.
+
+**Zero-value branches are dropped, then nodes are reindexed.** A campaign with
+nobody at Revisit should not show a Revisit label on an invisible ribbon, and
+recharts lays degenerate links out badly. Builder verified across four shapes:
+Operation 35 (10 nodes / 9 links, no invalid), an all-zero campaign (renders an
+empty state rather than a broken chart), an untouched-only campaign (2 nodes),
+and one with no outcomes yet (4 nodes).
+
+### Phase 9 — Not started
 - [ ] Drill from a trend point into the underlying activity list
 - [ ] Contact table on the detail view (the `/records` endpoint already serves it)
 - [ ] Stage-entry period flow, like `outreach-pipeline-rework.md`
