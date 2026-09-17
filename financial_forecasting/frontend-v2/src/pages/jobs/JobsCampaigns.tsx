@@ -187,11 +187,14 @@ function Option({ label, sub, selected, onClick, pinned, onTogglePin }: {
           // Stops the row's select handler: pinning is a different intent from
           // opening, and the two sit a few pixels apart.
           onClick={(e) => { e.stopPropagation(); onTogglePin(); }}
+          // Visible at rest, not hover-revealed. A control nobody can see is a
+          // control nobody uses — the first version hid it until row hover and
+          // it read as missing.
           className={cn(
             "shrink-0 rounded p-1.5 transition-colors",
             pinned
               ? "text-accent hover:bg-accent/10"
-              : "text-ink-4 opacity-0 hover:bg-surface-2 hover:text-ink-2 focus:opacity-100 group-hover:opacity-100",
+              : "text-ink-4/70 hover:bg-surface-2 hover:text-ink-2",
           )}
         >
           {pinned ? <Pin size={13} className="fill-current" /> : <Pin size={13} />}
