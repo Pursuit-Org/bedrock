@@ -1329,6 +1329,17 @@ function outreachParams(granularity: OutreachGranularity, scope: OutreachScopeKi
   return p;
 }
 
+export interface DrillRow {
+  at: string | null;
+  name: string | null;
+  account: string | null;
+  owner: string | null;
+  editor: string | null;
+  detail: string | null;
+  subkind: string | null;
+  contact_id: number | null;
+}
+
 export interface OutreachSummary {
   period: { from: string; to: string };
   /** How long an account must go quiet before a touch counts as activation. */
@@ -1345,6 +1356,9 @@ export interface OutreachSummary {
   outreach_activity: number;
   calls_booked: number;
   converted: number;
+  /** What each headline counts, capped — the counts above stay the source of
+   *  truth, so a truncated list can never make one of them wrong. */
+  drills: Record<"accounts_activated" | "outreach_activity" | "calls_booked" | "converted", DrillRow[]>;
 }
 
 /** The three headline numbers on the Outreach tab, over the page's own window

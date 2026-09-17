@@ -22,6 +22,7 @@ import {
   MEMBERSHIP_STAGE_LABELS,
   type OutreachGranularity,
   type OutreachScopeKind,
+  type OutreachSummary,
   type OutreachDateRange,
   type ScorecardRow,
   useTouchDepth,
@@ -35,6 +36,7 @@ import { JobsFunnels } from "@/components/jobs/JobsFunnels";
 import { Panel, BreakdownBars } from "./JobsOpportunitiesOverview";
 import { ActivityTrends } from "@/components/jobs/ActivityTrends";
 import { ActivityFeed } from "@/components/jobs/ActivityFeed";
+import { DrillList } from "@/components/jobs/DrillList";
 import { PeriodBar, ScopeButtons, defaultPeriod } from "@/components/jobs/PeriodBar";
 import { relDay } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -938,9 +940,21 @@ function OutboundActivityFeed({ granularity, scope, owner, range }: {
 }
 
 /** Accounts activated · outreach activity · calls booked · conversions, over
- *  the page's own window
- *  and sender scope. Shown on both sub-tabs: Overview needs the headline, and
- *  Outbound Detail needs it as the footing for the table below it. */
+ *  the page's own window and sender scope. Shown on both sub-tabs: Overview
+ *  needs the headline, Outbound Detail needs it as the footing for the tables
+ *  below it. Each card opens the list behind its number. */
+const SUMMARY_CARDS: {
+  key: keyof OutreachSummary["drills"];
+  label: string;
+  tone: "ink" | "green";
+  empty: string;
+}[] = [
+  { key: "accounts_activated", label: "Accounts activated", tone: "ink", empty: "No accounts came back from quiet in this period." },
+  { key: "outreach_activity", label: "Outreach activity", tone: "ink", empty: "Nothing sent in this period." },
+  { key: "calls_booked", label: "Calls booked", tone: "ink", empty: "No calls or meetings in this period." },
+  { key: "converted", label: "Converted to oppty", tone: "green", empty: "No conversions in this period." },
+];
+
 function OutreachSummaryCards({ granularity, scope, owner, range }: {
   granularity: OutreachGranularity;
   scope: OutreachScopeKind;
@@ -948,36 +962,44 @@ function OutreachSummaryCards({ granularity, scope, owner, range }: {
   range?: OutreachDateRange;
 }) {
   const { data, isLoading } = useOutreachSummary(granularity, scope, owner, range);
-  const cards: { tone: "accent" | "ink" | "green"; label: string; value?: number; sub: string }[] = [
-    {
-      tone: "accent", label: "Accounts activated", value: data?.accounts_activated,
-      sub: data
-        ? `quiet ${data.dormant_days}+ days, touched this period · ${data.accounts_reached.toLocaleString()} reached in all`
-        : "reopened after going quiet",
-    },
-    {
-      tone: "ink", label: "Outreach activity", value: data?.outreach_activity,
-      sub: "emails, LinkedIn and texts sent",
-    },
-    { tone: "ink", label: "Calls booked", value: data?.calls_booked, sub: "meetings and logged calls" },
-    { tone: "green", label: "Converted to oppty", value: data?.converted, sub: "contacts that became an opportunity" },
-  ];
+  const [open, setOpen] = useState<keyof OutreachSummary["drills"] | null>(null);
+  const openCard = SUMMARY_CARDS.find((c) => c.key === open);
+
   return (
-    <div className="grid grid-cols-2 items-stretch gap-4 lg:grid-cols-4">
-      {cards.map((c) => (
-        <div key={c.label} className="rounded-2xl border border-border-strong bg-surface px-5 py-4">
-          <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">{c.label}</div>
-          {isLoading ? (
-            <div className="mt-2 h-8 w-16 animate-pulse rounded bg-surface-2" />
-          ) : (
-            <div className={cn("mt-1.5 text-[30px] font-bold leading-none tabular-nums",
-              c.tone === "accent" ? "text-accent" : c.tone === "green" ? "text-green" : "text-ink")}>
-              {c.value ?? 0}
-            </div>
-          )}
-          <div className="mt-2 text-[11.5px] text-ink-4">{c.sub}</div>
-        </div>
-      ))}
+    <div className="flex flex-col gap-3">
+      <div className="grid grid-cols-2 items-stretch gap-4 lg:grid-cols-4">
+        {SUMMARY_CARDS.map((c) => {
+          const active = open === c.key;
+          return (
+            <button
+              key={c.key}
+              type="button"
+              onClick={() => setOpen(active ? null : c.key)}
+              aria-expanded={active}
+              className={cn(
+                "rounded-2xl border bg-surface px-5 py-4 text-left transition-colors",
+                active ? "border-accent ring-1 ring-accent/30" : "border-border-strong hover:border-accent",
+              )}
+            >
+              <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">{c.label} ›</div>
+              {isLoading ? (
+                <div className="mt-2 h-8 w-16 animate-pulse rounded bg-surface-2" />
+              ) : (
+                <div className={cn("mt-1.5 text-[30px] font-bold leading-none tabular-nums",
+                  c.tone === "green" ? "text-green" : "text-ink")}>
+                  {data?.[c.key] ?? 0}
+                </div>
+              )}
+            </button>
+          );
+        })}
+      </div>
+      {openCard ? (
+        <section className="rounded-2xl border border-border-strong bg-surface px-5 py-4">
+          <h3 className="mb-3 text-[13px] font-semibold text-ink">{openCard.label}</h3>
+          <DrillList rows={data?.drills?.[openCard.key] ?? []} emptyLabel={openCard.empty} />
+        </section>
+      ) : null}
     </div>
   );
 }

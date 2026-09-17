@@ -167,7 +167,39 @@ Kwame's fifth round.
 activated (90-day dormancy; the old first-ever rule gave 44), 79 reached,
 104 outreach activity, 31 calls booked.
 
-### Phase 7 — Not started
+### Phase 7 — Funnel flowchart + drill-downs ✅ DONE (2026-09-17)
+Kwame's sixth round.
+
+**Campaigns**
+- [x] Activation bar flexes to fill the card instead of a fixed 84px
+- [x] Stacked stage bar replaced by a **left-to-right funnel**: all contacts →
+      assigned / not assigned → contacted / not yet contacted → outcome
+      (converted · call booked · contacted-no-outcome · revisit · not a fit).
+      Column widths are fixed, not proportional: at 449-to-4 the small branches
+      would round to nothing, so share rides on each node's own bar and percent
+- [x] Channel tiles (emails, calls booked, LinkedIn, texts) open the sends
+      behind them — 5 rows then Show all
+- [x] Trend points are clickable; a point opens what went out in that bucket
+- [x] "Outreach trends" → **"Outreach Trends"**
+
+**Outreach tab**
+- [x] All four summary cards clickable, each opening its own drill list
+- [x] Accounts activated recoloured to black; only Converted stays green
+- [x] Card subtitles removed
+- [x] Backend `/outreach/summary` now returns a `drills` object, capped at 60
+      rows per card
+
+**Shared**
+- [x] `components/jobs/DrillList.tsx` — Name · Account · Detail · Owner ·
+      Editor · When, 5 rows then Show all. Used by the campaign channel tiles,
+      the trend points and all four Outreach cards, so one number never gets
+      two different explanations.
+
+**Note on the trend drill:** a point covers its own bucket start up to the next
+point's, not an exact date match — otherwise weekly and monthly buckets would
+open empty.
+
+### Phase 8 — Not started
 - [ ] Drill from a trend point into the underlying activity list
 - [ ] Contact table on the detail view (the `/records` endpoint already serves it)
 - [ ] Stage-entry period flow, like `outreach-pipeline-rework.md`

@@ -30,26 +30,16 @@ import { Calendar, Check, ChevronDown, Linkedin, Loader2, Mail, MessageSquare } 
 import { TagCampaigns } from "@/components/jobs/TagCampaigns";
 import { PeriodBar, PERIOD_PRESETS } from "@/components/jobs/PeriodBar";
 import { ActivityFeed } from "@/components/jobs/ActivityFeed";
+import { DrillList, type DrillRow } from "@/components/jobs/DrillList";
 import {
   useTagCampaigns, useTagCampaignStats, useTagCampaignActivity,
   type TagCampaign, type TagCampaignStats, type CampaignGranularity, type MembershipStage,
+  type CampaignEvent,
 } from "@/services/jobs";
 import { cn } from "@/lib/utils";
 
 const EMAIL_COLOR = "#4242EA";
 const CALL_COLOR = "#14b8a6";
-
-/** Funnel order, worked-first, shared by the stage bar and its legend so the
- *  two can never drift. `on_hold` is absent by design: the backend folds it
- *  into `revisit`, matching canon_membership_stage(). */
-const STAGE_ORDER: { key: MembershipStage; label: string; cls: string }[] = [
-  { key: "converted_to_opportunity", label: "Converted", cls: "bg-green-500" },
-  { key: "call_booked", label: "Call booked", cls: "bg-teal-500" },
-  { key: "initial_outreach", label: "Contacted", cls: "bg-accent" },
-  { key: "revisit", label: "Revisit", cls: "bg-amber-400" },
-  { key: "not_a_fit", label: "Not a fit", cls: "bg-rose-300" },
-  { key: "assigned", label: "Assigned", cls: "bg-sky-400" },
-];
 
 function pct(n: number, d: number): number | null {
   return d > 0 ? Math.round((100 * n) / d) : null;
@@ -188,11 +178,10 @@ function ActivationGroup({ label, hint, tone, rows }: {
             <div key={r.unit} className={cn("flex flex-col gap-1.5", i > 0 && "border-t border-border-strong/70 pt-3.5")}>
               <span className="text-[11px] font-medium uppercase tracking-wide text-ink-3">{r.unit}</span>
               {p !== null ? (
-                <div className="flex items-center gap-2.5">
-                  {/* Bar is deliberately capped rather than flex-1: the counts
-                      beside it are the reading, and a full-width bar pushed
-                      them off the card at this width. */}
-                  <div className="h-1.5 w-[84px] shrink-0 overflow-hidden rounded-full bg-surface-2">
+                <div className="flex items-center gap-3">
+                  {/* Flexes to fill whatever the counts beside it don't need,
+                      with a floor so a narrow card still shows a readable bar. */}
+                  <div className="h-2 min-w-[90px] flex-1 overflow-hidden rounded-full bg-surface-2">
                     <div className={cn("h-full rounded-full", bar)} style={{ width: `${p}%` }} />
                   </div>
                   <span className="w-9 shrink-0 text-[12px] font-medium tabular-nums text-ink-3">{p}%</span>
@@ -220,85 +209,208 @@ function ActivationGroup({ label, hint, tone, rows }: {
 /** Half again as tall as it was, with the count rendered inside each band and
  *  the labels moved to a legend below. Labels used to sit beside the numbers in
  *  the legend row and wrapped into each other at this width. */
-function StageBar({ stats }: { stats: TagCampaignStats }) {
-  const st = stats.totals.stages;
-  const parts = [
-    ...STAGE_ORDER.map((s) => ({ label: s.label, cls: s.cls, n: st[s.key] ?? 0 })),
-    { label: "No stage", cls: "bg-stone-300", n: stats.totals.no_stage },
-  ];
-  const denom = parts.reduce((a, p) => a + p.n, 0) || 1;
+/** The pipeline as a flow, left to right, each column splitting the one before
+ *  it. Reading it: every contact is either assigned to someone or not; every
+ *  assigned contact has either been contacted or not; every contacted contact
+ *  sits at an outcome. The stacked bar this replaced showed the same seven
+ *  numbers but not what splits into what, which is the question the funnel is
+ *  actually asked.
+ *
+ *  Column widths are fixed rather than proportional: at 449-to-4 the smallest
+ *  branches would round to nothing. Share is carried by the percentage and the
+ *  inline bar on each node instead. */
+function FunnelNode({ label, n, of, tone, muted }: {
+  label: string; n: number; of: number;
+  tone: string; muted?: boolean;
+}) {
+  const p = pct(n, of);
   return (
-    <div className="flex flex-col gap-3">
-      <div
-        className="flex h-6 w-full overflow-hidden rounded-lg bg-surface-2"
-        title={parts.map((p) => `${p.label}: ${p.n.toLocaleString()}`).join("  ·  ")}
-      >
-        {parts.map((p) => {
-          const share = (100 * p.n) / denom;
-          return p.n > 0 && (
-            <div
-              key={p.label}
-              className={cn("flex h-full items-center justify-center", p.cls)}
-              style={{ width: `${share}%` }}
-            >
-              {/* Below ~4% the band is narrower than two digits, so the number
-                  would clip rather than inform. The legend still carries it. */}
-              {share >= 4 ? (
-                <span className="px-1 text-[11px] font-semibold tabular-nums text-white drop-shadow-sm">
-                  {p.n.toLocaleString()}
-                </span>
-              ) : null}
-            </div>
-          );
-        })}
+    <div className={cn(
+      "flex flex-col gap-1.5 rounded-lg border px-3 py-2.5",
+      muted ? "border-border-strong bg-surface-2/40" : "border-border-strong bg-surface",
+    )}>
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="truncate text-[11px] font-medium text-ink-2" title={label}>{label}</span>
+        <span className="shrink-0 text-[15px] font-semibold tabular-nums text-ink">{n.toLocaleString()}</span>
       </div>
-      <div className="flex flex-wrap gap-x-5 gap-y-2">
-        {parts.map((p) => (
-          <span key={p.label} className="flex items-center gap-1.5 text-[11.5px] text-ink-3">
-            <span className={cn("inline-block h-2.5 w-2.5 shrink-0 rounded-sm", p.cls)} />
-            <span className="whitespace-nowrap">{p.label}</span>
-            <span className="font-semibold tabular-nums text-ink-2">{p.n.toLocaleString()}</span>
-          </span>
+      <div className="flex items-center gap-2">
+        <div className="h-1.5 min-w-[28px] flex-1 overflow-hidden rounded-full bg-surface-2">
+          <div className="h-full rounded-full" style={{ width: `${p ?? 0}%`, background: tone }} />
+        </div>
+        <span className="w-8 shrink-0 text-right text-[10.5px] tabular-nums text-ink-4">{p ?? 0}%</span>
+      </div>
+    </div>
+  );
+}
+
+function FunnelColumn({ heading, sub, children }: {
+  heading: string; sub: string; children: React.ReactNode;
+}) {
+  return (
+    <div className="flex min-w-[168px] flex-1 flex-col gap-2">
+      <div>
+        <div className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">{heading}</div>
+        <div className="text-[10.5px] text-ink-4">{sub}</div>
+      </div>
+      <div className="flex flex-col gap-2">{children}</div>
+    </div>
+  );
+}
+
+function StageFunnel({ stats }: { stats: TagCampaignStats }) {
+  const st = stats.totals.stages;
+  const total = stats.totals.in_pipeline;
+  const notAssigned = stats.totals.no_stage;
+  const assigned = Math.max(0, total - notAssigned);
+  const awaitingContact = st.assigned ?? 0;
+  const contacted = Math.max(0, assigned - awaitingContact);
+
+  const outcomes: { key: MembershipStage; label: string; tone: string }[] = [
+    { key: "converted_to_opportunity", label: "Converted to oppty", tone: "var(--green)" },
+    { key: "call_booked", label: "Call booked", tone: "#14b8a6" },
+    { key: "initial_outreach", label: "Contacted, no outcome yet", tone: "var(--accent)" },
+    { key: "revisit", label: "Revisit", tone: "var(--amber)" },
+    { key: "not_a_fit", label: "Not a fit", tone: "#fda4af" },
+  ];
+
+  return (
+    <div className="flex flex-col gap-3 overflow-x-auto lg:flex-row lg:items-stretch">
+      <FunnelColumn heading="In pipeline" sub="every tagged prospect">
+        <FunnelNode label="All contacts" n={total} of={total} tone="var(--ink-3)" />
+      </FunnelColumn>
+      <FunnelColumn heading="Assigned?" sub={`of ${total.toLocaleString()} contacts`}>
+        <FunnelNode label="Assigned to someone" n={assigned} of={total} tone="var(--sky)" />
+        <FunnelNode label="Not assigned" n={notAssigned} of={total} tone="var(--ink-4)" muted />
+      </FunnelColumn>
+      <FunnelColumn heading="Contacted?" sub={`of ${assigned.toLocaleString()} assigned`}>
+        <FunnelNode label="Contacted" n={contacted} of={assigned || 1} tone="var(--accent)" />
+        <FunnelNode label="Assigned, not yet contacted" n={awaitingContact} of={assigned || 1} tone="var(--ink-4)" muted />
+      </FunnelColumn>
+      <FunnelColumn heading="Outcome" sub={`of ${contacted.toLocaleString()} contacted`}>
+        {outcomes.map((o) => (
+          <FunnelNode key={o.key} label={o.label} n={st[o.key] ?? 0} of={contacted || 1} tone={o.tone} />
         ))}
-      </div>
+      </FunnelColumn>
     </div>
   );
 }
 
 // ── Outreach volume ─────────────────────────────────────────────────────────
-const CHANNELS: { key: keyof TagCampaignStats["outreach"]; label: string; Icon: typeof Mail }[] = [
-  { key: "emails", label: "Emails sent", Icon: Mail },
-  { key: "calls_booked", label: "Calls booked", Icon: Calendar },
-  { key: "linkedin", label: "LinkedIn", Icon: Linkedin },
-  { key: "texts", label: "Texts", Icon: MessageSquare },
+/** `types` is what the tile opens: the activity types whose events make up
+ *  this count, so the drill can never list something the number didn't count.
+ *  Calls booked spans two because a calendar meeting and a logged call are one
+ *  channel here. */
+const CHANNELS: {
+  key: keyof TagCampaignStats["outreach"];
+  label: string;
+  Icon: typeof Mail;
+  types: string[];
+}[] = [
+  { key: "emails", label: "Emails sent", Icon: Mail, types: ["email"] },
+  { key: "calls_booked", label: "Calls booked", Icon: Calendar, types: ["meeting", "call"] },
+  { key: "linkedin", label: "LinkedIn", Icon: Linkedin, types: ["linkedin"] },
+  { key: "texts", label: "Texts", Icon: MessageSquare, types: ["text"] },
 ];
 
-function OutreachStats({ stats }: { stats: TagCampaignStats }) {
+/** Campaign events → drill rows. One mapping, so the channel tiles and the
+ *  trend points can't describe the same event two different ways. */
+function toDrillRows(events: CampaignEvent[]): DrillRow[] {
+  return events.map((e) => ({
+    at: e.at,
+    name: e.contact_name,
+    account: e.account,
+    owner: e.owner,
+    editor: e.editor,
+    detail: e.subject ?? e.snippet,
+    subkind: e.subkind,
+    contact_id: e.contact_id,
+  }));
+}
+
+function OutreachStats({ stats, events, loadingEvents }: {
+  stats: TagCampaignStats;
+  events: CampaignEvent[];
+  loadingEvents: boolean;
+}) {
   const o = stats.outreach;
+  const [open, setOpen] = useState<string | null>(null);
+  const openChannel = CHANNELS.find((c) => c.key === open);
+  const rows = useMemo(
+    () => (openChannel ? toDrillRows(events.filter((e) => openChannel.types.includes(e.subkind ?? ""))) : []),
+    [openChannel, events],
+  );
+
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-3">
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-        {CHANNELS.map(({ key, label, Icon }) => (
-          <div key={key} className="flex flex-col gap-1 rounded-lg border border-border-strong bg-surface-2/40 px-3 py-2.5">
-            <span className="flex items-center gap-1.5 text-[10.5px] font-semibold uppercase tracking-wider text-ink-4">
-              <Icon size={11} />{label}
-            </span>
-            <span className="text-[20px] font-semibold leading-none tabular-nums text-ink">
-              {(o[key] as number).toLocaleString()}
-            </span>
-          </div>
-        ))}
+        {CHANNELS.map(({ key, label, Icon }) => {
+          const active = open === key;
+          return (
+            <button
+              key={key}
+              type="button"
+              onClick={() => setOpen(active ? null : key)}
+              aria-expanded={active}
+              className={cn(
+                "flex flex-col gap-1 rounded-lg border px-3 py-2.5 text-left transition-colors",
+                active ? "border-accent bg-accent/5 ring-1 ring-accent/30"
+                       : "border-border-strong bg-surface-2/40 hover:border-accent",
+              )}
+            >
+              <span className="flex items-center gap-1.5 text-[10.5px] font-semibold uppercase tracking-wider text-ink-4">
+                <Icon size={11} />{label} ›
+              </span>
+              <span className="text-[20px] font-semibold leading-none tabular-nums text-ink">
+                {(o[key] as number).toLocaleString()}
+              </span>
+            </button>
+          );
+        })}
       </div>
+      {openChannel ? (
+        loadingEvents ? (
+          <div className="flex items-center gap-2 py-4 text-[12.5px] text-ink-3">
+            <Loader2 size={14} className="animate-spin" /> Loading {openChannel.label.toLowerCase()}…
+          </div>
+        ) : (
+          <DrillList
+            rows={rows}
+            emptyLabel={`No ${openChannel.label.toLowerCase()} in this period.`}
+            className="rounded-lg border border-border-strong px-3 py-2"
+          />
+        )
+      ) : null}
     </div>
   );
 }
 
-function TrendChart({ stats }: { stats: TagCampaignStats }) {
+function TrendChart({ stats, events, loadingEvents }: {
+  stats: TagCampaignStats;
+  events: CampaignEvent[];
+  loadingEvents: boolean;
+}) {
+  const [day, setDay] = useState<string | null>(null);
   const data = useMemo(() => stats.trend.map((p) => ({
     label: p.bucket.slice(5),   // MM-DD; the year is never in question here
+    bucket: p.bucket,
     Emails: p.emails,
     "Calls booked": p.calls_booked,
   })), [stats.trend]);
+
+  // Buckets can be a day, a week or a month, so a point covers everything from
+  // its own start up to the next point's — matching by exact date would show
+  // nothing on any non-daily bucket.
+  const rows = useMemo(() => {
+    if (!day) return [];
+    const i = stats.trend.findIndex((p) => p.bucket === day);
+    if (i < 0) return [];
+    const next = stats.trend[i + 1]?.bucket;
+    return toDrillRows(events.filter((e) => {
+      if (!e.at) return false;
+      const d = e.at.slice(0, 10);
+      return d >= day && (next === undefined || d < next);
+    }));
+  }, [day, events, stats.trend]);
 
   if (stats.trend.every((p) => p.total === 0)) {
     return (
@@ -310,7 +422,17 @@ function TrendChart({ stats }: { stats: TagCampaignStats }) {
   return (
     <>
       <ResponsiveContainer width="100%" height={240}>
-        <LineChart data={data} margin={{ top: 6, right: 8, bottom: 0, left: -18 }}>
+        <LineChart
+          data={data}
+          margin={{ top: 6, right: 8, bottom: 0, left: -18 }}
+          // recharts types activeLabel as string | number, so compare as a
+          // string rather than narrowing the handler's parameter type.
+          onClick={(st) => {
+            const label = st?.activeLabel == null ? null : String(st.activeLabel);
+            const hit = data.find((d) => d.label === label);
+            setDay(hit && hit.bucket !== day ? hit.bucket : null);
+          }}
+        >
           <CartesianGrid vertical={false} stroke="var(--color-border)" />
           <XAxis dataKey="label" tick={{ fontSize: 11 }} stroke="var(--color-ink-3)" />
           <YAxis tick={{ fontSize: 11 }} stroke="var(--color-ink-3)" allowDecimals={false} />
@@ -318,14 +440,33 @@ function TrendChart({ stats }: { stats: TagCampaignStats }) {
             cursor={{ stroke: "var(--color-border)" }}
             contentStyle={{ fontSize: 12, borderRadius: 8, border: "1px solid var(--color-border)" }}
           />
-          <Line type="monotone" dataKey="Emails" stroke={EMAIL_COLOR} strokeWidth={2} dot={{ r: 2.5 }} activeDot={{ r: 4 }} />
-          <Line type="monotone" dataKey="Calls booked" stroke={CALL_COLOR} strokeWidth={2} dot={{ r: 2.5 }} activeDot={{ r: 4 }} />
+          <Line type="monotone" dataKey="Emails" stroke={EMAIL_COLOR} strokeWidth={2}
+            dot={{ r: 2.5 }} activeDot={{ r: 4 }} className="cursor-pointer" />
+          <Line type="monotone" dataKey="Calls booked" stroke={CALL_COLOR} strokeWidth={2}
+            dot={{ r: 2.5 }} activeDot={{ r: 4 }} className="cursor-pointer" />
         </LineChart>
       </ResponsiveContainer>
       <div className="mt-1 flex flex-wrap items-center gap-4 pl-1">
         <Legend color={EMAIL_COLOR} label="Emails sent" />
         <Legend color={CALL_COLOR} label="Calls booked" />
+        <span className="text-[11px] text-ink-4">Click a point for what went out</span>
       </div>
+      {day ? (
+        <div className="mt-3 rounded-lg border border-border-strong px-3 py-2.5">
+          <div className="mb-2 flex items-baseline justify-between gap-2">
+            <span className="text-[12.5px] font-semibold text-ink">{day}</span>
+            <button type="button" onClick={() => setDay(null)}
+              className="text-[11.5px] font-medium text-accent hover:underline">Close</button>
+          </div>
+          {loadingEvents ? (
+            <div className="flex items-center gap-2 py-2 text-[12.5px] text-ink-3">
+              <Loader2 size={14} className="animate-spin" /> Loading…
+            </div>
+          ) : (
+            <DrillList rows={rows} emptyLabel="Nothing went out on this date." />
+          )}
+        </div>
+      ) : null}
     </>
   );
 }
@@ -339,8 +480,9 @@ function Legend({ color, label }: { color: string; label: string }) {
   );
 }
 
-/** The campaign's own feed: tag-scoped, with its owner filter wired to the
- *  endpoint so filtering reaches past the row cap rather than just the page. */
+/** The campaign's own feed. Owner filtering runs through the endpoint rather
+ *  than the page so it reaches past the row cap, which is why this keeps its
+ *  own query instead of reusing the detail-level one. */
 function CampaignActivity({ campaignKey, from, to }: {
   campaignKey: string; from: string; to: string;
 }) {
@@ -365,6 +507,11 @@ function CampaignDetail({ campaignKey, from, to, granularity }: {
   granularity: CampaignGranularity;
 }) {
   const { data: stats, isLoading, isError } = useTagCampaignStats(campaignKey, { granularity, from, to });
+  // One unfiltered fetch feeds both the channel tiles and the trend points.
+  // React Query dedupes it against the feed's own query only when the filter
+  // matches, which is fine — this one must stay unfiltered either way.
+  const { data: activity, isLoading: loadingEvents } = useTagCampaignActivity(campaignKey, { from, to });
+  const events = activity?.events ?? [];
 
   if (isLoading) {
     return (
@@ -405,16 +552,16 @@ function CampaignDetail({ campaignKey, from, to, granularity }: {
           />
         </div>
         <div className="mt-5">
-          <StageBar stats={stats} />
+          <StageFunnel stats={stats} />
         </div>
       </Section>
 
       <Section title="Outreach">
-        <OutreachStats stats={stats} />
+        <OutreachStats stats={stats} events={events} loadingEvents={loadingEvents} />
       </Section>
 
-      <Section title="Outreach trends">
-        <TrendChart stats={stats} />
+      <Section title="Outreach Trends">
+        <TrendChart stats={stats} events={events} loadingEvents={loadingEvents} />
       </Section>
 
       <CampaignActivity campaignKey={campaignKey} from={from} to={to} />

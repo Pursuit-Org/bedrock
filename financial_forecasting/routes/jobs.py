@@ -4891,6 +4891,138 @@ async def outreach_summary(
         WHERE converted_at >= $1 AND converted_at < ($2::date + 1)
     """, this_start, this_end)
 
+    # ── Drill rows, one list per card ───────────────────────────────────────
+    # Capped rather than complete: the cards open a "what is behind this
+    # number" list, not an export. The headline counts above are the source of
+    # truth, so a truncated list can never make one of them wrong.
+    DRILL_CAP = 60
+
+    touch_drill_sql = f"""
+        WITH act AS (
+          SELECT a.id, a.activity_date, a.type,
+                 lower(coalesce(
+                   nullif(substring(a.email_from from '<([^>]+)>'), ''),
+                   nullif(a.email_from, ''),
+                   a.logged_by)) AS editor,
+                 a.subject,
+                 a.participant_public_contact_id AS cid,
+                 a.email_to, a.email_cc, a.meeting_attendees
+          FROM bedrock.activity a
+          WHERE a.deleted_at IS NULL AND {actor}
+            AND {_not_autoreply('a')} AND {_jobs_relevant('a')}
+            AND a.type = ANY($3::text[])
+            AND a.activity_date >= $1 AND a.activity_date < ($2::date + 1)
+        ),
+        linked AS (
+          SELECT a.id, a.activity_date, a.type, a.editor, a.subject, c.contact_id
+          FROM act a JOIN public.contacts c ON c.contact_id = a.cid
+          UNION
+          SELECT a.id, a.activity_date, a.type, a.editor, a.subject, c.contact_id
+          FROM act a
+          CROSS JOIN LATERAL unnest(coalesce(a.email_to, '{{}}') || coalesce(a.email_cc, '{{}}')) AS e
+          JOIN public.contacts c ON lower(c.email) = lower(e)
+          WHERE a.type = 'email'
+          UNION
+          SELECT a.id, a.activity_date, a.type, a.editor, a.subject, c.contact_id
+          FROM act a
+          CROSS JOIN LATERAL jsonb_array_elements(coalesce(a.meeting_attendees, '[]'::jsonb)) AS att
+          JOIN public.contacts c ON lower(c.email) = lower(att->>'email')
+          WHERE a.type = 'meeting'
+        )
+        SELECT l.activity_date AS at, l.type AS subkind, l.editor, l.subject,
+               c.contact_id, c.full_name AS name, c.current_company AS account,
+               coalesce(m.owner_email, ja.owner_email) AS owner
+        FROM linked l
+        JOIN public.contacts c ON c.contact_id = l.contact_id
+        LEFT JOIN bedrock.jobs_contact_membership m ON m.contact_id = c.contact_id
+        LEFT JOIN bedrock.jobs_account ja
+          ON ja.account_key = nullif(lower(btrim(coalesce(c.current_company, ''))), '')
+        WHERE c.is_jobs_contact
+        ORDER BY l.activity_date DESC, c.full_name
+        LIMIT {DRILL_CAP}
+    """
+    sends = await conn.fetch(touch_drill_sql, this_start, this_end, ["email", "linkedin", "text"])
+    calls = await conn.fetch(touch_drill_sql, this_start, this_end, ["meeting", "call"])
+
+    # Accounts that came back from quiet. Keyed on the account rather than the
+    # contact, so the list matches what the number counts.
+    activated = await conn.fetch(f"""
+        WITH team_act AS (
+          SELECT a.id, a.activity_date, a.participant_public_contact_id AS cid,
+                 a.email_to, a.email_cc, a.meeting_attendees,
+                 lower(coalesce(
+                   nullif(substring(a.email_from from '<([^>]+)>'), ''),
+                   nullif(a.email_from, ''),
+                   a.logged_by)) AS editor
+          FROM bedrock.activity a
+          WHERE a.deleted_at IS NULL AND {actor}
+            AND {_not_autoreply('a')} AND {_jobs_relevant('a')}
+        ),
+        touch_contact AS (
+          SELECT id, activity_date, editor, cid AS contact_id FROM team_act WHERE cid IS NOT NULL
+          UNION
+          SELECT t.id, t.activity_date, t.editor, c.contact_id
+          FROM team_act t, unnest(coalesce(t.email_to,'{{}}') || coalesce(t.email_cc,'{{}}')) e
+          JOIN public.contacts c ON lower(c.email) = lower(e)
+          UNION
+          SELECT t.id, t.activity_date, t.editor, c.contact_id
+          FROM team_act t, jsonb_array_elements(coalesce(t.meeting_attendees, '[]'::jsonb)) att
+          JOIN public.contacts c ON lower(c.email) = lower(att->>'email')
+        ),
+        acct_touch AS (
+          SELECT DISTINCT tc.id, tc.activity_date, tc.editor,
+                 lower(trim(c.current_company)) AS company,
+                 c.current_company AS display
+          FROM touch_contact tc
+          JOIN public.contacts c ON c.contact_id = tc.contact_id
+          WHERE coalesce(trim(c.current_company), '') <> ''
+        ),
+        prior AS (
+          SELECT company, max(activity_date) AS last_prior FROM acct_touch
+          WHERE activity_date < $1 GROUP BY company
+        ),
+        win AS (
+          SELECT DISTINCT ON (company) company, display, activity_date, editor
+          FROM acct_touch
+          WHERE activity_date >= $1 AND activity_date < ($2::date + 1)
+          ORDER BY company, activity_date
+        )
+        SELECT w.display AS name, w.activity_date AS at, w.editor,
+               ja.owner_email AS owner, p.last_prior
+        FROM win w
+        LEFT JOIN prior p ON p.company = w.company
+        LEFT JOIN bedrock.jobs_account ja ON ja.account_key = w.company
+        WHERE p.last_prior IS NULL OR p.last_prior < ($1::date - $3::int)
+        ORDER BY w.activity_date DESC
+        LIMIT {DRILL_CAP}
+    """, this_start, this_end, DORMANT_DAYS)
+
+    # Conversions, with the staffer who recorded the move where history has one.
+    converted_rows = await conn.fetch(f"""
+        SELECT c.contact_id, c.full_name AS name, c.current_company AS account,
+               m.converted_at AS at,
+               coalesce(m.owner_email, ja.owner_email) AS owner,
+               (SELECT lower(h.changed_by) FROM bedrock.jobs_membership_stage_history h
+                 WHERE h.contact_id = m.contact_id AND h.to_stage = 'converted_to_opportunity'
+                 ORDER BY h.changed_at DESC LIMIT 1) AS editor
+        FROM bedrock.jobs_contact_membership m
+        JOIN public.contacts c ON c.contact_id = m.contact_id
+        LEFT JOIN bedrock.jobs_account ja
+          ON ja.account_key = nullif(lower(btrim(coalesce(c.current_company, ''))), '')
+        WHERE m.converted_at >= $1 AND m.converted_at < ($2::date + 1)
+        ORDER BY m.converted_at DESC
+        LIMIT {DRILL_CAP}
+    """, this_start, this_end)
+
+    def _touch_rows(rows):
+        return [{
+            "at": r["at"].isoformat() if r["at"] else None,
+            "name": r["name"], "account": r["account"],
+            "owner": r["owner"], "editor": r["editor"],
+            "detail": r["subject"], "subkind": r["subkind"],
+            "contact_id": r["contact_id"],
+        } for r in rows]
+
     return {"success": True, "data": {
         "period": {"from": this_start.date().isoformat(), "to": this_end.date().isoformat()},
         "dormant_days": DORMANT_DAYS,
@@ -4899,6 +5031,23 @@ async def outreach_summary(
         "outreach_activity": int(row["outreach_activity"] or 0),
         "calls_booked": int(row["calls_booked"] or 0),
         "converted": int(conv["n"] or 0),
+        "drills": {
+            "accounts_activated": [{
+                "at": r["at"].isoformat() if r["at"] else None,
+                "name": r["name"], "account": None,
+                "owner": r["owner"], "editor": r["editor"],
+                "detail": ("last touched " + r["last_prior"].date().isoformat()) if r["last_prior"] else "first ever touch",
+                "subkind": None, "contact_id": None,
+            } for r in activated],
+            "outreach_activity": _touch_rows(sends),
+            "calls_booked": _touch_rows(calls),
+            "converted": [{
+                "at": r["at"].isoformat() if r["at"] else None,
+                "name": r["name"], "account": r["account"],
+                "owner": r["owner"], "editor": r["editor"],
+                "detail": None, "subkind": None, "contact_id": r["contact_id"],
+            } for r in converted_rows],
+        },
     }}
 
 
