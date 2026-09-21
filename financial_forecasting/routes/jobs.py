@@ -51,10 +51,36 @@ VALID_STAGES = {
 
 # Post-migration stage lists, in funnel order. These drive the UI once the
 # database accepts them.
+# The 2026-09-21 expansion (Kwame): the middle of the funnel was one step where
+# the team runs four. `reviewing_builders` is retired rather than kept — it sat
+# between "profiles sent" and "in interviews" and meant either, which is exactly
+# the ambiguity these stages remove. It stays in STAGE_LABELS so the rows still
+# holding it render, and in the legacy list so it is never offered again.
 OPPORTUNITY_STAGES_NEW = [
-    "lead_submitted", "active_in_discussions", "active_opportunity_confirmed",
-    "reviewing_builders", "closed_won", "closed_lost",
+    "lead_submitted",
+    "active_in_discussions",
+    "ask_submitted",
+    "active_opportunity_confirmed",
+    "builder_submitted",
+    "builder_interviewing",
+    "offer_contracting",
+    "closed_won",
+    "closed_lost",
 ]
+
+# What each stage means, in the team's own words. Surfaced on the stage picker
+# so the definition lives next to the choice rather than in a doc nobody opens.
+STAGE_DESCRIPTIONS = {
+    "lead_submitted":               "A lead is in, not yet qualified.",
+    "active_in_discussions":        "Confirmed hiring appetite and a named decision maker.",
+    "ask_submitted":                "A specific ask is with the employer — role, scope or option set. Awaiting yes or no.",
+    "active_opportunity_confirmed": "They said yes. A real role or engagement exists.",
+    "builder_submitted":            "Named builder profiles sent to the employer.",
+    "builder_interviewing":         "At least one builder in the employer's interview process.",
+    "offer_contracting":            "Offer extended, or contract in redline.",
+    "closed_won":                   "Builder accepted.",
+    "closed_lost":                  "Dead, with a reason code.",
+}
 MEMBERSHIP_STAGES_NEW = [
     "assigned", "initial_outreach", "call_booked",
     "converted_to_opportunity", "revisit", "not_a_fit",
@@ -177,6 +203,11 @@ STAGE_LABELS = {
     "active_builder_interview":     "Builder Interview",
     "closed_won":                   "Closed — Won",
     "closed_lost":                  "Closed — Lost",
+    "ask_submitted":                "Ask Submitted",
+    "builder_submitted":            "Builder Submitted",
+    "builder_interviewing":         "Builder Interviewing",
+    "offer_contracting":            "Offer Contracting",
+    # Retired 2026-09-21, superseded by Builder Submitted / Builder Interviewing.
     "reviewing_builders":           "Reviewing Builders",
     # Legacy values — kept so history and un-migrated rows still render a name
     # rather than a raw slug.
@@ -5937,10 +5968,14 @@ async def stage_vocabulary(user=Depends(require_auth)):
     the new ones, with no code change in between."""
     opp = await _writable_stages(
         "jobs_opportunity", "jobs_opportunity_stage_check",
-        OPPORTUNITY_STAGES_NEW + ["initial_outreach", "active_builder_interview",
+        OPPORTUNITY_STAGES_NEW + ["reviewing_builders", "initial_outreach",
+                                  "active_builder_interview",
                                   "on_hold_not_selected", "on_hold_not_interested",
                                   "on_hold_not_responsive"],
-        settles_when="reviewing_builders")
+        # Only the 2026-09-21 constraint contains this, so the vocabulary keeps
+        # being re-probed until that migration lands rather than caching the
+        # pre-migration answer for the life of the process.
+        settles_when="offer_contracting")
     mem = await _writable_stages(
         "jobs_contact_membership", "jobs_contact_membership_stage_vals",
         MEMBERSHIP_STAGES_NEW + ["on_hold"],
@@ -5953,8 +5988,9 @@ async def stage_vocabulary(user=Depends(require_auth)):
     def _opt(v: str, label: str, allowed: list[str]):
         ok = v in allowed
         return {"value": v, "label": label, "available": ok,
+                "description": STAGE_DESCRIPTIONS.get(v),
                 "unavailable_reason": None if ok else
-                "Available once the 2026-08-05 stage migration is applied"}
+                "Available once the pending stage migration is applied"}
 
     # on_hold is deliberately NOT appended when the database still accepts it:
     # Revisit replaces it outright (Kwame 2026-08-05), so offering both would let
@@ -5968,8 +6004,10 @@ async def stage_vocabulary(user=Depends(require_auth)):
         "opportunity_stages": [_opt(v, STAGE_LABELS.get(v, v), opp) for v in opp_target],
         "membership_stages": [_opt(v, MEMBERSHIP_STAGE_LABELS.get(v, v), mem) for v in membership_target],
         "closed_lost_reasons": [{"value": v, "label": l, "available": True} for v, l in CLOSED_LOST_REASONS],
-        # True once the stage migration has landed.
+        # True once the 2026-08-05 membership migration has landed.
         "migrated": "call_booked" in mem,
+        # True once the 2026-09-21 opportunity-stage expansion has landed.
+        "stages_expanded": "offer_contracting" in opp,
     }}
 
 

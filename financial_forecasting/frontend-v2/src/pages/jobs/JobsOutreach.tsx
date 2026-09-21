@@ -14,7 +14,6 @@ import {
   useContactDetail,
   useContactTagCatalog,
   useJobsAccounts,
-  useDailyDigest,
   useStuckContacts,
   useRespondedContacts,
   useUpdateJobsMembership,
@@ -172,9 +171,12 @@ function RowDrill({
 // ── A scorecard table (User Pipeline / Activity Pipeline) ─────────────────────
 function ScorecardTable({
   title, rows, idPrefix, firstColHeader, drillKind, granularity, scope, owner, range, nameOf,
+  rangeLabel,
 }: {
   title: string; rows: ScorecardRow[]; idPrefix: string; firstColHeader: string;
   drillKind: "user" | "activity";
+  /** Shown in grey next to "This Period" so the window is never implicit. */
+  rangeLabel?: string;
   granularity: OutreachGranularity; scope: OutreachScopeKind; owner?: string; range?: OutreachDateRange;
   nameOf: (email: string) => string;
 }) {
@@ -186,10 +188,19 @@ function ScorecardTable({
         <thead>
           <tr className="bg-surface-2 text-[10.5px] uppercase tracking-wide text-ink-3">
             <th className="py-2.5 pl-3.5 pr-2 text-left font-bold">{firstColHeader}</th>
-            <th className="whitespace-nowrap px-2 py-2.5 text-right font-bold">This</th>
+            <th className="whitespace-nowrap px-2 py-2.5 text-right font-bold">
+              This Period
+              {/* The window, in grey beside the heading rather than in a caption
+                  above the table: the number under it is meaningless without
+                  the dates, so they belong in the same glance. */}
+              {rangeLabel ? (
+                <span className="ml-1.5 font-normal normal-case tracking-normal text-ink-4">{rangeLabel}</span>
+              ) : null}
+            </th>
             <th className="whitespace-nowrap px-2 py-2.5 text-right font-bold">Last</th>
             <th className="whitespace-nowrap px-2 py-2.5 text-right font-bold">Trend</th>
-            <th className="whitespace-nowrap px-3.5 py-2.5 text-right font-bold">Δ Target</th>
+            <th className="whitespace-nowrap px-2 py-2.5 text-right font-bold">Δ to Target</th>
+            <th className="whitespace-nowrap px-3.5 py-2.5 text-right font-bold">Target</th>
           </tr>
         </thead>
         <tbody>
@@ -219,11 +230,17 @@ function ScorecardTable({
                   <td className="px-3.5 py-2.5 text-right tabular-nums">{r.this_period.total}</td>
                   <td className="px-3.5 py-2.5 text-right tabular-nums">{r.last_period.total}</td>
                   <td className="px-3.5 py-2.5 text-right text-[12.5px]"><Trend current={r.this_period.total} prior={r.last_period.total} /></td>
-                  <td className="px-3.5 py-2.5 text-right text-[12.5px]">{r.target ? <Trend current={r.this_period.total} prior={r.target} /> : <span className="text-ink-4">—</span>}</td>
+                  <td className="px-3.5 py-2.5 text-right text-[12.5px]">
+                    {r.target ? <Trend current={r.this_period.total} prior={r.target} /> : <span className="text-ink-4">—</span>}
+                  </td>
+                  {/* Target renders 0 rather than a dash when unset: the column
+                      is a standing prompt that a target is owed, and an em-dash
+                      reads as "not applicable". */}
+                  <td className="px-3.5 py-2.5 text-right tabular-nums text-ink-3">{r.target ?? 0}</td>
                 </tr>
                 {isOpen && (
                   <tr>
-                    <td colSpan={5} className="border-b border-border bg-bg p-0">
+                    <td colSpan={6} className="border-b border-border bg-bg p-0">
                       <RowDrill kind={drillKind} rowKey={rowKey} granularity={granularity} scope={scope} owner={owner} range={range} nameOf={nameOf} />
                     </td>
                   </tr>
@@ -407,85 +424,12 @@ function SectionHead({ title, note }: { title: string; note?: string }) {
 }
 
 // ── Daily digest — Avni's morning Slack, computed ────────────────────────────
-// "Builder outreach" (staff→builder emails) isn't in the activity model yet;
-// that line joins the digest once staff→builder email matching exists.
+// The daily-digest card (digestSlackText + DailyDigestBlock) lived here until
+// 2026-09-21, when Kwame removed it from Outbound Detail. Nothing else rendered
+// it, so it went with the card rather than sitting unreachable. `useDailyDigest`
+// and GET /jobs/daily-digest both remain, so restoring it is a revert of this
+// commit, not a rebuild.
 
-const localISODate = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-
-function digestSlackText(dg: NonNullable<ReturnType<typeof useDailyDigest>["data"]>): string {
-  const o = dg.outreach;
-  const lines = [
-    "Update on jobs team activity. Yesterday there was:",
-    `• ${o.new_touches ?? 0} outreach to new accounts`,
-    `• ${o.existing_touches ?? 0} outreach to existing accounts${(o.meetings ?? 0) > 0 ? `, including ${o.meetings} meeting${o.meetings === 1 ? "" : "s"}` : ""}`,
-  ];
-  if (dg.submissions.length > 0) {
-    const totalBuilders = dg.submissions.reduce((n, s) => n + s.builders, 0);
-    const totalRoles = dg.submissions.reduce((n, s) => n + s.roles, 0);
-    const companies = dg.submissions.map((s) => s.company).join(", ");
-    lines.push(`• ${totalBuilders} Builder${totalBuilders === 1 ? "" : "s"} submitted to ${totalRoles} role${totalRoles === 1 ? "" : "s"} at ${companies}`);
-  }
-  return lines.join("\n");
-}
-
-function DailyDigestBlock({ periodEnd }: { periodEnd?: string }) {
-  const yesterday = useMemo(() => { const d = new Date(); d.setDate(d.getDate() - 1); return localISODate(d); }, []);
-  // The digest is ONE day by design — it's the morning Slack post, not a range
-  // summary. But it follows the page period's END date so it isn't stranded on
-  // yesterday while the rest of the page shows July: moving the period to
-  // Jul 6 – Aug 2 lands the digest on Aug 2. Overriding the date here is still
-  // allowed, and a later period change moves it again.
-  const target = periodEnd && periodEnd <= yesterday ? periodEnd : yesterday;
-  const [override, setOverride] = useState<string | null>(null);
-  const [syncedTo, setSyncedTo] = useState(target);
-  if (syncedTo !== target) { setSyncedTo(target); setOverride(null); }
-  const digestDate = override ?? target;
-  const setDigestDate = (v: string) => setOverride(v);
-  const { data: dg, isLoading } = useDailyDigest(digestDate);
-  const o = dg?.outreach;
-  const copy = () => {
-    if (!dg) return;
-    navigator.clipboard.writeText(digestSlackText(dg))
-      .then(() => toast.success("Digest copied — paste into Slack"))
-      .catch(() => toast.error("Couldn't copy"));
-  };
-  return (
-    <div className="flex flex-col gap-2 rounded-xl border border-border-strong bg-surface px-4 py-3">
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">Daily digest</span>
-        <input type="date" value={digestDate} max={yesterday}
-          onChange={(e) => { if (e.target.value) setDigestDate(e.target.value); }}
-          title="The digest covers a single day — this one"
-          className="h-6 rounded border border-border-strong bg-surface px-1.5 text-[11.5px] text-ink-2 outline-none focus:border-accent" />
-        <div className="flex-1" />
-        <button type="button" onClick={copy} disabled={!dg}
-          className="h-7 rounded-md border border-border-strong bg-surface px-2.5 text-[12px] font-medium text-ink-2 hover:bg-surface-2 disabled:opacity-40">
-          Copy
-        </button>
-      </div>
-      {isLoading || !o ? (
-        <div className="h-14 animate-pulse rounded bg-surface-2" />
-      ) : (
-        <div className="flex flex-col gap-0.5 text-[13px] text-ink-2">
-          <span><b className={cn("tabular-nums", (o.new_touches ?? 0) > 0 ? "text-green" : "text-ink")}>{o.new_touches ?? 0}</b> outreach to new accounts{(o.new_accounts ?? 0) > 0 ? <span className="text-ink-4"> · {o.new_accounts} accounts</span> : null}</span>
-          <span><b className="tabular-nums text-ink">{o.existing_touches ?? 0}</b> outreach to existing accounts{(o.meetings ?? 0) > 0 ? <>, including <b className="tabular-nums">{o.meetings}</b> meeting{o.meetings === 1 ? "" : "s"}</> : null}<span className="text-ink-4"> · {o.existing_accounts ?? 0} accounts</span></span>
-          {(dg?.submissions.length ?? 0) > 0 ? (
-            <span>
-              <b className="tabular-nums text-green">{dg!.submissions.reduce((n, s) => n + s.builders, 0)}</b> Builder{dg!.submissions.reduce((n, s) => n + s.builders, 0) === 1 ? "" : "s"} submitted to{" "}
-              <b className="tabular-nums">{dg!.submissions.reduce((n, s) => n + s.roles, 0)}</b> role{dg!.submissions.reduce((n, s) => n + s.roles, 0) === 1 ? "" : "s"} at {dg!.submissions.map((s) => s.company).join(", ")}
-            </span>
-          ) : (
-            <span className="text-ink-4">No builder submissions</span>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ── Monday-meeting blocks (agenda order: coverage → this week → traction → hygiene) ──
-
-// Start of the current Sun–Sat week (local) — same convention as Jobs Home.
 const startOfWeekSunday = () => {
   const d = new Date();
   d.setHours(0, 0, 0, 0);
@@ -901,19 +845,20 @@ function ThisWeekBlock({ nameOf, scope, owner, range, onSelectOwner }: {
 /** The Activity Pipeline table, lifted out of ThisWeekBlock on 2026-09-16 so it
  *  can live on the Outbound Detail sub-tab. Overview shows the summary card in
  *  the space it used to occupy. */
-function ActivityPipelineBlock({ activityPipeline, granularity, scope, owner, range, nameOf }: {
+function ActivityPipelineBlock({ activityPipeline, granularity, scope, owner, range, nameOf, rangeLabel }: {
   activityPipeline?: ScorecardRow[];
   granularity: OutreachGranularity;
   scope: OutreachScopeKind;
   owner?: string;
   range?: OutreachDateRange;
   nameOf: (email: string) => string;
+  rangeLabel?: string;
 }) {
   if (!activityPipeline || activityPipeline.length === 0) return null;
   return (
     <ScorecardTable title="Activity Pipeline" firstColHeader="Activity" rows={activityPipeline}
       idPrefix="act" drillKind="activity" granularity={granularity} scope={scope}
-      owner={owner} range={range} nameOf={nameOf} />
+      owner={owner} range={range} nameOf={nameOf} rangeLabel={rangeLabel} />
   );
 }
 
@@ -1594,14 +1539,23 @@ export function JobsOutreach() {
              Activity over time now sits below the sender-segment divider. ── */}
       {onDetail ? (
         <>
-          {/* Daily digest (the morning Slack) moved here from Overview on
-              2026-09-17: it lists what went out, which is this page's subject. */}
-          <DailyDigestBlock periodEnd={to} />
           <OutreachSummaryCards granularity={granularity} scope={scope}
             owner={owner || undefined} range={range} />
           <ActivityPipelineBlock activityPipeline={sc?.activity_pipeline}
             granularity={granularity} scope={scope} owner={owner || undefined}
-            range={range} nameOf={nameOf} />
+            range={range} nameOf={nameOf} rangeLabel={rangeLabel || undefined} />
+          {/* Outreach Detail moved off Overview on 2026-09-21 — it is the
+              per-owner breakdown of the volume the table above totals, so it
+              belongs under it rather than on a different tab. */}
+          <ThisWeekBlock nameOf={nameOf}
+            scope={scope} owner={owner || undefined} range={range}
+            onSelectOwner={(email) => {
+              // The table keys owners lowercased; resolve back to the canonical
+              // staff email so exact-match server filters still hit (one staff
+              // record is "joanna@Pursuit.org").
+              const canonical = staff.find((st) => st.email.toLowerCase() === email)?.email ?? email;
+              setOwner(owner.toLowerCase() === email ? "" : canonical);
+            }} />
           {/* Outreach Trends moved here from Overview on 2026-09-16 — it
               answers "what went out over time", which is this page's question. */}
           <ActivityTrends scope={scope} owner={owner || undefined} range={range} />
@@ -1616,16 +1570,6 @@ export function JobsOutreach() {
           Outbound Detail, and these three numbers take its place. */}
       <OutreachSummaryCards granularity={granularity} scope={scope}
         owner={owner || undefined} range={range} />
-
-      <ThisWeekBlock nameOf={nameOf}
-        scope={scope} owner={owner || undefined} range={range}
-        onSelectOwner={(email) => {
-          // The table keys owners lowercased; resolve back to the canonical
-          // staff email so exact-match server filters still hit (one staff
-          // record is "joanna@Pursuit.org").
-          const canonical = staff.find((st) => st.email.toLowerCase() === email)?.email ?? email;
-          setOwner(owner.toLowerCase() === email ? "" : canonical);
-        }} />
 
       {isError && <div className="rounded-lg border border-red-soft bg-red-soft px-4 py-3 text-[13px] text-red">Couldn't load the scorecard. Try again in a moment.</div>}
       {isLoading && !sc && (

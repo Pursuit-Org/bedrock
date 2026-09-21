@@ -38,10 +38,15 @@ function invalidateOppDependents(qc: QueryClient, extra: string[][] = []) {
 export type JobStage =
   | "lead_submitted"
   | "active_in_discussions"
+  | "ask_submitted"
   | "active_opportunity_confirmed"
-  | "reviewing_builders"
+  | "builder_submitted"
+  | "builder_interviewing"
+  | "offer_contracting"
   | "closed_won"
   | "closed_lost"
+  // legacy — retired 2026-09-21, superseded by builder_submitted / builder_interviewing
+  | "reviewing_builders"
   // legacy, pre-2026-08-05
   | "initial_outreach"
   | "active_builder_interview"
@@ -183,11 +188,15 @@ export interface OpportunityFilters {
 export const STAGE_LABELS: Record<JobStage, string> = {
   lead_submitted:               "Lead Submitted",
   active_in_discussions:        "In Discussions",
+  ask_submitted:                "Ask Submitted",
   active_opportunity_confirmed: "Opportunity Confirmed",
-  reviewing_builders:           "Reviewing Builders",
+  builder_submitted:            "Builder Submitted",
+  builder_interviewing:         "Builder Interviewing",
+  offer_contracting:            "Offer Contracting",
   closed_won:                   "Closed — Won",
   closed_lost:                  "Closed — Lost",
   // Legacy — labelled so un-migrated rows and history read as words, not slugs.
+  reviewing_builders:           "Reviewing Builders",
   initial_outreach:             "Initial Outreach",
   active_builder_interview:     "Builder Interview",
   on_hold_not_selected:         "Not Selected",
@@ -204,21 +213,41 @@ export const DEAL_TYPE_LABELS: Record<DealType, string> = {
   pilot:       "Pilot",
 };
 
-/** Board columns and pickers, in pipeline order. Six stages as of 2026-08-05.
+/** Board columns and pickers, in pipeline order. Nine stages as of 2026-09-21,
+ *  when the middle of the funnel split from one step into four.
  *  Legacy values are deliberately absent: a picker must not offer a stage the
  *  team has retired. Anything still stored under one renders via STAGE_LABELS
  *  and moves to a current stage on the next edit. */
 export const STAGES_ORDERED: JobStage[] = [
   "lead_submitted",
   "active_in_discussions",
+  "ask_submitted",
   "active_opportunity_confirmed",
-  "reviewing_builders",
+  "builder_submitted",
+  "builder_interviewing",
+  "offer_contracting",
   "closed_won",
   "closed_lost",
 ];
 
+/** What each stage means. Shown on the picker so the definition sits next to
+ *  the choice rather than in a doc nobody opens. Mirrors STAGE_DESCRIPTIONS in
+ *  routes/jobs.py. */
+export const STAGE_DESCRIPTIONS: Partial<Record<JobStage, string>> = {
+  lead_submitted:               "A lead is in, not yet qualified.",
+  active_in_discussions:        "Confirmed hiring appetite and a named decision maker.",
+  ask_submitted:                "A specific ask is with the employer — role, scope or option set. Awaiting yes or no.",
+  active_opportunity_confirmed: "They said yes. A real role or engagement exists.",
+  builder_submitted:            "Named builder profiles sent to the employer.",
+  builder_interviewing:         "At least one builder in the employer's interview process.",
+  offer_contracting:            "Offer extended, or contract in redline.",
+  closed_won:                   "Builder accepted.",
+  closed_lost:                  "Dead, with a reason code.",
+};
+
 /** Legacy stages that still exist in un-migrated data. Rendered, never offered. */
 export const LEGACY_STAGES: JobStage[] = [
+  "reviewing_builders",
   "initial_outreach",
   "active_builder_interview",
   "on_hold_not_selected",
@@ -228,8 +257,11 @@ export const LEGACY_STAGES: JobStage[] = [
 
 export const ACTIVE_STAGES: JobStage[] = [
   "active_in_discussions",
+  "ask_submitted",
   "active_opportunity_confirmed",
-  "reviewing_builders",
+  "builder_submitted",
+  "builder_interviewing",
+  "offer_contracting",
 ];
 
 // ── Hooks ────────────────────────────────────────────────────────────────────
@@ -290,6 +322,8 @@ export const MEMBERSHIP_STAGE_LABELS: Record<MembershipStage, string> = {
 export interface StageOption {
   value: string;
   label: string;
+  /** The team's definition of the stage, where there is one. */
+  description?: string | null;
   /** False while the database CHECK constraint still rejects it — shown in the
    *  picker but not selectable, so a pending migration reads as "coming" rather
    *  than "missing". */
