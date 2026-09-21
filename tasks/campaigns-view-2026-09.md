@@ -511,7 +511,46 @@ which is referenced in ~20 places across `routes/jobs.py` — including
 would move every team-scoped number on every Jobs page, not just this table.
 Flagged rather than done.
 
-### Phase 17 — Not started
+### Phase 17 — Sender picker reverted, Overview relaid out, account drill ✅ (2026-09-21)
+
+**Sender pins reverted.** The All jobs team / Avni / Damon / Devika button strip
+is gone and the period card is one row again: Period, dates, presets, then
+Jobs Team / Other Staff / Everyone and the sender dropdown. What survived is the
+grouping Kwame liked — All senders, then a **Jobs Team** optgroup (Avni, Damon,
+Devika, Kwame), then **Other Pursuit staff**. A button strip spent a whole row
+of the card to save the same click the optgroup already saves.
+
+**Whose data, as a chip.** Top right of Activity Pipeline: `⊙ VIEWING · Avni
+Nahar`, filled accent when one person is selected, quiet grey outline for a
+group. The strong treatment goes to the individual case on purpose — a filter
+narrowed to one person is the state you can forget you are in and then misread a
+target by. The control that sets it is several sections up the page, so the
+table states it rather than making you scroll back to check.
+
+**Overview relaid out.** Contact Pipeline returns to the top. Outreach Trends and
+Touch Depth now share a 2-up grid (Touch Depth moved off Outbound Detail), which
+puts "how much went out" next to "was any of it followed up" — the same question
+from two sides. They stack below `lg`. One asymmetry left standing and stated in
+Touch Depth's own subtitle: the trend follows the period bar, Touch Depth is
+always "right now".
+
+Overview: Contact Pipeline → summary cards → Activity Pipeline → Outreach Detail
+→ [Outreach Trends | Touch Depth] → send feed.
+Outbound Detail: Targeting Mix → Current State → Requiring Attention.
+
+**Scorecard drill is account-first.** It listed one row per contact, each
+repeating its company, so four people at Blackstone read as four rows you had to
+reassemble. Now: account on the left, the contacts under it (first three, then
+`+N`), who worked them, and the account's total touches. Expanding shows each
+contact with their own touches, as before.
+
+Grouped on the client. The endpoint already returns every contact behind the
+number, so the second shape is a `reduce`, not a round trip. Accounts sort by
+touch volume, since the drill is opened to see where the volume went, and
+contacts with no company share one "No account on file" bucket rather than each
+becoming a single-contact account at the top of the list.
+
+### Phase 18 — Not started
 - [ ] Drill from a trend point into the underlying activity list
 - [ ] Contact table on the detail view (the `/records` endpoint already serves it)
 - [ ] Stage-entry period flow, like `outreach-pipeline-rework.md`

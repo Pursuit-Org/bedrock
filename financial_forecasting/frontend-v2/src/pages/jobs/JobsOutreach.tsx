@@ -25,6 +25,7 @@ import {
   type OutreachSummary,
   type OutreachDateRange,
   type ScorecardRow,
+  type OutreachDrillContact,
   useTouchDepth,
   type TouchDepthBucket,
   type JobContactWithDeal,
@@ -41,7 +42,10 @@ import { PeriodBar, ScopeButtons, defaultPeriod } from "@/components/jobs/Period
 import { relDay } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
+/** Accounts shown in a scorecard drill before "Show more". */
 const DRILL_PAGE = 25;
+/** Contact names listed on a collapsed account row before "+N". */
+const CONTACT_NAMES_SHOWN = 3;
 
 type OutreachSub = "overview" | "detail";
 const OUTREACH_SUBS: { key: OutreachSub; label: string; icon: typeof BarChart3; title: string }[] = [
@@ -93,68 +97,125 @@ function actorSummary(actors: string[] | undefined, nameOf: (e: string) => strin
   return actors.length === 1 ? first : `${first} +${actors.length - 1}`;
 }
 
+/** Contacts regrouped under the account they work for.
+ *
+ *  The API answers this drill contact-first, which is the right shape for the
+ *  query and the wrong one for the question. "Blackstone, four people, eleven
+ *  touches" is one line of judgement; four separate rows that all say Blackstone
+ *  is four lines you have to reassemble yourself (Kwame 2026-09-21).
+ *
+ *  Grouped on the client on purpose: the endpoint already returns every contact
+ *  behind the number, so a second shape is a `reduce`, not a round trip. */
+interface DrillAccount {
+  account: string;
+  contacts: OutreachDrillContact[];
+  touches: number;
+  actors: string[];
+}
+
+function groupByAccount(contacts: OutreachDrillContact[]): DrillAccount[] {
+  const byAccount = new Map<string, DrillAccount>();
+  for (const c of contacts) {
+    // Everything without a company shares one bucket rather than each becoming
+    // its own single-contact "account", which read as noise at the top of the list.
+    const key = c.company?.trim() || "No account on file";
+    let g = byAccount.get(key);
+    if (!g) { g = { account: key, contacts: [], touches: 0, actors: [] }; byAccount.set(key, g); }
+    g.contacts.push(c);
+    g.touches += c.touches.length;
+  }
+  for (const g of byAccount.values()) {
+    g.actors = [...new Set(g.contacts.flatMap((c) => c.actors ?? []))];
+    g.contacts.sort((a, b) => b.touches.length - a.touches.length);
+  }
+  // Busiest account first: the drill is opened to see where the volume went.
+  return [...byAccount.values()].sort((a, b) => b.touches - a.touches || a.account.localeCompare(b.account));
+}
+
+/** "David Drew, Jane Roe, Sam Lee +2" — enough names to recognise the account's
+ *  relationships without the row wrapping. */
+function contactSummary(contacts: OutreachDrillContact[]): string {
+  const names = contacts.map((c) => c.name || "Unknown contact");
+  const shown = names.slice(0, CONTACT_NAMES_SHOWN).join(", ");
+  const hidden = names.length - CONTACT_NAMES_SHOWN;
+  return hidden > 0 ? `${shown} +${hidden}` : shown;
+}
+
 function RowDrill({
   kind, rowKey, granularity, scope, owner, range, nameOf,
 }: {
   kind: "user" | "activity"; rowKey: string;
   granularity: OutreachGranularity; scope: OutreachScopeKind; owner?: string; range?: OutreachDateRange;
-  /** Resolves an actor email to a staff name for the Owner column. */
   nameOf: (email: string) => string;
 }) {
-  const [openContact, setOpenContact] = useState<Set<number>>(new Set());
+  const [openAccount, setOpenAccount] = useState<Set<string>>(new Set());
   const [showAll, setShowAll] = useState(false);
   const { data, isLoading, isError } = useOutreachDrill({ kind, key: rowKey, period: "this", granularity, scope, owner, range });
+  const accounts = useMemo(() => groupByAccount(data?.contacts ?? []), [data]);
 
   if (isLoading) return <div className="flex items-center gap-2 px-4 py-3 text-[12.5px] text-ink-3"><Loader2 size={13} className="animate-spin" /> Loading…</div>;
   if (isError) return <div className="px-4 py-3 text-[12.5px] text-red">Couldn't load the detail.</div>;
-  if (!data || data.contacts.length === 0) return <div className="px-4 py-3 text-[12.5px] text-ink-4">No records in this period.</div>;
+  if (accounts.length === 0) return <div className="px-4 py-3 text-[12.5px] text-ink-4">No records in this period.</div>;
 
-  const shown = showAll ? data.contacts : data.contacts.slice(0, DRILL_PAGE);
+  const shown = showAll ? accounts : accounts.slice(0, DRILL_PAGE);
   return (
     <div className="flex flex-col divide-y divide-border">
-      {shown.map((c) => {
-        const open = openContact.has(c.contact_id);
+      {shown.map((g) => {
+        const open = openAccount.has(g.account);
         return (
-          <div key={c.contact_id}>
+          <div key={g.account}>
             <button
-              onClick={() => setOpenContact((prev) => { const n = new Set(prev); n.has(c.contact_id) ? n.delete(c.contact_id) : n.add(c.contact_id); return n; })}
+              onClick={() => setOpenAccount((prev) => { const n = new Set(prev); n.has(g.account) ? n.delete(g.account) : n.add(g.account); return n; })}
               className="flex w-full items-center gap-2 px-4 py-2 text-left hover:bg-surface-2"
             >
-              <span className="w-3.5 text-ink-4">{open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}</span>
-              <span className="text-[13px] font-medium text-ink">{c.name || "Unknown contact"}</span>
-              <span className="text-[12px] text-ink-3">{c.company || "—"}</span>
-              {/* Who worked this contact, without having to expand the row. */}
-              <span className="ml-auto shrink-0 text-[11.5px] text-ink-3" title={(c.actors ?? []).map(nameOf).join(", ")}>
-                {actorSummary(c.actors, nameOf)}
+              <span className="w-3.5 shrink-0 text-ink-4">{open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}</span>
+              {/* Fixed width so the account column reads as a column down the
+                  list rather than a ragged left edge. */}
+              <span className="w-[180px] shrink-0 truncate text-[13px] font-semibold text-ink">{g.account}</span>
+              <span className="min-w-0 flex-1 truncate text-[12px] text-ink-3"
+                title={g.contacts.map((c) => c.name || "Unknown contact").join(", ")}>
+                {contactSummary(g.contacts)}
               </span>
-              <span className="w-[74px] shrink-0 text-right text-[11.5px] text-ink-4">{c.touches.length} touch{c.touches.length === 1 ? "" : "es"}</span>
+              <span className="shrink-0 text-[11.5px] text-ink-3" title={g.actors.map(nameOf).join(", ")}>
+                {actorSummary(g.actors, nameOf)}
+              </span>
+              <span className="w-[74px] shrink-0 text-right text-[11.5px] text-ink-4">{g.touches} touch{g.touches === 1 ? "" : "es"}</span>
             </button>
             {open && (
-              <div className="flex flex-col gap-1 bg-bg px-4 py-2 pl-10">
-                {c.touches.length === 0 && <div className="text-[12px] text-ink-4">No jobs touches in this period.</div>}
-                {c.touches.length > 0 && (
-                  <div className="flex items-baseline gap-2 text-[9.5px] font-bold uppercase tracking-wider text-ink-4">
-                    <span className="w-[52px]">Type</span>
-                    <span className="min-w-0 flex-1">Subject</span>
-                    <span className="w-[124px] shrink-0">Owner</span>
-                    <span className="w-[70px] shrink-0 text-right">Date</span>
-                  </div>
-                )}
-                {c.touches.map((t, i) => (
-                  <div key={i} className="flex items-baseline gap-2 text-[12.5px]">
-                    <span className={cn("w-[52px] shrink-0 truncate rounded px-1.5 py-0.5 text-center text-[10.5px] font-semibold uppercase",
-                      t.direction === "received" ? "bg-green-soft text-green" : "bg-surface-2 text-ink-3")}>
-                      {t.direction === "received" ? "reply" : t.type}
-                    </span>
-                    <span className="min-w-0 flex-1 truncate text-ink-2">{t.subject || t.snippet || "(no subject)"}</span>
-                    {/* Owner: who sent it, or on a reply who earned it. */}
-                    <span className="w-[124px] shrink-0 truncate text-[11.5px] text-ink-3"
-                      title={t.actor
-                        ? `${t.direction === "received" ? "Replied to" : "By"} ${nameOf(t.actor)} · ${t.actor}`
-                        : "No Pursuit sender recorded on this touch"}>
-                      {t.actor ? nameOf(t.actor) : "—"}
-                    </span>
-                    <span className="w-[70px] shrink-0 text-right text-ink-4">{t.date ? fmtDate(t.date) : ""}</span>
+              <div className="flex flex-col gap-3 bg-bg px-4 py-2 pl-10">
+                {g.contacts.map((c) => (
+                  <div key={c.contact_id} className="flex flex-col gap-1">
+                    <div className="flex items-baseline gap-2">
+                      <span className="text-[12.5px] font-medium text-ink">{c.name || "Unknown contact"}</span>
+                      <span className="text-[11px] text-ink-4">{c.touches.length} touch{c.touches.length === 1 ? "" : "es"}</span>
+                    </div>
+                    {c.touches.length === 0 ? (
+                      <div className="text-[12px] text-ink-4">No jobs touches in this period.</div>
+                    ) : (
+                      <div className="flex items-baseline gap-2 text-[9.5px] font-bold uppercase tracking-wider text-ink-4">
+                        <span className="w-[52px]">Type</span>
+                        <span className="min-w-0 flex-1">Subject</span>
+                        <span className="w-[124px] shrink-0">Owner</span>
+                        <span className="w-[70px] shrink-0 text-right">Date</span>
+                      </div>
+                    )}
+                    {c.touches.map((t, i) => (
+                      <div key={i} className="flex items-baseline gap-2 text-[12.5px]">
+                        <span className={cn("w-[52px] shrink-0 truncate rounded px-1.5 py-0.5 text-center text-[10.5px] font-semibold uppercase",
+                          t.direction === "received" ? "bg-green-soft text-green" : "bg-surface-2 text-ink-3")}>
+                          {t.direction === "received" ? "reply" : t.type}
+                        </span>
+                        <span className="min-w-0 flex-1 truncate text-ink-2">{t.subject || t.snippet || "(no subject)"}</span>
+                        {/* Owner: who sent it, or on a reply who earned it. */}
+                        <span className="w-[124px] shrink-0 truncate text-[11.5px] text-ink-3"
+                          title={t.actor
+                            ? `${t.direction === "received" ? "Replied to" : "By"} ${nameOf(t.actor)} · ${t.actor}`
+                            : "No Pursuit sender recorded on this touch"}>
+                          {t.actor ? nameOf(t.actor) : "—"}
+                        </span>
+                        <span className="w-[70px] shrink-0 text-right text-ink-4">{t.date ? fmtDate(t.date) : ""}</span>
+                      </div>
+                    ))}
                   </div>
                 ))}
               </div>
@@ -162,9 +223,9 @@ function RowDrill({
           </div>
         );
       })}
-      {!showAll && data.contacts.length > DRILL_PAGE && (
+      {!showAll && accounts.length > DRILL_PAGE && (
         <button onClick={() => setShowAll(true)} className="px-4 py-2 text-left text-[12.5px] font-medium text-accent-ink hover:underline">
-          Show more ({data.contacts.length - DRILL_PAGE} more)
+          Show more ({accounts.length - DRILL_PAGE} more)
         </button>
       )}
     </div>
@@ -380,10 +441,12 @@ function TouchDepthDrill({ bucket, nameOf }: {
 // contacts that entered initial outreach this period; the bars are how many
 // logged touches each has. Server-computed off the same activity filters as the
 // drills, so it can't disagree with the rest of the tab.
-function TouchDepthPanel({ scope, owner, nameOf }: {
+function TouchDepthPanel({ scope, owner, nameOf, className }: {
   scope: OutreachScopeKind;
   owner?: string;
   nameOf: (email: string) => string;
+  /** "h-full" when it shares a grid row with Outreach Trends. */
+  className?: string;
 }) {
   const [open, setOpen] = useState<string | null>(null);
   const { data: depth, isLoading } = useTouchDepth(scope, owner);
@@ -398,6 +461,7 @@ function TouchDepthPanel({ scope, owner, nameOf }: {
       desc={depth
         ? `All ${depth.total} contacts sitting in initial outreach right now, by touches received in the last ${depth.weeks} weeks`
         : "Loading…"}
+      className={className}
     >
       {isLoading || !depth ? (
         <div className="h-28 animate-pulse rounded bg-surface-2" />
@@ -882,58 +946,10 @@ function ThisWeekBlock({ nameOf, scope, owner, range, onSelectOwner }: {
   );
 }
 
-/** The four names worth one click, pinned under the scope buttons.
- *
- *  This lives in the period card rather than on any one panel because it is a
- *  page filter: it drives the same `owner` state the sender dropdown does, so
- *  the two can never disagree, and every section below moves together. It sat
- *  on the right of the Activity Pipeline title for a day, which made it look
- *  like it filtered that table alone (Kwame 2026-09-21).
- *
- *  "All jobs team" also resets the scope. A pinned name can be someone outside
- *  the core three, and clearing the owner while the scope is still `staff`
- *  would leave the page filtered to a group the button does not name. */
-function SenderPins({ owner, onSelect, nameOf }: {
-  owner?: string;
-  onSelect: (email: string) => void;
-  nameOf: (email: string) => string;
-}) {
-  const current = (owner ?? "").toLowerCase();
-  const pins = [{ email: "", label: "All jobs team" },
-                ...JOBS_TEAM_PINNED.map((e) => ({ email: e, label: nameOf(e) }))];
-  return (
-    <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-      <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">Sender</span>
-      <div className="inline-flex items-center rounded-md border border-border-strong bg-surface p-0.5">
-        {pins.map((t) => {
-          const active = current === t.email.toLowerCase();
-          return (
-            <button
-              key={t.email || "all"}
-              type="button"
-              onClick={() => onSelect(t.email)}
-              title={t.email || "Every member of the jobs team"}
-              className={cn(
-                "rounded px-2 py-0.5 text-[12px] font-medium transition-colors",
-                active ? "bg-accent-soft text-accent" : "text-ink-2 hover:bg-surface-2",
-              )}
-            >
-              {t.label}
-            </button>
-          );
-        })}
-      </div>
-      {/* Named so the row reads as "these four, or anyone" rather than as two
-          unrelated controls that happen to share a line. */}
-      <span className="text-[11.5px] text-ink-4">or</span>
-    </div>
-  );
-}
-
 /** The Activity Pipeline table, lifted out of ThisWeekBlock on 2026-09-16 so it
  *  can live on the Outbound Detail sub-tab. Overview shows the summary card in
  *  the space it used to occupy. */
-function ActivityPipelineBlock({ activityPipeline, granularity, scope, owner, range, nameOf, rangeLabel, lastRangeLabel, ownerLabel }: {
+function ActivityPipelineBlock({ activityPipeline, granularity, scope, owner, range, nameOf, rangeLabel, lastRangeLabel, ownerLabel, ownerIsPerson }: {
   activityPipeline?: ScorecardRow[];
   granularity: OutreachGranularity;
   scope: OutreachScopeKind;
@@ -942,9 +958,13 @@ function ActivityPipelineBlock({ activityPipeline, granularity, scope, owner, ra
   nameOf: (email: string) => string;
   rangeLabel?: string;
   lastRangeLabel?: string;
-  /** Who the table is counting, echoed in the title bar. The control that sets
-   *  it lives in the period card, so the table says whose numbers these are. */
+  /** Who the table is counting. The control that sets it is the sender picker
+   *  up in the period card, several sections away by the time you are reading
+   *  this table — so the table states it rather than leaving you to scroll up
+   *  and check whose targets you are looking at. */
   ownerLabel?: string;
+  /** True when one person is selected, which is what earns the stronger chip. */
+  ownerIsPerson?: boolean;
 }) {
   if (!activityPipeline || activityPipeline.length === 0) return null;
   return (
@@ -952,9 +972,25 @@ function ActivityPipelineBlock({ activityPipeline, granularity, scope, owner, ra
       idPrefix="act" drillKind="activity" granularity={granularity} scope={scope}
       owner={owner} range={range} nameOf={nameOf} rangeLabel={rangeLabel}
       lastRangeLabel={lastRangeLabel}
-      action={ownerLabel
-        ? <span className="text-[12px] font-medium text-ink-3">{ownerLabel}</span>
-        : undefined} />
+      action={ownerLabel ? <ViewingChip label={ownerLabel} strong={ownerIsPerson} /> : undefined} />
+  );
+}
+
+/** Whose numbers are on screen, as a chip rather than a sentence.
+ *
+ *  Filled accent when one person is selected and quiet grey for a whole group:
+ *  a filter narrowed to an individual is the state you can forget you are in
+ *  and then misread a target by, so that is the one that should catch the eye. */
+function ViewingChip({ label, strong }: { label: string; strong?: boolean }) {
+  return (
+    <span className={cn(
+      "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11.5px] font-medium",
+      strong ? "bg-accent-soft text-accent" : "border border-border-strong bg-surface text-ink-3",
+    )}>
+      <Users size={11} className={strong ? "text-accent" : "text-ink-4"} />
+      <span className="uppercase tracking-wide text-[10px] font-semibold opacity-70">Viewing</span>
+      <span className="font-semibold">{label}</span>
+    </span>
   );
 }
 
@@ -1622,37 +1658,29 @@ export function JobsOutreach() {
           from={from} to={to}
           onChange={(f, t) => { setFrom(f); setTo(t); }}
           granularity={granularity} onGranularityChange={setGranularity}
-          secondary={
-            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-              <SenderPins owner={owner} nameOf={nameOf} onSelect={(email) => {
-                if (!email) { setScope("team"); setOwner(""); return; }
-                setOwner(email);
-              }} />
-              {/* Anyone at all, with the four pinned names repeated at the top
-                  so the dropdown agrees with the buttons beside it. A flat
-                  forty-name list made reaching the people you actually filter by
-                  a scroll (Kwame 2026-09-21). */}
-              <select value={owner} onChange={(e) => setOwner(e.target.value)}
-                className="h-7 max-w-[200px] rounded-md border border-border-strong bg-surface px-2 text-[12.5px] text-ink-2 outline-none focus:border-accent"
-                title="Filter every section to one person">
-                <option value="">All senders</option>
-                {pinnedStaff.length > 0 && (
-                  <optgroup label="Jobs Team">
-                    {pinnedStaff.map((st) => (
-                      <option key={st.email} value={st.email}>{st.name || st.email}</option>
-                    ))}
-                  </optgroup>
-                )}
-                <optgroup label="Everyone else">
-                  {otherStaff.map((st) => (
-                    <option key={st.email} value={st.email}>{st.name || st.email}</option>
-                  ))}
-                </optgroup>
-              </select>
-            </div>
-          }
         >
           <ScopeButtons value={scope} onChange={(v) => { setScope(v); setOwner(""); }} />
+          {/* One row, as it was. The jobs team is grouped to the top of the list
+              rather than broken out into buttons: four names you reach without
+              scrolling is the whole benefit, and a button strip spent a row of
+              the card to save the same click (Kwame 2026-09-21). */}
+          <select value={owner} onChange={(e) => setOwner(e.target.value)}
+            className="h-7 max-w-[190px] rounded-md border border-border-strong bg-surface px-2 text-[12.5px] text-ink-2 outline-none focus:border-accent"
+            title="Filter every section to one person">
+            <option value="">All senders</option>
+            {pinnedStaff.length > 0 && (
+              <optgroup label="Jobs Team">
+                {pinnedStaff.map((st) => (
+                  <option key={st.email} value={st.email}>{st.name || st.email}</option>
+                ))}
+              </optgroup>
+            )}
+            <optgroup label="Other Pursuit staff">
+              {otherStaff.map((st) => (
+                <option key={st.email} value={st.email}>{st.name || st.email}</option>
+              ))}
+            </optgroup>
+          </select>
         </PeriodBar>
 
 
@@ -1680,6 +1708,10 @@ export function JobsOutreach() {
              review. ── */}
       {!onDetail ? (
         <>
+          {/* Contact Pipeline opens the review again — it is the top of the
+              funnel everything below is downstream of (Kwame 2026-09-21). */}
+          <JobsFunnels only="prospects" period={range} periodLabel={rangeLabel || undefined} />
+
           <OutreachSummaryCards granularity={granularity} scope={scope}
             owner={owner || undefined} range={range} />
 
@@ -1693,7 +1725,8 @@ export function JobsOutreach() {
           <ActivityPipelineBlock activityPipeline={sc?.activity_pipeline}
             granularity={granularity} scope={scope} owner={owner || undefined}
             range={range} nameOf={nameOf} rangeLabel={rangeLabel || undefined}
-            lastRangeLabel={lastRangeLabel || undefined} ownerLabel={senderLabel} />
+            lastRangeLabel={lastRangeLabel || undefined}
+            ownerLabel={senderLabel} ownerIsPerson={!!owner} />
           {/* Outreach Detail sits directly under the table it breaks down. */}
           <ThisWeekBlock nameOf={nameOf}
             scope={scope} owner={owner || undefined} range={range}
@@ -1704,8 +1737,19 @@ export function JobsOutreach() {
               const canonical = staff.find((st) => st.email.toLowerCase() === email)?.email ?? email;
               setOwner(owner.toLowerCase() === email ? "" : canonical);
             }} />
-          <ActivityTrends scope={scope} owner={owner || undefined} range={range} />
-          <JobsFunnels only="prospects" period={range} periodLabel={rangeLabel || undefined} />
+
+          {/* Volume over time, and whether that volume is follow-up or one-and-
+              done. They answer the same question from two sides, so they read
+              better side by side than a screen apart. Stacks below lg, where
+              half width would squeeze the trend line into noise.
+              Note the asymmetry, which is deliberate and stated in Touch
+              Depth's own subtitle: the trend follows the period bar, Touch
+              Depth is always "right now". */}
+          <div className="grid grid-cols-1 items-stretch gap-4 lg:grid-cols-2">
+            <ActivityTrends scope={scope} owner={owner || undefined} range={range} />
+            <TouchDepthPanel scope={scope} owner={owner || undefined} nameOf={nameOf} className="h-full" />
+          </div>
+
           <OutboundActivityFeed granularity={granularity} scope={scope}
             owner={owner || undefined} range={range} />
         </>
@@ -1735,8 +1779,6 @@ export function JobsOutreach() {
       {onDetail && (
         <>
       <ZoneBoundary />
-
-      <TouchDepthPanel scope={scope} owner={owner || undefined} nameOf={nameOf} />
 
       {/* Requiring attention closes the page (moved below the trend band
           2026-08-04): it's the action list you leave the review with, so it
