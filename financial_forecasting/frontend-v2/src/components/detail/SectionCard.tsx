@@ -20,6 +20,8 @@ import { useCollapsible } from "@/lib/collapsible";
 
 export interface SectionCardProps {
   title: string;
+  /** Optional node rendered on the left of the header, after the title. */
+  leftAction?: React.ReactNode;
   /** Optional action node rendered on the right of the header
    *  (e.g. "+ Add" button, status pill toggle). */
   action?: React.ReactNode;
@@ -39,6 +41,7 @@ export interface SectionCardProps {
 
 export function SectionCard({
   title,
+  leftAction,
   action,
   defaultOpen = true,
   collapsible = true,
@@ -52,13 +55,13 @@ export function SectionCard({
   const isOpen = collapsible ? open : true;
   return (
     <section className="mt-6 overflow-hidden rounded-lg border border-border-strong bg-surface shadow-sm">
-      <div className="flex items-center justify-between border-b border-border-strong bg-surface-2 px-5 py-2.5">
+      <div className="flex items-center gap-3 border-b border-border-strong bg-surface-2 px-5 py-2.5">
         {collapsible ? (
           <button
             type="button"
             onClick={toggle}
             aria-expanded={isOpen}
-            className="flex flex-1 items-center gap-2 text-left"
+            className="flex items-center gap-2 text-left"
           >
             {isOpen ? (
               <ChevronDown size={12} className="flex-shrink-0 text-ink-3" aria-hidden="true" />
@@ -74,6 +77,8 @@ export function SectionCard({
             {title}
           </span>
         )}
+        {leftAction ?? null}
+        <div className="flex-1" />
         {action ?? null}
       </div>
       {isOpen ? children : null}

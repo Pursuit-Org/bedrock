@@ -17,7 +17,7 @@ import { StageChip } from "@/components/ui/StageChip";
 import { Tag } from "@/components/ui/Tag";
 import { Tooltip } from "@/components/ui/Tooltip";
 import { accountStatusVariant } from "@/lib/accountStatus";
-import { fmtDate, fmtMoney, fmtMoneyFull, initials } from "@/lib/format";
+import { fmtDate, fmtMoney, fmtMoneyFull, initials, toExternalHref } from "@/lib/format";
 import { useCollapsible } from "@/lib/collapsible";
 import { isLost, isOpen, isWon, SF_STAGE_OPTIONS, stageStatus } from "@/lib/stages";
 import { cn } from "@/lib/utils";
@@ -574,6 +574,22 @@ export function AccountDetailPage() {
                   <td className="mono px-5 py-2.5 text-right text-[11.5px] text-ink-3">
                     {fmtDate(c.Last_Activity_Date__c ?? c.LastActivityDate)}
                   </td>
+                  <td className="px-5 py-2.5 text-[12.5px]">
+                    {toExternalHref(c.LinkedIn_URL__c) ? (
+                      <a
+                        href={toExternalHref(c.LinkedIn_URL__c)!}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={(e) => e.stopPropagation()}
+                        className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-semibold text-[#0A66C2] hover:underline"
+                        title={c.LinkedIn_URL__c ?? undefined}
+                      >
+                        in <ExternalLink size={11} />
+                      </a>
+                    ) : (
+                      <span className="text-ink-4">—</span>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -622,6 +638,7 @@ function AddContactModal({
     Email: "",
     Phone: "",
     Title: "",
+    LinkedInUrl: "",
   });
   const [error, setError] = useState<string | null>(null);
 
@@ -632,6 +649,24 @@ function AddContactModal({
     e.preventDefault();
     if (!form.LastName.trim()) return;
     setError(null);
+    // type="url" is browser-side only, and it accepts any absolute URL —
+    // "javascript:…" passes it. This value is written to Salesforce and later
+    // rendered as a link elsewhere in the app, so pin it to http(s) here,
+    // where we can still tell the user, rather than storing something the
+    // render side has to defend against.
+    const linkedIn = form.LinkedInUrl.trim();
+    if (linkedIn && !/^https?:\/\//i.test(linkedIn) && /^[a-z][a-z0-9+.-]*:/i.test(linkedIn)) {
+      setError("LinkedIn URL must start with https:// (or be a plain linkedin.com address).");
+      return;
+    }
+    if (linkedIn && /\s/.test(linkedIn)) {
+      setError("LinkedIn URL can't contain spaces.");
+      return;
+    }
+    // Store scheme-less input as a real URL so consumers get a usable href.
+    const linkedInUrl = linkedIn
+      ? (/^https?:\/\//i.test(linkedIn) ? linkedIn : `https://${linkedIn.replace(/^\/+/, "")}`)
+      : undefined;
     try {
       // Demote the previous primary first so we never have two flagged
       // at once even momentarily.
@@ -648,6 +683,7 @@ function AddContactModal({
         Email: form.Email.trim() || undefined,
         Phone: form.Phone.trim() || undefined,
         Title: form.Title.trim() || undefined,
+        LinkedIn_URL__c: linkedInUrl,
         Philanthropic_Contact__c: asPrimary || undefined,
       });
       onClose();
@@ -725,6 +761,15 @@ function AddContactModal({
               value={form.Title}
               onChange={set("Title")}
               placeholder="VP of Engineering"
+              className={inputCls}
+            />
+          </Field>
+          <Field label="LinkedIn URL">
+            <input
+              type="url"
+              value={form.LinkedInUrl}
+              onChange={set("LinkedInUrl")}
+              placeholder="https://linkedin.com/in/janedoe"
               className={inputCls}
             />
           </Field>
