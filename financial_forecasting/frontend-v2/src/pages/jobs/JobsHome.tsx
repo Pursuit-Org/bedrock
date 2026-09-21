@@ -29,7 +29,6 @@ import { RowExpandPanel } from "@/components/RowExpandPanel";
 import { SortableHeader } from "@/components/ui/SortableHeader";
 import { ContactExpandTabs, OwnerSelect } from "@/components/jobs/jobsEntity";
 import { OppRolesSection } from "@/components/jobs/OppRolesSection";
-import { RequiringAttention } from "@/components/jobs/RequiringAttention";
 import { OppBuilderActivity } from "@/components/jobs/OppBuilderActivity";
 import { CommittedRolesModal } from "@/components/jobs/CommittedRolesModal";
 import { DealExpandPanel, PlacementsModal, ClosedLostModal, useOppStageOptions } from "./JobsTeam";
@@ -1109,7 +1108,6 @@ function HomeBody({ me, staff, sel, setSel, owner }: {
   owner: string | null;
 }) {
   // Same query keys as the zones — React Query dedupes, so the chips are free.
-  const staffEmails = useMemo(() => new Set(staff.map((s) => s.email.toLowerCase())), [staff]);
   const { data: assigned } = useJobsContacts(assignedFilters(owner));
   const { data: overview } = useOpportunitiesOverview(owner ?? undefined);
   const { data: pipelineOpps = [] } = useInterviewPipeline();
@@ -1159,17 +1157,6 @@ function HomeBody({ me, staff, sel, setSel, owner }: {
       <OpportunitiesZone owner={owner} />
       <RolesZone owner={owner} />
       <TasksZone owner={owner} />
-      {/* Moved off the Outreach tab on 2026-09-21 (Kwame). Three queues that
-          belong to a person, on the page you open to see what is on your plate.
-          `owner` here is already the canonical staff email, so it filters the
-          same way every other zone on this page does — pick Avni in the header
-          and these three show Avni's. Everyone resolves to null, which the
-          component reads as unfiltered. */}
-      <RequiringAttention
-        owner={owner ?? undefined}
-        nameOf={(email) => staff.find((s) => s.email.toLowerCase() === email.toLowerCase())?.name || email.split("@")[0]}
-        staffEmails={staffEmails}
-      />
       <IntroRequestsZone />
     </div>
   );

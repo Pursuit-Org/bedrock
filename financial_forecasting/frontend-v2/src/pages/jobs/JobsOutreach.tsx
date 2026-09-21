@@ -32,7 +32,6 @@ import { ActivityTrends } from "@/components/jobs/ActivityTrends";
 import { ActivityFeed } from "@/components/jobs/ActivityFeed";
 import { DrillList } from "@/components/jobs/DrillList";
 import { PeriodBar, ScopeButtons, defaultPeriod } from "@/components/jobs/PeriodBar";
-import { SectionHead } from "@/components/jobs/RequiringAttention";
 import { relDay } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
@@ -977,23 +976,58 @@ function DeltaChip({ actual, target }: { actual: number; target: number | null |
   const d = actual - target;
   return (
     <span className={cn("inline-flex items-center rounded px-1.5 py-0.5 text-[12.5px] font-semibold tabular-nums",
-      d >= 0 ? "bg-green-soft text-green" : "bg-red-soft text-red")}>
+      // Exactly on target is grey, not green (Kwame 2026-09-21). Green is for
+      // beating the number; hitting it exactly is the expected state, and
+      // colouring the expected state leaves nothing for the good one to say.
+      d === 0 ? "bg-surface-2 text-ink-3" : d > 0 ? "bg-green-soft text-green" : "bg-red-soft text-red")}>
       {d > 0 ? "+" : ""}{d}
     </span>
   );
 }
 
+// ── Section header ────────────────────────────────────────────────────────────
+function SectionHead({ title, note }: { title: string; note?: string }) {
+  return (
+    <div className="flex items-baseline justify-between">
+      <h2 className="text-[13px] font-bold uppercase tracking-wider text-ink-3">{title}</h2>
+      {note && <span className="text-[12.5px] text-ink-4">{note}</span>}
+    </div>
+  );
+}
+
+/** A column-group cap: centred, ruled underneath. Mirrors Volume / Conversion
+ *  on Contact Pipeline so the two tables read as one system. */
+const GROUP_CAP =
+  "block border-b border-border-strong pb-0.5 text-center text-[9.5px] font-bold uppercase tracking-[.1em] text-ink-3";
+
 /** Target, actual and gap for one metric — three cells, used six times. */
-function OwnerCells({ m, muted }: { m: OwnerMetric; muted?: boolean }) {
+function OwnerCells({ m, muted, onOpen, open }: {
+  m: OwnerMetric; muted?: boolean;
+  /** Set to make the actual clickable — it opens the same account-grouped
+   *  drill the Activity tab uses, filtered to this owner and metric. */
+  onOpen?: () => void;
+  open?: boolean;
+}) {
+  const n = scorecardCount(m.this_period);
   return (
     <>
       <td className="px-3 py-2.5 text-center tabular-nums text-ink-3">{m.target ?? "—"}</td>
-      <td className={cn("px-3 py-2.5 text-center font-semibold tabular-nums", muted ? "text-ink-3" : "text-ink")}>
-        {scorecardCount(m.this_period)}
-      </td>
       <td className="px-3 py-2.5 text-center">
-        <DeltaChip actual={scorecardCount(m.this_period)} target={m.target} />
+        {onOpen ? (
+          <button
+            type="button"
+            onClick={onOpen}
+            title="Show the accounts and contacts behind this"
+            className={cn("rounded px-1.5 py-0.5 font-semibold tabular-nums transition-colors hover:bg-surface-2",
+              open ? "bg-accent-soft text-accent" : muted ? "text-ink-3" : "text-ink")}
+          >
+            {n}
+          </button>
+        ) : (
+          <span className={cn("font-semibold tabular-nums", muted ? "text-ink-3" : "text-ink")}>{n}</span>
+        )}
       </td>
+      <td className="px-3 py-2.5 text-center"><DeltaChip actual={n} target={m.target} /></td>
     </>
   );
 }
@@ -1016,6 +1050,7 @@ function OwnerScorecardTable({ granularity, range, rangeLabel, nameOf, leading, 
   action?: React.ReactNode;
 }) {
   const { data, isLoading } = useOwnerScorecard(granularity, range);
+  const [open, setOpen] = useState<string | null>(null);   // "<owner>:<metric>"
   const rows = data?.rows ?? [];
   return (
     <div className="flex flex-col overflow-hidden rounded-xl border border-border-strong bg-surface">
@@ -1026,8 +1061,15 @@ function OwnerScorecardTable({ granularity, range, rangeLabel, nameOf, leading, 
               which metric, so "Target" appearing twice is never ambiguous. */}
           <tr className="bg-surface-2 text-[10.5px] uppercase tracking-wide text-ink-3">
             <th className="py-2 pl-3.5 pr-2 text-left font-bold align-bottom" rowSpan={2}>Owner</th>
-            <th className="border-l border-border px-2 pt-2 pb-1 text-center font-bold" colSpan={3}>Outreach</th>
-            <th className="border-l border-border px-2 pt-2 pb-1 text-center font-bold" colSpan={3}>Calls</th>
+            {/* Same treatment as Volume / Conversion on Contact Pipeline: a
+                centred cap with a rule under it, so the three columns beneath
+                read as belonging to it. */}
+            <th className="border-l border-border px-2 pt-2 pb-1" colSpan={3}>
+              <span className={GROUP_CAP}>Outreach</span>
+            </th>
+            <th className="border-l border-border px-2 pt-2 pb-1" colSpan={3}>
+              <span className={GROUP_CAP}>Discovery Calls</span>
+            </th>
           </tr>
           <tr className="bg-surface-2 text-[10px] uppercase tracking-wide text-ink-4">
             {/* The window sits under "This period", the only column it qualifies.
@@ -1070,13 +1112,34 @@ function OwnerScorecardTable({ granularity, range, rangeLabel, nameOf, leading, 
               <OwnerCells m={data.totals.calls} muted />
             </tr>
           )}
-          {rows.map((r) => (
-            <tr key={r.owner} className="border-b border-border text-[13.5px]">
-              <td className="px-3.5 py-2.5 text-left font-medium text-ink" title={r.owner}>{nameOf(r.owner)}</td>
-              <OwnerCells m={r.outreach} />
-              <OwnerCells m={r.calls} />
-            </tr>
-          ))}
+          {rows.map((r) => {
+            const openKey = (metric: string) => `${r.owner}:${metric}`;
+            const isOpen = (metric: string) => open === openKey(metric);
+            const toggle = (metric: string) => setOpen(isOpen(metric) ? null : openKey(metric));
+            const openMetric = open?.startsWith(`${r.owner}:`) ? open.split(":").pop()! : null;
+            return (
+              <Fragment key={r.owner}>
+                <tr className={cn("text-[13.5px]", !openMetric && "border-b border-border")}>
+                  <td className="px-3.5 py-2.5 text-left font-medium text-ink" title={r.owner}>{nameOf(r.owner)}</td>
+                  <OwnerCells m={r.outreach} open={isOpen("total_outreach_activity")}
+                    onOpen={() => toggle("total_outreach_activity")} />
+                  <OwnerCells m={r.calls} open={isOpen("call_discovery")}
+                    onOpen={() => toggle("call_discovery")} />
+                </tr>
+                {openMetric && (
+                  <tr>
+                    {/* Same drill as the Activity tab: account first, its
+                        contacts under it, five at a time, each expanding to the
+                        actual touches. Scoped to this one person by `owner`. */}
+                    <td colSpan={7} className="border-b border-border bg-bg p-0">
+                      <RowDrill kind="activity" rowKey={openMetric} granularity={granularity}
+                        scope="pursuit" owner={r.owner} range={range} nameOf={nameOf} />
+                    </td>
+                  </tr>
+                )}
+              </Fragment>
+            );
+          })}
         </tbody>
       </table>
     </div>

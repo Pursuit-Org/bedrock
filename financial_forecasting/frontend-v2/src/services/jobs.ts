@@ -2914,34 +2914,8 @@ export function useOpportunitiesOverview(owner?: string, dealType?: string, week
 }
 
 // ── Daily digest (the morning Slack, computed) ───────────────────────────────
-export interface StuckContact {
-  contact_id: number;
-  full_name: string | null;
-  current_title: string | null;
-  current_company: string | null;
-  owner_email: string | null;
-  touches: number;
-  last_touch: string | null;
-  first_outreach_at: string | null;
-  other_contacts_at_account: number;
-}
-
 /** Contacts with N+ touches in initial outreach and no reply — the cue to work
  *  a different contact at that account. */
-export function useStuckContacts(minTouches = 3, owner?: string) {
-  return useQuery<StuckContact[]>({
-    queryKey: ["jobs", "stuck-contacts", minTouches, owner ?? ""],
-    queryFn: async () => {
-      const p = new URLSearchParams({ min_touches: String(minTouches) });
-      if (owner) p.set("owner", owner);
-      const { data } = await api.get<ApiResponse<StuckContact[]>>(`/api/jobs/outreach/stuck-contacts?${p}`);
-      return data.data;
-    },
-    staleTime: 60_000,
-  });
-}
-
-// ── Responded, awaiting a decision (initial outreach → converted / on hold / not a fit) ──
 export interface RespondedContact {
   contact_id: number;
   full_name: string | null;

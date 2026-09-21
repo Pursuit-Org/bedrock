@@ -4537,23 +4537,33 @@ async def outreach_scorecard_by_owner(
     Counted by the same _send_events_sql / _call_events_sql helpers as
     everything else on this page, per owner, so a person's row and the team
     total can never tell different stories.
+
+    The calls column is DISCOVERY calls, not all calls (Kwame 2026-09-21): the
+    per-person conversation is about how many real first conversations someone
+    opened, and a check-in should not fill that quota. Note the consequence —
+    until the call_kind migration lands, every call defaults to `general`, so
+    this column reads 0 for everyone.
     """
     this_start, this_end, last_start, last_end = _outreach_windows(granularity, date_from, date_to)
+    has_call_kind = await _has_column("bedrock", "activity", "call_kind")
+    call_kind_sql = (f"'call_' || coalesce(a.call_kind, '{CALL_KIND_DEFAULT}')" if has_call_kind
+                     else f"'call_{CALL_KIND_DEFAULT}'")
 
     rows = []
     for email in OWNER_ACTIVITY_TARGETS:
         if not _SAFE_EMAIL.match(email):      # code-owned list; belt and braces
             continue
+        calls = _call_events_sql('team', email, call_kind_sql)
         counts = await conn.fetchrow(f"""
             SELECT
               (SELECT count(*) FROM ({_send_events_sql('team', email)}) se
                 WHERE se.ts >= $1 AND se.ts < $2)                    AS outreach_this,
               (SELECT count(*) FROM ({_send_events_sql('team', email)}) se
                 WHERE se.ts >= $3 AND se.ts < $4)                    AS outreach_last,
-              (SELECT count(*) FROM ({_call_events_sql('team', email, "'call_general'")}) ce
-                WHERE ce.ts >= $1 AND ce.ts < $2)                    AS calls_this,
-              (SELECT count(*) FROM ({_call_events_sql('team', email, "'call_general'")}) ce
-                WHERE ce.ts >= $3 AND ce.ts < $4)                    AS calls_last
+              (SELECT count(*) FROM ({calls}) ce
+                WHERE ce.metric = 'call_discovery' AND ce.ts >= $1 AND ce.ts < $2) AS calls_this,
+              (SELECT count(*) FROM ({calls}) ce
+                WHERE ce.metric = 'call_discovery' AND ce.ts >= $3 AND ce.ts < $4) AS calls_last
         """, this_start, this_end, last_start, last_end)
 
         def _metric(key: str, this_n: int, last_n: int):
@@ -4567,12 +4577,15 @@ async def outreach_scorecard_by_owner(
         rows.append({
             "owner": email,
             "outreach": _metric("total_outreach_activity", counts["outreach_this"], counts["outreach_last"]),
-            "calls": _metric("total_calls", counts["calls_this"], counts["calls_last"]),
+            "calls": _metric("call_discovery", counts["calls_this"], counts["calls_last"]),
         })
 
-    # Biggest shortfall first. A row with no target sorts last: it is not a miss,
-    # it is an unanswered question, and it should not head the table.
-    rows.sort(key=lambda r: (r["outreach"]["delta"] is None, r["outreach"]["delta"] or 0))
+    # Biggest commitment first (Kwame 2026-09-21): Devika 50, then Avni and
+    # Damon on 45, then Kwame on 10. Sorting by shortfall put whoever had the
+    # worst week on top, so the order moved every Monday — a table you read by
+    # position should not reshuffle itself. Name breaks the tie, so the two 45s
+    # keep a stable order.
+    rows.sort(key=lambda r: (-(r["outreach"]["target"] or 0), r["owner"]))
 
     def _total(section: str, field: str):
         vals = [r[section][field] for r in rows if r[section][field] is not None]
@@ -5165,95 +5178,6 @@ async def outreach_responded_contacts(
         LEFT JOIN touch_counts tc ON tc.cid = r.cid
         WHERE true {owner_where}
         ORDER BY r.last_reply ASC
-        LIMIT 200
-    """, *params)
-    return {"success": True, "data": [dict(r) for r in rows]}
-
-
-@router.get("/outreach/stuck-contacts")
-async def outreach_stuck_contacts(
-    min_touches: int = Query(3, ge=1, le=20),
-    owner: Optional[str] = Query(None),
-    user=Depends(require_auth),
-    conn=Depends(get_db),
-):
-    """Contacts stuck in initial outreach: N+ touches from the jobs team and no
-    reply. The signal that this person isn't the way in and the team should work
-    a different contact at that account — so each row carries how many OTHER
-    jobs prospects exist at the same company. Replaces the account working list."""
-    team_aem = " OR ".join(f"aem.from_email ILIKE '%{e}%'" for e in JOBS_TEAM_EMAILS)
-    owner_where = ""
-    params: list = [min_touches]
-    if owner:
-        owner_where = "AND lower(coalesce(c.owner_email,'')) = lower($2)"
-        params.append(owner)
-    rows = await conn.fetch(f"""
-        WITH sends AS (
-            -- one row per outbound MESSAGE (thread-level rows undercount follow-ups)
-            SELECT a.participant_public_contact_id AS cid, aem.sent_at AS ts, TRUE AS is_email
-            FROM bedrock.activity a
-            JOIN bedrock.activity_email_message aem ON aem.activity_id = a.id
-            WHERE a.deleted_at IS NULL AND a.type = 'email'
-              AND coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs'
-              AND a.participant_public_contact_id IS NOT NULL
-              AND ({team_aem})
-            UNION ALL
-            SELECT a.participant_public_contact_id, a.activity_date, FALSE
-            FROM bedrock.activity a
-            WHERE a.deleted_at IS NULL AND a.type IN ('call','text','linkedin')
-              AND a.participant_public_contact_id IS NOT NULL
-        ),
-        agg AS (
-            SELECT cid, count(*) AS touches, max(ts) AS last_touch,
-                   -- email-only floor, to match /outreach/responded-contacts exactly
-                   min(ts) FILTER (WHERE is_email) AS first_email_send
-            FROM sends GROUP BY 1),
-        replied AS (
-            -- a meeting at all, OR any inbound MESSAGE on a thread linked to
-            -- the contact (their own reply or a colleague's — either way the
-            -- account engaged).
-            -- 'call' is deliberately NOT here: bedrock.activity has no direction
-            -- column and the only writer of type='call' is log_jobs_activity, i.e.
-            -- OUR outbound touch — already counted in `sends` above. Treating it as
-            -- engagement disqualified every call-only contact from this queue, which
-            -- is exactly the population the panel exists to surface.
-            SELECT DISTINCT a.participant_public_contact_id AS cid
-            FROM bedrock.activity a
-            WHERE a.deleted_at IS NULL AND a.participant_public_contact_id IS NOT NULL
-              AND a.type = 'meeting'
-            UNION
-            SELECT DISTINCT a.participant_public_contact_id AS cid
-            FROM bedrock.activity a
-            JOIN bedrock.activity_email_message aem ON aem.activity_id = a.id
-            JOIN agg ON agg.cid = a.participant_public_contact_id
-            JOIN bedrock.jobs_contact_membership mm
-              ON mm.contact_id = a.participant_public_contact_id
-            WHERE a.deleted_at IS NULL AND a.participant_public_contact_id IS NOT NULL
-              AND aem.from_email NOT ILIKE '%@pursuit.org%'
-              AND aem.from_email NOT ILIKE '%@pursuit.com%'
-              -- These two predicates MUST match /outreach/responded-contacts
-              -- (search: "the reply has to be on a jobs-classified thread").
-              -- Without them a stale or non-jobs inbound message excluded a
-              -- contact from Stuck without admitting them to Replied, so they
-              -- appeared in neither queue on the same page.
-              AND coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs'
-              AND aem.sent_at >= coalesce(mm.first_outreach_at, agg.first_email_send)
-        )
-        SELECT c.contact_id, c.full_name, c.current_title, c.current_company,
-               c.owner_email, agg.touches::int AS touches, agg.last_touch,
-               m.first_outreach_at,
-               (SELECT count(*) FROM public.contacts oc
-                 WHERE oc.is_jobs_contact AND oc.contact_id <> c.contact_id
-                   AND coalesce(trim(oc.current_company),'') <> ''
-                   AND lower(trim(oc.current_company)) = lower(trim(c.current_company)))::int
-                 AS other_contacts_at_account
-        FROM agg
-        JOIN public.contacts c ON c.contact_id = agg.cid
-        JOIN bedrock.jobs_contact_membership m
-          ON m.contact_id = c.contact_id AND m.stage = 'initial_outreach'
-        LEFT JOIN replied r ON r.cid = agg.cid
-        WHERE agg.touches >= $1 AND r.cid IS NULL {owner_where}
-        ORDER BY agg.touches DESC, agg.last_touch DESC NULLS LAST
         LIMIT 200
     """, *params)
     return {"success": True, "data": [dict(r) for r in rows]}

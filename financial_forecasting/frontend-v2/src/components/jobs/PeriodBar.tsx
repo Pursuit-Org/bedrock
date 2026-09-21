@@ -36,7 +36,12 @@ function yesterday(): Date {
 
 /** Each preset sets the window AND the bucket size together — a month of dates
  *  shown in weekly buckets reads as a bug. All three are trailing windows ending
- *  yesterday, so "Weekly" on Aug 3 means Jul 27 – Aug 2. */
+ *  yesterday.
+ *
+ *  Weekly is yesterday PLUS the seven days before it, so on 21 Sep it reads
+ *  13–20 Sep (Kwame 2026-09-21). That is eight days, not seven, and the `8d`
+ *  the bar prints beside the range is not a bug — he asked for the window by
+ *  its endpoints, and this is what those endpoints span. */
 export const PERIOD_PRESETS: {
   key: OutreachGranularity;
   label: string;
@@ -52,10 +57,10 @@ export const PERIOD_PRESETS: {
   {
     key: "week",
     label: "Weekly",
-    title: "The 7 days ending yesterday",
+    title: "Yesterday and the 7 days before it",
     get: () => {
       const e = yesterday();
-      const s = new Date(e); s.setDate(e.getDate() - 6);
+      const s = new Date(e); s.setDate(e.getDate() - 7);
       return [iso(s), iso(e)];
     },
   },
@@ -71,7 +76,8 @@ export const PERIOD_PRESETS: {
   },
 ];
 
-/** The default window for a page: the completed week. */
+/** The default window on Outreach and Pipeline alike, so the two pages open on
+ *  the same dates. */
 export function defaultPeriod(): [string, string] {
   return PERIOD_PRESETS[1].get();
 }

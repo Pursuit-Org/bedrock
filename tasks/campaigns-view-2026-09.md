@@ -751,7 +751,52 @@ The lesson, stated so it is not relearned: normalise at the boundary a value
 CROSSES, not the boundary it ENTERS. Data already inside the process never
 passes the entry point again.
 
-### Phase 23 — Not started
+### Phase 23 — Owner-tab drills, ordering, defaults (2026-09-21)
+
+**Owner rows sort by target, descending**: Devika 50, Avni 45, Damon 45, Kwame
+10, name breaking the tie. They sorted by shortfall before, which put whoever had
+the worst week on top and reshuffled the table every Monday. A table you read by
+position should not move under you.
+
+**Group caps ruled and centred**, matching Volume / Conversion on Contact
+Pipeline, so the two tables read as one system.
+
+**Calls became Discovery Calls** under Owner, in the data as well as the label:
+the per-person conversation is about how many real first conversations someone
+opened, and a check-in should not fill that quota. Consequence worth knowing:
+until Jac applies the call_kind migration every call defaults to `general`, so
+this column reads 0 for everyone.
+
+**Both owner numbers drill.** Clicking an actual opens the same account-grouped
+list the Activity tab uses, scoped to that person: account, its contacts, who
+worked them, touch count; expanding an account gives each contact's touches with
+type, subject, owner and date. Reuses `RowDrill` and
+`/outreach/scorecard/detail` with `owner` set, so there is no new endpoint.
+
+**A delta of exactly 0 is grey**, on both tabs. Green is for beating the number.
+
+**Requiring attention removed from Jobs Home** as duplicative of the zones
+already there. It now exists nowhere, so `RequiringAttention.tsx` is deleted,
+`SectionHead` moved back to its one remaining caller, and `useStuckContacts`
+plus `GET /outreach/stuck-contacts` went with it.
+
+**Default window is yesterday plus the seven days before it.** On 21 Sep that is
+13-20 Sep. That is eight days, not seven: Kwame gave the endpoints and this is
+what they span, so the `8d` the bar prints is correct. Outreach and Pipeline
+share `defaultPeriod()`, so both moved together.
+
+**Contact and Opportunity funnels open collapsed.** They are context you open
+when a number raises a question, and two expanded funnels pushed the Activity
+Pipeline and the Opportunities Set below the fold. The header still carries the
+totals, so nothing is hidden, only deferred.
+
+Verified in a headless browser: Outreach, Pipeline and Jobs Home all render with
+0 page errors and no expanded funnel; the owner order reads Devika / Avni /
+Damon / Kwame; clicking Damon's 40 opens Blackstone (David Drew, Jane Roe, 3
+touches) and Sequoia (Pat Chen, 1); expanding Blackstone lists EMAIL and
+LINKEDIN rows with subject and date.
+
+### Phase 24 - Not started
 - [ ] Drill from a trend point into the underlying activity list
 - [ ] Contact table on the detail view (the `/records` endpoint already serves it)
 - [ ] Stage-entry period flow, like `outreach-pipeline-rework.md`

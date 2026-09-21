@@ -249,7 +249,13 @@ function FunnelCard({
   onRetry: () => void;
 }) {
   const [expanded, setExpanded] = useState<string | null>(null);
-  const [collapsed, setCollapsed] = useState(false);
+  // Starts collapsed (Kwame 2026-09-21). The funnel is context you open when a
+  // number above it raises a question, not the first thing you read — and two
+  // expanded funnels pushed the Activity Pipeline and the Opportunities Set
+  // below the fold on both pages. The header still shows the totals, so nothing
+  // is hidden, only deferred; the toggle is one click and remembers nothing on
+  // purpose, so every page load opens the same way.
+  const [collapsed, setCollapsed] = useState(true);
 
   const subtitle = isPeriod
     ? `${FUNNEL_NOUN[funnel]} that entered each stage${periodLabel ? ` · ${periodLabel}` : ""}`
