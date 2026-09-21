@@ -1294,6 +1294,18 @@ export const JOBS_TEAM_EMAILS = [
   "devika@pursuit.org",
 ];
 
+/** Who gets pinned to the top of a sender picker.
+ *
+ *  A superset of JOBS_TEAM_EMAILS on purpose (Kwame 2026-09-21). Adding someone
+ *  to JOBS_TEAM_EMAILS changes what the "Jobs Team" SCOPE counts, and therefore
+ *  every team number on every page. Pinning is only about which four names you
+ *  should not have to scroll a forty-name list to reach. Two different
+ *  questions, two different lists. */
+export const JOBS_TEAM_PINNED = [
+  ...JOBS_TEAM_EMAILS,
+  "kwame@pursuit.org",
+];
+
 /** Does this owner belong to the selected sender scope? */
 export function inScope(email: string | null | undefined, scope: OutreachScopeKind): boolean {
   if (scope === "pursuit") return true;

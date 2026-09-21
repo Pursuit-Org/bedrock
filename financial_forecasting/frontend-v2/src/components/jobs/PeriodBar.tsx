@@ -81,7 +81,7 @@ function fmt(v: string) {
 }
 
 export function PeriodBar({
-  from, to, onChange, granularity, onGranularityChange, clampToToday = false, children,
+  from, to, onChange, granularity, onGranularityChange, clampToToday = false, children, secondary,
 }: {
   from: string;
   to: string;
@@ -91,6 +91,8 @@ export function PeriodBar({
   /** Pipeline never shows a future window (it would always be empty). */
   clampToToday?: boolean;
   children?: React.ReactNode;
+  /** A second row inside the same card, under a hairline rule. */
+  secondary?: React.ReactNode;
 }) {
   const today = iso(new Date());
   const span = Math.max(1, dayDiff(from, to) + 1);
@@ -166,6 +168,13 @@ export function PeriodBar({
       </div>
 
       {children ? <div className="ml-auto flex flex-wrap items-center gap-x-3 gap-y-2">{children}</div> : null}
+
+      {/* A second line INSIDE the same card, not a card of its own. The outer
+          flex wraps, so a w-full child breaks the row; a hairline rule above it
+          says "still the same control block, one level down". */}
+      {secondary ? (
+        <div className="mt-1 w-full border-t border-border-strong/60 pt-2">{secondary}</div>
+      ) : null}
     </div>
   );
 }
@@ -176,6 +185,8 @@ export function ScopeButtons({ value, onChange }: {
   onChange: (v: "pursuit" | "team" | "staff") => void;
 }) {
   const opts: { key: "team" | "staff" | "pursuit"; label: string; title: string }[] = [
+    // The scope is still the three in JOBS_TEAM_EMAILS. Kwame is pinned in the
+    // sender picker but deliberately not in this aggregate — see JOBS_TEAM_PINNED.
     { key: "team", label: "Jobs Team", title: "Avni, Damon and Devika" },
     { key: "staff", label: "Other Staff", title: "Everyone else at Pursuit" },
     { key: "pursuit", label: "Everyone", title: "The whole Pursuit team" },

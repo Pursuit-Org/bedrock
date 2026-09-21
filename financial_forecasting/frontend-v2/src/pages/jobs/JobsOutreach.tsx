@@ -18,7 +18,7 @@ import {
   useRespondedContacts,
   useUpdateJobsMembership,
   inScope,
-  JOBS_TEAM_EMAILS,
+  JOBS_TEAM_PINNED,
   MEMBERSHIP_STAGE_LABELS,
   type OutreachGranularity,
   type OutreachScopeKind,
@@ -45,8 +45,10 @@ const DRILL_PAGE = 25;
 
 type OutreachSub = "overview" | "detail";
 const OUTREACH_SUBS: { key: OutreachSub; label: string; icon: typeof BarChart3; title: string }[] = [
-  { key: "overview", label: "Overview", icon: BarChart3, title: "The Monday review — funnel, queue and what needs a decision" },
-  { key: "detail", label: "Outbound Detail", icon: Send, title: "What went out: volume against target, trends and the send feed" },
+  { key: "overview", label: "Overview", icon: BarChart3, title: "The Monday review — volume against target, who did what, and the trend" },
+  // Still called Outbound Detail. It now holds the supporting cuts rather than
+  // the volume table, so the name is due a rethink — Kwame's call, not mine.
+  { key: "detail", label: "Outbound Detail", icon: Send, title: "Supporting detail — segment mix, touch depth and the live queues" },
 ];
 /** Touches shown before "Show n older" in a contact's inline touch log. */
 const TOUCH_LOG_CAP = 5;
@@ -880,39 +882,50 @@ function ThisWeekBlock({ nameOf, scope, owner, range, onSelectOwner }: {
   );
 }
 
-/** Who the Activity Pipeline is counting: the whole jobs team, or one member.
+/** The four names worth one click, pinned under the scope buttons.
  *
- *  Drives the PAGE's owner filter rather than keeping its own, so it can never
- *  disagree with the sender select in the period bar. "All jobs team" also
- *  resets the scope, since a person can be selected from outside the core three
- *  and leaving the scope on `staff` would then show an empty table. */
-function TeamTabs({ owner, onSelect, nameOf }: {
+ *  This lives in the period card rather than on any one panel because it is a
+ *  page filter: it drives the same `owner` state the sender dropdown does, so
+ *  the two can never disagree, and every section below moves together. It sat
+ *  on the right of the Activity Pipeline title for a day, which made it look
+ *  like it filtered that table alone (Kwame 2026-09-21).
+ *
+ *  "All jobs team" also resets the scope. A pinned name can be someone outside
+ *  the core three, and clearing the owner while the scope is still `staff`
+ *  would leave the page filtered to a group the button does not name. */
+function SenderPins({ owner, onSelect, nameOf }: {
   owner?: string;
   onSelect: (email: string) => void;
   nameOf: (email: string) => string;
 }) {
   const current = (owner ?? "").toLowerCase();
-  const tabs = [{ email: "", label: "All jobs team" },
-                ...JOBS_TEAM_EMAILS.map((e) => ({ email: e, label: nameOf(e) }))];
+  const pins = [{ email: "", label: "All jobs team" },
+                ...JOBS_TEAM_PINNED.map((e) => ({ email: e, label: nameOf(e) }))];
   return (
-    <div className="flex items-center gap-0.5 rounded-lg border border-border-strong bg-surface p-0.5">
-      {tabs.map((t) => {
-        const active = current === t.email.toLowerCase();
-        return (
-          <button
-            key={t.email || "all"}
-            type="button"
-            onClick={() => onSelect(t.email)}
-            title={t.email || "Every member of the jobs team"}
-            className={cn(
-              "rounded-md px-2.5 py-1 text-[12px] font-medium transition-colors",
-              active ? "bg-accent/10 text-accent" : "text-ink-3 hover:text-ink-2",
-            )}
-          >
-            {t.label}
-          </button>
-        );
-      })}
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+      <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">Sender</span>
+      <div className="inline-flex items-center rounded-md border border-border-strong bg-surface p-0.5">
+        {pins.map((t) => {
+          const active = current === t.email.toLowerCase();
+          return (
+            <button
+              key={t.email || "all"}
+              type="button"
+              onClick={() => onSelect(t.email)}
+              title={t.email || "Every member of the jobs team"}
+              className={cn(
+                "rounded px-2 py-0.5 text-[12px] font-medium transition-colors",
+                active ? "bg-accent-soft text-accent" : "text-ink-2 hover:bg-surface-2",
+              )}
+            >
+              {t.label}
+            </button>
+          );
+        })}
+      </div>
+      {/* Named so the row reads as "these four, or anyone" rather than as two
+          unrelated controls that happen to share a line. */}
+      <span className="text-[11.5px] text-ink-4">or</span>
     </div>
   );
 }
@@ -920,7 +933,7 @@ function TeamTabs({ owner, onSelect, nameOf }: {
 /** The Activity Pipeline table, lifted out of ThisWeekBlock on 2026-09-16 so it
  *  can live on the Outbound Detail sub-tab. Overview shows the summary card in
  *  the space it used to occupy. */
-function ActivityPipelineBlock({ activityPipeline, granularity, scope, owner, range, nameOf, rangeLabel, lastRangeLabel, onSelectOwner }: {
+function ActivityPipelineBlock({ activityPipeline, granularity, scope, owner, range, nameOf, rangeLabel, lastRangeLabel, ownerLabel }: {
   activityPipeline?: ScorecardRow[];
   granularity: OutreachGranularity;
   scope: OutreachScopeKind;
@@ -929,7 +942,9 @@ function ActivityPipelineBlock({ activityPipeline, granularity, scope, owner, ra
   nameOf: (email: string) => string;
   rangeLabel?: string;
   lastRangeLabel?: string;
-  onSelectOwner: (email: string) => void;
+  /** Who the table is counting, echoed in the title bar. The control that sets
+   *  it lives in the period card, so the table says whose numbers these are. */
+  ownerLabel?: string;
 }) {
   if (!activityPipeline || activityPipeline.length === 0) return null;
   return (
@@ -937,7 +952,9 @@ function ActivityPipelineBlock({ activityPipeline, granularity, scope, owner, ra
       idPrefix="act" drillKind="activity" granularity={granularity} scope={scope}
       owner={owner} range={range} nameOf={nameOf} rangeLabel={rangeLabel}
       lastRangeLabel={lastRangeLabel}
-      action={<TeamTabs owner={owner} onSelect={onSelectOwner} nameOf={nameOf} />} />
+      action={ownerLabel
+        ? <span className="text-[12px] font-medium text-ink-3">{ownerLabel}</span>
+        : undefined} />
   );
 }
 
@@ -1543,6 +1560,24 @@ export function JobsOutreach() {
 
   const staffEmails = useMemo(() => new Set(staff.map((s) => s.email.toLowerCase())), [staff]);
 
+  // The picker splits into pinned and everyone else. Pinned keeps JOBS_TEAM_PINNED's
+  // order (it is a priority list, not an alphabet); the rest sorts by name.
+  const [pinnedStaff, otherStaff] = useMemo(() => {
+    const pins = JOBS_TEAM_PINNED.map((e) => e.toLowerCase());
+    const byEmail = new Map(staff.map((st) => [st.email.toLowerCase(), st]));
+    const pinned = pins.map((e) => byEmail.get(e)).filter((st): st is typeof staff[number] => !!st);
+    const rest = staff.filter((st) => !pins.includes(st.email.toLowerCase()))
+      .sort((a, b) => (a.name || a.email).localeCompare(b.name || b.email));
+    return [pinned, rest];
+  }, [staff]);
+
+  // Whose numbers the pipeline table is showing. With nobody selected it is the
+  // scope, not "all jobs team": Other Staff with no owner is a real state, and
+  // labelling it as the jobs team would be a lie on the face of the table.
+  const senderLabel = owner
+    ? nameOf(owner)
+    : { team: "All jobs team", staff: "Other staff", pursuit: "Everyone at Pursuit" }[scope];
+
   // Two views over one period bar. Overview is the Monday review; Outbound
   // Detail is the activity table that used to sit mid-scroll on it. The period,
   // scope and sender controls govern both, so they stay above the sub-tabs.
@@ -1587,15 +1622,37 @@ export function JobsOutreach() {
           from={from} to={to}
           onChange={(f, t) => { setFrom(f); setTo(t); }}
           granularity={granularity} onGranularityChange={setGranularity}
+          secondary={
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+              <SenderPins owner={owner} nameOf={nameOf} onSelect={(email) => {
+                if (!email) { setScope("team"); setOwner(""); return; }
+                setOwner(email);
+              }} />
+              {/* Anyone at all, with the four pinned names repeated at the top
+                  so the dropdown agrees with the buttons beside it. A flat
+                  forty-name list made reaching the people you actually filter by
+                  a scroll (Kwame 2026-09-21). */}
+              <select value={owner} onChange={(e) => setOwner(e.target.value)}
+                className="h-7 max-w-[200px] rounded-md border border-border-strong bg-surface px-2 text-[12.5px] text-ink-2 outline-none focus:border-accent"
+                title="Filter every section to one person">
+                <option value="">All senders</option>
+                {pinnedStaff.length > 0 && (
+                  <optgroup label="Jobs Team">
+                    {pinnedStaff.map((st) => (
+                      <option key={st.email} value={st.email}>{st.name || st.email}</option>
+                    ))}
+                  </optgroup>
+                )}
+                <optgroup label="Everyone else">
+                  {otherStaff.map((st) => (
+                    <option key={st.email} value={st.email}>{st.name || st.email}</option>
+                  ))}
+                </optgroup>
+              </select>
+            </div>
+          }
         >
           <ScopeButtons value={scope} onChange={(v) => { setScope(v); setOwner(""); }} />
-          <select value={owner} onChange={(e) => setOwner(e.target.value)}
-            className="h-7 rounded-md border border-border-strong bg-surface px-2 text-[12.5px] text-ink-2 outline-none focus:border-accent"
-            title="Filter every section to one person">
-            <option value="">All senders</option>
-            {[...staff].sort((a, b) => (a.name || a.email).localeCompare(b.name || b.email))
-              .map((st) => <option key={st.email} value={st.email}>{st.name || st.email}</option>)}
-          </select>
         </PeriodBar>
 
 
@@ -1614,27 +1671,30 @@ export function JobsOutreach() {
         </div>
       )}
 
-      {/* ── Monday agenda: contacts funnel → this week (+ activity pipeline)
-             → requiring attention → campaigns → scorecard → targeting.
-             Activity over time now sits below the sender-segment divider. ── */}
-      {onDetail ? (
+      {/* ── The two tabs swapped contents on 2026-09-21 (Kwame) ───────────
+             Overview is now the weekly review itself: the headline numbers, the
+             pipeline table, who did what, and the trend. Outbound Detail holds
+             the supporting cuts — how the book is segmented, and the live
+             queues that ignore the period bar entirely.
+             The old split had the review's own numbers a tab away from the
+             review. ── */}
+      {!onDetail ? (
         <>
           <OutreachSummaryCards granularity={granularity} scope={scope}
             owner={owner || undefined} range={range} />
+
+          {isError && <div className="rounded-lg border border-red-soft bg-red-soft px-4 py-3 text-[13px] text-red">Couldn't load the scorecard. Try again in a moment.</div>}
+          {isLoading && !sc && (
+            <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+              {[0, 1].map((i) => <div key={i} className="h-64 animate-pulse rounded-xl border border-border-strong bg-surface-2" />)}
+            </div>
+          )}
+
           <ActivityPipelineBlock activityPipeline={sc?.activity_pipeline}
             granularity={granularity} scope={scope} owner={owner || undefined}
             range={range} nameOf={nameOf} rangeLabel={rangeLabel || undefined}
-            lastRangeLabel={lastRangeLabel || undefined}
-            onSelectOwner={(email) => {
-              // "All jobs team" is scope=team with nobody selected. Picking a
-              // person leaves the scope alone: they are all core team, so the
-              // team scope already contains them.
-              if (!email) { setScope("team"); setOwner(""); return; }
-              setOwner(email);
-            }} />
-          {/* Outreach Detail moved off Overview on 2026-09-21 — it is the
-              per-owner breakdown of the volume the table above totals, so it
-              belongs under it rather than on a different tab. */}
+            lastRangeLabel={lastRangeLabel || undefined} ownerLabel={senderLabel} />
+          {/* Outreach Detail sits directly under the table it breaks down. */}
           <ThisWeekBlock nameOf={nameOf}
             scope={scope} owner={owner || undefined} range={range}
             onSelectOwner={(email) => {
@@ -1644,40 +1704,21 @@ export function JobsOutreach() {
               const canonical = staff.find((st) => st.email.toLowerCase() === email)?.email ?? email;
               setOwner(owner.toLowerCase() === email ? "" : canonical);
             }} />
-          {/* Outreach Trends moved here from Overview on 2026-09-16 — it
-              answers "what went out over time", which is this page's question. */}
           <ActivityTrends scope={scope} owner={owner || undefined} range={range} />
+          <JobsFunnels only="prospects" period={range} periodLabel={rangeLabel || undefined} />
           <OutboundActivityFeed granularity={granularity} scope={scope}
             owner={owner || undefined} range={range} />
         </>
       ) : (
       <>
-      <JobsFunnels only="prospects" period={range} periodLabel={rangeLabel || undefined} />
-
-      {/* The Activity Pipeline table lived here until 2026-09-16; it now opens
-          Outbound Detail, and these three numbers take its place. */}
-      <OutreachSummaryCards granularity={granularity} scope={scope}
-        owner={owner || undefined} range={range} />
-
-      {isError && <div className="rounded-lg border border-red-soft bg-red-soft px-4 py-3 text-[13px] text-red">Couldn't load the scorecard. Try again in a moment.</div>}
-      {isLoading && !sc && (
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-          {[0, 1].map((i) => <div key={i} className="h-64 animate-pulse rounded-xl border border-border-strong bg-surface-2" />)}
-        </div>
-      )}
-
-      {/* ── One band, two charts side by side ─────────────────────────────
-             Both are supporting detail on the review above, and neither needs
-             the full page width, so they share a single divider and sit in a
-             2-up grid with a rule between them. They stack below lg, where
-             half-width would squeeze the trend line into noise. ── */}
-      <div className="mt-6 flex items-center gap-3">
+      {/* ── One band ──────────────────────────────────────────────────────
+             Targeting Mix is the "who are we choosing to work" cut, which is
+             detail on the review rather than part of it. ── */}
+      <div className="flex items-center gap-3">
         <div className="h-px flex-1 bg-border-strong" />
         <span className="text-[11px] font-bold uppercase tracking-[.12em] text-ink-3">Segments</span>
         <div className="h-px flex-1 bg-border-strong" />
       </div>
-      {/* Targeting had a trend chart beside it until 2026-09-16; that chart now
-          lives on Outbound Detail, so this runs full width. */}
       <TargetingPanel granularity={granularity} scope={scope} owner={owner || undefined} range={range} />
       </>
       )}
@@ -1691,7 +1732,7 @@ export function JobsOutreach() {
              The divider is deliberately heavier than the "Segments" rule
              above, which heads a period-scoped panel — this one
              separates two different notions of time. ── */}
-      {!onDetail && (
+      {onDetail && (
         <>
       <ZoneBoundary />
 

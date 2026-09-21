@@ -60,11 +60,36 @@ ACTIVITY_PIPELINE_TARGETS: dict[str, dict[str, int]] = {
 }
 
 
+# Per-person goals (Kwame 2026-09-21). Deliberately NOT a division of the team
+# number: he set 100 for the team and 50 each for Avni, Damon and Devika, which
+# sums to 150. The team figure is the floor the group owes; the personal figure
+# is what each person is asked to carry. Both are real, neither derives from the
+# other.
+#
+# An owner view therefore reads ONLY from here. Falling back to the team target
+# would put the team's 100 next to one person's volume and read as a miss every
+# week. A metric with no entry shows no target, which says "nobody has set one"
+# rather than inventing a number.
+OWNER_ACTIVITY_TARGETS: dict[str, dict[str, dict[str, int]]] = {
+    "avni@pursuit.org":             {"total_outreach_activity": _weekly(50)},
+    "damon.kornhauser@pursuit.org": {"total_outreach_activity": _weekly(50)},
+    "devika@pursuit.org":           {"total_outreach_activity": _weekly(50)},
+    # kwame@pursuit.org has no number yet, and neither does anyone's call goal.
+    # Add them here the moment the team agrees on one — nothing else changes.
+}
+
+
 def user_pipeline_target(stage: str, granularity: str) -> Optional[int]:
     """Target for a user-pipeline stage at a granularity, or None if unset."""
     return USER_PIPELINE_TARGETS.get(stage, {}).get(granularity)
 
 
-def activity_pipeline_target(metric: str, granularity: str) -> Optional[int]:
-    """Target for an activity-pipeline metric at a granularity, or None if unset."""
+def activity_pipeline_target(metric: str, granularity: str,
+                             owner: Optional[str] = None) -> Optional[int]:
+    """Target for an activity-pipeline metric, or None if unset.
+
+    With `owner`, the personal goal — never the team's. See OWNER_ACTIVITY_TARGETS.
+    """
+    if owner:
+        return OWNER_ACTIVITY_TARGETS.get(owner.strip().lower(), {}).get(metric, {}).get(granularity)
     return ACTIVITY_PIPELINE_TARGETS.get(metric, {}).get(granularity)

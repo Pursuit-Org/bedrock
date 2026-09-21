@@ -4051,7 +4051,7 @@ _OUTREACH_STAGE_META = [
 # drill keys stay live on /outreach/scorecard/detail, so putting either row back
 # costs one line here.
 _OUTREACH_ACTIVITY_META = [
-    ("total_outreach_activity", "Total Outreach Activity", 0),
+    ("total_outreach_activity", "Total Outreach", 0),
     ("direct_email_sent",       "Direct Email Sent",       1),
     ("linkedin_message_sent",   "LinkedIn Messages Sent",  1),
     ("facilitated_intro_sent",  "Facilitated Intro",       1),
@@ -4315,15 +4315,33 @@ async def outreach_scorecard(
     stage_events AS (
         {stage_events_sql}
     ),
-    -- Message-level sends: every email the scope actually authored, dated by the
-    -- message itself (thread rows are dated/attributed to the FIRST message, which
-    -- made replies and follow-ups invisible to weekly counts).
+    -- Every email send the scope authored, at the finest grain available.
+    --
+    -- Branch 1, parsed messages: one row per message, dated by the message.
+    -- Thread rows are dated and attributed to the FIRST message, which made
+    -- replies and follow-ups invisible to weekly counts.
+    --
+    -- Branch 2, rows with nothing parsed: only gmail-sync writes
+    -- activity_email_message, so a hand-logged email and a Salesforce-sourced
+    -- one have no messages to count and were falling out of this number
+    -- entirely. In the week of 2026-09-06 that was 13 of 17 email rows, which
+    -- is why the Outreach Activity card and Total Outreach disagreed. The NOT
+    -- EXISTS keeps the branches disjoint, so nothing is counted twice, and the
+    -- actor filter drops to the row because there is no message to attribute.
     sent_msgs AS (
         SELECT aem.sent_at AS ts, a.participant_public_contact_id AS contact_id
         FROM bedrock.activity a
         JOIN bedrock.activity_email_message aem ON aem.activity_id = a.id
         WHERE a.deleted_at IS NULL AND a.type = 'email' AND {_message_actor(scope, owner)}
           AND {_not_autoreply('a')} AND {_jobs_relevant('a')}
+        UNION ALL
+        SELECT a.activity_date AS ts, a.participant_public_contact_id AS contact_id
+        FROM bedrock.activity a
+        WHERE a.deleted_at IS NULL AND a.type = 'email'
+          AND {_activity_actor('a', scope, owner)}
+          AND {_not_autoreply('a')} AND {_jobs_relevant('a')}
+          AND NOT EXISTS (SELECT 1 FROM bedrock.activity_email_message m
+                           WHERE m.activity_id = a.id)
     ),
     -- Leaf events: one row per thing that happened. Roll-up rows are derived
     -- from these below rather than counted again, so a parent can never
@@ -4470,7 +4488,8 @@ async def outreach_scorecard(
                 "available": ok,
                 "unavailable_reason": None if ok else
                 "Available once the pending call-type migration is applied",
-                **_row("activity", m, label, activity_pipeline_target(m, granularity))}
+                **_row("activity", m, label,
+                       activity_pipeline_target(m, granularity, owner))}
 
     activity_pipeline = [_activity_row(m, label, depth)
                          for m, label, depth in _OUTREACH_ACTIVITY_META]

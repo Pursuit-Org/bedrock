@@ -434,7 +434,57 @@ title: All jobs team, Avni, Damon, Devika. It drives the PAGE's owner state
 rather than keeping its own, so it can never disagree with the sender select in
 the period bar.
 
-### Phase 15 — Not started
+### Phase 15 — Tab swap, per-person targets, sender pins ✅ (2026-09-21)
+
+**The two Outreach sub-tabs swapped contents.** Overview is now the weekly
+review itself: summary cards, Activity Pipeline, Outreach Detail, Outreach
+Trends, the contacts funnel and the send feed. Outbound Detail holds the
+supporting cuts: Targeting Mix, then the Current State zone (Touch Depth,
+Requiring Attention). The old split put the review's own numbers a tab away
+from the review. The contacts funnel stayed with Overview rather than moving —
+it is top-of-funnel context for the review, not a supporting cut. "Outbound
+Detail" is now a poor name for what the tab holds; flagged for Kwame.
+
+**Per-person targets.** `activity_pipeline_target()` takes an optional `owner`.
+Avni, Damon and Devika each carry 50 outreach a week against the team's 100 —
+deliberately not a division of it (50 × 3 = 150). The team figure is the floor
+the group owes, the personal figure is what each person is asked to carry. An
+owner view therefore reads ONLY from `OWNER_ACTIVITY_TARGETS`; falling back to
+the team's 100 would show every individual as missing by half every week.
+Unset: Kwame's outreach number and everyone's call number.
+
+**"Total Outreach Activity" renamed "Total Outreach"** (label only; the metric
+key stays `total_outreach_activity` so targets and drill URLs are untouched).
+
+**Bug fixed: hand-logged emails were invisible to Total Outreach.** Kwame asked
+why the Outreach Activity card and Total Outreach disagreed. Root cause: only
+`gmail-sync` writes `bedrock.activity_email_message`, and `sent_msgs` counted
+nothing but parsed messages. In the week of 2026-09-06, 13 of 17 jobs email
+rows had no parsed messages — 10 manual, 3 Salesforce — so every email the team
+typed into Bedrock by hand counted for nothing. `sent_msgs` now unions a second
+branch for rows with no parsed messages, dated and attributed at the row level,
+with a `NOT EXISTS` guard keeping the branches disjoint. Direct Email Sent for
+that week went 14 → 27. This also fixes the User Pipeline's Outreached row,
+which reads the same CTE.
+
+The two numbers still differ by design, and now for stateable reasons: the card
+counts activity ROWS (a thread once, however many messages went out) and only
+where the contact resolves to a company; Total Outreach counts each outbound
+message.
+
+**Sender pins moved into the period card.** The All jobs team / Avni / Damon /
+Devika strip came off the right of the Activity Pipeline title, where it looked
+like it filtered that one table. It now sits on a second row inside the period
+card, under a hairline rule, beside a sender dropdown whose first optgroup is
+Jobs Team (Avni, Damon, Devika, Kwame) and second is Everyone else. The pipeline
+title now just echoes whose numbers are on screen.
+
+`JOBS_TEAM_PINNED` is deliberately a superset of `JOBS_TEAM_EMAILS`. Adding
+Kwame to the latter would change what the "Jobs Team" SCOPE counts, and so every
+team number on every page. Pinning is only about which names you should not have
+to scroll to. Two questions, two lists.
+
+### Phase 16 — Not started
 - [ ] Drill from a trend point into the underlying activity list
 - [ ] Contact table on the detail view (the `/records` endpoint already serves it)
 - [ ] Stage-entry period flow, like `outreach-pipeline-rework.md`
