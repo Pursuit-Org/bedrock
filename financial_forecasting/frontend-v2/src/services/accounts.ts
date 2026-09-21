@@ -242,6 +242,10 @@ export function useUpdateAccount() {
       // The jobs pages render from the ["jobs","accounts",...] caches, whose
       // rows carry `sf_active` (not Active__c). Patch every variant so the
       // Deprioritize toggle is visible immediately on the jobs side too.
+      // Snapshot these too — onError restored only the two above, so a failed
+      // write left every jobs-side account list showing the optimistic value
+      // with nothing to correct it (onSettled early-returns on error).
+      const previousJobsAccounts = qc.getQueriesData({ queryKey: ["jobs", "accounts"] });
       if ("Active__c" in patch) {
         qc.setQueriesData<Array<{ sf_account_id?: string | null; sf_active?: boolean | null }>>(
           { queryKey: ["jobs", "accounts"] },
@@ -252,7 +256,7 @@ export function useUpdateAccount() {
         );
       }
 
-      return { previousAccounts, previousActiveOnly };
+      return { previousAccounts, previousActiveOnly, previousJobsAccounts };
     },
     onError: (_err, _variables, context) => {
       // Restore pre-mutation snapshots so the UI doesn't stay stuck on the
@@ -262,6 +266,9 @@ export function useUpdateAccount() {
       }
       if (context?.previousActiveOnly !== undefined) {
         qc.setQueryData(["accounts", "active-only"], context.previousActiveOnly);
+      }
+      for (const [key, data] of context?.previousJobsAccounts ?? []) {
+        qc.setQueryData(key, data);
       }
     },
     onSettled: (_data, error, variables) => {

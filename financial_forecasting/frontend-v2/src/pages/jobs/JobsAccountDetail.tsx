@@ -11,6 +11,8 @@ import { AccountAvatar } from "@/components/AccountAvatar";
 import { BackLink, SectionCard } from "@/components/detail";
 import { Tag } from "@/components/ui/Tag";
 import { Tooltip } from "@/components/ui/Tooltip";
+import { toast } from "sonner";
+import { ConfirmDeprioritizeDialog } from "@/components/ConfirmDeprioritizeDialog";
 import { cn } from "@/lib/utils";
 import { accountStatusVariant } from "@/lib/accountStatus";
 import { useUpdateAccount } from "@/services/accounts";
@@ -127,6 +129,8 @@ export function JobsAccountDetailPage() {
   const updateAccount = useUpdateJobsAccount();
   const updateSfAccount = useUpdateAccount();
   const [promoteOpen, setPromoteOpen] = useState(false);
+  const [deprioritizeOpen, setDeprioritizeOpen] = useState(false);
+  const [deprioritizeError, setDeprioritizeError] = useState<string | null>(null);
 
   if (isLoading) {
     return <div className="px-7 py-6 text-[13px] text-ink-3">Loading account…</div>;
@@ -168,16 +172,43 @@ export function JobsAccountDetailPage() {
         )}
         {account.sf_account_id != null && (() => {
           const isActive = account.sf_active !== false;
+          const runDeprioritize = () => {
+            setDeprioritizeError(null);
+            updateSfAccount.mutate(
+              {
+                id: account.sf_account_id!,
+                patch: { Active__c: !isActive },
+                displayPatch: isActive ? { account_status: "Deprioritized" } : undefined,
+              },
+              {
+                onSuccess: (data) => {
+                  setDeprioritizeOpen(false);
+                  const reminder = (data as { _reminder_task?: { created?: boolean; reason?: string } } | undefined)
+                    ?._reminder_task;
+                  if (reminder && reminder.created === false) {
+                    toast.warning(
+                      `Account deprioritized, but no reminder task was created — ${reminder.reason ?? "unknown reason"}.`,
+                    );
+                  }
+                },
+                onError: (err) => {
+                  const detail = (err as { response?: { data?: { detail?: unknown } } })
+                    ?.response?.data?.detail;
+                  setDeprioritizeError(
+                    typeof detail === "string"
+                      ? detail
+                      : err instanceof Error ? err.message : "Could not deprioritize this account.",
+                  );
+                },
+              },
+            );
+          };
           return (
             <div className="flex items-center gap-1.5">
               <button
                 type="button"
                 disabled={updateSfAccount.isPending}
-                onClick={() => updateSfAccount.mutate({
-                  id: account.sf_account_id!,
-                  patch: { Active__c: !isActive },
-                  displayPatch: isActive ? { account_status: "Deprioritized" } : undefined,
-                })}
+                onClick={() => { if (isActive) setDeprioritizeOpen(true); else runDeprioritize(); }}
                 className={cn(
                   "inline-flex h-[30px] items-center gap-1.5 rounded border px-3 text-[13px] font-medium transition-colors",
                   isActive
@@ -187,6 +218,14 @@ export function JobsAccountDetailPage() {
               >
                 {isActive ? "Deprioritize" : "Reprioritize"}
               </button>
+              {deprioritizeOpen && (
+                <ConfirmDeprioritizeDialog
+                  busy={updateSfAccount.isPending}
+                  error={deprioritizeError}
+                  onCancel={() => { setDeprioritizeOpen(false); setDeprioritizeError(null); }}
+                  onConfirm={runDeprioritize}
+                />
+              )}
               <Tooltip
                 content="All accounts should default to 'Active'. Uncheck if there has been no recent contact with this account and there is no reason to engage with it in the foreseeable future."
                 side="bottom"

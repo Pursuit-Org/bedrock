@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
+import { ConfirmDeprioritizeDialog } from "@/components/ConfirmDeprioritizeDialog";
 
 import { api } from "@/lib/api";
 import { ChevronDown, ChevronRight, ExternalLink, Info, Loader2, Mail, Pencil, Phone, Plus, Search, UserPlus, X } from "lucide-react";
@@ -61,6 +62,7 @@ export function AccountDetailPage() {
   const [folderEditing, setFolderEditing] = useState(false);
   const [folderDraft, setFolderDraft] = useState("");
   const [deprioritizeDialogOpen, setDeprioritizeDialogOpen] = useState(false);
+  const [deprioritizeError, setDeprioritizeError] = useState<string | null>(null);
   const navigate = useNavigate();
   const commentInputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -251,15 +253,46 @@ export function AccountDetailPage() {
                 {deprioritizeDialogOpen && (
                   <ConfirmDeprioritizeDialog
                     busy={updateAccount.isPending}
-                    onCancel={() => setDeprioritizeDialogOpen(false)}
+                    error={deprioritizeError}
+                    onCancel={() => { setDeprioritizeDialogOpen(false); setDeprioritizeError(null); }}
                     onConfirm={() => {
+                      setDeprioritizeError(null);
                       updateAccount.mutate(
                         {
                           id: account.Id,
                           patch: { Active__c: false },
                           displayPatch: { account_status: "Deprioritized" },
                         },
-                        { onSettled: () => setDeprioritizeDialogOpen(false) },
+                        {
+                          // Close only on success. onSettled closed the dialog on
+                          // failure too, and nothing on this page surfaces an
+                          // error for this mutation — so a rejected write looked
+                          // like a successful deprioritize, then silently undid
+                          // itself when the optimistic patch rolled back.
+                          onSuccess: (data) => {
+                            setDeprioritizeDialogOpen(false);
+                            const reminder = (data as { _reminder_task?: { created?: boolean; reason?: string } } | undefined)
+                              ?._reminder_task;
+                            if (reminder && reminder.created === false) {
+                              // The dialog promises a reminder task. Say so when
+                              // there isn't one rather than letting the promise stand.
+                              toast.warning(
+                                `Account deprioritized, but no reminder task was created — ${reminder.reason ?? "unknown reason"}.`,
+                              );
+                            }
+                          },
+                          onError: (err) => {
+                            const detail = (err as { response?: { data?: { detail?: unknown } } })
+                              ?.response?.data?.detail;
+                            setDeprioritizeError(
+                              typeof detail === "string"
+                                ? detail
+                                : err instanceof Error
+                                  ? err.message
+                                  : "Could not deprioritize this account.",
+                            );
+                          },
+                        },
                       );
                     }}
                   />
@@ -1393,51 +1426,6 @@ function PickerRow({
   );
 }
 
-function ConfirmDeprioritizeDialog({
-  busy,
-  onCancel,
-  onConfirm,
-}: {
-  busy: boolean;
-  onCancel: () => void;
-  onConfirm: () => void;
-}) {
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
-      onClick={(e) => { if (e.target === e.currentTarget) onCancel(); }}
-    >
-      <div className="w-full max-w-md rounded-lg border border-border-strong bg-surface shadow-2xl">
-        <div className="px-5 py-4 text-[13px] text-ink-2">
-          <p>
-            Are you sure you want to Deprioritize this account? Proceeding will update the account
-            status to <strong>'Deprioritized'</strong> and a task will be set with a due date in 6
-            months for the account owner to re-evaluate if this stage still accurately reflects the
-            relationship.
-          </p>
-        </div>
-        <div className="flex items-center justify-end gap-2 border-t border-border-strong px-5 py-3">
-          <button
-            type="button"
-            onClick={onCancel}
-            disabled={busy}
-            className="rounded border border-border-strong bg-surface px-3 py-1.5 text-[12.5px] text-ink-2 hover:bg-surface-2 disabled:opacity-50"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            onClick={onConfirm}
-            disabled={busy}
-            className="rounded border border-border-strong bg-surface px-3 py-1.5 text-[12.5px] font-medium text-ink-2 transition-colors hover:border-red/40 hover:bg-red-soft hover:text-red disabled:opacity-60"
-          >
-            {busy ? "Deprioritizing…" : "Deprioritize"}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
 
 function ConfirmReparentDialog({
   contact,
