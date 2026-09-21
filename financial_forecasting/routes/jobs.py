@@ -6446,13 +6446,23 @@ async def update_jobs_membership(contact_id: int, body: MembershipPatch,
                 "bedrock", "jobs_contact_membership", "call_booked_at"):
             sets.append("call_booked_at = CASE WHEN jobs_contact_membership.stage "
                         "IS DISTINCT FROM 'call_booked' THEN now() ELSE jobs_contact_membership.call_booked_at END")
-    if body.revisit_date is not None and await _has_column(
-            "bedrock", "jobs_contact_membership", "revisit_date"):
+    # Parse once, before the column probe. Two reasons it can't live inside that
+    # `if` the way it used to: a malformed date should 400 whether or not the
+    # column exists, and _ensure_revisit_task needs a real date object even when
+    # the membership can't store one — jobs_task.deadline is written through a
+    # $n::date parameter, and asyncpg rejects a str for it outright
+    # ("'str' object has no attribute 'toordinal'"). That raised inside the
+    # transaction below, rolling back the stage UPDATE that had already
+    # succeeded, so every Revisit 500'd and the contact never moved.
+    revisit_on: Optional[date] = None
+    if body.revisit_date is not None:
         try:
-            _rd = date.fromisoformat(body.revisit_date)
+            revisit_on = date.fromisoformat(body.revisit_date)
         except ValueError:
             raise HTTPException(400, "invalid revisit_date; use YYYY-MM-DD")
-        sets.append(f"revisit_date = ${i}"); params.append(_rd); i += 1
+    if revisit_on is not None and await _has_column(
+            "bedrock", "jobs_contact_membership", "revisit_date"):
+        sets.append(f"revisit_date = ${i}"); params.append(revisit_on); i += 1
     if body.owner_email is not None:
         sets.append(f"owner_email = ${i}"); params.append(body.owner_email); i += 1
     if body.opportunity_id is not None:
@@ -6482,19 +6492,23 @@ async def update_jobs_membership(contact_id: int, body: MembershipPatch,
                 "INSERT INTO bedrock.jobs_membership_stage_history "
                 "(contact_id, from_stage, to_stage, changed_by) VALUES ($1, $2, $3, $4)",
                 contact_id, old_stage, body.stage, _user_email(user))
-        if body.revisit_date:
-            await _ensure_revisit_task(conn, contact_id, body.revisit_date, _user_email(user))
+        if revisit_on is not None:
+            await _ensure_revisit_task(conn, contact_id, revisit_on, _user_email(user))
     return {"success": True}
 
 
-async def _ensure_revisit_task(conn, contact_id: int, when: str, actor: Optional[str]) -> None:
+async def _ensure_revisit_task(conn, contact_id: int, when: date, actor: Optional[str]) -> None:
     """Put the revisit on the owner's task list for that date.
 
     Reuses bedrock.jobs_task, which already drives the Jobs Home Overdue/Today/
     Upcoming widget — so Revisit needs no new surface, it just files a row the
     existing widget already renders. Idempotent per contact: re-setting the date
     moves the open task rather than stacking a second one, otherwise changing your
-    mind three times leaves three reminders."""
+    mind three times leaves three reminders.
+
+    `when` must be a datetime.date, not a 'YYYY-MM-DD' string: both writes below
+    bind it to a $n::date parameter, and asyncpg raises DataError on a str
+    rather than coercing it."""
     row = await conn.fetchrow(
         "SELECT m.owner_email, c.full_name, c.current_company "
         "FROM bedrock.jobs_contact_membership m "
