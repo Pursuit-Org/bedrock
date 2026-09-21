@@ -285,11 +285,20 @@ export function AccountDetailPage() {
                 value={account.OwnerId ?? null}
                 options={ownerOptions}
                 onSave={saveOwner}
-                renderValue={() => (
-                  <span className="text-[13px] text-ink-2">
-                    {account.Owner?.Name ?? ownerOptions.find((o) => o.value === account.OwnerId)?.label ?? "—"}
-                  </span>
-                )}
+                renderValue={(v) => {
+                  const inFlightName =
+                    v && v !== account.OwnerId
+                      ? ownerOptions.find((o) => o.value === v)?.label
+                      : null;
+                  return (
+                    <span className="text-[13px] text-ink-2">
+                      {inFlightName ??
+                        account.Owner?.Name ??
+                        ownerOptions.find((o) => o.value === account.OwnerId)?.label ??
+                        "—"}
+                    </span>
+                  );
+                }}
               />
             </DetailRow>
             <DetailRow label="Engagement types">
