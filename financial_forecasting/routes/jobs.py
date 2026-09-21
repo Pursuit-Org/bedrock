@@ -7336,6 +7336,45 @@ async def get_contact(
     )
     all_activity: list = [dict(r) for r in rows_act]
 
+    # Facilitated intros live in bedrock.intro_request, not bedrock.activity —
+    # activity.type has no 'intro' in its CHECK — so without this the one touch
+    # the Outreach scorecard counts is the one touch missing from the contact's
+    # own timeline. Shaped like an activity row rather than given a section of
+    # its own: it is a touch, and it belongs in sequence with the rest.
+    from routes.jobs_intro import ASK_LABELS   # local: keeps the import one-way
+
+    rows_intro = await conn.fetch(
+        """
+        SELECT ir.id, ir.specific_ask, ir.context, ir.status, ir.requested_by_email,
+               coalesce(ir.responded_at, ir.created_at) AS activity_date,
+               m.display_name AS connector_name, m.email AS connector_email
+        FROM bedrock.intro_request ir
+        LEFT JOIN bedrock.staff_user_id_map m ON m.staff_user_id = ir.connector_staff_id
+        WHERE ir.contact_id = $1 AND ir.status IN ('accepted', 'completed')
+        ORDER BY coalesce(ir.responded_at, ir.created_at) DESC
+        LIMIT 50
+        """,
+        contact_id,
+    )
+    for r in rows_intro:
+        via = r["connector_name"] or r["connector_email"] or "a colleague"
+        ask = ASK_LABELS.get(r["specific_ask"] or "", r["specific_ask"])
+        all_activity.append({
+            "id": str(r["id"]),
+            "type": "intro",
+            "subject": f"Facilitated intro via {via}" + (f" · {ask}" if ask else ""),
+            "description": r["context"],
+            "activity_date": r["activity_date"],
+            "logged_by": r["requested_by_email"],
+            "source": "manual",
+            "email_from": None, "email_snippet": None,
+            "meeting_duration_minutes": None, "deleted_at": None,
+            # An intro is a jobs touch by definition — it is only ever created
+            # from the jobs tools — so it never goes through the classifier.
+            "jobs_relevance": "jobs", "jobs_relevance_override": "jobs",
+            "is_jobs": True,
+        })
+
     all_activity.sort(key=lambda x: x.get("activity_date") or "", reverse=True)
     activity = all_activity[:150]
 

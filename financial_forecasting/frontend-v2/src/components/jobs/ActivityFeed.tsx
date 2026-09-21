@@ -11,8 +11,8 @@ import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { format } from "date-fns";
 import {
-  ArrowRight, Calendar, ChevronDown, ChevronRight, Linkedin, Loader2, Mail,
-  MessageSquare, Plus, StickyNote,
+  ArrowRight, Calendar, ChevronDown, ChevronRight, Handshake, Linkedin, Loader2,
+  Mail, MessageSquare, Plus, StickyNote,
 } from "lucide-react";
 
 import {
@@ -49,6 +49,7 @@ const TOUCH_META: Record<string, { label: string; icon: React.ReactNode }> = {
   text: { label: "Text", icon: <MessageSquare size={11} /> },
   linkedin: { label: "LinkedIn", icon: <Linkedin size={11} /> },
   note: { label: "Note", icon: <StickyNote size={11} /> },
+  intro: { label: "Facilitated Intro", icon: <Handshake size={11} /> },
 };
 
 const SEGMENTS: { key: "all" | CampaignEventCategory; label: string; title: string }[] = [
