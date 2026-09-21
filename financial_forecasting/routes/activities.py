@@ -880,9 +880,13 @@ async def log_call(
             data={**_row_to_dict(final_row), "sf_synced": sf_synced},
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error logging call: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        # Raw exception text can carry SQL and connection detail; keep it
+        # server-side, same as the other write endpoints here.
+        logger.error(f"Error logging call: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to log call")
 
 
 # ---------------------------------------------------------------------------

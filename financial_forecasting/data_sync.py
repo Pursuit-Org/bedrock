@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional, Set
 from datetime import datetime, date, timedelta, timezone
 from decimal import Decimal
 
+from security import escape_soql_string
 from models import (
     SalesforceOpportunity, SalesforceAccount, IntacctCustomer, IntacctInvoice,
     OpportunityInvoiceMapping, OpportunityStage
@@ -202,6 +203,7 @@ class DataSyncService:
                   AND source = 'manual'
                   AND type = 'call'
                   AND deleted_at IS NULL
+                ORDER BY activity_date DESC
                 LIMIT 50
                 """
             )
@@ -210,11 +212,12 @@ class DataSyncService:
             logger.info("Pending call sync: retrying %d rows", len(rows))
             for row in rows:
                 try:
+                    what_id = row["opportunity_id"] or row["account_id"]
                     sf_fields = {
                         "Subject": row["subject"],
                         "Status": "Completed",
                         "TaskSubtype": "Call",
-                        "WhatId": row["opportunity_id"] or row["account_id"],
+                        "WhatId": what_id,
                     }
                     if row["activity_date"]:
                         sf_fields["ActivityDate"] = row["activity_date"].date().isoformat()
@@ -223,8 +226,25 @@ class DataSyncService:
                     contact_ids = row["contact_ids"] or []
                     if contact_ids:
                         sf_fields["WhoId"] = contact_ids[0]
-                    result = await salesforce.create_record("Task", sf_fields)
-                    sf_id = result.get("id") or result.get("Id")
+
+                    # Adopt before creating.
+                    #
+                    # A row stays 'pending' whenever the Salesforce create
+                    # succeeded but the local bookkeeping didn't — the UPDATE
+                    # below failing, or create_record returning a shape with no
+                    # recognisable id. Retrying blindly then created a *second*
+                    # Task, and since this runs at the end of every sync cycle
+                    # (900s) a single stuck row minted ~96 duplicate Tasks a day,
+                    # indefinitely, with nothing in Salesforce deduplicating them.
+                    #
+                    # Looking for the Task we would have created makes the retry
+                    # idempotent regardless of why the row was left pending.
+                    sf_id = await self._find_existing_call_task(salesforce, sf_fields)
+                    adopted = sf_id is not None
+                    if not adopted:
+                        result = await salesforce.create_record("Task", sf_fields)
+                        sf_id = result.get("id") or result.get("Id")
+
                     if sf_id:
                         await conn.execute(
                             """
@@ -234,9 +254,48 @@ class DataSyncService:
                             """,
                             sf_id, row["id"],
                         )
-                        logger.info("Pending call %s synced to SF Task %s", row["id"], sf_id)
+                        logger.info("Pending call %s %s SF Task %s", row["id"],
+                                    "adopted existing" if adopted else "synced to", sf_id)
+                    else:
+                        # Salesforce took it but told us nothing usable. Leaving
+                        # it pending is what caused the duplicate storm, so stop
+                        # retrying and let a human look.
+                        await conn.execute(
+                            "UPDATE bedrock.activity SET sf_sync_status='failed' WHERE id=$1",
+                            row["id"],
+                        )
+                        logger.error("Pending call %s: SF returned no id; marked failed", row["id"])
                 except Exception as e:
                     logger.warning("Failed to sync pending call %s to SF: %s", row["id"], e)
+
+    async def _find_existing_call_task(self, salesforce, sf_fields: dict) -> Optional[str]:
+        """The Task this activity would create, if it is already in Salesforce.
+
+        Matched on the fields we set at creation. Returns None on any query
+        failure so the caller falls through to creating — a missed adoption
+        costs one duplicate, whereas treating a query error as "already there"
+        would silently drop the activity.
+        """
+        what_id = sf_fields.get("WhatId")
+        subject = sf_fields.get("Subject")
+        if not what_id or not subject:
+            return None
+        clauses = [
+            f"WhatId = '{escape_soql_string(str(what_id))}'",
+            f"Subject = '{escape_soql_string(str(subject))}'",
+            "TaskSubtype = 'Call'",
+        ]
+        if sf_fields.get("ActivityDate"):
+            clauses.append(f"ActivityDate = {sf_fields['ActivityDate']}")
+        try:
+            res = await salesforce.query(
+                "SELECT Id FROM Task WHERE " + " AND ".join(clauses) + " LIMIT 1"
+            )
+            records = (res or {}).get("records") or []
+            return records[0].get("Id") if records else None
+        except Exception as e:
+            logger.warning("Duplicate-check query failed (will create): %s", e)
+            return None
 
     @staticmethod
     def _parse_sf_datetime(value) -> Optional[datetime]:
