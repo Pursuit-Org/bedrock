@@ -289,12 +289,16 @@ function ScorecardTable({
       <table className="w-full border-collapse">
         <thead>
           <tr className="bg-surface-2 text-[10.5px] uppercase tracking-wide text-ink-3">
+            {/* Goal, then gap, then the numbers behind them (Kwame 2026-09-21).
+                You read this table to answer "are we on track", and the two
+                columns that answer it used to be the last two — past three
+                columns of raw counts you only need once the answer is no. */}
             <th className="py-2 pl-3.5 pr-2 text-left font-bold align-bottom">{firstColHeader}</th>
+            <th className="whitespace-nowrap px-3.5 py-2 text-center font-bold align-bottom">Target</th>
+            <th className="whitespace-nowrap px-2 py-2 text-center font-bold align-bottom">Δ to Target</th>
             <PeriodHead label="This Period" range={rangeLabel} />
             <PeriodHead label="Last Period" range={lastRangeLabel} />
             <th className="whitespace-nowrap px-2 py-2 text-center font-bold align-bottom">Trend</th>
-            <th className="whitespace-nowrap px-2 py-2 text-center font-bold align-bottom">Δ to Target</th>
-            <th className="whitespace-nowrap px-3.5 py-2 text-center font-bold align-bottom">Target</th>
           </tr>
         </thead>
         <tbody>
@@ -340,6 +344,14 @@ function ScorecardTable({
                     {r.label}
                     {pending && <span className="ml-2 text-[10.5px] uppercase tracking-wide text-ink-4">pending migration</span>}
                   </td>
+                  {/* A dash, never 0 (Kwame 2026-09-21): the individual outreach
+                      channels carry no target, and printing 0 claimed one — every
+                      send then read as beating a goal nobody set. */}
+                  <td className="px-3.5 py-2.5 text-center tabular-nums text-ink-3">{pending ? "—" : r.target ?? "—"}</td>
+                  <td className="px-3.5 py-2.5 text-center">
+                    {pending ? <span className="text-ink-4">—</span>
+                      : <DeltaChip actual={thisN} target={r.target} />}
+                  </td>
                   {/* Centred, not right-aligned: the headings carry a second
                       line of dates, and a right-aligned number drifts away from
                       the window it belongs to. */}
@@ -353,17 +365,6 @@ function ScorecardTable({
                     {pending ? <span className="text-ink-4">—</span>
                       : <Trend current={thisN} prior={lastN} />}
                   </td>
-                  <td className="px-3.5 py-2.5 text-center">
-                    {pending ? <span className="text-ink-4">—</span>
-                      : <DeltaChip actual={thisN} target={r.target} />}
-                  </td>
-                  {/* Target renders 0 rather than a dash when unset: the column
-                      is a standing prompt that a target is owed, and an em-dash
-                      reads as "not applicable". */}
-                  {/* A dash, never 0 (Kwame 2026-09-21): the individual outreach channels
-                      carry no target, and printing 0 claimed one — every send then read
-                      as beating a goal nobody set. */}
-                  <td className="px-3.5 py-2.5 text-center tabular-nums text-ink-3">{pending ? "—" : r.target ?? "—"}</td>
                 </tr>
                 {isOpen && (
                   <tr>

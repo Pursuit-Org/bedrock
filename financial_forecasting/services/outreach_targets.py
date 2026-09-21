@@ -19,20 +19,37 @@ table it fed. Both went when nothing rendered that table any more.
 
 from typing import Optional
 
-# Targets are 0 for now (per product) — the "Δ Target" column renders "—" until
-# real goals are set. Bump these when the team agrees on per-period goals.
-_ZERO = {"day": 0, "week": 0, "month": 0}
+# Working days in a week, and weeks in a month, for spreading a weekly goal.
+#
+# WEEKS_PER_MONTH is 4, not the calendar-accurate 4.33 (Kwame 2026-09-21): the
+# monthly target is "four weeks of the weekly one", which is what he manages to
+# and what he expects to read — 150 a week is 600 a month, not 649.
+#
+# Know the consequence before trusting a monthly row: an average month is 4.33
+# weeks long, so a full month measured against 4 weeks of target is about 8%
+# easier to hit than the same weeks measured one at a time. Weekly is the
+# honest view; monthly is a convenience.
+WORK_DAYS_PER_WEEK = 5
+WEEKS_PER_MONTH = 4
 
 
-def _weekly(n: int) -> dict[str, int]:
+def _weekly(n: int) -> dict[str, Optional[int]]:
     """A weekly goal, spread to the other two granularities.
 
-    Kwame sets the number he manages to, which is the weekly one. Daily divides
-    by five working days and monthly multiplies by 4.33 weeks, both rounded.
-    They are arithmetic on his number, not separate goals — replace either the
-    moment the team has a real one.
+    Kwame sets the number he manages to, which is the weekly one. The other two
+    are arithmetic on it, not separate goals — replace either the moment the
+    team has a real one.
+
+    A goal that does not survive the division to a day reports NO daily target
+    rather than 0. Converting 2 contacts a week is a real goal; "convert 0 today"
+    is not one, and it rendered as a green 0 in Δ to Target — a day with nothing
+    converted read as a day on plan. An explicit _weekly(0) still spreads to 0
+    everywhere, because there the zero IS the goal.
     """
-    return {"day": round(n / 5), "week": n, "month": round(n * 4.33)}
+    per_day = round(n / WORK_DAYS_PER_WEEK)
+    return {"day": per_day if (n == 0 or per_day >= 1) else None,
+            "week": n,
+            "month": n * WEEKS_PER_MONTH}
 
 # Per-person weekly goals (Kwame 2026-09-21). These are the source: the team
 # figures below are their SUM, because that is how Kwame built them —
@@ -46,7 +63,7 @@ def _weekly(n: int) -> dict[str, int]:
 # does not count his sends. The team view is therefore ~10 a week short of its
 # own target by construction. Fixing it means adding him to JOBS_TEAM_EMAILS,
 # which moves every team-scoped number across the Jobs pages, not just this one.
-OWNER_ACTIVITY_TARGETS: dict[str, dict[str, dict[str, int]]] = {
+OWNER_ACTIVITY_TARGETS: dict[str, dict[str, dict[str, Optional[int]]]] = {
     # call_discovery matches total_calls on purpose (Kwame 2026-09-21): the ask
     # is that every call in the goal is a discovery call. General carries no
     # target, so a week hit entirely on check-ins shows Total Calls met and
@@ -68,19 +85,19 @@ OWNER_ACTIVITY_TARGETS: dict[str, dict[str, dict[str, int]]] = {
 }
 
 
-def _team_total(metric: str) -> dict[str, int]:
+def _team_total(metric: str) -> dict[str, Optional[int]]:
     """The team goal for a metric: the sum of the personal goals.
 
     Summed rather than typed a second time, so moving one person's number can
     never leave the team figure quietly stale.
     """
-    return {g: sum(t.get(metric, {}).get(g, 0) for t in OWNER_ACTIVITY_TARGETS.values())
+    return {g: sum(t.get(metric, {}).get(g) or 0 for t in OWNER_ACTIVITY_TARGETS.values())
             for g in ("day", "week", "month")}
 
 
 # Team goals. Only the three totals appear: a metric absent from this dict has
 # no target, which the API reports as null and the UI as a dash.
-ACTIVITY_PIPELINE_TARGETS: dict[str, dict[str, int]] = {
+ACTIVITY_PIPELINE_TARGETS: dict[str, dict[str, Optional[int]]] = {
     # The two totals carry a goal, and Discovery Calls carries one because the
     # ask is about the MIX, not extra volume: it is the same 15 calls, with an
     # expectation about what kind they are. Every other row is a breakdown of
