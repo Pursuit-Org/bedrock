@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
+import { ConfirmDeprioritizeDialog } from "@/components/ConfirmDeprioritizeDialog";
 
 import { api } from "@/lib/api";
 import { ChevronDown, ChevronRight, ExternalLink, Info, Loader2, Mail, Pencil, Phone, Plus, Search, UserPlus, X } from "lucide-react";
@@ -60,6 +61,8 @@ export function AccountDetailPage() {
   const [showAddOpp, setShowAddOpp] = useState(false);
   const [folderEditing, setFolderEditing] = useState(false);
   const [folderDraft, setFolderDraft] = useState("");
+  const [deprioritizeDialogOpen, setDeprioritizeDialogOpen] = useState(false);
+  const [deprioritizeError, setDeprioritizeError] = useState<string | null>(null);
   const navigate = useNavigate();
   const commentInputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -224,25 +227,77 @@ export function AccountDetailPage() {
           {(() => {
             const isActive = account.Active__c !== false;
             return (
-              <button
-                type="button"
-                disabled={updateAccount.isPending}
-                onClick={() =>
-                  updateAccount.mutate({
-                    id: account.Id,
-                    patch: { Active__c: !isActive },
-                    displayPatch: isActive ? { account_status: "Deprioritized" } : undefined,
-                  })
-                }
-                className={cn(
-                  "inline-flex h-[30px] items-center gap-1.5 rounded border px-3 text-[13px] font-medium transition-colors disabled:opacity-50",
-                  isActive
-                    ? "border-border-strong bg-surface text-ink-2 hover:border-red/40 hover:bg-red-soft hover:text-red"
-                    : "border-border-strong bg-surface text-ink-2 hover:border-green/40 hover:bg-green-soft hover:text-green",
+              <>
+                <button
+                  type="button"
+                  disabled={updateAccount.isPending}
+                  onClick={() => {
+                    if (isActive) {
+                      setDeprioritizeDialogOpen(true);
+                    } else {
+                      updateAccount.mutate({
+                        id: account.Id,
+                        patch: { Active__c: true },
+                      });
+                    }
+                  }}
+                  className={cn(
+                    "inline-flex h-[30px] items-center gap-1.5 rounded border px-3 text-[13px] font-medium transition-colors disabled:opacity-50",
+                    isActive
+                      ? "border-border-strong bg-surface text-ink-2 hover:border-red/40 hover:bg-red-soft hover:text-red"
+                      : "border-border-strong bg-surface text-ink-2 hover:border-green/40 hover:bg-green-soft hover:text-green",
+                  )}
+                >
+                  {isActive ? "Deprioritize" : "Reprioritize"}
+                </button>
+                {deprioritizeDialogOpen && (
+                  <ConfirmDeprioritizeDialog
+                    busy={updateAccount.isPending}
+                    error={deprioritizeError}
+                    onCancel={() => { setDeprioritizeDialogOpen(false); setDeprioritizeError(null); }}
+                    onConfirm={() => {
+                      setDeprioritizeError(null);
+                      updateAccount.mutate(
+                        {
+                          id: account.Id,
+                          patch: { Active__c: false },
+                          displayPatch: { account_status: "Deprioritized" },
+                        },
+                        {
+                          // Close only on success. onSettled closed the dialog on
+                          // failure too, and nothing on this page surfaces an
+                          // error for this mutation — so a rejected write looked
+                          // like a successful deprioritize, then silently undid
+                          // itself when the optimistic patch rolled back.
+                          onSuccess: (data) => {
+                            setDeprioritizeDialogOpen(false);
+                            const reminder = (data as { _reminder_task?: { created?: boolean; reason?: string } } | undefined)
+                              ?._reminder_task;
+                            if (reminder && reminder.created === false) {
+                              // The dialog promises a reminder task. Say so when
+                              // there isn't one rather than letting the promise stand.
+                              toast.warning(
+                                `Account deprioritized, but no reminder task was created — ${reminder.reason ?? "unknown reason"}.`,
+                              );
+                            }
+                          },
+                          onError: (err) => {
+                            const detail = (err as { response?: { data?: { detail?: unknown } } })
+                              ?.response?.data?.detail;
+                            setDeprioritizeError(
+                              typeof detail === "string"
+                                ? detail
+                                : err instanceof Error
+                                  ? err.message
+                                  : "Could not deprioritize this account.",
+                            );
+                          },
+                        },
+                      );
+                    }}
+                  />
                 )}
-              >
-                {isActive ? "Deprioritize" : "Reprioritize"}
-              </button>
+              </>
             );
           })()}
           <Tooltip
@@ -1370,6 +1425,7 @@ function PickerRow({
     </li>
   );
 }
+
 
 function ConfirmReparentDialog({
   contact,

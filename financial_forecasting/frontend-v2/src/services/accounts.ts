@@ -223,17 +223,29 @@ export function useUpdateAccount() {
         { updates: patch, reason: "Updated via Bedrock" },
       );
     },
-    onSuccess: (_data, { id, patch, displayPatch }) => {
+    onMutate: async ({ id, patch, displayPatch }) => {
+      // Cancel in-flight refetches so they don't overwrite the optimistic update
+      await qc.cancelQueries({ queryKey: ["accounts"] });
+
+      // Snapshot for rollback on error
+      const previousAccounts = qc.getQueryData<SfAccount[]>(["accounts"]);
+      const previousActiveOnly = qc.getQueryData<SfAccount[]>(["accounts", "active-only"]);
+
+      // Apply optimistic update immediately — badge and fields reflect the
+      // change before the Salesforce write even starts (true optimistic UI).
       const merged = { ...patch, ...(displayPatch ?? {}) };
-      const patchCache = (old: SfAccount[] | undefined) => {
-        if (!old) return old;
-        return old.map((a) => (a.Id === id ? ({ ...a, ...merged } as SfAccount) : a));
-      };
-      qc.setQueryData<SfAccount[]>(["accounts"], patchCache);
-      qc.setQueryData<SfAccount[]>(["accounts", "active-only"], patchCache);
+      const applyPatch = (old: SfAccount[] | undefined) =>
+        old?.map((a) => (a.Id === id ? ({ ...a, ...merged } as SfAccount) : a));
+      qc.setQueryData<SfAccount[]>(["accounts"], applyPatch);
+      qc.setQueryData<SfAccount[]>(["accounts", "active-only"], applyPatch);
+
       // The jobs pages render from the ["jobs","accounts",...] caches, whose
       // rows carry `sf_active` (not Active__c). Patch every variant so the
       // Deprioritize toggle is visible immediately on the jobs side too.
+      // Snapshot these too — onError restored only the two above, so a failed
+      // write left every jobs-side account list showing the optimistic value
+      // with nothing to correct it (onSettled early-returns on error).
+      const previousJobsAccounts = qc.getQueriesData({ queryKey: ["jobs", "accounts"] });
       if ("Active__c" in patch) {
         qc.setQueriesData<Array<{ sf_account_id?: string | null; sf_active?: boolean | null }>>(
           { queryKey: ["jobs", "accounts"] },
@@ -243,8 +255,23 @@ export function useUpdateAccount() {
             ),
         );
       }
+
+      return { previousAccounts, previousActiveOnly, previousJobsAccounts };
     },
-    onSettled: (_data, error) => {
+    onError: (_err, _variables, context) => {
+      // Restore pre-mutation snapshots so the UI doesn't stay stuck on the
+      // optimistic value after a failed write.
+      if (context?.previousAccounts !== undefined) {
+        qc.setQueryData(["accounts"], context.previousAccounts);
+      }
+      if (context?.previousActiveOnly !== undefined) {
+        qc.setQueryData(["accounts", "active-only"], context.previousActiveOnly);
+      }
+      for (const [key, data] of context?.previousJobsAccounts ?? []) {
+        qc.setQueryData(key, data);
+      }
+    },
+    onSettled: (_data, error, variables) => {
       if (error) return;
       // Delayed refetch: give Salesforce a moment to propagate, then take the
       // server's answer as truth. (The previous version re-applied the client
@@ -253,6 +280,10 @@ export function useUpdateAccount() {
       setTimeout(() => {
         void qc.refetchQueries({ queryKey: ["accounts"] });
         void qc.invalidateQueries({ queryKey: ["jobs", "accounts"] });
+        // Refresh tasks so the auto-created reminder task appears without a manual reload
+        if (variables?.patch.Active__c === false || variables?.patch.Qualification_Status__c === "Not Qualified") {
+          void qc.invalidateQueries({ queryKey: ["account-tasks", variables.id] });
+        }
       }, 2000);
     },
   });
