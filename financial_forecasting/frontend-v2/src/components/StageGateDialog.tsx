@@ -68,7 +68,13 @@ export function StageGateDialog({
     if (opp.Probability != null) return String(opp.Probability);
     return "";
   });
-  const [closeReason, setCloseReason] = useState<string>("");
+  // Seeded from the record, not blank. The reason is optional, so a blank
+  // box is a legitimate submit — and with an unseeded box that submit wrote
+  // "" over an existing reason (some of these hold full rejection letters).
+  const [closeReason, setCloseReason] = useState<string>(() => {
+    const field = spec.closeReasonField ?? "npsp__Closed_Lost_Reason__c";
+    return String((opp as unknown as Record<string, unknown>)[field] ?? "");
+  });
   // Per-hint satisfied state — multi-stage jumps can require several
   // attachments at once (proposal + signed contract, etc.). Keyed by
   // the hint string so each picker tracks independently.
@@ -143,7 +149,13 @@ export function StageGateDialog({
     }
     if (spec.closeReason) {
       const closeReasonField = spec.closeReasonField ?? "npsp__Closed_Lost_Reason__c";
-      patch[closeReasonField] = closeReason.trim();
+      const existing = String((opp as unknown as Record<string, unknown>)[closeReasonField] ?? "");
+      const next = closeReason.trim();
+      // Change-guarded like CloseDate and Amount above. Unconditional, this
+      // wiped an existing reason whenever the gate was re-confirmed with the
+      // box left empty — which became reachable the moment the field was made
+      // optional.
+      if (next !== existing.trim()) patch[closeReasonField] = next;
     }
 
     // Optimistic close: dismiss the dialog immediately and run the
