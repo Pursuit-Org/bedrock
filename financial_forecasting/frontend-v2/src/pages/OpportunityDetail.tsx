@@ -247,6 +247,7 @@ export function OpportunityDetailPage() {
               value={opp.StageName}
               options={stageOptions}
               onSave={handleStageChange}
+              noOptimistic
               renderValue={(v) => <StageChip stage={v ?? opp.StageName} status={stageStatus({ ...opp, StageName: v ?? opp.StageName })} />}
             />
             <InlineSelect
@@ -412,12 +413,35 @@ export function OpportunityDetailPage() {
               value={opp.StageName}
               options={stageOptions}
               onSave={handleStageChange}
+              noOptimistic
               renderValue={(v) => <StageChip stage={v ?? opp.StageName} status={stageStatus({ ...opp, StageName: v ?? opp.StageName })} />}
             />
           </EditField>
 
           {/* Multi-year grant — full-width row below the 3-column grid */}
           <div className="col-span-full mt-1 border-t border-border pt-3 flex flex-col gap-2">
+            {/* Stage-terminal reason — only visible for Closed Lost / Withdrawn */}
+            {opp.StageName === "Closed Lost" ? (
+              <div className="pb-1">
+                <EditField label="Closed Lost Reason">
+                  <InlineText
+                    value={opp.npsp__Closed_Lost_Reason__c ?? ""}
+                    onSave={(v) => patch("npsp__Closed_Lost_Reason__c", v.trim() || null)}
+                    placeholder="None Listed"
+                  />
+                </EditField>
+              </div>
+            ) : opp.StageName === "Withdrawn" ? (
+              <div className="pb-1">
+                <EditField label="Withdrawn Reason">
+                  <InlineText
+                    value={opp.Withdrawn_Reason__c ?? ""}
+                    onSave={(v) => patch("Withdrawn_Reason__c", v.trim() || null)}
+                    placeholder="None Listed"
+                  />
+                </EditField>
+              </div>
+            ) : null}
             <div className="flex items-center gap-2">
               <input
                 type="checkbox"

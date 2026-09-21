@@ -143,6 +143,11 @@ def get_google_credentials(email: str, request: Request = None):
 @router.get("/auth/google")
 async def auth_google(request: Request):
     """Initiate Google OAuth flow."""
+    # Clear any stale state from previous (possibly failed) OAuth attempts so
+    # the new state we're about to generate is the only one in the session.
+    # Without this, multiple rapid "Sign in" clicks leave old state in the
+    # session cookie that makes the next callback fail with mismatching_state.
+    request.session.clear()
     return await oauth.google.authorize_redirect(
         request, GOOGLE_REDIRECT_URI,
         access_type='offline',
