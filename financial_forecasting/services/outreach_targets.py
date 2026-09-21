@@ -22,6 +22,17 @@ from typing import Optional
 # real goals are set. Bump these when the team agrees on per-period goals.
 _ZERO = {"day": 0, "week": 0, "month": 0}
 
+
+def _weekly(n: int) -> dict[str, int]:
+    """A weekly goal, spread to the other two granularities.
+
+    Kwame sets the number he manages to, which is the weekly one. Daily divides
+    by five working days and monthly multiplies by 4.33 weeks, both rounded.
+    They are arithmetic on his number, not separate goals — replace either the
+    moment the team has a real one.
+    """
+    return {"day": round(n / 5), "week": n, "month": round(n * 4.33)}
+
 # Contacts ENTERING each funnel stage in the period (flow, not occupancy).
 USER_PIPELINE_TARGETS: dict[str, dict[str, int]] = {
     "flagged":          dict(_ZERO),  # Lead Sourced
@@ -32,8 +43,12 @@ USER_PIPELINE_TARGETS: dict[str, dict[str, int]] = {
 
 # Raw activity rows sent/received in the period.
 ACTIVITY_PIPELINE_TARGETS: dict[str, dict[str, int]] = {
-    "total_outreach_activity": dict(_ZERO),
-    "total_calls":            dict(_ZERO),
+    # Kwame's first real numbers (2026-09-21): 100 outreach touches and 10 calls
+    # a week for the whole jobs team. Only the two totals carry a goal — the
+    # rows beneath them are a breakdown of how the total was hit, not separate
+    # commitments, and a target on each would double-count the same week's work.
+    "total_outreach_activity": _weekly(100),
+    "total_calls":            _weekly(10),
     "call_discovery":         dict(_ZERO),
     "call_solution":          dict(_ZERO),
     "call_general":           dict(_ZERO),

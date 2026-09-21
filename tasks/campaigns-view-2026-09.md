@@ -384,7 +384,57 @@ call/meeting half and become replies only.
 type. The Activity Pipeline breakdown is the evidence that a tag saved, and the
 column does not exist yet, so there is nothing to display until Jac applies it.
 
-### Phase 14 — Not started
+### Phase 14 — Activity Pipeline trimmed to two totals ✅ (2026-09-21)
+
+Kwame's review of Phase 13. The table is now two peer sections, not one tree.
+
+```
+Total Outreach Activity     depth 0   target 100/wk
+  Direct Email Sent
+  LinkedIn Messages Sent
+  Facilitated Intro
+Total Calls                 depth 0   target 10/wk
+  Discovery Calls                     pending migration
+  Solution Calls                      pending migration
+  General Calls                       carries every untagged call
+```
+
+**The two totals are now DISJOINT.** Total Outreach Activity no longer contains
+calls. This follows from Kwame promoting Total Calls to depth 0 with a target of
+its own, and it makes the table finally agree with the Outreach Overview card,
+which has always defined outreach activity as sends only with calls excluded.
+Verified on production for the week of Sep 6: outreach 14 = 14 + 0 + 0, calls
+10 = 0 + 0 + 10. Each parent equals the sum of its children exactly.
+
+**Unclassified is gone.** An untagged call reads as General rather than sitting
+in a bucket nobody will ever clean up (`CALL_KIND_DEFAULT`). General therefore
+stays enabled pre-migration and carries the real count; only Discovery and
+Solution grey out.
+
+**Engagements and Direct Email Responses removed.** Engagements overlapped Total
+Calls and nobody could say what it meant. Their drill keys stay live on
+`/outreach/scorecard/detail`, so restoring either row costs one line in
+`_OUTREACH_ACTIVITY_META`. Dropping them also removed the `sent_out` /
+`first_reply` / `engagement_events` CTEs, which were the expensive half of the
+scorecard query — a self-join across every parsed email message.
+
+**Targets.** First real numbers: 100 outreach touches and 10 calls a week for
+the team. `_weekly()` spreads a weekly goal to day (÷5) and month (×4.33) so the
+other granularities are arithmetic on Kwame's number rather than invented ones.
+Only the two totals carry a goal; a target on each child would double-count the
+same week's work.
+
+**Header and alignment.** Each period column is now a stacked heading — label on
+top, window in grey underneath — and every numeric column is centre-aligned, so
+each number sits directly under the dates it covers. "Last" became "Last Period"
+and gained its own window.
+
+**Team tabs.** A segmented control sits at the right of the Activity Pipeline
+title: All jobs team, Avni, Damon, Devika. It drives the PAGE's owner state
+rather than keeping its own, so it can never disagree with the sender select in
+the period bar.
+
+### Phase 15 — Not started
 - [ ] Drill from a trend point into the underlying activity list
 - [ ] Contact table on the detail view (the `/records` endpoint already serves it)
 - [ ] Stage-entry period flow, like `outreach-pipeline-rework.md`

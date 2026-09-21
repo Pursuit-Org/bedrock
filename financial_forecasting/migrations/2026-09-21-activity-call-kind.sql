@@ -8,12 +8,14 @@
 --   solution   presenting builders, scope or an option set against that need
 --   general    everything else: intros, check-ins, relationship calls
 --
--- Nullable with no default on purpose. Backfilling every historical call to
--- 'general' would invent a classification nobody made; NULL reads honestly as
--- "logged before we tracked this", and the UI groups those under Unclassified.
--- Only the log-a-call form writes it. Calls and meetings both count toward Total
--- Calls (they are one thing to this team), but a meeting synced from a calendar
--- has nobody to ask, so it stays NULL and reports as Unclassified.
+-- Nullable with no default on purpose. Backfilling would rewrite history that
+-- nobody classified; NULL stays honest about "logged before we tracked this".
+-- The scorecard reads a NULL as `general`, which is the catch-all the team
+-- already describes as "everything else" (Kwame 2026-09-21), so the three rows
+-- always sum to Total Calls and no permanent Unclassified bucket accumulates.
+-- Only the log-a-call form writes the column. Calls and meetings both count
+-- toward Total Calls (they are one thing to this team), but a meeting synced
+-- from a calendar has nobody to ask, so it stays NULL and reads as general.
 
 ALTER TABLE bedrock.activity
   ADD COLUMN IF NOT EXISTS call_kind text

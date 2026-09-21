@@ -4033,30 +4033,32 @@ _OUTREACH_STAGE_META = [
     ("initial_outreach", "Initial Outreach"),
     ("converted_to_opportunity", "Converted to Opportunity"),
 ]
-# (metric, label, depth). Depth drives indentation in the UI: a roll-up sits at
-# 0, its components at 1, a component's own breakdown at 2. Kwame 2026-09-21 —
-# "Total Outreach Activity" up top, "Total Calls" under it, and the call itself
-# split by what kind of call it was.
+# (metric, label, depth). Depth drives indentation in the UI: a total sits at 0,
+# the rows that make it up at 1.
 #
-# The tier-1 rows COUNT EVENTS, not distinct contacts, which is a change from
-# the first cut. Three reasons: the labels already promise volume ("Messages
-# Sent"); a parent only equals the sum of its children under event counting;
-# and the distinct-contact version silently dropped every email to an address
-# Bedrock has no contact row for. Engagements and Direct Email Responses stay
-# distinct-contact — "how many contacts engaged" is the right question there,
-# and they are outcomes rather than effort.
+# Two top-level totals, each with its own components and its own target
+# (Kwame 2026-09-21). They are DISJOINT: Total Outreach Activity is send volume
+# and excludes calls, which is how the Outreach Overview card has always defined
+# it, so the two numbers on this page finally agree. Each parent equals the sum
+# of the rows indented beneath it, exactly.
+#
+# These rows COUNT EVENTS, not distinct contacts. Three reasons: the labels
+# already promise volume ("Messages Sent"); a parent only equals the sum of its
+# children under event counting; and the distinct-contact version silently
+# dropped every email to an address Bedrock has no contact row for.
+#
+# Engagements and Direct Email Responses came off the table the same day. Their
+# drill keys stay live on /outreach/scorecard/detail, so putting either row back
+# costs one line here.
 _OUTREACH_ACTIVITY_META = [
     ("total_outreach_activity", "Total Outreach Activity", 0),
     ("direct_email_sent",       "Direct Email Sent",       1),
     ("linkedin_message_sent",   "LinkedIn Messages Sent",  1),
     ("facilitated_intro_sent",  "Facilitated Intro",       1),
-    ("total_calls",             "Total Calls",             1),
-    ("call_discovery",          "Discovery Calls",         2),
-    ("call_solution",           "Solution Calls",          2),
-    ("call_general",            "General Calls",           2),
-    ("call_unclassified",       "Unclassified",            2),
-    ("engagement",              "Engagements",             0),
-    ("direct_email_response",   "Direct Email Responses",  0),
+    ("total_calls",             "Total Calls",             0),
+    ("call_discovery",          "Discovery Calls",         1),
+    ("call_solution",           "Solution Calls",          1),
+    ("call_general",            "General Calls",           1),
 ]
 # What kind of call it was. Asked for at log time so Total Calls can be split
 # into the three the team actually runs, rather than reconstructed from the note
@@ -4068,18 +4070,20 @@ CALL_KINDS = [
     ("general",   "General",   "Check-in, relationship or anything else."),
 ]
 CALL_KIND_VALUES = {v for v, _, _ in CALL_KINDS}
-# metric name → the call_kind it counts. "Unclassified" has no kind: it is every
-# call logged before the picker existed, or logged without an answer.
+# metric name → the call_kind it counts.
 _CALL_KIND_METRIC = {f"call_{v}": v for v, _, _ in CALL_KINDS}
-_CALL_METRICS = list(_CALL_KIND_METRIC) + ["call_unclassified"]
-# Funnel tier per activity metric — the frontend uses this to visually group the
-# rows: sent touches (1) → engagements (2) → email replies (3).
+_CALL_METRICS = list(_CALL_KIND_METRIC)
+# Where a call with no kind lands. General is the catch-all the team already
+# describes as "everything else", so an untagged call reads as one rather than
+# sitting in an Unclassified row nobody will ever go back and clean up. It also
+# means the three rows always sum to Total Calls.
+CALL_KIND_DEFAULT = "general"
+# Funnel tier per activity metric — the frontend draws a stronger rule where the
+# tier changes, which is what separates the send block from the call block.
 _ACTIVITY_TIER = {
     "total_outreach_activity": 1,
     "direct_email_sent": 1, "linkedin_message_sent": 1, "facilitated_intro_sent": 1,
-    "total_calls": 1, "call_discovery": 1, "call_solution": 1, "call_general": 1,
-    "call_unclassified": 1,
-    "engagement": 2, "direct_email_response": 3,
+    "total_calls": 2, "call_discovery": 2, "call_solution": 2, "call_general": 2,
 }
 _STAGE_ENTERED_COL = {
     "assigned": "assigned_at", "initial_outreach": "first_outreach_at",
@@ -4299,10 +4303,10 @@ async def outreach_scorecard(
     # can say "pending migration" instead of quietly showing zeros. Probed per
     # request, so the rows light up the moment the column lands — no redeploy.
     has_call_kind = await _has_column("bedrock", "activity", "call_kind")
-    call_kind_sql = ("'call_' || coalesce(a.call_kind, 'unclassified')" if has_call_kind
-                     else "'call_unclassified'")
+    call_kind_sql = (f"'call_' || coalesce(a.call_kind, '{CALL_KIND_DEFAULT}')" if has_call_kind
+                     else f"'call_{CALL_KIND_DEFAULT}'")
     call_kind_note = ("call_kind is live." if has_call_kind
-                      else "call_kind column not present yet - all calls unclassified.")
+                      else "call_kind column not present yet - every call reads as general.")
     call_metric_in = _sql_in("metric", _CALL_METRICS)
 
     # One query, warmth computed once, two labelled result sets unioned.
@@ -4343,53 +4347,27 @@ async def outreach_scorecard(
         WHERE a.deleted_at IS NULL AND a.type IN ('call','meeting')
           AND {_activity_actor('a', scope, owner)} AND {_jobs_relevant('a')}
     ),
+    -- The two totals are disjoint: sends roll up to Total Outreach Activity,
+    -- calls roll up to Total Calls, and neither contains the other. Each equals
+    -- the sum of the rows the UI indents beneath it.
     activity_events AS (
         SELECT * FROM leaf_events
         UNION ALL
         SELECT 'total_calls', ts, contact_id FROM leaf_events WHERE {call_metric_in}
         UNION ALL
         SELECT 'total_outreach_activity', ts, contact_id FROM leaf_events
+         WHERE NOT ({call_metric_in})
     ),
     -- Outreached (activity-driven): distinct jobs contacts who RECEIVED an outreach
     -- email from the selected scope in the period (not the empty membership stamp).
     outreach_emails AS (
         SELECT sm.contact_id, sm.ts FROM sent_msgs sm WHERE sm.contact_id IS NOT NULL
     ),
-    -- Direct Email Responses: an external address that got a jobs outreach email
-    -- from the scope, then sent its FIRST inbound email back afterwards. Counted in
-    -- the period of that first reply.
-    sent_out AS (
-        SELECT lower(e) AS addr, min(aem.sent_at) AS first_out
-        FROM bedrock.activity a
-        JOIN bedrock.activity_email_message aem ON aem.activity_id = a.id
-        CROSS JOIN unnest(coalesce(a.email_to,'{{}}') || coalesce(a.email_cc,'{{}}')) e
-        WHERE a.deleted_at IS NULL AND a.type = 'email' AND {_message_actor(scope, owner)}
-          AND {_jobs_relevant('a')} AND lower(e) NOT LIKE '%@pursuit.org%'
-        GROUP BY 1
-    ),
-    first_reply AS (
-        -- Reply need not be classified (the OUTREACH was jobs-relevant, via sent_out);
-        -- just an inbound MESSAGE from that address after we emailed them — including
-        -- replies inside threads WE started, which the thread row never surfaces.
-        SELECT aem.from_email AS addr, min(aem.sent_at) AS reply_date,
-               max(a.participant_public_contact_id) AS contact_id
-        FROM bedrock.activity a
-        JOIN bedrock.activity_email_message aem ON aem.activity_id = a.id
-        JOIN sent_out s ON s.addr = aem.from_email AND aem.sent_at >= s.first_out
-        WHERE a.deleted_at IS NULL AND a.type = 'email' AND {_not_autoreply('a')}
-          AND aem.from_email NOT LIKE '%@pursuit.org%'
-        GROUP BY 1
-    ),
-    -- Engagements = the counterpart engaging back: a meeting or call, OR a direct
-    -- email response. Built so Direct Email Responses always nest inside it.
-    engagement_events AS (
-        SELECT a.activity_date AS ts, a.participant_public_contact_id AS contact_id
-        FROM bedrock.activity a
-        WHERE a.deleted_at IS NULL AND a.type IN ('meeting','call')
-          AND {_jobs_relevant('a')} AND {_not_autoreply('a')}
-        UNION ALL
-        SELECT fr.reply_date AS ts, fr.contact_id FROM first_reply fr
-    ),
+    -- The sent_out / first_reply / engagement_events CTEs lived here until
+    -- 2026-09-21. They existed only for the Engagements and Direct Email
+    -- Responses rows, which came off the table, and they were the expensive
+    -- half of this query (a self-join across every parsed email message). The
+    -- drill endpoint still builds them on demand for its own keys.
     stage_counts AS (
         SELECT 'user' AS kind, se.stage AS key, coalesce(cw.warmth,'cold') AS warmth,
                count(*) FILTER (WHERE se.entered_at >= $1 AND se.entered_at < $2) AS this_period,
@@ -4414,28 +4392,10 @@ async def outreach_scorecard(
         FROM activity_events ae
         LEFT JOIN contact_warmth cw ON cw.contact_id = ae.contact_id
         GROUP BY ae.metric, coalesce(cw.warmth,'cold')
-    ),
-    engagement_counts AS (
-        SELECT 'activity' AS kind, 'engagement' AS key, coalesce(cw.warmth,'cold') AS warmth,
-               count(DISTINCT ee.contact_id) FILTER (WHERE ee.ts >= $1 AND ee.ts < $2) AS this_period,
-               count(DISTINCT ee.contact_id) FILTER (WHERE ee.ts >= $3 AND ee.ts < $4) AS last_period
-        FROM engagement_events ee
-        LEFT JOIN contact_warmth cw ON cw.contact_id = ee.contact_id
-        GROUP BY coalesce(cw.warmth,'cold')
-    ),
-    response_counts AS (
-        SELECT 'activity' AS kind, 'direct_email_response' AS key, coalesce(cw.warmth,'cold') AS warmth,
-               count(*) FILTER (WHERE fr.reply_date >= $1 AND fr.reply_date < $2) AS this_period,
-               count(*) FILTER (WHERE fr.reply_date >= $3 AND fr.reply_date < $4) AS last_period
-        FROM first_reply fr
-        LEFT JOIN contact_warmth cw ON cw.contact_id = fr.contact_id
-        GROUP BY coalesce(cw.warmth,'cold')
     )
     SELECT * FROM stage_counts
     UNION ALL SELECT * FROM outreached_counts
     UNION ALL SELECT * FROM activity_counts
-    UNION ALL SELECT * FROM engagement_counts
-    UNION ALL SELECT * FROM response_counts
     """
     rows = await conn.fetch(sql, this_start, this_end, last_start, last_end)
 
@@ -4502,7 +4462,10 @@ async def outreach_scorecard(
         # exists. Showing it disabled with a reason tells the truth; hiding it
         # would read as "not built", and showing a bare 0 would read as "nobody
         # made a discovery call this week".
-        ok = has_call_kind or m not in _CALL_KIND_METRIC
+        # Discovery and Solution need the column. General does not: every
+        # untagged call already lands there, so greying it would hide a real
+        # number behind a "pending" label.
+        ok = has_call_kind or _CALL_KIND_METRIC.get(m) in (None, CALL_KIND_DEFAULT)
         return {"metric": m, "depth": depth, "tier": _ACTIVITY_TIER.get(m),
                 "available": ok,
                 "unavailable_reason": None if ok else
@@ -4511,11 +4474,6 @@ async def outreach_scorecard(
 
     activity_pipeline = [_activity_row(m, label, depth)
                          for m, label, depth in _OUTREACH_ACTIVITY_META]
-    # Unclassified is noise once every call carries a kind — drop the row when
-    # it is empty in both periods rather than leaving a permanent zero.
-    activity_pipeline = [r for r in activity_pipeline
-                         if r["metric"] != "call_unclassified"
-                         or r["this_period"]["total"] or r["last_period"]["total"]]
     return {"success": True, "data": {
         "granularity": granularity,
         "scope": scope,
@@ -4791,7 +4749,14 @@ async def outreach_scorecard_detail(
             # subtype drills would be a syntax error rather than an empty list.
             # They come back empty instead, matching the disabled rows above.
             def _kind(v: str) -> str:
-                return f"{calls} AND {windowed} AND a.call_kind = '{v}'" if has_call_kind else "FALSE"
+                if not has_call_kind:
+                    # No column to filter on. Every call is general by default,
+                    # so the general drill lists them all and the other two are
+                    # empty, matching the rows above.
+                    return f"{calls} AND {windowed}" if v == CALL_KIND_DEFAULT else "FALSE"
+                pred = (f"a.call_kind = '{v}'" if v != CALL_KIND_DEFAULT
+                        else f"coalesce(a.call_kind, '{CALL_KIND_DEFAULT}') = '{CALL_KIND_DEFAULT}'")
+                return f"{calls} AND {windowed} AND {pred}"
             where = {
                 # Window + actor applied per MESSAGE — a follow-up sent this week in an
                 # old thread must appear in this week's drill.
@@ -4804,16 +4769,15 @@ async def outreach_scorecard_detail(
                 "call_discovery": _kind("discovery"),
                 "call_solution":  _kind("solution"),
                 "call_general":   _kind("general"),
-                "call_unclassified":
-                    (f"{calls} AND {windowed} AND a.call_kind IS NULL" if has_call_kind
-                     else f"{calls} AND {windowed}"),
-                # The roll-up. Facilitated intros live in bedrock.intro_request and
-                # so aren't in this union — they have their own drillable row, and
+                # The send roll-up. Calls are deliberately absent: they roll up
+                # to Total Calls instead, and the two totals are disjoint.
+                # Facilitated intros live in bedrock.intro_request and so aren't
+                # in this union either — they have their own drillable row, and
                 # folding a second table in here would double the query for a
                 # handful of records.
                 "total_outreach_activity":
                     f"(({email_sent}) OR (a.type = 'linkedin' AND {_activity_actor('a', scope, owner)} "
-                    f"AND {_jobs_relevant('a')} AND {windowed}) OR ({calls} AND {windowed}))",
+                    f"AND {_jobs_relevant('a')} AND {windowed}))",
             }.get(key)
             if where is None:
                 raise HTTPException(400, "invalid activity key")

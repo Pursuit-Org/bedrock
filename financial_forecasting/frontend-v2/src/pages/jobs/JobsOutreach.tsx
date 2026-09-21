@@ -18,6 +18,7 @@ import {
   useRespondedContacts,
   useUpdateJobsMembership,
   inScope,
+  JOBS_TEAM_EMAILS,
   MEMBERSHIP_STAGE_LABELS,
   type OutreachGranularity,
   type OutreachScopeKind,
@@ -169,38 +170,51 @@ function RowDrill({
 }
 
 // ── A scorecard table (User Pipeline / Activity Pipeline) ─────────────────────
+/** A period column heading: the label, with its window stacked underneath in
+ *  grey. Side by side the dates pushed the heading off-centre and stretched the
+ *  column; stacked, every number sits directly under the window it covers. */
+function PeriodHead({ label, range }: { label: string; range?: string }) {
+  return (
+    <th className="whitespace-nowrap px-2 py-2 text-center font-bold align-bottom">
+      <span className="block">{label}</span>
+      <span className="mt-0.5 block h-3.5 text-[10px] font-normal normal-case tracking-normal text-ink-4">
+        {range ?? ""}
+      </span>
+    </th>
+  );
+}
+
 function ScorecardTable({
   title, rows, idPrefix, firstColHeader, drillKind, granularity, scope, owner, range, nameOf,
-  rangeLabel,
+  rangeLabel, lastRangeLabel, action,
 }: {
   title: string; rows: ScorecardRow[]; idPrefix: string; firstColHeader: string;
   drillKind: "user" | "activity";
-  /** Shown in grey next to "This Period" so the window is never implicit. */
+  /** Shown in grey under "This Period" so the window is never implicit. */
   rangeLabel?: string;
+  /** Same, for the comparison period. */
+  lastRangeLabel?: string;
+  /** Optional control rendered at the right of the title bar. */
+  action?: React.ReactNode;
   granularity: OutreachGranularity; scope: OutreachScopeKind; owner?: string; range?: OutreachDateRange;
   nameOf: (email: string) => string;
 }) {
   const [open, setOpen] = useState<string | null>(null);
   return (
     <div className="flex flex-col overflow-hidden rounded-xl border border-border-strong bg-surface">
-      <div className="border-b border-border-strong bg-surface-2 px-4 py-3 text-[13px] font-bold text-ink-2">{title}</div>
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border-strong bg-surface-2 px-4 py-2.5">
+        <span className="text-[13px] font-bold text-ink-2">{title}</span>
+        {action}
+      </div>
       <table className="w-full border-collapse">
         <thead>
           <tr className="bg-surface-2 text-[10.5px] uppercase tracking-wide text-ink-3">
-            <th className="py-2.5 pl-3.5 pr-2 text-left font-bold">{firstColHeader}</th>
-            <th className="whitespace-nowrap px-2 py-2.5 text-right font-bold">
-              This Period
-              {/* The window, in grey beside the heading rather than in a caption
-                  above the table: the number under it is meaningless without
-                  the dates, so they belong in the same glance. */}
-              {rangeLabel ? (
-                <span className="ml-1.5 font-normal normal-case tracking-normal text-ink-4">{rangeLabel}</span>
-              ) : null}
-            </th>
-            <th className="whitespace-nowrap px-2 py-2.5 text-right font-bold">Last</th>
-            <th className="whitespace-nowrap px-2 py-2.5 text-right font-bold">Trend</th>
-            <th className="whitespace-nowrap px-2 py-2.5 text-right font-bold">Δ to Target</th>
-            <th className="whitespace-nowrap px-3.5 py-2.5 text-right font-bold">Target</th>
+            <th className="py-2 pl-3.5 pr-2 text-left font-bold align-bottom">{firstColHeader}</th>
+            <PeriodHead label="This Period" range={rangeLabel} />
+            <PeriodHead label="Last Period" range={lastRangeLabel} />
+            <th className="whitespace-nowrap px-2 py-2 text-center font-bold align-bottom">Trend</th>
+            <th className="whitespace-nowrap px-2 py-2 text-center font-bold align-bottom">Δ to Target</th>
+            <th className="whitespace-nowrap px-3.5 py-2 text-center font-bold align-bottom">Target</th>
           </tr>
         </thead>
         <tbody>
@@ -241,23 +255,26 @@ function ScorecardTable({
                     {r.label}
                     {pending && <span className="ml-2 text-[10.5px] uppercase tracking-wide text-ink-4">pending migration</span>}
                   </td>
-                  <td className={cn("px-3.5 py-2.5 text-right tabular-nums", pending && "text-ink-4")}>
+                  {/* Centred, not right-aligned: the headings carry a second
+                      line of dates, and a right-aligned number drifts away from
+                      the window it belongs to. */}
+                  <td className={cn("px-3.5 py-2.5 text-center tabular-nums", depth === 0 && "font-semibold", pending && "font-normal text-ink-4")}>
                     {pending ? "—" : r.this_period.total}
                   </td>
-                  <td className={cn("px-3.5 py-2.5 text-right tabular-nums", pending && "text-ink-4")}>
+                  <td className={cn("px-3.5 py-2.5 text-center tabular-nums", pending && "text-ink-4")}>
                     {pending ? "—" : r.last_period.total}
                   </td>
-                  <td className="px-3.5 py-2.5 text-right text-[12.5px]">
+                  <td className="px-3.5 py-2.5 text-center text-[12.5px]">
                     {pending ? <span className="text-ink-4">—</span>
                       : <Trend current={r.this_period.total} prior={r.last_period.total} />}
                   </td>
-                  <td className="px-3.5 py-2.5 text-right text-[12.5px]">
+                  <td className="px-3.5 py-2.5 text-center text-[12.5px]">
                     {!pending && r.target ? <Trend current={r.this_period.total} prior={r.target} /> : <span className="text-ink-4">—</span>}
                   </td>
                   {/* Target renders 0 rather than a dash when unset: the column
                       is a standing prompt that a target is owed, and an em-dash
                       reads as "not applicable". */}
-                  <td className="px-3.5 py-2.5 text-right tabular-nums text-ink-3">{pending ? "—" : r.target ?? 0}</td>
+                  <td className="px-3.5 py-2.5 text-center tabular-nums text-ink-3">{pending ? "—" : r.target ?? 0}</td>
                 </tr>
                 {isOpen && (
                   <tr>
@@ -863,10 +880,47 @@ function ThisWeekBlock({ nameOf, scope, owner, range, onSelectOwner }: {
   );
 }
 
+/** Who the Activity Pipeline is counting: the whole jobs team, or one member.
+ *
+ *  Drives the PAGE's owner filter rather than keeping its own, so it can never
+ *  disagree with the sender select in the period bar. "All jobs team" also
+ *  resets the scope, since a person can be selected from outside the core three
+ *  and leaving the scope on `staff` would then show an empty table. */
+function TeamTabs({ owner, onSelect, nameOf }: {
+  owner?: string;
+  onSelect: (email: string) => void;
+  nameOf: (email: string) => string;
+}) {
+  const current = (owner ?? "").toLowerCase();
+  const tabs = [{ email: "", label: "All jobs team" },
+                ...JOBS_TEAM_EMAILS.map((e) => ({ email: e, label: nameOf(e) }))];
+  return (
+    <div className="flex items-center gap-0.5 rounded-lg border border-border-strong bg-surface p-0.5">
+      {tabs.map((t) => {
+        const active = current === t.email.toLowerCase();
+        return (
+          <button
+            key={t.email || "all"}
+            type="button"
+            onClick={() => onSelect(t.email)}
+            title={t.email || "Every member of the jobs team"}
+            className={cn(
+              "rounded-md px-2.5 py-1 text-[12px] font-medium transition-colors",
+              active ? "bg-accent/10 text-accent" : "text-ink-3 hover:text-ink-2",
+            )}
+          >
+            {t.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 /** The Activity Pipeline table, lifted out of ThisWeekBlock on 2026-09-16 so it
  *  can live on the Outbound Detail sub-tab. Overview shows the summary card in
  *  the space it used to occupy. */
-function ActivityPipelineBlock({ activityPipeline, granularity, scope, owner, range, nameOf, rangeLabel }: {
+function ActivityPipelineBlock({ activityPipeline, granularity, scope, owner, range, nameOf, rangeLabel, lastRangeLabel, onSelectOwner }: {
   activityPipeline?: ScorecardRow[];
   granularity: OutreachGranularity;
   scope: OutreachScopeKind;
@@ -874,12 +928,16 @@ function ActivityPipelineBlock({ activityPipeline, granularity, scope, owner, ra
   range?: OutreachDateRange;
   nameOf: (email: string) => string;
   rangeLabel?: string;
+  lastRangeLabel?: string;
+  onSelectOwner: (email: string) => void;
 }) {
   if (!activityPipeline || activityPipeline.length === 0) return null;
   return (
     <ScorecardTable title="Activity Pipeline" firstColHeader="Activity" rows={activityPipeline}
       idPrefix="act" drillKind="activity" granularity={granularity} scope={scope}
-      owner={owner} range={range} nameOf={nameOf} rangeLabel={rangeLabel} />
+      owner={owner} range={range} nameOf={nameOf} rangeLabel={rangeLabel}
+      lastRangeLabel={lastRangeLabel}
+      action={<TeamTabs owner={owner} onSelect={onSelectOwner} nameOf={nameOf} />} />
   );
 }
 
@@ -1480,6 +1538,7 @@ export function JobsOutreach() {
   const nameOf = (email: string) => staff.find((s) => s.email.toLowerCase() === email.toLowerCase())?.name || email.split("@")[0];
   const { data: sc, isLoading, isError } = useOutreachScorecard(granularity, scope, owner || undefined, range);
   const rangeLabel = useMemo(() => (sc ? fmtRange(sc.period.this_start, sc.period.this_end) : ""), [sc]);
+  const lastRangeLabel = useMemo(() => (sc ? fmtRange(sc.period.last_start, sc.period.last_end) : ""), [sc]);
 
 
   const staffEmails = useMemo(() => new Set(staff.map((s) => s.email.toLowerCase())), [staff]);
@@ -1564,7 +1623,15 @@ export function JobsOutreach() {
             owner={owner || undefined} range={range} />
           <ActivityPipelineBlock activityPipeline={sc?.activity_pipeline}
             granularity={granularity} scope={scope} owner={owner || undefined}
-            range={range} nameOf={nameOf} rangeLabel={rangeLabel || undefined} />
+            range={range} nameOf={nameOf} rangeLabel={rangeLabel || undefined}
+            lastRangeLabel={lastRangeLabel || undefined}
+            onSelectOwner={(email) => {
+              // "All jobs team" is scope=team with nobody selected. Picking a
+              // person leaves the scope alone: they are all core team, so the
+              // team scope already contains them.
+              if (!email) { setScope("team"); setOwner(""); return; }
+              setOwner(email);
+            }} />
           {/* Outreach Detail moved off Overview on 2026-09-21 — it is the
               per-owner breakdown of the volume the table above totals, so it
               belongs under it rather than on a different tab. */}
