@@ -1,9 +1,12 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ChevronDown,
   ChevronRight,
+  Clock,
+  Phone,
   Pin,
   PinOff,
+  Plus,
   Search,
   X,
 } from "lucide-react";
@@ -13,7 +16,8 @@ import { useCollapsible } from "@/lib/collapsible";
 import { fmtDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { useCurrentUser } from "@/services/auth";
-import type { BedrockActivity } from "@/types/salesforce";
+import { useLogCall, type LogCallBody } from "@/services/activities";
+import type { BedrockActivity, SfContact, SfOpportunity } from "@/types/salesforce";
 
 // ── Body normalization ─────────────────────────────────────────────────────
 
@@ -94,11 +98,17 @@ export function ActivityTimeline({
   title,
   maxHeight = DEFAULT_MAX_H,
   scopeKey = "shared",
+  accountId,
+  contacts = [],
+  opportunities = [],
 }: {
   activities: BedrockActivity[];
   title?: string;
   maxHeight?: number;
   scopeKey?: string;
+  accountId?: string;
+  contacts?: SfContact[];
+  opportunities?: SfOpportunity[];
 }) {
   const { open, toggle } = useCollapsible(
     "bedrock-v2:section:activity-timeline",
@@ -112,6 +122,10 @@ export function ActivityTimeline({
   const [typeFilter, setTypeFilter] = useState<string>(ALL_TYPE);
   const [sourceFilter, setSourceFilter] = useState<string>(ALL_SOURCE);
   const [quick, setQuick] = useState<Quick>("all");
+
+  // Log Call form state
+  const [showLogCall, setShowLogCall] = useState(false);
+  const logCall = useLogCall(accountId);
 
   // Pin state — persisted per scope.
   const [pinned, setPinned] = useState<Set<string>>(() => loadPins(scopeKey));
@@ -236,15 +250,42 @@ export function ActivityTimeline({
 
   return (
     <section className="mt-6 overflow-hidden rounded-lg border border-border-strong bg-surface shadow-sm">
-      <button
-        type="button"
-        onClick={toggle}
-        aria-expanded={open}
-        className="flex w-full items-center gap-2 border-b border-border-strong bg-surface-2 px-5 py-2.5 text-left text-[12px] font-semibold uppercase tracking-wider text-ink-3"
-      >
-        {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-        {heading}
-      </button>
+      <div className="flex items-center border-b border-border-strong bg-surface-2">
+        <button
+          type="button"
+          onClick={toggle}
+          aria-expanded={open}
+          className="flex flex-1 items-center gap-2 px-5 py-2.5 text-left text-[12px] font-semibold uppercase tracking-wider text-ink-3"
+        >
+          {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+          {heading}
+        </button>
+        {accountId && (
+          <button
+            type="button"
+            onClick={() => setShowLogCall(true)}
+            className="mr-3 flex items-center gap-1 rounded border border-border-strong bg-surface px-2 py-1 text-[11px] font-medium text-ink-3 hover:border-accent hover:text-accent"
+            title="Log a call"
+          >
+            <Phone size={11} />
+            Log Call
+          </button>
+        )}
+      </div>
+
+      {showLogCall && accountId && (
+        <LogCallForm
+          accountId={accountId}
+          contacts={contacts}
+          opportunities={opportunities}
+          onClose={() => setShowLogCall(false)}
+          onSubmit={async (data) => {
+            await logCall.mutateAsync(data);
+            setShowLogCall(false);
+          }}
+          isPending={logCall.isPending}
+        />
+      )}
 
       {!open ? null : (
         <>
@@ -407,6 +448,163 @@ export function ActivityTimeline({
   );
 }
 
+// ── Log Call Form ──────────────────────────────────────────────────────────
+
+function LogCallForm({
+  accountId,
+  contacts,
+  opportunities,
+  onClose,
+  onSubmit,
+  isPending,
+}: {
+  accountId: string;
+  contacts: SfContact[];
+  opportunities: SfOpportunity[];
+  onClose: () => void;
+  onSubmit: (data: LogCallBody) => Promise<void>;
+  isPending: boolean;
+}) {
+  const today = new Date().toISOString().slice(0, 10);
+  const [subject, setSubject] = useState("Call");
+  const [date, setDate] = useState(today);
+  const [description, setDescription] = useState("");
+  const [contactId, setContactId] = useState("");
+  const [opportunityId, setOpportunityId] = useState("");
+  const firstInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => { firstInputRef.current?.focus(); }, []);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!subject.trim()) return;
+    await onSubmit({
+      account_id: accountId,
+      subject: subject.trim(),
+      activity_date: date,
+      description: description.trim() || undefined,
+      contact_id: contactId || undefined,
+      opportunity_id: opportunityId || undefined,
+    });
+  };
+
+  const inputCls =
+    "h-8 w-full rounded border border-border-strong bg-surface px-2.5 text-[12.5px] text-ink outline-none focus:border-accent";
+
+  return (
+    <form
+      onSubmit={handleSubmit}
+      className="border-b border-border-strong bg-surface-2/40 px-5 py-4"
+    >
+      <div className="mb-3 flex items-center gap-2">
+        <Phone size={13} className="text-ink-3" />
+        <span className="text-[12px] font-semibold uppercase tracking-wider text-ink-3">
+          Log a Call
+        </span>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3">
+        {/* Subject */}
+        <div className="col-span-2 flex flex-col gap-1">
+          <label className="text-[11px] font-medium text-ink-3">Subject</label>
+          <input
+            ref={firstInputRef}
+            value={subject}
+            onChange={(e) => setSubject(e.target.value)}
+            required
+            className={inputCls}
+          />
+        </div>
+
+        {/* Date */}
+        <div className="flex flex-col gap-1">
+          <label className="text-[11px] font-medium text-ink-3">Date</label>
+          <input
+            type="date"
+            value={date}
+            max={today}
+            onChange={(e) => setDate(e.target.value)}
+            required
+            className={inputCls}
+          />
+        </div>
+
+        {/* Related Contact */}
+        <div className="flex flex-col gap-1">
+          <label className="text-[11px] font-medium text-ink-3">Related Contact</label>
+          <select
+            value={contactId}
+            onChange={(e) => setContactId(e.target.value)}
+            className={inputCls}
+          >
+            <option value="">— None —</option>
+            {contacts.map((c) => (
+              <option key={c.Id} value={c.Id}>
+                {c.Name || `${c.FirstName ?? ""} ${c.LastName ?? ""}`.trim()}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {/* Related Opportunity */}
+        {opportunities.length > 0 && (
+          <div className="col-span-2 flex flex-col gap-1">
+            <label className="text-[11px] font-medium text-ink-3">Related Opportunity</label>
+            <select
+              value={opportunityId}
+              onChange={(e) => setOpportunityId(e.target.value)}
+              className={inputCls}
+            >
+              <option value="">— None —</option>
+              {opportunities.map((o) => (
+                <option key={o.Id} value={o.Id}>
+                  {o.Name}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+
+        {/* Notes */}
+        <div className="col-span-2 flex flex-col gap-1">
+          <label className="flex flex-col gap-0.5">
+            <span className="text-[11px] font-medium text-ink-3">Notes</span>
+            <span className="text-[10.5px] text-ink-4">
+              If a Fireflies link is available, please add it to your notes
+            </span>
+          </label>
+          <textarea
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            rows={3}
+            placeholder="Add call notes… or paste a Fireflies link for transcript context"
+            className="w-full rounded border border-border-strong bg-surface px-2.5 py-1.5 text-[12.5px] text-ink outline-none focus:border-accent"
+          />
+        </div>
+      </div>
+
+      <div className="mt-3 flex justify-end gap-2">
+        <button
+          type="button"
+          onClick={onClose}
+          className="rounded border border-border-strong bg-surface px-3 py-1.5 text-[12px] text-ink-3 hover:bg-surface-2"
+        >
+          Cancel
+        </button>
+        <button
+          type="submit"
+          disabled={isPending || !subject.trim()}
+          className="flex items-center gap-1.5 rounded bg-accent px-4 py-1.5 text-[12px] font-medium text-white hover:opacity-90 disabled:opacity-50"
+        >
+          {isPending ? "Logging…" : (
+            <><Plus size={12} /> Log Call</>
+          )}
+        </button>
+      </div>
+    </form>
+  );
+}
+
 // ── Section bits ───────────────────────────────────────────────────────────
 
 function GroupHeader({ label, accent }: { label: string; accent?: boolean }) {
@@ -537,7 +735,10 @@ function ActivityRow({
   // Meetings often have no body but still carry useful detail (location,
   // duration, Fireflies notes if logged on the SF Event description).
   const hasMeetingMeta = !!(a.meeting_location || a.meeting_duration_minutes);
-  const isExpandable = hasBody || hasMeetingMeta;
+  const isManualCall = a.source === "manual" && a.type === "call";
+  // Show chevron when there's content to read, or it's a manual call.
+  // The pencil button bypasses this by setting expanded=true directly.
+  const isExpandable = hasBody || hasMeetingMeta || isManualCall;
 
   return (
     <li className="group/row border-b border-border-strong last:border-b-0">
@@ -583,6 +784,22 @@ function ActivityRow({
           </div>
           {showContext && a._context_type && a._context_type !== "account" && (
             <ContextChip type={a._context_type} name={a._context_name} />
+          )}
+          {a.sf_sync_status === "pending" && (
+            <span
+              title="Syncing to Salesforce…"
+              className="flex-shrink-0 text-amber-400"
+            >
+              <Clock size={11} />
+            </span>
+          )}
+          {a.sf_sync_status === "failed" && (
+            <span
+              title="Salesforce sync failed"
+              className="flex-shrink-0 text-red-400"
+            >
+              ⚠
+            </span>
           )}
           <div className="mono flex-shrink-0 text-[11px] text-ink-3">{date}</div>
         </button>
@@ -639,10 +856,14 @@ function ActivityRow({
                 </button>
               ) : null}
             </>
-          ) : (
+          ) : isManualCall ? (
             <div className="text-ink-4 italic">No notes logged.</div>
-          )}
-          {a.owner_email ? (
+          ) : null}
+          {isManualCall && (a.owner_email || a.owner_name) ? (
+            <div className="mt-3 text-[11px] text-ink-3">
+              Logged by {a.owner_name ?? a.owner_email}
+            </div>
+          ) : a.owner_email ? (
             <div className="mt-3 text-[11px] text-ink-3">{a.owner_email}</div>
           ) : null}
         </div>

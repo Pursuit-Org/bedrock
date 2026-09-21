@@ -1,4 +1,5 @@
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 
 import { api } from "@/lib/api";
 import type { BedrockActivity } from "@/types/salesforce";
@@ -102,5 +103,32 @@ export function useAccountFullActivities(
     queryFn: () => fetchAccountFullActivities(accountId!, limit),
     staleTime: 30_000,
     enabled: !!accountId,
+  });
+}
+
+// ── Log a Call ─────────────────────────────────────────────────────────────
+
+export interface LogCallBody {
+  account_id: string;
+  subject: string;
+  activity_date: string;       // ISO date string YYYY-MM-DD
+  description?: string;
+  contact_id?: string;
+  opportunity_id?: string;
+}
+
+export function useLogCall(accountId: string | undefined) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: LogCallBody) =>
+      api
+        .post<{ success: boolean; data: BedrockActivity }>("/api/activities/log-call", body)
+        .then((r) => r.data.data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["activities-full", accountId] });
+      qc.invalidateQueries({ queryKey: ["activities", { accountId }] });
+      toast.success("Call logged");
+    },
+    onError: () => toast.error("Failed to log call"),
   });
 }

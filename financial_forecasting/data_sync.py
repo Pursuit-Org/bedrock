@@ -179,6 +179,65 @@ class DataSyncService:
             "errors": errors,
         })
 
+        # Retry any manually-logged calls that failed to reach SF on the first attempt.
+        await self.sync_pending_call_activities()
+
+    async def sync_pending_call_activities(self):
+        """Push locally-saved call activities (sf_sync_status='pending') to Salesforce.
+
+        Called at the end of every sync cycle. On success stamps sf_id and flips
+        status to 'synced'. On repeated failure leaves status as 'pending' until
+        a human investigates or the backend reconnects to Salesforce.
+        """
+        if self.db_pool is None or not self._salesforce_available():
+            return
+        salesforce = self.mcp_client.services["salesforce"]
+        async with self.db_pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, subject, description, activity_date,
+                       account_id, opportunity_id, contact_ids
+                FROM bedrock.activity
+                WHERE sf_sync_status = 'pending'
+                  AND source = 'manual'
+                  AND type = 'call'
+                  AND deleted_at IS NULL
+                LIMIT 50
+                """
+            )
+            if not rows:
+                return
+            logger.info("Pending call sync: retrying %d rows", len(rows))
+            for row in rows:
+                try:
+                    sf_fields = {
+                        "Subject": row["subject"],
+                        "Status": "Completed",
+                        "TaskSubtype": "Call",
+                        "WhatId": row["opportunity_id"] or row["account_id"],
+                    }
+                    if row["activity_date"]:
+                        sf_fields["ActivityDate"] = row["activity_date"].date().isoformat()
+                    if row["description"]:
+                        sf_fields["Description"] = row["description"]
+                    contact_ids = row["contact_ids"] or []
+                    if contact_ids:
+                        sf_fields["WhoId"] = contact_ids[0]
+                    result = await salesforce.create_record("Task", sf_fields)
+                    sf_id = result.get("id") or result.get("Id")
+                    if sf_id:
+                        await conn.execute(
+                            """
+                            UPDATE bedrock.activity
+                            SET sf_id=$1, sf_task_id=$1, sf_sync_status='synced', synced_at=now()
+                            WHERE id=$2
+                            """,
+                            sf_id, row["id"],
+                        )
+                        logger.info("Pending call %s synced to SF Task %s", row["id"], sf_id)
+                except Exception as e:
+                    logger.warning("Failed to sync pending call %s to SF: %s", row["id"], e)
+
     @staticmethod
     def _parse_sf_datetime(value) -> Optional[datetime]:
         """Parse a Salesforce date/datetime string to a timezone-aware Python datetime.
