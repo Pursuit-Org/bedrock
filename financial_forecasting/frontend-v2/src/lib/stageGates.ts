@@ -43,8 +43,11 @@ export interface StageGateSpec {
     label: string;
     hint: string;
   }>;
-  /** Free-text close reason → npsp__Closed_Lost_Reason__c. */
+  /** Free-text close/withdrawal reason. */
   closeReason?: boolean;
+  /** The SF field to write the reason to. Defaults to
+   *  npsp__Closed_Lost_Reason__c when omitted. */
+  closeReasonField?: string;
 }
 
 const PURSUIT_CHECKLIST_BODY: Pick<
@@ -158,15 +161,16 @@ export function getStageGate(fromStage: string | null | undefined, toStage: stri
     return {
       id: "withdrawn",
       title: "Mark opportunity as withdrawn",
-      description: "Briefly note why this opportunity is being withdrawn. This goes into the SF \"Closed Lost Reason\" field so it's searchable for trend analysis.",
+      description: "Briefly note why this opportunity is being withdrawn. This helps the team understand trends and provides context for future interactions.",
       closeReason: true,
+      closeReasonField: "Withdrawn_Reason__c",
     };
   }
   if (toStage === "Closed Lost") {
     return {
       id: "closed-lost",
       title: "Mark opportunity as closed lost",
-      description: "Capture the loss reason for trend analysis. This goes into the SF \"Closed Lost Reason\" field.",
+      description: "Capture the loss reason for trend analysis. This helps the team understand what's driving closed lost outcomes.",
       closeReason: true,
     };
   }

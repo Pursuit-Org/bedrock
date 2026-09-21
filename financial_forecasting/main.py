@@ -545,7 +545,8 @@ async def get_opportunities(
                Philanthropy_Type__c,
                Manager_Probability_Override__c,
                Priority__c,
-               Grant_Start_Date__c, Grant_End_Date__c
+               Grant_Start_Date__c, Grant_End_Date__c,
+               npsp__Closed_Lost_Reason__c, Withdrawn_Reason__c
         FROM Opportunity
         """
 
@@ -2330,6 +2331,98 @@ async def update_account(
                     confirmed["Active__c"] = records[0].get("Active__c")
             except Exception:
                 logger.warning("Active__c read-back failed for %s", account_id)
+        # Auto-create a reminder task when the account is deprioritized or put on hold
+        _deprioritizing = update_request.updates.get("Active__c") is False
+        _on_hold = update_request.updates.get("Qualification_Status__c") == "Not Qualified"
+        if _deprioritizing or _on_hold:
+            # Reported back to the caller rather than only logged. The UI tells
+            # the user "a task will be set for the account owner", so when that
+            # silently doesn't happen the user is told something untrue.
+            reminder: dict = {"created": False, "reason": "not attempted"}
+            try:
+                owner_result = await salesforce.query(
+                    "SELECT OwnerId, Owner.IsActive FROM Account "
+                    f"WHERE Id = '{escape_soql_string(account_id)}' LIMIT 1"
+                )
+                owner_records = owner_result.get("records") or []
+                if not owner_records:
+                    reminder = {"created": False, "reason": "account not found"}
+                if owner_records:
+                    owner_id = owner_records[0]["OwnerId"]
+                    # 11,601 of 20,420 active accounts (57%) are owned by a
+                    # deactivated Salesforce user, and stale accounts owned by
+                    # departed staff are exactly the deprioritize population.
+                    # Salesforce rejects a Task assigned to an inactive user, so
+                    # assigning blindly meant the reminder was never filed for
+                    # the majority of accounts — silently, because the failure
+                    # was swallowed as a warning.
+                    owner_active = ((owner_records[0].get("Owner") or {}).get("IsActive")) is True
+                    acting_sf_id = (user.get("_app_user") or {}).get("sf_user_id")
+                    if not owner_active:
+                        if acting_sf_id:
+                            owner_id = acting_sf_id
+                            reminder["reassigned_from_inactive_owner"] = True
+                        else:
+                            owner_id = None
+                            reminder = {
+                                "created": False,
+                                "reason": "account owner is deactivated and no Salesforce user "
+                                          "is linked to your login to fall back to",
+                            }
+                    # Idempotent: deprioritize -> reprioritize -> deprioritize
+                    # otherwise stacks identical open reminders, as does a retry
+                    # after a write that actually landed past the 60s client
+                    # timeout.
+                    if owner_id:
+                        dupe = await salesforce.query(
+                            "SELECT Id FROM Task WHERE IsClosed = false "
+                            f"AND WhatId = '{escape_soql_string(account_id)}' "
+                            "AND Subject LIKE 'Account was deprioritized%' LIMIT 1"
+                        )
+                        dupe_records = dupe.get("records") or []
+                        if dupe_records:
+                            reminder = {
+                                "created": False,
+                                "reason": "an open reminder already exists for this account",
+                                "task_id": dupe_records[0].get("Id"),
+                            }
+                            owner_id = None
+                if owner_records and owner_id:
+                    today = date.today()
+                    future_month = today.month + 6
+                    due_year = today.year + (future_month - 1) // 12
+                    due_month = (future_month - 1) % 12 + 1
+                    due_day = min(today.day, calendar.monthrange(due_year, due_month)[1])
+                    due_date = date(due_year, due_month, due_day)
+                    date_str = f"{today.month}/{today.day}/{str(today.year)[2:]}"
+                    task_fields = {
+                        "Subject": (
+                            f"Account was deprioritized or put on hold on {date_str}. "
+                            "Please reevaluate if account status is still accurate."
+                        ),
+                        "ActivityDate": due_date.isoformat(),
+                        "OwnerId": owner_id,
+                        "WhatId": account_id,
+                        "Status": "Not Started",
+                        "Priority": "Normal",
+                    }
+                    task_result = await salesforce.create_record("Task", task_fields)
+                    task_id = task_result.get("id") or task_result.get("Id")
+                    if task_id:
+                        await _verify_and_recover_task_fields(salesforce, task_id, task_fields)
+                        reminder.update({
+                            "created": True, "task_id": task_id,
+                            "due": due_date.isoformat(), "owner_id": owner_id,
+                        })
+                        reminder.pop("reason", None)
+                    else:
+                        reminder = {"created": False,
+                                    "reason": "Salesforce accepted the task but returned no id"}
+                    cache.invalidate_prefix("account-tasks:")
+            except Exception as e:
+                logger.warning("Auto-task creation failed for account %s: %s", account_id, e)
+                reminder = {"created": False, "reason": str(e)[:200]}
+            confirmed["_reminder_task"] = reminder
         cache.invalidate_prefix("accounts:")
         logger.info(f"Account {account_id} updated by {user['user_id']}")
         return ApiResponse(success=True, data=confirmed)
