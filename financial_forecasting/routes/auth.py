@@ -143,6 +143,24 @@ def get_google_credentials(email: str, request: Request = None):
 @router.get("/auth/google")
 async def auth_google(request: Request):
     """Initiate Google OAuth flow."""
+    # Bound the number of pending OAuth states rather than clearing the
+    # session outright.
+    #
+    # Authlib keys each in-flight attempt separately ("_state_google_<state>"),
+    # so concurrent attempts are supposed to coexist — that is what makes two
+    # browser tabs, or a retry after a back-button, both able to complete.
+    # session.clear() made the newest initiation the only valid one and took
+    # the rest of the session with it, so tab A's callback then failed with the
+    # very mismatching_state it was meant to prevent.
+    #
+    # The real failure mode is accumulation: abandoned attempts pile up and the
+    # session cookie eventually exceeds the 4KB browser limit, at which point
+    # every state is lost. Keeping the most recent few fixes that without
+    # breaking concurrent flows.
+    _MAX_PENDING_STATES = 5
+    pending = [k for k in request.session if k.startswith("_state_google_")]
+    for stale in pending[:-_MAX_PENDING_STATES] if len(pending) > _MAX_PENDING_STATES else []:
+        request.session.pop(stale, None)
     return await oauth.google.authorize_redirect(
         request, GOOGLE_REDIRECT_URI,
         access_type='offline',

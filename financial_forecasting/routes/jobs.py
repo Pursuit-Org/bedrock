@@ -306,6 +306,7 @@ class OpportunityUpdate(BaseModel):
 @router.get("/metrics/{key}")
 async def metric_drilldown(
     key: str,
+    segment: Optional[str] = Query(None),
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
@@ -313,8 +314,20 @@ async def metric_drilldown(
 
     Generic shape: {title, columns:[{key,label}], rows:[{...}], count}.
     Lets the frontend render any metric's detail in one table component.
+
+    `segment` (an L3 cohort) mirrors the headline cards: the drill has to be
+    scoped the same way the number above it is, or the list doesn't reconcile
+    with it. Only builder-based rows can be scoped — a committed open req has
+    no builder and so no cohort, so under a segment it drops out of the drill
+    exactly as it drops out of the headline.
     """
     ENGAGED = ("initial_outreach", "active", "on_hold")
+
+    seg = segment if segment and segment != "all" else None
+    seg_uids: Optional[set] = None
+    if seg:
+        prows = await conn.fetch(f"WITH {_L3PLUS_POOL} SELECT user_id, segment FROM pool")
+        seg_uids = {r["user_id"] for r in prows if r["segment"] == seg}
 
     # ---- contact-based metrics ----
     contact_cols = [
@@ -434,27 +447,47 @@ async def metric_drilldown(
             "FROM bedrock.secured_jobs() s "
             f"WHERE s.payment_amount > 0 AND s.employment_type = 'full_time' AND {where} AND {_live_placement('s')} ORDER BY s.builder"
         )
+        if seg_uids is not None:
+            placed = [r for r in placed if r["user_id"] in seg_uids]
+        # The headline counts DISTINCT BUILDERS, so only one record per builder
+        # may carry the ✓ — someone with a prior FT role and a current one would
+        # otherwise tick twice against a number that counted them once, and the
+        # list would stop adding up to the card above it. Representative = the
+        # role they're actually in, else the best-paid one.
+        _rep: dict = {}
+        for r in placed:
+            key = (r["engagement_stage"] == "active", r["payment_amount"] or 0)
+            if r["user_id"] not in _rep or key > _rep[r["user_id"]][0]:
+                _rep[r["user_id"]] = (key, r["id"])
+        counted_ids = {v[1] for v in _rep.values()}
         for r in placed:
             out.append({
                 "id": str(r["id"]), "kind": "placed",
                 "opportunity_id": r["opp_id"],
                 "company": r["company_name"] or "—",
                 "builder": r["builder"] or "—",
-                "status": "Full-time placed",
+                "status": ("Full-time placed" if r["engagement_stage"] == "active"
+                           else "Full-time placed — no longer in role"),
+                # Raw value so the drill can render an editable stage dropdown;
+                # `status` stays the human sentence for the read-only rows.
+                "engagement_stage": r["engagement_stage"],
                 "role": r["role_title"] or "—",
                 "salary": str(int(r["payment_amount"])) if r["payment_amount"] else "",
-                "counted": "✓",
+                "counted": "✓" if r["id"] in counted_ids else "—",
             })
         # (2) committed active trials — builder in a trial (converts to the open FT req below)
-        trials = await conn.fetch("""
-            SELECT r.id, r.approx_salary, r.opportunity_id::text AS opp_id, o.account_name, r.title, s.builder
+        trials = await conn.fetch(f"""
+            SELECT r.id, r.approx_salary, r.opportunity_id::text AS opp_id, o.account_name, r.title,
+                   r.filled_by_user_id, s.builder
             FROM bedrock.jobs_role r
             JOIN bedrock.jobs_opportunity o ON o.id = r.opportunity_id
             LEFT JOIN bedrock.secured_jobs() s ON s.id = r.employment_record_id
-            WHERE o.deleted_at IS NULL AND r.commitment = 'committed' AND r.is_trial = true
-              AND r.filled_by_user_id IS NOT NULL AND r.status <> 'cancelled'
+            WHERE o.deleted_at IS NULL AND {_trial_running()}
             ORDER BY o.account_name
         """)
+        # A trial HAS a builder, so it does have a cohort — scoped, not dropped.
+        if seg_uids is not None:
+            trials = [t for t in trials if t["filled_by_user_id"] in seg_uids]
         for tr in trials:
             out.append({
                 "id": str(tr["id"]), "kind": "role",
@@ -466,8 +499,9 @@ async def metric_drilldown(
                 "salary": str(int(tr["approx_salary"])) if tr["approx_salary"] else "",
                 "counted": "—",
             })
-        # (3) committed FT roles still open — no builder placed yet
-        committed = await conn.fetch("""
+        # (3) committed FT roles still open — no builder placed yet, so no cohort:
+        # dropped under a segment to match the headline, which excludes them there.
+        committed = [] if seg else await conn.fetch("""
             SELECT r.id, r.approx_salary, r.opportunity_id::text AS opp_id, o.account_name, r.title
             FROM bedrock.jobs_role r
             JOIN bedrock.jobs_opportunity o ON o.id = r.opportunity_id
@@ -506,9 +540,13 @@ async def metric_drilldown(
         # id needed to edit it inline. Placed rows edit via the placement; committed
         # via the role (both stay in sync once filled).
         placed = await conn.fetch(
-            "SELECT id, builder, company_name, role_title, payment_amount "
+            "SELECT id, user_id, builder, company_name, role_title, payment_amount "
             f"FROM bedrock.secured_jobs() WHERE payment_amount > 0 AND employment_type='full_time' AND {_live_placement()} ORDER BY builder")
-        committed = await conn.fetch("""
+        if seg_uids is not None:
+            placed = [r for r in placed if r["user_id"] in seg_uids]
+        # Committed reqs have no builder, so no cohort — dropped under a segment
+        # to match avg_salary_ft_secured, which is placed-only there.
+        committed = [] if seg else await conn.fetch("""
             SELECT r.id, o.account_name, r.title, r.approx_salary
             FROM bedrock.jobs_role r JOIN bedrock.jobs_opportunity o ON o.id = r.opportunity_id
             WHERE r.status='open' AND o.deleted_at IS NULL AND r.commitment='committed' AND r.is_trial=false
@@ -542,6 +580,8 @@ async def metric_drilldown(
                OR (coalesce(payment_amount, 0) = 0 AND employment_type IN ('contract','freelance','part_time')))
               AND {_live_placement()}
             ORDER BY builder""")
+        if seg_uids is not None:
+            rows = [r for r in rows if r["user_id"] in seg_uids]
         # One row PER PAID ROLE: builders with several paid engagements show each
         # (the headline still counts distinct builders). Grouped by builder.
         rows = sorted(rows, key=lambda r: ((r["builder"] or "").lower(),
@@ -573,11 +613,13 @@ async def metric_drilldown(
 
     async def builders_interviewing(_where: str):
         rows = await conn.fetch("""
-            SELECT trim(split_part(notes, ':', 1)) AS builder, company_name, role_title
+            SELECT trim(split_part(notes, ':', 1)) AS builder, builder_id, company_name, role_title
             FROM public.job_applications
             WHERE stage='interview' AND source_type='Pursuit_referred'
             ORDER BY company_name
         """)
+        if seg_uids is not None:
+            rows = [r for r in rows if r["builder_id"] in seg_uids]
         out = [{"builder": r["builder"] or "—", "company": r["company_name"] or "—",
                 "role": r["role_title"] or "—", "stage": "Interviewing"} for r in rows]
         cols = [{"key": "builder", "label": "Builder"}, {"key": "company", "label": "Company"},
@@ -673,6 +715,13 @@ async def get_placements(
 
     # A builder is FT-placed if ANY of their paid records is full_time.
     ft_uids   = {r["user_id"] for r in rows if r["employment_type"] == "full_time"}
+    # FT-placed builders with no full-time record still running. They stay in the
+    # headline — the point is that they WERE placed — and the card reports how
+    # many have since left. 'completed' vs 'ended' isn't pinned down in dd_metrics
+    # yet; either way the builder isn't in the role now, so both count here.
+    ft_left = len(ft_uids - {r["user_id"] for r in rows
+                             if r["employment_type"] == "full_time"
+                             and r["engagement_stage"] == "active"})
     any_uids  = set(by_builder.keys())
     infl_uids = {r["user_id"] for r in rows if r["influenced"] is True}
 
@@ -710,18 +759,22 @@ async def get_placements(
           AND r.approx_salary IS NOT NULL
     """)
     committed_salaries = [float(r["approx_salary"]) for r in crows if r["approx_salary"]]
-    secured_salaries = placed_salaries + committed_salaries
+    # Committed roles have no builder, so no cohort. Blending their (global)
+    # salaries into a cohort-scoped average repeated the same demand under every
+    # cohort, and showed an Avg FT Salary for cohorts with zero placements —
+    # the same double-count TKT-127 fixed for the headline count, which never
+    # got applied here. Under a segment the average is placed-only.
+    secured_salaries = placed_salaries + ([] if seg else committed_salaries)
     avg_salary_ft_secured = round(sum(secured_salaries) / len(secured_salaries)) if secured_salaries else None
 
     # Builders currently in a committed, active paid trial (someone IS in the trial;
     # its FT conversion is a separate role that stays open until they convert). This
     # is the "Committed: trial active" status — surfaced so a trial like Fowler/Ethan
     # is neither counted as FT-placed nor invisible (fixes the Home vs Accounts gap).
-    trial_rows = await conn.fetch("""
+    trial_rows = await conn.fetch(f"""
         SELECT DISTINCT r.filled_by_user_id AS uid FROM bedrock.jobs_role r
         JOIN bedrock.jobs_opportunity o ON o.id = r.opportunity_id
-        WHERE o.deleted_at IS NULL AND r.commitment = 'committed' AND r.is_trial = true
-          AND r.filled_by_user_id IS NOT NULL AND r.status <> 'cancelled'
+        WHERE o.deleted_at IS NULL AND {_trial_running()}
     """)
     trial_uids = {r["uid"] for r in trial_rows}
     if seg_uids is not None:
@@ -767,6 +820,7 @@ async def get_placements(
             "influenced_any": infl_any,
             "committed_ft_roles": committed_ft_roles,
             "committed_trial_active": committed_trial_active,
+            "ft_no_longer_in_role": ft_left,
             # Committed roles have no builder, so no cohort — including them in
             # a cohort-scoped headline repeated the same roles under every
             # cohort (TKT-127). Under a segment they're reported separately
@@ -990,10 +1044,28 @@ async def link_opp_placement(
     return {"success": True, "data": {"id": str(placement_id), "opportunity_id": str(opp_id)}}
 
 
+# Mirrors employment_records_engagement_stage_check. 'pipeline' is a
+# pre-placement state and isn't offered in the placements UI, but the API
+# accepts it so a record filed in error can be walked back.
+_ENGAGEMENT_STAGES = ("active", "pipeline", "completed", "ended")
+
+# Stages that mean the builder is out of the role. Both require an end date —
+# see update_placement. 'completed' vs 'ended' has no dd_metrics definition yet.
+_TERMINAL_STAGES = ("completed", "ended")
+
+# Matches employment_records_end_reason_check (db/migrations/2026-09-15-...).
+_END_REASONS = ("contract_ended", "new_role", "laid_off", "terminated",
+                "personal", "unknown")
+
+
 class PlacementUpdate(BaseModel):
     influenced: Optional[bool] = None  # true / false / null (unclassify)
     salary: Optional[int] = None       # edit payment_amount (the secured-jobs SoT)
     role_title: Optional[str] = None   # edit the title (syncs the linked role)
+    engagement_stage: Optional[str] = None  # active | pipeline | completed | ended
+    end_date: Optional[date] = None         # when the engagement stopped
+    end_reason: Optional[str] = None        # one of _END_REASONS
+    end_note: Optional[str] = None          # optional free text alongside the reason
 
 
 @router.patch("/placements/{placement_id}")
@@ -1003,9 +1075,55 @@ async def update_placement(
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
-    """Edit a secured job: influence attribution and/or salary (payment_amount)."""
+    """Edit a secured job: influence attribution, salary, or engagement stage.
+
+    Stage is what records that a placed builder is no longer in the role. They
+    stay counted as placed — the metric is that they WERE placed — so nothing
+    here changes the headline; it drives the "N no longer in role" breakdown and
+    is the only way end dates ever get captured for retention. The linked role
+    is deliberately NOT reopened on an end: whether that seat is still live is a
+    separate call for the team.
+    """
     sets, params, i = [], [], 1
     fields = body.model_dump(exclude_unset=True)
+    stage = body.engagement_stage
+    if "engagement_stage" in fields:
+        if stage not in _ENGAGEMENT_STAGES:
+            raise HTTPException(
+                422, f"engagement_stage must be one of: {', '.join(_ENGAGEMENT_STAGES)}")
+        # An end date is required on the way out, not optional. Without it the
+        # record says someone left but not when, which is precisely the hole
+        # that makes retention uncomputable today. 'unknown' is an allowed
+        # reason, so nobody is forced to invent a cause — only a date, which an
+        # approximation still answers usefully.
+        if stage in _TERMINAL_STAGES:
+            known_end = body.end_date if "end_date" in fields else await conn.fetchval(
+                "SELECT end_date FROM public.employment_records WHERE id=$1", placement_id)
+            if known_end is None:
+                raise HTTPException(
+                    422, f"end_date is required when engagement_stage is '{stage}'")
+        sets.append(f"engagement_stage=${i}"); params.append(stage); i += 1
+    if "end_date" in fields:
+        sets.append(f"end_date=${i}"); params.append(body.end_date); i += 1
+    # Reason/note describe an ending, so returning to 'active' clears them along
+    # with the date rather than leaving a stale explanation on a live placement.
+    reopening = "engagement_stage" in fields and stage not in _TERMINAL_STAGES
+    if reopening and "end_date" not in fields:
+        sets.append("end_date=NULL")
+    if "end_reason" in fields and body.end_reason is not None:
+        if body.end_reason not in _END_REASONS:
+            raise HTTPException(422, f"end_reason must be one of: {', '.join(_END_REASONS)}")
+    # Columns arrive with db/migrations/2026-09-15-employment-records-end-reason.sql;
+    # writes are skipped until then rather than 42703-ing the whole update.
+    if await _has_column("public", "employment_records", "end_reason"):
+        if "end_reason" in fields:
+            sets.append(f"end_reason=${i}"); params.append(body.end_reason); i += 1
+        elif reopening:
+            sets.append("end_reason=NULL")
+        if "end_note" in fields:
+            sets.append(f"end_note=${i}"); params.append(body.end_note); i += 1
+        elif reopening:
+            sets.append("end_note=NULL")
     if "influenced" in fields:
         sets.append(f"influenced=${i}"); params.append(body.influenced); i += 1
     if "salary" in fields:
@@ -6719,6 +6837,19 @@ _MEMBERSHIP_STAGES = ('assigned', 'initial_outreach', 'call_booked',
 
 # TKT-161: placements whose linked opportunity was soft-deleted (data-entry
 # errors) must not count anywhere. Self-sourced placements (no opp link) stay.
+def _trial_running(a: str = "r") -> str:
+    """A committed trial actually under way: a builder is in it and it hasn't
+    ended. Putting an end date on the role is how staff close a trial out — the
+    role stays `filled`, since it was — so a past end date is what marks it
+    finished. Without this the count only ever went up (Ethan Davey / Fowler).
+    A future end date still reads as running: the trial is scheduled to end, not
+    ended.
+    """
+    return (f"{a}.commitment = 'committed' AND {a}.is_trial = true "
+            f"AND {a}.filled_by_user_id IS NOT NULL AND {a}.status <> 'cancelled' "
+            f"AND ({a}.end_date IS NULL OR {a}.end_date >= CURRENT_DATE)")
+
+
 def _live_placement(a: str = "") -> str:
     col = f"{a}.opportunity_id" if a else "opportunity_id"
     return (f"({col} IS NULL OR NOT EXISTS (SELECT 1 FROM bedrock.jobs_opportunity dop "
@@ -6860,13 +6991,23 @@ async def update_jobs_membership(contact_id: int, body: MembershipPatch,
                 "bedrock", "jobs_contact_membership", "call_booked_at"):
             sets.append("call_booked_at = CASE WHEN jobs_contact_membership.stage "
                         "IS DISTINCT FROM 'call_booked' THEN now() ELSE jobs_contact_membership.call_booked_at END")
-    if body.revisit_date is not None and await _has_column(
-            "bedrock", "jobs_contact_membership", "revisit_date"):
+    # Parse once, before the column probe. Two reasons it can't live inside that
+    # `if` the way it used to: a malformed date should 400 whether or not the
+    # column exists, and _ensure_revisit_task needs a real date object even when
+    # the membership can't store one — jobs_task.deadline is written through a
+    # $n::date parameter, and asyncpg rejects a str for it outright
+    # ("'str' object has no attribute 'toordinal'"). That raised inside the
+    # transaction below, rolling back the stage UPDATE that had already
+    # succeeded, so every Revisit 500'd and the contact never moved.
+    revisit_on: Optional[date] = None
+    if body.revisit_date is not None:
         try:
-            _rd = date.fromisoformat(body.revisit_date)
+            revisit_on = date.fromisoformat(body.revisit_date)
         except ValueError:
             raise HTTPException(400, "invalid revisit_date; use YYYY-MM-DD")
-        sets.append(f"revisit_date = ${i}"); params.append(_rd); i += 1
+    if revisit_on is not None and await _has_column(
+            "bedrock", "jobs_contact_membership", "revisit_date"):
+        sets.append(f"revisit_date = ${i}"); params.append(revisit_on); i += 1
     if body.owner_email is not None:
         sets.append(f"owner_email = ${i}"); params.append(body.owner_email); i += 1
     if body.opportunity_id is not None:
@@ -6896,19 +7037,23 @@ async def update_jobs_membership(contact_id: int, body: MembershipPatch,
                 "INSERT INTO bedrock.jobs_membership_stage_history "
                 "(contact_id, from_stage, to_stage, changed_by) VALUES ($1, $2, $3, $4)",
                 contact_id, old_stage, body.stage, _user_email(user))
-        if body.revisit_date:
-            await _ensure_revisit_task(conn, contact_id, body.revisit_date, _user_email(user))
+        if revisit_on is not None:
+            await _ensure_revisit_task(conn, contact_id, revisit_on, _user_email(user))
     return {"success": True}
 
 
-async def _ensure_revisit_task(conn, contact_id: int, when: str, actor: Optional[str]) -> None:
+async def _ensure_revisit_task(conn, contact_id: int, when: date, actor: Optional[str]) -> None:
     """Put the revisit on the owner's task list for that date.
 
     Reuses bedrock.jobs_task, which already drives the Jobs Home Overdue/Today/
     Upcoming widget — so Revisit needs no new surface, it just files a row the
     existing widget already renders. Idempotent per contact: re-setting the date
     moves the open task rather than stacking a second one, otherwise changing your
-    mind three times leaves three reminders."""
+    mind three times leaves three reminders.
+
+    `when` must be a datetime.date, not a 'YYYY-MM-DD' string: both writes below
+    bind it to a $n::date parameter, and asyncpg raises DataError on a str
+    rather than coercing it."""
     row = await conn.fetchrow(
         "SELECT m.owner_email, c.full_name, c.current_company "
         "FROM bedrock.jobs_contact_membership m "

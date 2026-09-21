@@ -29,6 +29,21 @@ function trimAbbr(n: number): string {
   return r % 1 === 0 ? r.toString() : r.toFixed(1);
 }
 
+/**
+ * Like fmtMoney but always shows one decimal place for headline figures.
+ * e.g. $11.3M, $3.6M, $951.4K — never drops to whole numbers above 10M.
+ */
+export function fmtMoneyMD(n: number | null | undefined): string {
+  if (n == null || n === 0) return "$0";
+  const sign = n < 0 ? "-" : "";
+  const abs = Math.abs(n);
+  if (abs >= 999_500_000_000) return `${sign}$${(abs / 1_000_000_000_000).toFixed(1)}T`;
+  if (abs >= 999_500_000)     return `${sign}$${(abs / 1_000_000_000).toFixed(1)}B`;
+  if (abs >= 999_500)         return `${sign}$${(abs / 1_000_000).toFixed(1)}M`;
+  if (abs >= 999.5)           return `${sign}$${(abs / 1_000).toFixed(1)}K`;
+  return `${sign}$${Math.round(abs).toLocaleString("en-US")}`;
+}
+
 const _moneyFullFormatter = new Intl.NumberFormat("en-US", {
   style: "currency",
   currency: "USD",
@@ -138,3 +153,24 @@ export const relDay = (iso: string | null | undefined): string | null => {
   const d = Math.floor((Date.now() - new Date(iso).getTime()) / 86400000);
   return d <= 0 ? "today" : d === 1 ? "1d" : d < 30 ? `${d}d` : d < 365 ? `${Math.floor(d / 30)}mo` : `${Math.floor(d / 365)}y`;
 };
+
+/** Normalize a user-entered URL for use in an `href`.
+ *
+ *  Salesforce holds plenty of scheme-less values (`www.linkedin.com/in/x`,
+ *  `linkedin.com/in/y`) — dropped into an href those are *relative*, so the
+ *  router swallows the click and lands on an in-app 404 instead of the
+ *  profile. Same normalization the Website links already do inline
+ *  (AccountDetail, CleanupAccountsTab), centralised so the next one gets it
+ *  for free.
+ *
+ *  Returns null for anything that can't be a URL — empty, or containing
+ *  whitespace (SF has a few rows holding a bare name) — so callers can render
+ *  nothing rather than a link that goes somewhere wrong. A non-http scheme is
+ *  prefixed rather than passed through, which renders `javascript:` inert.
+ */
+export function toExternalHref(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const v = raw.trim();
+  if (!v || /\s/.test(v)) return null;
+  return /^https?:\/\//i.test(v) ? v : `https://${v.replace(/^\/+/, "")}`;
+}

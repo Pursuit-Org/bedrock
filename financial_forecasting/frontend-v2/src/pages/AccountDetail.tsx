@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
+import { ConfirmDeprioritizeDialog } from "@/components/ConfirmDeprioritizeDialog";
 
 import { api } from "@/lib/api";
 import { ChevronDown, ChevronRight, ExternalLink, Info, Loader2, Mail, Pencil, Phone, Plus, Search, UserPlus, X } from "lucide-react";
@@ -17,7 +18,7 @@ import { StageChip } from "@/components/ui/StageChip";
 import { Tag } from "@/components/ui/Tag";
 import { Tooltip } from "@/components/ui/Tooltip";
 import { accountStatusVariant } from "@/lib/accountStatus";
-import { fmtDate, fmtMoney, fmtMoneyFull, initials } from "@/lib/format";
+import { fmtDate, fmtMoney, fmtMoneyFull, initials, toExternalHref } from "@/lib/format";
 import { useCollapsible } from "@/lib/collapsible";
 import { isLost, isOpen, isWon, SF_STAGE_OPTIONS, stageStatus } from "@/lib/stages";
 import { cn } from "@/lib/utils";
@@ -60,6 +61,8 @@ export function AccountDetailPage() {
   const [showAddOpp, setShowAddOpp] = useState(false);
   const [folderEditing, setFolderEditing] = useState(false);
   const [folderDraft, setFolderDraft] = useState("");
+  const [deprioritizeDialogOpen, setDeprioritizeDialogOpen] = useState(false);
+  const [deprioritizeError, setDeprioritizeError] = useState<string | null>(null);
   const navigate = useNavigate();
   const commentInputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -224,25 +227,77 @@ export function AccountDetailPage() {
           {(() => {
             const isActive = account.Active__c !== false;
             return (
-              <button
-                type="button"
-                disabled={updateAccount.isPending}
-                onClick={() =>
-                  updateAccount.mutate({
-                    id: account.Id,
-                    patch: { Active__c: !isActive },
-                    displayPatch: isActive ? { account_status: "Deprioritized" } : undefined,
-                  })
-                }
-                className={cn(
-                  "inline-flex h-[30px] items-center gap-1.5 rounded border px-3 text-[13px] font-medium transition-colors disabled:opacity-50",
-                  isActive
-                    ? "border-border-strong bg-surface text-ink-2 hover:border-red/40 hover:bg-red-soft hover:text-red"
-                    : "border-border-strong bg-surface text-ink-2 hover:border-green/40 hover:bg-green-soft hover:text-green",
+              <>
+                <button
+                  type="button"
+                  disabled={updateAccount.isPending}
+                  onClick={() => {
+                    if (isActive) {
+                      setDeprioritizeDialogOpen(true);
+                    } else {
+                      updateAccount.mutate({
+                        id: account.Id,
+                        patch: { Active__c: true },
+                      });
+                    }
+                  }}
+                  className={cn(
+                    "inline-flex h-[30px] items-center gap-1.5 rounded border px-3 text-[13px] font-medium transition-colors disabled:opacity-50",
+                    isActive
+                      ? "border-border-strong bg-surface text-ink-2 hover:border-red/40 hover:bg-red-soft hover:text-red"
+                      : "border-border-strong bg-surface text-ink-2 hover:border-green/40 hover:bg-green-soft hover:text-green",
+                  )}
+                >
+                  {isActive ? "Deprioritize" : "Reprioritize"}
+                </button>
+                {deprioritizeDialogOpen && (
+                  <ConfirmDeprioritizeDialog
+                    busy={updateAccount.isPending}
+                    error={deprioritizeError}
+                    onCancel={() => { setDeprioritizeDialogOpen(false); setDeprioritizeError(null); }}
+                    onConfirm={() => {
+                      setDeprioritizeError(null);
+                      updateAccount.mutate(
+                        {
+                          id: account.Id,
+                          patch: { Active__c: false },
+                          displayPatch: { account_status: "Deprioritized" },
+                        },
+                        {
+                          // Close only on success. onSettled closed the dialog on
+                          // failure too, and nothing on this page surfaces an
+                          // error for this mutation — so a rejected write looked
+                          // like a successful deprioritize, then silently undid
+                          // itself when the optimistic patch rolled back.
+                          onSuccess: (data) => {
+                            setDeprioritizeDialogOpen(false);
+                            const reminder = (data as { _reminder_task?: { created?: boolean; reason?: string } } | undefined)
+                              ?._reminder_task;
+                            if (reminder && reminder.created === false) {
+                              // The dialog promises a reminder task. Say so when
+                              // there isn't one rather than letting the promise stand.
+                              toast.warning(
+                                `Account deprioritized, but no reminder task was created — ${reminder.reason ?? "unknown reason"}.`,
+                              );
+                            }
+                          },
+                          onError: (err) => {
+                            const detail = (err as { response?: { data?: { detail?: unknown } } })
+                              ?.response?.data?.detail;
+                            setDeprioritizeError(
+                              typeof detail === "string"
+                                ? detail
+                                : err instanceof Error
+                                  ? err.message
+                                  : "Could not deprioritize this account.",
+                            );
+                          },
+                        },
+                      );
+                    }}
+                  />
                 )}
-              >
-                {isActive ? "Deprioritize" : "Reprioritize"}
-              </button>
+              </>
             );
           })()}
           <Tooltip
@@ -285,11 +340,20 @@ export function AccountDetailPage() {
                 value={account.OwnerId ?? null}
                 options={ownerOptions}
                 onSave={saveOwner}
-                renderValue={() => (
-                  <span className="text-[13px] text-ink-2">
-                    {account.Owner?.Name ?? ownerOptions.find((o) => o.value === account.OwnerId)?.label ?? "—"}
-                  </span>
-                )}
+                renderValue={(v) => {
+                  const inFlightName =
+                    v && v !== account.OwnerId
+                      ? ownerOptions.find((o) => o.value === v)?.label
+                      : null;
+                  return (
+                    <span className="text-[13px] text-ink-2">
+                      {inFlightName ??
+                        account.Owner?.Name ??
+                        ownerOptions.find((o) => o.value === account.OwnerId)?.label ??
+                        "—"}
+                    </span>
+                  );
+                }}
               />
             </DetailRow>
             <DetailRow label="Engagement types">
@@ -574,6 +638,22 @@ export function AccountDetailPage() {
                   <td className="mono px-5 py-2.5 text-right text-[11.5px] text-ink-3">
                     {fmtDate(c.Last_Activity_Date__c ?? c.LastActivityDate)}
                   </td>
+                  <td className="px-5 py-2.5 text-[12.5px]">
+                    {toExternalHref(c.LinkedIn_URL__c) ? (
+                      <a
+                        href={toExternalHref(c.LinkedIn_URL__c)!}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={(e) => e.stopPropagation()}
+                        className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-semibold text-[#0A66C2] hover:underline"
+                        title={c.LinkedIn_URL__c ?? undefined}
+                      >
+                        in <ExternalLink size={11} />
+                      </a>
+                    ) : (
+                      <span className="text-ink-4">—</span>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -622,6 +702,7 @@ function AddContactModal({
     Email: "",
     Phone: "",
     Title: "",
+    LinkedInUrl: "",
   });
   const [error, setError] = useState<string | null>(null);
 
@@ -632,6 +713,24 @@ function AddContactModal({
     e.preventDefault();
     if (!form.LastName.trim()) return;
     setError(null);
+    // type="url" is browser-side only, and it accepts any absolute URL —
+    // "javascript:…" passes it. This value is written to Salesforce and later
+    // rendered as a link elsewhere in the app, so pin it to http(s) here,
+    // where we can still tell the user, rather than storing something the
+    // render side has to defend against.
+    const linkedIn = form.LinkedInUrl.trim();
+    if (linkedIn && !/^https?:\/\//i.test(linkedIn) && /^[a-z][a-z0-9+.-]*:/i.test(linkedIn)) {
+      setError("LinkedIn URL must start with https:// (or be a plain linkedin.com address).");
+      return;
+    }
+    if (linkedIn && /\s/.test(linkedIn)) {
+      setError("LinkedIn URL can't contain spaces.");
+      return;
+    }
+    // Store scheme-less input as a real URL so consumers get a usable href.
+    const linkedInUrl = linkedIn
+      ? (/^https?:\/\//i.test(linkedIn) ? linkedIn : `https://${linkedIn.replace(/^\/+/, "")}`)
+      : undefined;
     try {
       // Demote the previous primary first so we never have two flagged
       // at once even momentarily.
@@ -648,6 +747,7 @@ function AddContactModal({
         Email: form.Email.trim() || undefined,
         Phone: form.Phone.trim() || undefined,
         Title: form.Title.trim() || undefined,
+        LinkedIn_URL__c: linkedInUrl,
         Philanthropic_Contact__c: asPrimary || undefined,
       });
       onClose();
@@ -725,6 +825,15 @@ function AddContactModal({
               value={form.Title}
               onChange={set("Title")}
               placeholder="VP of Engineering"
+              className={inputCls}
+            />
+          </Field>
+          <Field label="LinkedIn URL">
+            <input
+              type="url"
+              value={form.LinkedInUrl}
+              onChange={set("LinkedInUrl")}
+              placeholder="https://linkedin.com/in/janedoe"
               className={inputCls}
             />
           </Field>
@@ -1325,6 +1434,7 @@ function PickerRow({
     </li>
   );
 }
+
 
 function ConfirmReparentDialog({
   contact,

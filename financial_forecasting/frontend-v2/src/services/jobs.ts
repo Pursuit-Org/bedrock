@@ -927,6 +927,7 @@ export interface PlacementsSummary {
   influenced_any: number;
   committed_ft_roles: number;
   committed_trial_active: number;
+  ft_no_longer_in_role: number;
   ft_roles_secured: number;
   avg_salary_ft_placed: number | null;
   avg_salary_ft_secured: number | null;
@@ -1106,6 +1107,50 @@ export function useUpdatePlacementSalary() {
   });
 }
 
+// Mirrors employment_records_end_reason_check. Neutral by design — people leave
+// for good reasons, and the column explains a number rather than grading anyone.
+export const END_REASON_LABELS = {
+  contract_ended: "Contract ran its term",
+  new_role: "Left for another role",
+  laid_off: "Laid off / role eliminated",
+  terminated: "Let go",
+  personal: "Personal reasons",
+  unknown: "Unknown",
+} as const;
+export type EndReason = keyof typeof END_REASON_LABELS;
+
+export function useUpdatePlacementStage() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({
+      id,
+      engagement_stage,
+      end_date,
+      end_reason,
+      end_note,
+    }: {
+      id: string;
+      engagement_stage: string;
+      end_date?: string;
+      end_reason?: EndReason;
+      end_note?: string;
+    }) => {
+      await api.patch(`/api/jobs/placements/${id}`, {
+        engagement_stage,
+        ...(end_date !== undefined ? { end_date } : {}),
+        ...(end_reason !== undefined ? { end_reason } : {}),
+        ...(end_note !== undefined ? { end_note } : {}),
+      });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["jobs", "placements"] });
+      qc.invalidateQueries({ queryKey: ["jobs", "metric"] });
+      toast.success("Status updated");
+    },
+    onError: () => toast.error("Update failed"),
+  });
+}
+
 export function useSetActivityRelevance() {
   const qc = useQueryClient();
   return useMutation({
@@ -1227,11 +1272,13 @@ export function useJobRoles() {
   });
 }
 
-export function useMetricDrill(metricKey: string | null) {
+export function useMetricDrill(metricKey: string | null, segment?: string) {
   return useQuery<MetricDrill>({
-    queryKey: ["jobs", "metric", metricKey],
+    queryKey: ["jobs", "metric", metricKey, segment ?? "all"],
     queryFn: async () => {
-      const { data } = await api.get<ApiResponse<MetricDrill>>(`/api/jobs/metrics/${metricKey}`);
+      const { data } = await api.get<ApiResponse<MetricDrill>>(`/api/jobs/metrics/${metricKey}`, {
+        params: segment && segment !== "all" ? { segment } : undefined,
+      });
       return data.data;
     },
     enabled: metricKey !== null,

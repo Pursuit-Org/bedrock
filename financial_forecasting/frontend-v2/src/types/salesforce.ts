@@ -155,6 +155,12 @@ export interface SfOpportunity {
     Email?: string | null;
   } | null;
 
+  // Stage-terminal reasons
+  /** Reason for closing as lost — SF field npsp__Closed_Lost_Reason__c. */
+  npsp__Closed_Lost_Reason__c?: string | null;
+  /** Reason for withdrawal — SF field Withdrawn_Reason__c. */
+  Withdrawn_Reason__c?: string | null;
+
   // Reporting
   Reporting_Method__c?: string | null;
   npsp__Next_Grant_Deadline_Due_Date__c?: string | null;
