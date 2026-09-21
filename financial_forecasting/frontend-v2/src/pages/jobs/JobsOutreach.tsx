@@ -1027,7 +1027,7 @@ const SUMMARY_CARDS: {
   empty: string;
 }[] = [
   { key: "accounts_activated", label: "Accounts activated", tone: "ink", empty: "No accounts came back from quiet in this period." },
-  { key: "outreach_activity", label: "Outreach activity", tone: "ink", empty: "Nothing sent in this period." },
+  { key: "outreach_activity", label: "Outreach Activity", tone: "ink", empty: "Nothing sent in this period." },
   { key: "calls_booked", label: "Calls booked", tone: "ink", empty: "No calls or meetings in this period." },
   { key: "converted", label: "Converted to oppty", tone: "green", empty: "No conversions in this period." },
 ];
@@ -1685,19 +1685,10 @@ export function JobsOutreach() {
 
 
 
-      {/* The window these numbers cover, right-aligned just above the first
-          chart that uses it. At the top of the zone it read as a heading for
-          the whole page; here it reads as the footing for the charts below,
-          which is what it actually is. */}
-      {sc && (
-        <div className="-mb-3 flex justify-end">
-          <span className="text-[11.5px] text-ink-3">
-            {rangeLabel}
-            {" · trends compare with "}
-            {fmtRange(sc.period.last_start, sc.period.last_end)}
-          </span>
-        </div>
-      )}
+      {/* The "Sep 13 – Sep 20 · trends compare with …" line lived here until
+          2026-09-21. It duplicated the period bar directly above it and the
+          Activity Pipeline's own column headings directly below, so it was the
+          third statement of the same two dates on one screen. */}
 
       {/* ── The two tabs swapped contents on 2026-09-21 (Kwame) ───────────
              Overview is now the weekly review itself: the headline numbers, the

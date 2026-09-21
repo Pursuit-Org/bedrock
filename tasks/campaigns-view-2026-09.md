@@ -550,7 +550,53 @@ touch volume, since the drill is opened to see where the volume went, and
 contacts with no company share one "No account on file" bucket rather than each
 becoming a single-contact account at the top of the list.
 
-### Phase 18 — Not started
+### Phase 18 — One definition behind both numbers ✅ (2026-09-21)
+
+Kwame: "I'm still seeing discrepancies between Outreach Activity and Total
+Outreach, these should be the same no?" They should. They now come from the same
+SQL, and two more bugs fell out of getting there.
+
+**`_send_events_sql()` / `_call_events_sql()`** are the single definition, read
+by `/outreach/summary` (the cards) and `/outreach/scorecard` (the table). They
+had been built separately and disagreed for five compounding reasons:
+
+| | Card, before | Table, before | Now |
+|---|---|---|---|
+| Email grain | thread row | parsed message | message, or the row when nothing is parsed |
+| Hand-logged email | counted | dropped | counted |
+| Texts | counted | no row | own row |
+| Facilitated intros | dropped | counted | counted |
+| Contact with no company | dropped | counted | counted |
+| Window | **one day too wide** | correct | correct |
+
+**Bug: every card on `/outreach/summary` counted one extra day.**
+`_outreach_windows()` already returns `this_end` exclusive (`date_to + 1 day`),
+and all eight windows in that endpoint then wrote `< ($2::date + 1)`, adding a
+second. Accounts Activated, Outreach Activity, Calls Booked and Converted were
+all a day wide of the table beside them. Fixed to `< $2` throughout.
+
+Verified on production for Sep 14–20, team scope: card 71, table 71, calls 15.
+Identical by construction, not by coincidence — same SQL.
+
+**Texts Sent** is a new tier-1 row, so the children still sum to Total Outreach
+now that texts count (27 rows in the book, 0 last week).
+
+**Solution calls removed**, from the metadata, the drill, the targets and the
+migration's CHECK. Two kinds: Discovery and General. The line between learning a
+need and working it was a judgement call at log time, and a picker that makes
+people hesitate gets skipped.
+
+**Discovery Calls carries a target**, equal to Total Calls at every level: 5 for
+Avni, Damon and Devika, 0 for Kwame, 15 for the team. It is a target about the
+MIX, not extra volume — the same 15 calls, with an expectation about what kind
+they are. A week hit entirely on check-ins shows Total Calls met and Discovery
+short, which is the signal wanted.
+
+**Also:** the "Sep 13 – Sep 20 · trends compare with …" line above Contact
+Pipeline is gone (it was the third statement of the same two dates on one
+screen), and the card reads "Outreach Activity".
+
+### Phase 19 — Not started
 - [ ] Drill from a trend point into the underlying activity list
 - [ ] Contact table on the detail view (the `/records` endpoint already serves it)
 - [ ] Stage-entry period flow, like `outreach-pipeline-rework.md`

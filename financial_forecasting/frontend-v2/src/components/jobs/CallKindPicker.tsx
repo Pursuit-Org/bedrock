@@ -2,7 +2,7 @@ import { useStageVocabulary, type CallKind } from "@/services/jobs";
 import { cn } from "@/lib/utils";
 
 /**
- * What kind of call this was — discovery, solution or general.
+ * What kind of call this was — discovery or general.
  *
  * Asked at log time rather than inferred from the note later: the person who
  * just had the call is the only one who knows, and the Activity Pipeline's

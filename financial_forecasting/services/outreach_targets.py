@@ -11,7 +11,7 @@ Keys match the metric keys the scorecard endpoint emits:
   user pipeline     — flagged | initial_outreach | active | handed_off
   activity pipeline — total_outreach_activity | direct_email_sent |
                       linkedin_message_sent | facilitated_intro_sent |
-                      total_calls | call_discovery | call_solution |
+                      text_sent | total_calls | call_discovery |
                       call_general | engagement | direct_email_response
 Granularity keys match the API's granularity param: day | week | month.
 """
@@ -54,16 +54,24 @@ USER_PIPELINE_TARGETS: dict[str, dict[str, int]] = {
 # own target by construction. Fixing it means adding him to JOBS_TEAM_EMAILS,
 # which moves every team-scoped number across the Jobs pages, not just this one.
 OWNER_ACTIVITY_TARGETS: dict[str, dict[str, dict[str, int]]] = {
+    # call_discovery matches total_calls on purpose (Kwame 2026-09-21): the ask
+    # is that every call in the goal is a discovery call. General carries no
+    # target, so a week hit entirely on check-ins shows Total Calls met and
+    # Discovery short, which is exactly the signal wanted.
     "avni@pursuit.org":             {"total_outreach_activity": _weekly(45),
-                                     "total_calls":             _weekly(5)},
+                                     "total_calls":             _weekly(5),
+                                     "call_discovery":          _weekly(5)},
     "damon.kornhauser@pursuit.org": {"total_outreach_activity": _weekly(45),
-                                     "total_calls":             _weekly(5)},
+                                     "total_calls":             _weekly(5),
+                                     "call_discovery":          _weekly(5)},
     "devika@pursuit.org":           {"total_outreach_activity": _weekly(50),
-                                     "total_calls":             _weekly(5)},
+                                     "total_calls":             _weekly(5),
+                                     "call_discovery":          _weekly(5)},
     # Kwame carries outreach but no call goal. An explicit 0 beats leaving it
     # out: the row then reads "the target is none" rather than "nobody set one".
     "kwame@pursuit.org":            {"total_outreach_activity": _weekly(10),
-                                     "total_calls":             _weekly(0)},
+                                     "total_calls":             _weekly(0),
+                                     "call_discovery":          _weekly(0)},
 }
 
 
@@ -79,16 +87,17 @@ def _team_total(metric: str) -> dict[str, int]:
 
 # Raw activity rows sent/received in the period.
 ACTIVITY_PIPELINE_TARGETS: dict[str, dict[str, int]] = {
-    # Only the two totals carry a goal — the rows beneath them are a breakdown
-    # of how the total was hit, not separate commitments, and a target on each
-    # would double-count the same week's work.
+    # The two totals carry a goal, and Discovery Calls carries one because the
+    # ask is about the MIX, not extra volume: it is the same 15 calls, with an
+    # expectation about what kind they are. Every other row is a breakdown of
+    # how a total was hit, and a target on each would double-count the week.
     "total_outreach_activity": _team_total("total_outreach_activity"),
     "total_calls":            _team_total("total_calls"),
-    "call_discovery":         dict(_ZERO),
-    "call_solution":          dict(_ZERO),
+    "call_discovery":         _team_total("call_discovery"),
     "call_general":           dict(_ZERO),
     "direct_email_sent":      dict(_ZERO),
     "linkedin_message_sent":  dict(_ZERO),
+    "text_sent":              dict(_ZERO),
     "facilitated_intro_sent": dict(_ZERO),
     "engagement":             dict(_ZERO),
     "direct_email_response":  dict(_ZERO),

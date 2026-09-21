@@ -4054,19 +4054,21 @@ _OUTREACH_ACTIVITY_META = [
     ("total_outreach_activity", "Total Outreach", 0),
     ("direct_email_sent",       "Direct Email Sent",       1),
     ("linkedin_message_sent",   "LinkedIn Messages Sent",  1),
+    ("text_sent",               "Texts Sent",              1),
     ("facilitated_intro_sent",  "Facilitated Intro",       1),
     ("total_calls",             "Total Calls",             0),
     ("call_discovery",          "Discovery Calls",         1),
-    ("call_solution",           "Solution Calls",          1),
     ("call_general",            "General Calls",           1),
 ]
 # What kind of call it was. Asked for at log time so Total Calls can be split
 # into the three the team actually runs, rather than reconstructed from the note
 # afterwards. One definition drives the log-a-call picker, the CHECK constraint's
 # accepted values and the scorecard's breakdown rows.
+# Two kinds, not three. Solution was dropped on 2026-09-21 (Kwame): the line
+# between "learning the need" and "working the need" was a judgement call at log
+# time, and a picker that makes people hesitate is a picker that gets skipped.
 CALL_KINDS = [
     ("discovery", "Discovery", "First real conversation — learning what they need."),
-    ("solution",  "Solution",  "Working a specific role, scope or option set with them."),
     ("general",   "General",   "Check-in, relationship or anything else."),
 ]
 CALL_KIND_VALUES = {v for v, _, _ in CALL_KINDS}
@@ -4082,8 +4084,9 @@ CALL_KIND_DEFAULT = "general"
 # tier changes, which is what separates the send block from the call block.
 _ACTIVITY_TIER = {
     "total_outreach_activity": 1,
-    "direct_email_sent": 1, "linkedin_message_sent": 1, "facilitated_intro_sent": 1,
-    "total_calls": 2, "call_discovery": 2, "call_solution": 2, "call_general": 2,
+    "direct_email_sent": 1, "linkedin_message_sent": 1, "text_sent": 1,
+    "facilitated_intro_sent": 1,
+    "total_calls": 2, "call_discovery": 2, "call_general": 2,
 }
 _STAGE_ENTERED_COL = {
     "assigned": "assigned_at", "initial_outreach": "first_outreach_at",
@@ -4248,6 +4251,71 @@ _OUTREACH_WARMTH_CTES = """
     )"""
 
 
+def _send_events_sql(scope, owner) -> str:
+    """Every outbound touch the scope made, one row each, as (metric, ts, contact_id).
+
+    ONE definition, read by both the Outreach Activity card on
+    /outreach/summary and Total Outreach on /outreach/scorecard. They were
+    built separately and disagreed for four compounding reasons — threads vs
+    messages, hand-logged rows counted by one and not the other, texts in one
+    and not the other, and a company requirement on one side. Two numbers with
+    the same meaning on the same screen have to come from the same SQL, so
+    here it is, once (Kwame 2026-09-21).
+
+    Grain is the finest available. An email thread contributes one row per
+    parsed message; a row with nothing parsed (hand-logged, Salesforce-sourced)
+    contributes itself. The NOT EXISTS keeps those two disjoint.
+    """
+    return f"""
+        SELECT 'direct_email_sent' AS metric, aem.sent_at AS ts,
+               a.participant_public_contact_id AS contact_id
+        FROM bedrock.activity a
+        JOIN bedrock.activity_email_message aem ON aem.activity_id = a.id
+        WHERE a.deleted_at IS NULL AND a.type = 'email' AND {_message_actor(scope, owner)}
+          AND {_not_autoreply('a')} AND {_jobs_relevant('a')}
+        UNION ALL
+        SELECT 'direct_email_sent', a.activity_date, a.participant_public_contact_id
+        FROM bedrock.activity a
+        WHERE a.deleted_at IS NULL AND a.type = 'email'
+          AND {_activity_actor('a', scope, owner)}
+          AND {_not_autoreply('a')} AND {_jobs_relevant('a')}
+          AND NOT EXISTS (SELECT 1 FROM bedrock.activity_email_message m
+                           WHERE m.activity_id = a.id)
+        UNION ALL
+        SELECT 'linkedin_message_sent', a.activity_date, a.participant_public_contact_id
+        FROM bedrock.activity a
+        WHERE a.deleted_at IS NULL AND a.type = 'linkedin'
+          AND {_activity_actor('a', scope, owner)} AND {_jobs_relevant('a')}
+        UNION ALL
+        SELECT 'text_sent', a.activity_date, a.participant_public_contact_id
+        FROM bedrock.activity a
+        WHERE a.deleted_at IS NULL AND a.type = 'text'
+          AND {_activity_actor('a', scope, owner)} AND {_jobs_relevant('a')}
+        UNION ALL
+        -- Facilitated intro that was acted on.
+        SELECT 'facilitated_intro_sent', coalesce(ir.responded_at, ir.created_at), ir.contact_id
+        FROM bedrock.intro_request ir
+        WHERE ir.status IN ('accepted','completed') AND {_scope_intro_pred(scope, owner)}
+    """
+
+
+def _call_events_sql(scope, owner, kind_expr: str) -> str:
+    """Every call the scope logged, as (metric, ts, contact_id).
+
+    Same contract as _send_events_sql and the same reason: Calls Booked on the
+    summary card and Total Calls on the scorecard are the same question.
+    `kind_expr` is the call_kind SQL, which differs only by whether the column
+    exists yet.
+    """
+    return f"""
+        SELECT {kind_expr} AS metric, a.activity_date AS ts,
+               a.participant_public_contact_id AS contact_id
+        FROM bedrock.activity a
+        WHERE a.deleted_at IS NULL AND a.type IN ('call','meeting')
+          AND {_activity_actor('a', scope, owner)} AND {_jobs_relevant('a')}
+    """
+
+
 @router.get("/outreach/scorecard")
 async def outreach_scorecard(
     granularity: str = Query("week", pattern="^(day|week|month)$"),
@@ -4308,6 +4376,8 @@ async def outreach_scorecard(
     call_kind_note = ("call_kind is live." if has_call_kind
                       else "call_kind column not present yet - every call reads as general.")
     call_metric_in = _sql_in("metric", _CALL_METRICS)
+    send_events = _send_events_sql(scope, owner)
+    call_events = _call_events_sql(scope, owner, call_kind_sql)
 
     # One query, warmth computed once, two labelled result sets unioned.
     sql = f"""
@@ -4315,55 +4385,17 @@ async def outreach_scorecard(
     stage_events AS (
         {stage_events_sql}
     ),
-    -- Every email send the scope authored, at the finest grain available.
-    --
-    -- Branch 1, parsed messages: one row per message, dated by the message.
-    -- Thread rows are dated and attributed to the FIRST message, which made
-    -- replies and follow-ups invisible to weekly counts.
-    --
-    -- Branch 2, rows with nothing parsed: only gmail-sync writes
-    -- activity_email_message, so a hand-logged email and a Salesforce-sourced
-    -- one have no messages to count and were falling out of this number
-    -- entirely. In the week of 2026-09-06 that was 13 of 17 email rows, which
-    -- is why the Outreach Activity card and Total Outreach disagreed. The NOT
-    -- EXISTS keeps the branches disjoint, so nothing is counted twice, and the
-    -- actor filter drops to the row because there is no message to attribute.
+    -- Leaf events: one row per thing that happened. Both CTEs come from the
+    -- shared helpers, which is what stops this table and the summary cards from
+    -- disagreeing. Roll-up rows are derived below rather than counted again, so
+    -- a parent can never disagree with the sum of its children either.
     sent_msgs AS (
-        SELECT aem.sent_at AS ts, a.participant_public_contact_id AS contact_id
-        FROM bedrock.activity a
-        JOIN bedrock.activity_email_message aem ON aem.activity_id = a.id
-        WHERE a.deleted_at IS NULL AND a.type = 'email' AND {_message_actor(scope, owner)}
-          AND {_not_autoreply('a')} AND {_jobs_relevant('a')}
-        UNION ALL
-        SELECT a.activity_date AS ts, a.participant_public_contact_id AS contact_id
-        FROM bedrock.activity a
-        WHERE a.deleted_at IS NULL AND a.type = 'email'
-          AND {_activity_actor('a', scope, owner)}
-          AND {_not_autoreply('a')} AND {_jobs_relevant('a')}
-          AND NOT EXISTS (SELECT 1 FROM bedrock.activity_email_message m
-                           WHERE m.activity_id = a.id)
+        SELECT ts, contact_id FROM ({send_events}) se WHERE se.metric = 'direct_email_sent'
     ),
-    -- Leaf events: one row per thing that happened. Roll-up rows are derived
-    -- from these below rather than counted again, so a parent can never
-    -- disagree with the sum of its children.
     leaf_events AS (
-        SELECT 'direct_email_sent' AS metric, sm.ts, sm.contact_id
-        FROM sent_msgs sm
+        {send_events}
         UNION ALL
-        SELECT 'linkedin_message_sent', a.activity_date, a.participant_public_contact_id
-        FROM bedrock.activity a
-        WHERE a.deleted_at IS NULL AND a.type = 'linkedin' AND {_activity_actor('a', scope, owner)} AND {_jobs_relevant('a')}
-        UNION ALL
-        -- Facilitated intro that was acted on.
-        SELECT 'facilitated_intro_sent', coalesce(ir.responded_at, ir.created_at), ir.contact_id
-        FROM bedrock.intro_request ir
-        WHERE ir.status IN ('accepted','completed') AND {_scope_intro_pred(scope, owner)}
-        UNION ALL
-        -- Calls, split by what kind of call it was. {call_kind_note}
-        SELECT {call_kind_sql}, a.activity_date, a.participant_public_contact_id
-        FROM bedrock.activity a
-        WHERE a.deleted_at IS NULL AND a.type IN ('call','meeting')
-          AND {_activity_actor('a', scope, owner)} AND {_jobs_relevant('a')}
+        {call_events}
     ),
     -- The two totals are disjoint: sends roll up to Total Outreach Activity,
     -- calls roll up to Total Calls, and neither contains the other. Each equals
@@ -4782,11 +4814,12 @@ async def outreach_scorecard_detail(
                 "direct_email_sent": email_sent,
                 "linkedin_message_sent":
                     f"a.type = 'linkedin' AND {_activity_actor('a', scope, owner)} AND {_jobs_relevant('a')}",
+                "text_sent":
+                    f"a.type = 'text' AND {_activity_actor('a', scope, owner)} AND {_jobs_relevant('a')}",
                 "engagement":  # meetings/calls only here; email replies appended below
                     f"a.type IN ('meeting','call') AND {_jobs_relevant('a')} AND {_not_autoreply('a')}",
                 "total_calls": f"{calls} AND {windowed}",
                 "call_discovery": _kind("discovery"),
-                "call_solution":  _kind("solution"),
                 "call_general":   _kind("general"),
                 # The send roll-up. Calls are deliberately absent: they roll up
                 # to Total Calls instead, and the two totals are disjoint.
@@ -4795,7 +4828,7 @@ async def outreach_scorecard_detail(
                 # folding a second table in here would double the query for a
                 # handful of records.
                 "total_outreach_activity":
-                    f"(({email_sent}) OR (a.type = 'linkedin' AND {_activity_actor('a', scope, owner)} "
+                    f"(({email_sent}) OR (a.type IN ('linkedin','text') AND {_activity_actor('a', scope, owner)} "
                     f"AND {_jobs_relevant('a')} AND {windowed}))",
             }.get(key)
             if where is None:
@@ -4959,16 +4992,29 @@ async def outreach_summary(
     reopening dormant accounts. `accounts_reached` (any touch in the window)
     rides along as the wider denominator.
 
-    "Outreach activity" is send volume — emails, LinkedIn messages and texts.
-    Meetings and calls are deliberately excluded: they are the `calls_booked`
-    card, and counting them twice would inflate the effort number with
-    outcomes.
+    "Outreach Activity" is send volume — emails, LinkedIn messages, texts and
+    facilitated intros. Meetings and calls are deliberately excluded: they are
+    the `calls_booked` card, and counting them twice would inflate the effort
+    number with outcomes.
+
+    Both volume numbers are counted by _send_events_sql / _call_events_sql, the
+    same helpers behind Total Outreach and Total Calls on the scorecard, so the
+    cards and the table on one page always agree.
     """
     # How long an account must go quiet before a new touch counts as
     # re-activation rather than follow-up. Kwame's ask was "2 or 3 months".
     DORMANT_DAYS = 90
+    # this_end is ALREADY exclusive (_outreach_windows returns date_to + 1 day).
+    # Every window below used `< ($2::date + 1)`, which added a second day and
+    # made every card on this endpoint count one day more than the scorecard
+    # table beside it. Fixed 2026-09-21 — `< $2` throughout.
     this_start, this_end, _last_start, _last_end = _outreach_windows(granularity, date_from, date_to)
     actor = _actor_sql("a", owner, scope)
+    # The call-kind expression is irrelevant here (this only counts), but the
+    # helper takes one, so pass the column-free form and never touch a column
+    # that may not exist yet.
+    send_events = _send_events_sql(scope, owner)
+    call_events = _call_events_sql(scope, owner, f"'call_{CALL_KIND_DEFAULT}'")
     chan = ("CASE WHEN a.source='calendar-sync' OR a.type='meeting' THEN 'meeting' "
             "WHEN a.type='call' THEN 'call' "
             "WHEN a.type='linkedin' THEN 'linkedin' "
@@ -5005,7 +5051,7 @@ async def outreach_summary(
         ),
         acct_win AS (   -- accounts touched inside the window
           SELECT DISTINCT company FROM acct_touch
-          WHERE activity_date >= $1 AND activity_date < ($2::date + 1)
+          WHERE activity_date >= $1 AND activity_date < $2
         ),
         acct_prior AS ( -- and when we last touched them BEFORE it
           SELECT company, max(activity_date) AS last_prior FROM acct_touch
@@ -5017,12 +5063,17 @@ async def outreach_summary(
             WHERE p.last_prior IS NULL
                OR p.last_prior < ($1::date - $3::int)) AS accounts_activated,
           (SELECT count(*) FROM acct_win) AS accounts_reached,
-          (SELECT count(DISTINCT id) FROM acct_touch
-            WHERE channel IN ('email', 'linkedin', 'text')
-              AND activity_date >= $1 AND activity_date < ($2::date + 1)) AS outreach_activity,
-          (SELECT count(DISTINCT id) FROM acct_touch
-            WHERE channel IN ('meeting', 'call')
-              AND activity_date >= $1 AND activity_date < ($2::date + 1)) AS calls_booked
+          -- Both volume numbers read the SHARED event definitions, not the
+          -- account-oriented CTEs above. Those exist to answer "which accounts
+          -- came back from quiet", which needs a company on the contact; using
+          -- them for volume silently dropped every touch to someone with no
+          -- company, counted a thread once however many messages went out, and
+          -- so disagreed with the scorecard's Total Outreach and Total Calls on
+          -- the same screen (Kwame 2026-09-21). Same SQL now, same number.
+          (SELECT count(*) FROM ({send_events}) se
+            WHERE se.ts >= $1 AND se.ts < $2) AS outreach_activity,
+          (SELECT count(*) FROM ({call_events}) ce
+            WHERE ce.ts >= $1 AND ce.ts < $2) AS calls_booked
     """, this_start, this_end, DORMANT_DAYS)
 
     # Conversions come off the membership stamp rather than the activity table —
@@ -5030,7 +5081,7 @@ async def outreach_summary(
     conv = await conn.fetchrow("""
         SELECT count(*) AS n
         FROM bedrock.jobs_contact_membership
-        WHERE converted_at >= $1 AND converted_at < ($2::date + 1)
+        WHERE converted_at >= $1 AND converted_at < $2
     """, this_start, this_end)
 
     # ── Drill rows, one list per card ───────────────────────────────────────
@@ -5053,7 +5104,7 @@ async def outreach_summary(
           WHERE a.deleted_at IS NULL AND {actor}
             AND {_not_autoreply('a')} AND {_jobs_relevant('a')}
             AND a.type = ANY($3::text[])
-            AND a.activity_date >= $1 AND a.activity_date < ($2::date + 1)
+            AND a.activity_date >= $1 AND a.activity_date < $2
         ),
         linked AS (
           SELECT a.id, a.activity_date, a.type, a.editor, a.subject, c.contact_id
@@ -5126,7 +5177,7 @@ async def outreach_summary(
         win AS (
           SELECT DISTINCT ON (company) company, display, activity_date, editor
           FROM acct_touch
-          WHERE activity_date >= $1 AND activity_date < ($2::date + 1)
+          WHERE activity_date >= $1 AND activity_date < $2
           ORDER BY company, activity_date
         )
         SELECT w.display AS name, w.activity_date AS at, w.editor,
@@ -5151,7 +5202,7 @@ async def outreach_summary(
         JOIN public.contacts c ON c.contact_id = m.contact_id
         LEFT JOIN bedrock.jobs_account ja
           ON ja.account_key = nullif(lower(btrim(coalesce(c.current_company, ''))), '')
-        WHERE m.converted_at >= $1 AND m.converted_at < ($2::date + 1)
+        WHERE m.converted_at >= $1 AND m.converted_at < $2
         ORDER BY m.converted_at DESC
         LIMIT {DRILL_CAP}
     """, this_start, this_end)
@@ -5233,7 +5284,7 @@ async def outreach_activity_feed(
           WHERE a.deleted_at IS NULL AND {actor}
             AND {_not_autoreply('a')} AND {_jobs_relevant('a')}
             AND a.type IN ('email', 'linkedin', 'text')
-            AND a.activity_date >= $1 AND a.activity_date < ($2::date + 1)
+            AND a.activity_date >= $1 AND a.activity_date < $2
         ),
         linked AS (
           SELECT a.id, a.activity_date, a.type, a.editor, a.subject, a.snippet, c.contact_id

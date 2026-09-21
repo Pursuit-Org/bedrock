@@ -5,8 +5,11 @@
 -- what the call was FOR, which is the thing worth a target.
 --
 --   discovery  learning the employer's need
---   solution   presenting builders, scope or an option set against that need
---   general    everything else: intros, check-ins, relationship calls
+--   general    everything else: check-ins, relationship and follow-up calls
+--
+-- Two values, not three. A `solution` kind was specced and cut before this was
+-- applied: the line between learning a need and working it was a judgement call
+-- at log time, and a picker that makes people hesitate gets skipped.
 --
 -- Nullable with no default on purpose. Backfilling would rewrite history that
 -- nobody classified; NULL stays honest about "logged before we tracked this".
@@ -19,7 +22,7 @@
 
 ALTER TABLE bedrock.activity
   ADD COLUMN IF NOT EXISTS call_kind text
-      CHECK (call_kind IS NULL OR call_kind IN ('discovery', 'solution', 'general'));
+      CHECK (call_kind IS NULL OR call_kind IN ('discovery', 'general'));
 
 -- Partial index: the breakdown only ever filters classified calls, and the
 -- column is null on the overwhelming majority of rows.

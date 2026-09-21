@@ -331,8 +331,11 @@ export interface StageOption {
   available: boolean;
   unavailable_reason?: string | null;
 }
-/** discovery | solution | general — what kind of call was logged. */
-export type CallKind = "discovery" | "solution" | "general";
+/** discovery | general — what kind of call was logged. Solution was specced and
+ *  cut on 2026-09-21: the line between learning a need and working it was a
+ *  judgement call at log time, and a picker that makes people hesitate gets
+ *  skipped. The live list comes from /stage-vocabulary either way. */
+export type CallKind = "discovery" | "general";
 
 export interface StageVocabulary {
   opportunity_stages: StageOption[];
