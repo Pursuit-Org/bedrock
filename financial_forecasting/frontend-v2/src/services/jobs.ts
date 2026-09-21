@@ -1300,7 +1300,12 @@ export const JOBS_TEAM_EMAILS = [
  *  to JOBS_TEAM_EMAILS changes what the "Jobs Team" SCOPE counts, and therefore
  *  every team number on every page. Pinning is only about which four names you
  *  should not have to scroll a forty-name list to reach. Two different
- *  questions, two different lists. */
+ *  questions, two different lists.
+ *
+ *  The one place that bites: Kwame carries 10 of the team's 150 weekly outreach
+ *  target (services/outreach_targets.py) but is not in the scope, so the team
+ *  view is ~10 short of its own target by construction. Closing that gap is a
+ *  deliberate decision about the scope, not a tweak to this list. */
 export const JOBS_TEAM_PINNED = [
   ...JOBS_TEAM_EMAILS,
   "kwame@pursuit.org",

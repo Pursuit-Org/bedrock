@@ -186,7 +186,8 @@ export function ScopeButtons({ value, onChange }: {
 }) {
   const opts: { key: "team" | "staff" | "pursuit"; label: string; title: string }[] = [
     // The scope is still the three in JOBS_TEAM_EMAILS. Kwame is pinned in the
-    // sender picker but deliberately not in this aggregate — see JOBS_TEAM_PINNED.
+    // sender picker, and carries a target, but is deliberately not in this
+    // aggregate — see JOBS_TEAM_PINNED for why and what it costs.
     { key: "team", label: "Jobs Team", title: "Avni, Damon and Devika" },
     { key: "staff", label: "Other Staff", title: "Everyone else at Pursuit" },
     { key: "pursuit", label: "Everyone", title: "The whole Pursuit team" },

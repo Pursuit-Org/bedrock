@@ -41,14 +41,49 @@ USER_PIPELINE_TARGETS: dict[str, dict[str, int]] = {
     "handed_off":       dict(_ZERO),  # Committed
 }
 
+# Per-person weekly goals (Kwame 2026-09-21). These are the source: the team
+# figures below are their SUM, because that is how Kwame built them —
+# 10 + 45 + 45 + 50 = 150 outreach, 0 + 5 + 5 + 5 = 15 calls.
+#
+# An owner view reads ONLY from here, never from the team dict. A person's row
+# next to the team's 150 would read as a miss every week.
+#
+# CAVEAT worth knowing before trusting the team row: kwame@pursuit.org carries
+# 10 of the 150, but he is not in JOBS_TEAM_EMAILS, so the "Jobs Team" SCOPE
+# does not count his sends. The team view is therefore ~10 a week short of its
+# own target by construction. Fixing it means adding him to JOBS_TEAM_EMAILS,
+# which moves every team-scoped number across the Jobs pages, not just this one.
+OWNER_ACTIVITY_TARGETS: dict[str, dict[str, dict[str, int]]] = {
+    "avni@pursuit.org":             {"total_outreach_activity": _weekly(45),
+                                     "total_calls":             _weekly(5)},
+    "damon.kornhauser@pursuit.org": {"total_outreach_activity": _weekly(45),
+                                     "total_calls":             _weekly(5)},
+    "devika@pursuit.org":           {"total_outreach_activity": _weekly(50),
+                                     "total_calls":             _weekly(5)},
+    # Kwame carries outreach but no call goal. An explicit 0 beats leaving it
+    # out: the row then reads "the target is none" rather than "nobody set one".
+    "kwame@pursuit.org":            {"total_outreach_activity": _weekly(10),
+                                     "total_calls":             _weekly(0)},
+}
+
+
+def _team_total(metric: str) -> dict[str, int]:
+    """The team goal for a metric: the sum of the personal goals.
+
+    Summed rather than typed a second time, so moving one person's number can
+    never leave the team figure quietly stale.
+    """
+    return {g: sum(t.get(metric, {}).get(g, 0) for t in OWNER_ACTIVITY_TARGETS.values())
+            for g in ("day", "week", "month")}
+
+
 # Raw activity rows sent/received in the period.
 ACTIVITY_PIPELINE_TARGETS: dict[str, dict[str, int]] = {
-    # Kwame's first real numbers (2026-09-21): 100 outreach touches and 10 calls
-    # a week for the whole jobs team. Only the two totals carry a goal — the
-    # rows beneath them are a breakdown of how the total was hit, not separate
-    # commitments, and a target on each would double-count the same week's work.
-    "total_outreach_activity": _weekly(100),
-    "total_calls":            _weekly(10),
+    # Only the two totals carry a goal — the rows beneath them are a breakdown
+    # of how the total was hit, not separate commitments, and a target on each
+    # would double-count the same week's work.
+    "total_outreach_activity": _team_total("total_outreach_activity"),
+    "total_calls":            _team_total("total_calls"),
     "call_discovery":         dict(_ZERO),
     "call_solution":          dict(_ZERO),
     "call_general":           dict(_ZERO),
@@ -57,25 +92,6 @@ ACTIVITY_PIPELINE_TARGETS: dict[str, dict[str, int]] = {
     "facilitated_intro_sent": dict(_ZERO),
     "engagement":             dict(_ZERO),
     "direct_email_response":  dict(_ZERO),
-}
-
-
-# Per-person goals (Kwame 2026-09-21). Deliberately NOT a division of the team
-# number: he set 100 for the team and 50 each for Avni, Damon and Devika, which
-# sums to 150. The team figure is the floor the group owes; the personal figure
-# is what each person is asked to carry. Both are real, neither derives from the
-# other.
-#
-# An owner view therefore reads ONLY from here. Falling back to the team target
-# would put the team's 100 next to one person's volume and read as a miss every
-# week. A metric with no entry shows no target, which says "nobody has set one"
-# rather than inventing a number.
-OWNER_ACTIVITY_TARGETS: dict[str, dict[str, dict[str, int]]] = {
-    "avni@pursuit.org":             {"total_outreach_activity": _weekly(50)},
-    "damon.kornhauser@pursuit.org": {"total_outreach_activity": _weekly(50)},
-    "devika@pursuit.org":           {"total_outreach_activity": _weekly(50)},
-    # kwame@pursuit.org has no number yet, and neither does anyone's call goal.
-    # Add them here the moment the team agrees on one — nothing else changes.
 }
 
 

@@ -484,7 +484,34 @@ Kwame to the latter would change what the "Jobs Team" SCOPE counts, and so every
 team number on every page. Pinning is only about which names you should not have
 to scroll to. Two questions, two lists.
 
-### Phase 16 — Not started
+### Phase 16 — Real targets ✅ (2026-09-21)
+
+Kwame's numbers, and this time the team figure is the sum of the people rather
+than a separate stretch:
+
+| | Outreach / wk | Calls / wk |
+|---|---|---|
+| Avni | 45 | 5 |
+| Damon | 45 | 5 |
+| Devika | 50 | 5 |
+| Kwame | 10 | 0 |
+| **Team** | **150** | **15** |
+
+`OWNER_ACTIVITY_TARGETS` is now the source and `_team_total()` sums it, so moving
+one person's number can never leave the team figure stale. Kwame's call target is
+an explicit 0, which renders as "Target 0, Δ —" instead of the blank a missing
+entry would give: the row says the target is none, not that nobody set one.
+
+**Known gap, Kwame's decision.** Kwame carries 10 of the 150 but is not in
+`JOBS_TEAM_EMAILS`, so the "Jobs Team" scope does not count his sends. The team
+view is therefore ~10 a week short of its own target by construction. Calls are
+unaffected (his target is 0). Closing it means adding him to `JOBS_TEAM_EMAILS`,
+which is referenced in ~20 places across `routes/jobs.py` — including
+`_jobs_activity_flag`, which decides what counts as jobs activity at all — so it
+would move every team-scoped number on every Jobs page, not just this table.
+Flagged rather than done.
+
+### Phase 17 — Not started
 - [ ] Drill from a trend point into the underlying activity list
 - [ ] Contact table on the detail view (the `/records` endpoint already serves it)
 - [ ] Stage-entry period flow, like `outreach-pipeline-rework.md`
