@@ -83,6 +83,8 @@ export function JobsLeadership() {
                 ? `${p?.committed_ft_roles ?? 0} committed`
                 : `+${p?.committed_ft_roles ?? 0} committed (all cohorts, not added)`,
               ...((p?.committed_trial_active ?? 0) > 0 ? [`${p?.committed_trial_active} in trial`] : []),
+              // Only the exception is worth the space — the remainder is implied.
+              ...((p?.ft_no_longer_in_role ?? 0) > 0 ? [`${p?.ft_no_longer_in_role} no longer in role`] : []),
             ].join(" · ")}
             sub={pLoading ? undefined : `${pctOfPool(p?.ft_roles_secured ?? 0)}% of ${poolTotal} job-ready`}
             progressPct={pctOfPool(p?.ft_roles_secured ?? 0)}
@@ -110,7 +112,7 @@ export function JobsLeadership() {
             icon={<DollarSign size={14} />}
             format="salary"
             isLoading={pLoading}
-            subLead="secured (placed + committed)"
+            subLead={segment === "all" ? "secured (placed + committed)" : "placed (this cohort)"}
             sub={p?.avg_salary_ft_placed != null ? `Placed: $${p.avg_salary_ft_placed.toLocaleString()} · click to edit` : "click to edit"}
             onClick={() => setOpenMetric("ft_salaries")}
           />
@@ -126,7 +128,7 @@ export function JobsLeadership() {
           Tag campaigns + activity trends likewise live on Outreach (2026-07-30)
           — Monday-meeting material, not exec outcomes. */}
 
-      <MetricDrawer metricKey={openMetric} onClose={() => setOpenMetric(null)} />
+      <MetricDrawer metricKey={openMetric} segment={segment} onClose={() => setOpenMetric(null)} />
     </div>
   );
 }
