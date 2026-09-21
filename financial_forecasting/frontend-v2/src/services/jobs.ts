@@ -1323,8 +1323,6 @@ export function inScope(email: string | null | undefined, scope: OutreachScopeKi
 }
 export interface OutreachDateRange { from: string; to: string }
 
-export interface ScorecardCell { warm: number; cold: number; total: number }
-
 /** One row of either scorecard table. `stage` is set for user-pipeline rows,
  *  `metric` for activity-pipeline rows. `target` is null when unconfigured. */
 export interface ScorecardRow {
@@ -1340,21 +1338,14 @@ export interface ScorecardRow {
   available?: boolean;
   unavailable_reason?: string | null;
   label: string;
-  this_period: ScorecardCell;
-  last_period: ScorecardCell;
+  this_period: number;
+  last_period: number;
   target: number | null;
 }
 
 export interface ScorecardPeriod {
   this_start: string; this_end: string; last_start: string; last_end: string;
 }
-export interface BySenderRow {
-  staff: string;
-  sent: { this: number; last: number };
-  warm: number;
-  cold: number;
-}
-
 export interface TouchDepthContact {
   contact_id: number;
   name: string | null;
@@ -1390,9 +1381,7 @@ export interface OutreachScorecard {
   granularity: OutreachGranularity;
   scope: OutreachScopeKind;
   period: ScorecardPeriod;
-  user_pipeline: ScorecardRow[];
   activity_pipeline: ScorecardRow[];
-  by_sender: BySenderRow[];
 }
 
 function outreachParams(granularity: OutreachGranularity, scope: OutreachScopeKind, owner?: string, range?: OutreachDateRange) {
@@ -1503,24 +1492,6 @@ export function useTouchDepth(scope: OutreachScopeKind, owner?: string) {
   });
 }
 
-export interface TargetingBucket { bucket: string; sent: number; responses: number }
-export interface TargetingDim { key: string; label: string; rows: TargetingBucket[] }
-
-/** Targeting Mix — outreach volume + replies cut by lead source / industry / size / stage. */
-export function useOutreachTargetingMix(granularity: OutreachGranularity, scope: OutreachScopeKind, owner?: string, range?: OutreachDateRange) {
-  const rangeKey = range ? `${range.from}..${range.to}` : "";
-  return useQuery<{ dims: TargetingDim[] }>({
-    queryKey: ["jobs", "outreach-targeting", granularity, scope, owner ?? "", rangeKey],
-    queryFn: async () => {
-      const { data } = await api.get<ApiResponse<{ dims: TargetingDim[] }>>(
-        `/api/jobs/outreach/targeting-mix?${outreachParams(granularity, scope, owner, range)}`,
-      );
-      return data.data;
-    },
-    staleTime: 60_000,
-  });
-}
-
 export interface OutreachAccountComment { author: string | null; content: string; date: string | null }
 export interface OutreachAccountTask { title: string; status: string; deadline: string | null; owner: string | null }
 export interface OutreachAccountContact { name: string | null; title: string | null }
@@ -1538,6 +1509,7 @@ export interface OutreachAccount {
 
 /** Account working list — accounts with comments/open tasks for the deep-dive discussion.
  *  With `owner`, restricts to accounts that staffer is involved with. */
+
 export function useOutreachAccounts(owner?: string) {
   return useQuery<{ accounts: OutreachAccount[] }>({
     queryKey: ["jobs", "outreach-accounts", owner ?? ""],
@@ -2923,25 +2895,6 @@ export function useOpportunitiesOverview(owner?: string, dealType?: string, week
 }
 
 // ── Daily digest (the morning Slack, computed) ───────────────────────────────
-export interface DailyDigest {
-  date: string;
-  outreach: { new_touches: number; existing_touches: number; new_accounts: number; existing_accounts: number; meetings: number };
-  submissions: { company: string; builders: number; roles: number }[];
-}
-
-export function useDailyDigest(date?: string) {
-  return useQuery<DailyDigest>({
-    queryKey: ["jobs", "daily-digest", date ?? "yesterday"],
-    queryFn: async () => {
-      const qs = date ? `?date=${date}` : "";
-      const { data } = await api.get<ApiResponse<DailyDigest>>(`/api/jobs/daily-digest${qs}`);
-      return data.data;
-    },
-    staleTime: 300_000,
-  });
-}
-
-// ── Stuck in initial outreach (replaces the account working list) ─────────────
 export interface StuckContact {
   contact_id: number;
   full_name: string | null;

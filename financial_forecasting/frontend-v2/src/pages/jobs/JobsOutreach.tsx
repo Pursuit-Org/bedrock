@@ -321,17 +321,18 @@ function ScorecardTable({
                       line of dates, and a right-aligned number drifts away from
                       the window it belongs to. */}
                   <td className={cn("px-3.5 py-2.5 text-center tabular-nums", depth === 0 && "font-semibold", pending && "font-normal text-ink-4")}>
-                    {pending ? "—" : r.this_period.total}
+                    {pending ? "—" : r.this_period}
                   </td>
                   <td className={cn("px-3.5 py-2.5 text-center tabular-nums", pending && "text-ink-4")}>
-                    {pending ? "—" : r.last_period.total}
+                    {pending ? "—" : r.last_period}
                   </td>
                   <td className="px-3.5 py-2.5 text-center text-[12.5px]">
                     {pending ? <span className="text-ink-4">—</span>
-                      : <Trend current={r.this_period.total} prior={r.last_period.total} />}
+                      : <Trend current={r.this_period} prior={r.last_period} />}
                   </td>
-                  <td className="px-3.5 py-2.5 text-center text-[12.5px]">
-                    {!pending && r.target ? <Trend current={r.this_period.total} prior={r.target} /> : <span className="text-ink-4">—</span>}
+                  <td className="px-3.5 py-2.5 text-center">
+                    {pending ? <span className="text-ink-4">—</span>
+                      : <DeltaChip actual={r.this_period} target={r.target} />}
                   </td>
                   {/* Target renders 0 rather than a dash when unset: the column
                       is a standing prompt that a target is owed, and an em-dash
@@ -353,12 +354,6 @@ function ScorecardTable({
     </div>
   );
 }
-/* TargetingPanel lived here until 2026-09-21. Kwame cut it: "who are we
-   choosing to work" is a question the Campaigns view answers with a picker and
-   a period bar, and a second segment breakdown on Outreach was the same cut
-   with less context. /outreach/targeting-mix is still served, so restoring it
-   is a component, not an endpoint. */
-
 /** The contacts behind one touch-depth bucket: name, touches, owner. Opens at
  *  five — enough to see who's in there without the panel swallowing the page —
  *  with the rest a click away. */
@@ -496,12 +491,6 @@ function TouchDepthPanel({ scope, owner, nameOf, className }: {
 
 
 // ── Daily digest — Avni's morning Slack, computed ────────────────────────────
-// The daily-digest card (digestSlackText + DailyDigestBlock) lived here until
-// 2026-09-21, when Kwame removed it from Outbound Detail. Nothing else rendered
-// it, so it went with the card rather than sitting unreachable. `useDailyDigest`
-// and GET /jobs/daily-digest both remain, so restoring it is a revert of this
-// commit, not a rebuild.
-
 const startOfWeekSunday = () => {
   const d = new Date();
   d.setHours(0, 0, 0, 0);
@@ -970,23 +959,33 @@ function ActivityPipelineBlock({ activityPipeline, granularity, scope, owner, ra
 
 // ── Activity Pipeline · the owner cut ────────────────────────────────────────
 
+/** The gap to a target, as a signed number.
+ *
+ *  One component for both cuts of the Activity Pipeline (Kwame 2026-09-21). The
+ *  Activity tab used to show this as a percentage, which asked you to do
+ *  arithmetic to answer "how many more do I owe" — the only question the column
+ *  is there for. Three states, deliberately distinct: no target is a dash,
+ *  exactly on target is a green 0 with no sign, and anything else is signed. */
+function DeltaChip({ actual, target }: { actual: number; target: number | null | undefined }) {
+  if (target == null) return <span className="text-ink-4">—</span>;
+  const d = actual - target;
+  return (
+    <span className={cn("inline-flex items-center rounded px-1.5 py-0.5 text-[12.5px] font-semibold tabular-nums",
+      d >= 0 ? "bg-green-soft text-green" : "bg-red-soft text-red")}>
+      {d > 0 ? "+" : ""}{d}
+    </span>
+  );
+}
+
 /** Target, actual and gap for one metric — three cells, used six times. */
-function OwnerCells({ m }: { m: OwnerMetric }) {
-  // A gap of exactly zero is "on target" and reads green; no target at all
-  // reads as a dash. Collapsing those two into one 0 was the thing to avoid.
-  const d = m.delta;
+function OwnerCells({ m, muted }: { m: OwnerMetric; muted?: boolean }) {
   return (
     <>
       <td className="px-3 py-2.5 text-center tabular-nums text-ink-3">{m.target ?? "—"}</td>
-      <td className="px-3 py-2.5 text-center tabular-nums font-semibold text-ink">{m.this_period}</td>
-      <td className="px-3 py-2.5 text-center text-[12.5px]">
-        {d == null ? <span className="text-ink-4">—</span> : (
-          <span className={cn("inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 font-semibold tabular-nums",
-            d >= 0 ? "bg-green-soft text-green" : "bg-red-soft text-red")}>
-            {d >= 0 ? "+" : ""}{d}
-          </span>
-        )}
+      <td className={cn("px-3 py-2.5 text-center font-semibold tabular-nums", muted ? "text-ink-3" : "text-ink")}>
+        {m.this_period}
       </td>
+      <td className="px-3 py-2.5 text-center"><DeltaChip actual={m.this_period} target={m.target} /></td>
     </>
   );
 }
@@ -1018,22 +1017,25 @@ function OwnerScorecardTable({ granularity, range, rangeLabel, nameOf, leading, 
           {/* Two header rows: the group spans say which three columns belong to
               which metric, so "Target" appearing twice is never ambiguous. */}
           <tr className="bg-surface-2 text-[10.5px] uppercase tracking-wide text-ink-3">
-            <th className="py-2 pl-3.5 pr-2 text-left font-bold align-bottom" rowSpan={2}>
-              Owner
-              {rangeLabel ? (
-                <span className="mt-0.5 block text-[10px] font-normal normal-case tracking-normal text-ink-4">{rangeLabel}</span>
-              ) : null}
-            </th>
+            <th className="py-2 pl-3.5 pr-2 text-left font-bold align-bottom" rowSpan={2}>Owner</th>
             <th className="border-l border-border px-2 pt-2 pb-1 text-center font-bold" colSpan={3}>Outreach</th>
             <th className="border-l border-border px-2 pt-2 pb-1 text-center font-bold" colSpan={3}>Calls</th>
           </tr>
           <tr className="bg-surface-2 text-[10px] uppercase tracking-wide text-ink-4">
-            <th className="border-l border-border px-3 pb-2 text-center font-semibold">Target</th>
-            <th className="px-3 pb-2 text-center font-semibold">This period</th>
-            <th className="px-3 pb-2 text-center font-semibold">Δ to target</th>
-            <th className="border-l border-border px-3 pb-2 text-center font-semibold">Target</th>
-            <th className="px-3 pb-2 text-center font-semibold">This period</th>
-            <th className="px-3 pb-2 text-center font-semibold">Δ to target</th>
+            {/* The window sits under "This period", the only column it qualifies.
+                It was under Owner, where it read as a property of the person. */}
+            {[0, 1].map((i) => (
+              <Fragment key={i}>
+                <th className="border-l border-border px-3 pb-2 text-center font-semibold align-bottom">Target</th>
+                <th className="px-3 pb-2 text-center font-semibold align-bottom">
+                  <span className="block">This period</span>
+                  <span className="mt-0.5 block h-3.5 text-[9.5px] font-normal normal-case tracking-normal text-ink-4">
+                    {rangeLabel ?? ""}
+                  </span>
+                </th>
+                <th className="px-3 pb-2 text-center font-semibold align-bottom">Δ to target</th>
+              </Fragment>
+            ))}
           </tr>
         </thead>
         <tbody>
@@ -1047,6 +1049,19 @@ function OwnerScorecardTable({ granularity, range, rangeLabel, nameOf, leading, 
               Nobody carries a target yet.
             </td></tr>
           )}
+          {/* The team line leads (Kwame 2026-09-21): you read the group result
+              first, then who made it up. Greyed and ruled off so it reads as a
+              total rather than a fourth person. It is summed from the rows
+              below, never counted separately, so it cannot disagree with them. */}
+          {!isLoading && rows.length > 0 && data && (
+            <tr className="border-b-2 border-border-strong bg-surface-2/60 text-[13.5px] font-semibold">
+              <td className="px-3.5 py-2.5 text-left text-[11px] font-bold uppercase tracking-wider text-ink-3">
+                All jobs team
+              </td>
+              <OwnerCells m={data.totals.outreach} muted />
+              <OwnerCells m={data.totals.calls} muted />
+            </tr>
+          )}
           {rows.map((r) => (
             <tr key={r.owner} className="border-b border-border text-[13.5px]">
               <td className="px-3.5 py-2.5 text-left font-medium text-ink" title={r.owner}>{nameOf(r.owner)}</td>
@@ -1054,15 +1069,6 @@ function OwnerScorecardTable({ granularity, range, rangeLabel, nameOf, leading, 
               <OwnerCells m={r.calls} />
             </tr>
           ))}
-          {/* The team line is the sum of the rows above, not a separate count,
-              so it can never disagree with them. */}
-          {!isLoading && rows.length > 0 && data && (
-            <tr className="bg-surface-2/60 text-[13.5px] font-semibold">
-              <td className="px-3.5 py-2.5 text-left text-ink">All jobs team</td>
-              <OwnerCells m={data.totals.outreach} />
-              <OwnerCells m={data.totals.calls} />
-            </tr>
-          )}
         </tbody>
       </table>
     </div>
@@ -1264,11 +1270,6 @@ export function JobsOutreach() {
 
 
 
-      {/* The "Sep 13 – Sep 20 · trends compare with …" line lived here until
-          2026-09-21. It duplicated the period bar directly above it and the
-          Activity Pipeline's own column headings directly below, so it was the
-          third statement of the same two dates on one screen. */}
-
       {/* Contact Pipeline opens the review again — it is the top of the
               funnel everything below is downstream of (Kwame 2026-09-21). */}
           <JobsFunnels only="prospects" period={range} periodLabel={rangeLabel || undefined} />
@@ -1319,7 +1320,4 @@ export function JobsOutreach() {
   );
 }
 
-/* ZoneBoundary — the "Current state" divider — lived here until 2026-09-21. It
-   existed to say the period bar stopped applying below it. Requiring attention
-   was the only thing below it, and that moved to Jobs Home, so the line had
-   nothing left to divide. */
+

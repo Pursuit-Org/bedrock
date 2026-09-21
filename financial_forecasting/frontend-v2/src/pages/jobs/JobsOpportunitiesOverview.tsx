@@ -303,20 +303,24 @@ export function JobsOpportunitiesOverview() {
         )}
       </Panel>
 
+      {/* ── Opportunities Set (grouped by priority; owner view = the walkthrough) ──
+          Sits directly under the heatmap and above Recent Activity (Kwame
+          2026-09-21): the heatmap says where deals are piling up, and this is
+          the list you work them from. The activity feed is the narrative you
+          read afterwards, not the thing you act on. */}
+      <Panel title="Opportunities Set">
+        <div className="max-h-[520px] overflow-y-auto">
+          <OwnerWalkthrough openOpps={openOpps} needsById={needsById} nextTaskByOpp={nextTaskByOpp}
+            nameOf={nameOf} {...rowHandlers} />
+        </div>
+      </Panel>
+
       {/* ── Recent activity — the week's narrative ────────────────────── */}
       <Panel
         title="Recent Activity"
         desc={`Added, moved, won or lost between ${rangeLabel} — newest first`}
       >
         <RecentActivity events={orderedActivity} isLoading={isLoading} nameOf={nameOf} />
-      </Panel>
-
-      {/* ── Opportunities Set (grouped by priority; owner view = the walkthrough) ── */}
-      <Panel title="Opportunities Set">
-        <div className="max-h-[520px] overflow-y-auto">
-          <OwnerWalkthrough openOpps={openOpps} needsById={needsById} nextTaskByOpp={nextTaskByOpp}
-            nameOf={nameOf} {...rowHandlers} />
-        </div>
       </Panel>
 
       {/* Needs-attention panel removed 2026-07-30 — the walkthrough's stalled

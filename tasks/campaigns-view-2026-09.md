@@ -651,7 +651,50 @@ headline count implies a verdict, and neither is one: net new means nothing
 without a target, and stalled already carries amber on the board below. Net
 new's delta chip still colours, which is where the judgement belongs.
 
-### Phase 20 — Not started
+### Phase 20 — Dead-code sweep, owner-view polish, pipeline reorder ✅ (2026-09-21)
+
+**828 lines removed, 226 added.** Everything below was verified unreferenced
+before deleting, and the trimmed scorecard was re-run against production: 71
+outreach and 15 calls for Sep 14–20, identical to before the refactor.
+
+| Removed | Why |
+|---|---|
+| `user_pipeline` + its CTEs, targets and drill branch | Nothing rendered the User Pipeline table |
+| `by_sender` + its second query | Nothing rendered it |
+| `_OUTREACH_WARMTH_CTES` (6 CTEs over the whole contact universe) | Existed only to split cells warm/cold; the page reads `.total` |
+| `ScorecardCell {warm, cold, total}` → plain numbers | Same |
+| Targeting Mix endpoint, hook, types, `_TARGETING_DIMS` | Panel cut in Phase 19 |
+| Daily digest endpoint + hook | Card cut in Phase 13 |
+| `engagement` / `direct_email_response` drill branches | Rows cut in Phase 15; took a self-join over every parsed email message with them |
+| `JobsFunnel.tsx` (266 lines) | Unused since before this work |
+| Four tombstone comments of my own | Narration git already records |
+
+The scorecard query went from 180 rendered lines to 55. It now reads the two
+shared event helpers, groups by metric, and returns.
+
+**One bug the verification caught.** Slicing out `_OUTREACH_WARMTH_CTES` by line
+range also removed `_send_events_sql` and `_call_events_sql`, which sat between
+it and the endpoint. Python still parsed — they are only referenced inside
+function bodies — so `tsc` and `ast.parse` both passed. Rendering the SQL
+outside the app is what surfaced it. Restored from git.
+
+**Owner view.** The window moved from under Owner (where it read as a property
+of the person) to under each "This period" column, the only thing it qualifies.
+The team line moved to the top, greyed, small-caps and ruled off: you read the
+group result first, then who made it up, and it should not look like a fourth
+person.
+
+**One delta chip, both cuts.** `DeltaChip` replaces the percentage Trend on the
+Activity tab's Δ to target. A percentage asked you to do arithmetic to answer
+"how many more do I owe", which is the only question that column is for. Three
+distinct states: no target is a dash, exactly on target is a green `0` with no
+sign, anything else is signed.
+
+**Pipeline reorder.** Opportunities Set now sits between Stage × Time and Recent
+Activity. The heatmap says where deals are piling up and the Set is the list you
+work them from; the activity feed is the narrative you read afterwards.
+
+### Phase 21 — Not started
 - [ ] Drill from a trend point into the underlying activity list
 - [ ] Contact table on the detail view (the `/records` endpoint already serves it)
 - [ ] Stage-entry period flow, like `outreach-pipeline-rework.md`

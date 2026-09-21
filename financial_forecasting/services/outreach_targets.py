@@ -8,12 +8,13 @@ here. If they ever need to be per-owner or editable in-app, promote to a
 call sites won't change.
 
 Keys match the metric keys the scorecard endpoint emits:
-  user pipeline     — flagged | initial_outreach | active | handed_off
-  activity pipeline — total_outreach_activity | direct_email_sent |
-                      linkedin_message_sent | facilitated_intro_sent |
-                      text_sent | total_calls | call_discovery |
-                      call_general | engagement | direct_email_response
+  total_outreach_activity | direct_email_sent | linkedin_message_sent |
+  text_sent | facilitated_intro_sent | total_calls | call_discovery |
+  call_general
 Granularity keys match the API's granularity param: day | week | month.
+
+USER_PIPELINE_TARGETS lived here until 2026-09-21, alongside the User Pipeline
+table it fed. Both went when nothing rendered that table any more.
 """
 
 from typing import Optional
@@ -32,14 +33,6 @@ def _weekly(n: int) -> dict[str, int]:
     moment the team has a real one.
     """
     return {"day": round(n / 5), "week": n, "month": round(n * 4.33)}
-
-# Contacts ENTERING each funnel stage in the period (flow, not occupancy).
-USER_PIPELINE_TARGETS: dict[str, dict[str, int]] = {
-    "flagged":          dict(_ZERO),  # Lead Sourced
-    "initial_outreach": dict(_ZERO),  # Outreached
-    "active":           dict(_ZERO),  # Qualified Lead
-    "handed_off":       dict(_ZERO),  # Committed
-}
 
 # Per-person weekly goals (Kwame 2026-09-21). These are the source: the team
 # figures below are their SUM, because that is how Kwame built them —
@@ -102,11 +95,6 @@ ACTIVITY_PIPELINE_TARGETS: dict[str, dict[str, int]] = {
     "engagement":             dict(_ZERO),
     "direct_email_response":  dict(_ZERO),
 }
-
-
-def user_pipeline_target(stage: str, granularity: str) -> Optional[int]:
-    """Target for a user-pipeline stage at a granularity, or None if unset."""
-    return USER_PIPELINE_TARGETS.get(stage, {}).get(granularity)
 
 
 def activity_pipeline_target(metric: str, granularity: str,
