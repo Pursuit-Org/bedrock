@@ -1,6 +1,6 @@
 -- Call subtype on logged activity (Kwame, 2026-09-21).
 --
--- "Total calls" on the Activity Pipeline is one number covering three very
+-- "Total calls" on the Activity Pipeline is one number covering two very
 -- different conversations. Splitting them lets the table break calls down by
 -- what the call was FOR, which is the thing worth a target.
 --
@@ -14,7 +14,7 @@
 -- Nullable with no default on purpose. Backfilling would rewrite history that
 -- nobody classified; NULL stays honest about "logged before we tracked this".
 -- The scorecard reads a NULL as `general`, which is the catch-all the team
--- already describes as "everything else" (Kwame 2026-09-21), so the three rows
+-- already describes as "everything else" (Kwame 2026-09-21), so the two rows
 -- always sum to Total Calls and no permanent Unclassified bucket accumulates.
 -- Only the log-a-call form writes the column. Calls and meetings both count
 -- toward Total Calls (they are one thing to this team), but a meeting synced

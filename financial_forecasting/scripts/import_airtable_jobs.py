@@ -27,16 +27,33 @@ DEALS_TABLE = "tbllNUHlb11IaW0S6"
 ENGAGEMENTS_TABLE = "tblRcbb5SzvuWBCCh"
 COMPANIES_TABLE = "tblOyUDqF6kcntIYk"
 
+# Airtable Deal Stage -> bedrock.jobs_opportunity.stage.
+#
+# EVERY value here must be one the jobs_opportunity_stage_check constraint
+# accepts, or the insert fails. Six entries previously did not: four mapped to
+# `active_builder_interview` and one each to `initial_outreach` and
+# `on_hold_not_responsive`, none of which the constraint has ever allowed — so
+# those six Airtable stages could not be imported at all. The 2026-09-21 stage
+# expansion gives the builder ones an honest home, and the rest fold into the
+# stage the funnel actually starts at:
+#
+#   Candidates Submitted / Active: Candidates Submitted -> builder_submitted
+#   Interviewing / Active: Builder Interviews           -> builder_interviewing
+#   Reached Out    described a CONTACT, not a deal. That work lives in the
+#                  membership pipeline now (assigned -> initial_outreach -> ...),
+#                  so an opportunity row for it starts In Discussion, which is
+#                  the same call the migration makes for lead_submitted.
+#   On Hold        there is no on-hold STAGE and no on-hold column. A paused
+#                  deal is still an open deal, so it lands In Discussion rather
+#                  than failing the import; the pause is not recorded.
 STAGE_MAP = {
     # Legacy stage names (kept for older records)
-    # lead_submitted was retired 2026-09-21 and is no longer writable; these
-    # legacy Airtable rows land at the funnel's first stage instead.
     "R+D (pre-contact)":            "active_in_discussions",
-    "Reached Out":                   "initial_outreach",
+    "Reached Out":                   "active_in_discussions",
     "In Discussion":                 "active_in_discussions",
     "In Contract":                   "active_in_discussions",
-    "Candidates Submitted":          "active_builder_interview",
-    "Interviewing":                  "active_builder_interview",
+    "Candidates Submitted":          "builder_submitted",
+    "Interviewing":                  "builder_interviewing",
     "Closed - Won/FTE":              "closed_won",
     "Closed - Won/Contract":         "closed_won",
     "Closed - Won/Capstone or Volunteer": "closed_won",
@@ -45,11 +62,23 @@ STAGE_MAP = {
     "Active: In Discussion":         "active_in_discussions",
     "Active: In Contract":           "active_in_discussions",
     "Active: Builder Matching":      "active_opportunity_confirmed",
-    "Active: Builder Interviews":    "active_builder_interview",
-    "Active: Candidates Submitted":  "active_builder_interview",
-    "On Hold":                       "on_hold_not_responsive",
+    "Active: Builder Interviews":    "builder_interviewing",
+    "Active: Candidates Submitted":  "builder_submitted",
+    "On Hold":                       "active_in_discussions",
     "Closed - Won":                  "closed_won",
 }
+
+# The constraint's vocabulary, duplicated here rather than imported: this script
+# runs standalone against a database and must not drag routes/jobs.py (and so
+# FastAPI) in with it. The assert below is what keeps the copy honest.
+_VALID_STAGES = {
+    "active_in_discussions", "ask_submitted", "active_opportunity_confirmed",
+    "builder_submitted", "builder_interviewing", "offer_contracting",
+    "closed_won", "closed_lost",
+}
+assert set(STAGE_MAP.values()) <= _VALID_STAGES, (
+    "STAGE_MAP targets a stage the database will reject: "
+    f"{sorted(set(STAGE_MAP.values()) - _VALID_STAGES)}")
 
 
 def _map_stage(at_stage: str | None) -> str:

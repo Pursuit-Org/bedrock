@@ -42,7 +42,7 @@ export function JobsLeadership() {
   const poolTotal =
     segment === "all"
       ? segmentsQ.data?.total ?? 0
-      : segmentsQ.data?.segments.find((s) => s.value === segment)?.count ?? 0;
+      : segmentsQ.data?.segments?.find((s) => s.value === segment)?.count ?? 0;
   const pctOfPool = (n: number) => (poolTotal ? Math.round((100 * n) / poolTotal) : 0);
 
   return (

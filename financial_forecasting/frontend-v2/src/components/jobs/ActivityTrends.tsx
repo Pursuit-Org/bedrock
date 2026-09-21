@@ -99,10 +99,10 @@ export function ActivityTrends({ scope, owner, range }: {
   const [split, setSplit] = useState<SplitMode>("volume");
   // Deliberately NOT the page's range — see trendWindow. This card exists to
   // show the run the selected period sits inside.
-  const window = useMemo(() => trendWindow(range), [range]);
+  const trendRange = useMemo(() => trendWindow(range), [range]);
   const isVolume = split === "volume";
-  const accounts = useActivityTrends(gran, channel, owner || undefined, scope, window);
-  const volume = useVolumeTrends(gran, owner || undefined, scope, window);
+  const accounts = useActivityTrends(gran, channel, owner || undefined, scope, trendRange);
+  const volume = useVolumeTrends(gran, owner || undefined, scope, trendRange);
   const { isLoading, isError, refetch } = isVolume ? volume : accounts;
   const data = accounts.data;
 

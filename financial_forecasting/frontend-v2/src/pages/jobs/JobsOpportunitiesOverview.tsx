@@ -209,7 +209,7 @@ export function JobsOpportunitiesOverview() {
       <div className="grid grid-cols-2 items-stretch gap-4 lg:grid-cols-5">
         <SummaryCard tone="ink" label="In the set" value={s?.in_set} isLoading={isLoading}
           sub="All active opportunities"
-          onClick={() => setDrill({ title: "In the set", note: "All active opportunities", rows: data?.drills.in_set ?? [] })} />
+          onClick={() => setDrill({ title: "In the set", note: "All active opportunities", rows: data?.drills?.in_set ?? [] })} />
         {/* Net new and Stalled read black like In the set (Kwame 2026-09-21).
             Colouring a headline count implies a verdict on it, and neither is
             one: net new is neither good nor bad without a target, and stalled
@@ -218,10 +218,10 @@ export function JobsOpportunitiesOverview() {
             actually belongs. */}
         <SummaryCard tone="ink" label="Net new" value={s?.net_new} sub={rangeLabel} isLoading={isLoading}
           delta={s ? { n: netDelta, prev: s.net_new_prev, priorLabel: spanDays === 7 ? "last wk" : `prior ${spanDays}d` } : undefined}
-          onClick={() => setDrill({ title: "Net new", note: `Created ${rangeLabel}`, rows: data?.drills.net_new ?? [] })} />
+          onClick={() => setDrill({ title: "Net new", note: `Created ${rangeLabel}`, rows: data?.drills?.net_new ?? [] })} />
         <SummaryCard tone="ink" label="Stalled" value={s?.stalled_6wk} isLoading={isLoading}
           sub="Open opportunity 6+ weeks"
-          onClick={() => setDrill({ title: "Stalled 6+ weeks", note: "Open, created more than 6 weeks ago", rows: data?.drills.stalled ?? [] })} />
+          onClick={() => setDrill({ title: "Stalled 6+ weeks", note: "Open, created more than 6 weeks ago", rows: data?.drills?.stalled ?? [] })} />
         {/* Stage-gate check: won on the board but the follow-through (e.g. the
             signed contract task) is still open — "signed contract = closed".
             Sits left of the outcome boxes: it's an action, they're a result. */}
@@ -232,9 +232,9 @@ export function JobsOpportunitiesOverview() {
             subtly highlighted) over Closed lost (context to understand, not a red flag). */}
         <div className="flex flex-col gap-4">
           <OutcomeBox tone="green" highlight label="Closed won" value={s?.moved_committed} isLoading={isLoading}
-            onClick={() => setDrill({ title: "Closed won", note: rangeLabel, rows: data?.drills.won ?? [] })} />
+            onClick={() => setDrill({ title: "Closed won", note: rangeLabel, rows: data?.drills?.won ?? [] })} />
           <OutcomeBox tone="ink" label="Closed lost" value={s?.closed_lost} isLoading={isLoading}
-            onClick={() => setDrill({ title: "Closed lost", note: rangeLabel, rows: data?.drills.lost ?? [] })} />
+            onClick={() => setDrill({ title: "Closed lost", note: rangeLabel, rows: data?.drills?.lost ?? [] })} />
         </div>
       </div>
 
@@ -249,7 +249,7 @@ export function JobsOpportunitiesOverview() {
       {/* ── Aging + Breakdown ─────────────────────────────────────────── */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <Panel title="Time in Pipeline">
-          <AgingBars buckets={data?.aging.buckets ?? []} isLoading={isLoading}
+          <AgingBars buckets={data?.aging?.buckets ?? []} isLoading={isLoading}
             activeSet={data?.active_set} nameOf={nameOf} />
         </Panel>
         <Panel
@@ -292,8 +292,8 @@ export function JobsOpportunitiesOverview() {
           <EmptyPriorityCard unset={data.heatmaps.priority.unset ?? 0} />
         ) : (
           <Heatmap
-            heatmap={heatAxis === "stage" ? data?.heatmaps.stage : data?.heatmaps.priority}
-            buckets={data?.heatmaps.buckets ?? []}
+            heatmap={heatAxis === "stage" ? data?.heatmaps?.stage : data?.heatmaps?.priority}
+            buckets={data?.heatmaps?.buckets ?? []}
             rowHeader={heatAxis === "stage" ? "Stage" : "Priority"}
             isLoading={isLoading}
             axis={heatAxis}

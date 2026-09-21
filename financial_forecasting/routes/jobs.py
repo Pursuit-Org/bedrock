@@ -5013,7 +5013,7 @@ async def outreach_scorecard_by_owner(
             "outreach": {k: _total("outreach", k) for k in ("target", "this_period", "last_period", "delta")},
             "calls":    {k: _total("calls", k)    for k in ("target", "this_period", "last_period", "delta")},
             "opportunities": {
-                "target": activity_pipeline_target("converted_opportunities", granularity),
+                "target": conv_target,
                 "this_period": conv_team_this, "last_period": conv_team_last,
                 "delta": (None if conv_target is None else conv_team_this - conv_target),
             },
