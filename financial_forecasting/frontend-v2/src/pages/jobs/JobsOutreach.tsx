@@ -19,6 +19,7 @@ import {
   type OutreachDateRange,
   type ScorecardRow,
   type OutreachDrillContact,
+  scorecardCount,
   useOwnerScorecard,
   type OwnerMetric,
   useTouchDepth,
@@ -295,6 +296,11 @@ function ScorecardTable({
             // otherwise have to keep in sync with the API.
             const depth = r.depth ?? 0;
             const pending = r.available === false;
+            // Read through scorecardCount, never straight off the row: these
+            // were `{warm, cold, total}` before 2026-09-21, and a cached row or
+            // an un-restarted backend still hands one over.
+            const thisN = scorecardCount(r.this_period);
+            const lastN = scorecardCount(r.last_period);
             return (
               <Fragment key={id}>
                 <tr
@@ -321,18 +327,18 @@ function ScorecardTable({
                       line of dates, and a right-aligned number drifts away from
                       the window it belongs to. */}
                   <td className={cn("px-3.5 py-2.5 text-center tabular-nums", depth === 0 && "font-semibold", pending && "font-normal text-ink-4")}>
-                    {pending ? "—" : r.this_period}
+                    {pending ? "—" : thisN}
                   </td>
                   <td className={cn("px-3.5 py-2.5 text-center tabular-nums", pending && "text-ink-4")}>
-                    {pending ? "—" : r.last_period}
+                    {pending ? "—" : lastN}
                   </td>
                   <td className="px-3.5 py-2.5 text-center text-[12.5px]">
                     {pending ? <span className="text-ink-4">—</span>
-                      : <Trend current={r.this_period} prior={r.last_period} />}
+                      : <Trend current={thisN} prior={lastN} />}
                   </td>
                   <td className="px-3.5 py-2.5 text-center">
                     {pending ? <span className="text-ink-4">—</span>
-                      : <DeltaChip actual={r.this_period} target={r.target} />}
+                      : <DeltaChip actual={thisN} target={r.target} />}
                   </td>
                   {/* Target renders 0 rather than a dash when unset: the column
                       is a standing prompt that a target is owed, and an em-dash
@@ -983,9 +989,11 @@ function OwnerCells({ m, muted }: { m: OwnerMetric; muted?: boolean }) {
     <>
       <td className="px-3 py-2.5 text-center tabular-nums text-ink-3">{m.target ?? "—"}</td>
       <td className={cn("px-3 py-2.5 text-center font-semibold tabular-nums", muted ? "text-ink-3" : "text-ink")}>
-        {m.this_period}
+        {scorecardCount(m.this_period)}
       </td>
-      <td className="px-3 py-2.5 text-center"><DeltaChip actual={m.this_period} target={m.target} /></td>
+      <td className="px-3 py-2.5 text-center">
+        <DeltaChip actual={scorecardCount(m.this_period)} target={m.target} />
+      </td>
     </>
   );
 }

@@ -726,7 +726,32 @@ Two findings from the exercise worth keeping:
 - `tsc` and `vite build` both pass on code that cannot render. Neither is a
   substitute for loading the page.
 
-### Phase 22 — Not started
+### Phase 22 — Fix, properly: guard where the value becomes DOM ✅ (2026-09-21)
+
+Phase 21's boundary worked — Kwame's screenshot showed the exact error instead of
+a blank page — but the page was still broken, and the normalisation meant to
+prevent it had shipped in the same commit.
+
+**Why the fetch-time fix did not fix it.** Normalising inside `queryFn` only
+touches rows fetched AFTER that code loads. Kwame's browser held rows in the
+React Query cache from before the pull (`staleTime` is 60s), Vite hot-swapped
+the component modules around them, and the new render code read a cached object
+straight into the DOM. The fix and the bug were live at the same time.
+
+**The guard moved to the render site.** `scorecardCount` is exported and called
+where the number becomes DOM. That one position covers all three ways the old
+shape arrives — stale cache, un-restarted backend, hot reload — where fetch-time
+normalisation covered only the last. The `queryFn` map is gone.
+
+**Verified against both shapes in a headless browser**, not by reading:
+old `{warm, cold, total}` renders 71 and 15 with 0 page errors; plain numbers
+render identically, Owner tab included.
+
+The lesson, stated so it is not relearned: normalise at the boundary a value
+CROSSES, not the boundary it ENTERS. Data already inside the process never
+passes the entry point again.
+
+### Phase 23 — Not started
 - [ ] Drill from a trend point into the underlying activity list
 - [ ] Contact table on the detail view (the `/records` endpoint already serves it)
 - [ ] Stage-entry period flow, like `outreach-pipeline-rework.md`
