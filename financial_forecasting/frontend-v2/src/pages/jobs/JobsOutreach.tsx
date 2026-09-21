@@ -1,5 +1,6 @@
 import { Fragment, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
+import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip as ReTooltip } from "recharts";
 import { ChevronRight, ChevronDown, Loader2, Users } from "lucide-react";
 
 import {
@@ -440,6 +441,18 @@ function TouchDepthDrill({ bucket, nameOf }: {
 // contacts that entered initial outreach this period; the bars are how many
 // logged touches each has. Server-computed off the same activity filters as the
 // drills, so it can't disagree with the rest of the tab.
+/** Slice colour per bucket. Zero touches is the red one on purpose — it is the
+ *  follow-up gap this panel exists to surface — and the rest run pale to strong
+ *  as the depth climbs, so a well-worked queue reads as a ring that darkens. */
+const TOUCH_COLORS: Record<string, string> = {
+  "0": "#a8364b",
+  "1": "#c9c4fb",
+  "2": "#a79dfa",
+  "3": "#8271f8",
+  "4plus": "#5b45f0",
+  fallback: "#c7c7f5",
+};
+
 function TouchDepthPanel({ scope, owner, nameOf, className }: {
   scope: OutreachScopeKind;
   owner?: string;
@@ -450,7 +463,11 @@ function TouchDepthPanel({ scope, owner, nameOf, className }: {
   const [open, setOpen] = useState<string | null>(null);
   const { data: depth, isLoading } = useTouchDepth(scope, owner);
   const buckets = depth?.buckets ?? [];
-  const max = Math.max(1, ...buckets.map((b) => b.count));
+  // Recharts drops a zero-value slice anyway, and an empty bucket is still
+  // worth reading ("nobody has had 3 touches" is a finding), so the numbers
+  // list every bucket and only the ring is filtered.
+  const slices = useMemo(() => buckets.filter((b) => b.count > 0), [buckets]);
+  const openBucket = buckets.find((b) => b.key === open) ?? null;
   return (
     <Panel
       title="Touch Depth"
@@ -469,47 +486,101 @@ function TouchDepthPanel({ scope, owner, nameOf, className }: {
           Nobody is sitting in initial outreach.
         </div>
       ) : (
-        <div className="flex flex-col">
-          {buckets.map((b) => {
-            const isOpen = open === b.key;
-            const zero = b.key === "0";
-            // The whole row is the control — label, bar and count all open the
-            // same list. Clicking a bar and having nothing happen is the kind of
-            // dead affordance that makes people stop trying.
-            const toggle = () => b.count > 0 && setOpen(isOpen ? null : b.key);
-            return (
-              <div key={b.key}>
-                <div
-                  role={b.count > 0 ? "button" : undefined}
-                  tabIndex={b.count > 0 ? 0 : undefined}
-                  onClick={toggle}
-                  onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } }}
-                  title={b.count > 0 ? `Show the ${b.count} contacts with ${b.label.toLowerCase()}` : undefined}
-                  className={cn("grid grid-cols-[150px_1fr_74px] items-center gap-3 rounded-md px-1 py-[7px]",
-                    b.count > 0 && "cursor-pointer hover:bg-surface-2/50",
-                    isOpen && "bg-surface-2/50")}
-                >
-                  <span className={cn("text-[12.5px] font-medium",
-                    zero ? "text-[#8f2f3f]" : "text-ink")}>{b.label}</span>
-                  <span className="h-2.5 overflow-hidden rounded-full bg-surface-2">
-                    <span className="block h-full rounded-full transition-[width] duration-500"
-                      style={{ width: `${Math.round((100 * b.count) / max)}%`,
-                               background: zero
-                                 ? "linear-gradient(90deg,#7a2233,#b8556a)"
-                                 : "linear-gradient(90deg,#6d5efc,#8b7dff)" }} />
-                  </span>
-                  <span className="text-right text-[12px] tabular-nums text-ink-2">
-                    <span className={cn("font-semibold",
+        <div className="flex flex-col gap-3">
+          {/* Numbers left, ring right (Kwame 2026-09-21). The bars that used to
+              sit between the label and the counts are gone: they encoded share,
+              which is what the ring now says, and they pushed the two numbers
+              people actually read out to the far edge of the card. */}
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div className="flex min-w-[210px] flex-1 flex-col">
+              {/* A header, because "50% · 41" is ambiguous without one and this
+                  panel has no column headings anywhere else to borrow. */}
+              <div className="grid grid-cols-[14px_1fr_46px_52px] items-center gap-2 px-1.5 pb-1">
+                <span /><span />
+                <span className="text-right text-[9px] font-semibold uppercase tracking-wider text-ink-4">Share</span>
+                <span className="text-right text-[9px] font-semibold uppercase tracking-wider text-ink-4">Contacts</span>
+              </div>
+              {buckets.map((b) => {
+                const isOpen = open === b.key;
+                const zero = b.key === "0";
+                // The whole row is the control, as it was when it was a bar.
+                // Clicking a row and having nothing happen is the kind of dead
+                // affordance that makes people stop trying.
+                const toggle = () => b.count > 0 && setOpen(isOpen ? null : b.key);
+                return (
+                  <div
+                    key={b.key}
+                    role={b.count > 0 ? "button" : undefined}
+                    tabIndex={b.count > 0 ? 0 : undefined}
+                    onClick={toggle}
+                    onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } }}
+                    title={b.count > 0 ? `Show the ${b.count} contacts with ${b.label.toLowerCase()}` : undefined}
+                    className={cn("grid grid-cols-[14px_1fr_46px_52px] items-center gap-2 rounded-md px-1.5 py-[6px]",
+                      b.count > 0 && "cursor-pointer hover:bg-surface-2/50",
+                      isOpen && "bg-surface-2/50")}
+                  >
+                    <span className="h-2.5 w-2.5 rounded-sm"
+                      style={{ backgroundColor: TOUCH_COLORS[b.key] ?? TOUCH_COLORS.fallback,
+                               opacity: b.count === 0 ? 0.3 : 1 }} />
+                    <span className={cn("truncate text-[12.5px] font-medium",
+                      b.count === 0 ? "text-ink-4" : zero ? "text-[#8f2f3f]" : "text-ink")}>
+                      {b.label}
+                    </span>
+                    <span className={cn("text-right text-[12.5px] font-semibold tabular-nums",
                       b.count === 0 ? "text-ink-4" : isOpen ? "text-accent" : zero ? "text-[#8f2f3f]" : "text-ink")}>
+                      {b.pct}%
+                    </span>
+                    <span className={cn("text-right text-[12px] tabular-nums",
+                      b.count === 0 ? "text-ink-4" : "text-ink-2")}>
                       {b.count}
                     </span>
-                    <span className="text-ink-4"> · {b.pct}%</span>
-                  </span>
-                </div>
-                {isOpen ? <TouchDepthDrill bucket={b} nameOf={nameOf} /> : null}
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="relative h-[170px] w-[170px] shrink-0">
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie
+                    data={slices} dataKey="count" nameKey="label"
+                    cx="50%" cy="50%" innerRadius={53} outerRadius={80}
+                    paddingAngle={1.5} stroke="var(--color-surface)" strokeWidth={2}
+                    // By index, not by the datum: TouchDepthBucket has its own
+                    // `key` field and recharts types the one it hands back as
+                    // React's Key. The index is unambiguous.
+                    onClick={(_d, i: number) => {
+                      const k = slices[i]?.key;
+                      if (k) setOpen(open === k ? null : k);
+                    }}
+                    className="cursor-pointer"
+                  >
+                    {slices.map((b) => (
+                      <Cell key={b.key} fill={TOUCH_COLORS[b.key] ?? TOUCH_COLORS.fallback}
+                        opacity={open && open !== b.key ? 0.35 : 1} />
+                    ))}
+                  </Pie>
+                  <ReTooltip
+                    formatter={(v, _n, item) => {
+                      const b = (item as { payload?: TouchDepthBucket })?.payload;
+                      return [`${v} contacts · ${b?.pct ?? 0}%`, b?.label ?? ""];
+                    }}
+                    contentStyle={{ fontSize: 12, borderRadius: 8, border: "1px solid var(--color-border)" }}
+                  />
+                </PieChart>
+              </ResponsiveContainer>
+              {/* The hole carries the queue total, which the bars had nowhere to
+                  put. pointer-events-none so it never eats a click meant for the
+                  slice underneath it. */}
+              <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
+                <span className="text-[19px] font-semibold tabular-nums leading-none text-ink">{depth.total}</span>
+                <span className="mt-0.5 text-[9px] uppercase tracking-wider text-ink-4">in queue</span>
               </div>
-            );
-          })}
+            </div>
+          </div>
+          {/* Below the whole row, not inside the list: the drill is a four-column
+              table, and it was unreadable squeezed into half the card. */}
+          {openBucket ? <TouchDepthDrill bucket={openBucket} nameOf={nameOf} /> : null}
         </div>
       )}
     </Panel>
