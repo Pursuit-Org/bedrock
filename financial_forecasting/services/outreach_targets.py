@@ -78,7 +78,8 @@ def _team_total(metric: str) -> dict[str, int]:
             for g in ("day", "week", "month")}
 
 
-# Raw activity rows sent/received in the period.
+# Team goals. Only the three totals appear: a metric absent from this dict has
+# no target, which the API reports as null and the UI as a dash.
 ACTIVITY_PIPELINE_TARGETS: dict[str, dict[str, int]] = {
     # The two totals carry a goal, and Discovery Calls carries one because the
     # ask is about the MIX, not extra volume: it is the same 15 calls, with an
@@ -87,13 +88,11 @@ ACTIVITY_PIPELINE_TARGETS: dict[str, dict[str, int]] = {
     "total_outreach_activity": _team_total("total_outreach_activity"),
     "total_calls":            _team_total("total_calls"),
     "call_discovery":         _team_total("call_discovery"),
-    "call_general":           dict(_ZERO),
-    "direct_email_sent":      dict(_ZERO),
-    "linkedin_message_sent":  dict(_ZERO),
-    "text_sent":              dict(_ZERO),
-    "facilitated_intro_sent": dict(_ZERO),
-    "engagement":             dict(_ZERO),
-    "direct_email_response":  dict(_ZERO),
+    # Nothing else carries a number. The individual channels are a breakdown of
+    # HOW a total was hit, not commitments of their own — the team owes 150
+    # touches, not 150 emails — and a 0 in the Target column read as a goal of
+    # zero rather than "no goal here". Absent means the API sends null and the
+    # UI renders a dash (Kwame 2026-09-21).
 }
 
 

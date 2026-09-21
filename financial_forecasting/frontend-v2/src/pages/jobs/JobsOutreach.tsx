@@ -11,7 +11,6 @@ import {
   useJobsContacts,
   useContactDetail,
   useContactTagCatalog,
-  inScope,
   JOBS_TEAM_PINNED,
   type OutreachGranularity,
   type OutreachScopeKind,
@@ -54,11 +53,30 @@ function fmtDate(iso: string) {
   const d = new Date(iso);
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
-function fmtRange(startISO: string, endISO: string) {
-  // end is exclusive (start-of-next-day) — show the last included day.
-  const end = new Date(new Date(endISO).getTime() - 1);
-  const y = end.getFullYear();
-  return `${fmtDate(startISO)} – ${end.toLocaleDateString(undefined, { month: "short", day: "numeric" })}, ${y}`;
+/** "Sep 15 – Sep 20, 2026" from two INCLUSIVE YYYY-MM-DD days.
+ *
+ *  Parsed at local noon on purpose. The labels used to come from the scorecard
+ *  response, whose bounds are UTC timestamps — west of Greenwich `new Date()`
+ *  slid each one back a day, so a 9/15–9/20 pick rendered as 9/14–9/20 under
+ *  "This period" (Kwame 2026-09-21). Formatting the picker's own plain dates
+ *  means the card and the table cannot disagree in the first place. */
+function fmtDayRange(fromISO: string, toISO: string) {
+  const at = (iso: string) => new Date(`${iso}T12:00:00`);
+  const end = at(toISO);
+  const day = (d: Date) => d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  return `${day(at(fromISO))} – ${day(end)}, ${end.getFullYear()}`;
+}
+
+/** The equal-length window immediately before [from, to], inclusive — the same
+ *  comparison the backend makes for a custom range, so "Last period" names the
+ *  window its numbers actually came from. */
+function priorDayRange(fromISO: string, toISO: string): [string, string] {
+  const iso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const start = new Date(`${fromISO}T12:00:00`);
+  const days = Math.round((new Date(`${toISO}T12:00:00`).getTime() - start.getTime()) / 86_400_000) + 1;
+  const lastEnd = new Date(start); lastEnd.setDate(start.getDate() - 1);
+  const lastStart = new Date(lastEnd); lastStart.setDate(lastEnd.getDate() - (days - 1));
+  return [iso(lastStart), iso(lastEnd)];
 }
 function Trend({ current, prior, unit = "pct" }: { current: number; prior: number; unit?: "pct" | "pt" }) {
   if (unit === "pct") {
@@ -342,7 +360,10 @@ function ScorecardTable({
                   {/* Target renders 0 rather than a dash when unset: the column
                       is a standing prompt that a target is owed, and an em-dash
                       reads as "not applicable". */}
-                  <td className="px-3.5 py-2.5 text-center tabular-nums text-ink-3">{pending ? "—" : r.target ?? 0}</td>
+                  {/* A dash, never 0 (Kwame 2026-09-21): the individual outreach channels
+                      carry no target, and printing 0 claimed one — every send then read
+                      as beating a goal nobody set. */}
+                  <td className="px-3.5 py-2.5 text-center tabular-nums text-ink-3">{pending ? "—" : r.target ?? "—"}</td>
                 </tr>
                 {isOpen && (
                   <tr>
@@ -722,28 +743,26 @@ function ContactCellDrill({ label, contacts, whenLabel }: {
   );
 }
 
-function ThisWeekBlock({ nameOf, scope, owner, range, onSelectOwner }: {
-  nameOf: (email: string) => string;
-  scope: OutreachScopeKind;
-  owner?: string;
-  range?: OutreachDateRange;
-  /** Clicking an owner scopes the whole page to them (same state as the
-   *  sender dropdown), so the row acts as a filter rather than a dead label. */
-  onSelectOwner?: (email: string) => void;
-}) {
+/** Contacts that entered `assigned` or `initial_outreach` during the period,
+ *  bucketed by owner.
+ *
+ *  Lifted out of the old Outreach Detail table on 2026-09-21 so the Owner cut of
+ *  the Activity Pipeline can carry the same numbers in a column (Kwame: fold the
+ *  two together). Keeps the contact objects, not just tallies — the drill lists
+ *  them, and deriving both from one pass means the number and the list can never
+ *  disagree. */
+type AssignedContacted = { assigned: JobContactWithDeal[]; contacted: JobContactWithDeal[] };
+const EMPTY_AC: AssignedContacted = { assigned: [], contacted: [] };
+
+function useAssignedContacted(range?: OutreachDateRange) {
   const { data: assignedData } = useJobsContacts({ membership_stage: "assigned", limit: 1000 });
   const { data: contactedData } = useJobsContacts({ membership_stage: "initial_outreach", limit: 1000 });
-  // Which owner's which column is expanded, e.g. "avni@pursuit.org:contacted".
-  const [openCell, setOpenCell] = useState<string | null>(null);
-
-  // Keep the contact objects, not just tallies — the drill lists them, and
-  // deriving both from one pass means the number and the list always agree.
-  const { rows, undated, hidden } = useMemo(() => {
+  return useMemo(() => {
     // Contacted is a period event, so it follows the page's Period picker (it
     // used to hardcode the current Sun-week and ignore the selector entirely).
     const pStart = range?.from ? new Date(`${range.from}T00:00:00`) : startOfWeekSunday();
     const pEnd = range?.to ? new Date(`${range.to}T23:59:59.999`) : new Date();
-    const by = new Map<string, { assigned: JobContactWithDeal[]; contacted: JobContactWithDeal[] }>();
+    const by = new Map<string, AssignedContacted>();
     const bucket = (email: string | null | undefined) => {
       const k = (email ?? "").toLowerCase() || "(unowned)";
       const r = by.get(k) ?? { assigned: [], contacted: [] };
@@ -754,158 +773,31 @@ function ThisWeekBlock({ nameOf, scope, owner, range, onSelectOwner }: {
     // contacts that entered this window, what share got reached. Assigned used
     // to be the whole standing queue against a period-scoped numerator, which
     // made the % drift down as the backlog grew rather than describing the week.
+    //
+    // `undated` is contacts whose stage entry has no timestamp, so no period can
+    // place them. Production currently has zero of these across every stage, but
+    // the count stays because nothing guarantees that stays true — a membership
+    // written without a stamp would otherwise vanish from the totals silently.
     let undated = 0;
     const inWindow = (c: JobContactWithDeal) => {
       if (!c.membership_stage_entered_at) { undated++; return false; }
       const t = new Date(c.membership_stage_entered_at);
       return t >= pStart && t <= pEnd;
     };
-    for (const c of assignedData?.data ?? []) {
-      if (inWindow(c)) bucket(c.owner_email).assigned.push(c);
-    }
-    for (const c of contactedData?.data ?? []) {
-      if (inWindow(c)) bucket(c.owner_email).contacted.push(c);
-    }
-    const withEntries = [...by.entries()]
-      .filter(([, r]) => r.assigned.length + r.contacted.length > 0);
-    const visible = withEntries
-      // Honour the page's sender scope: "(unowned)" is nobody's, so it only
-      // shows under Everyone.
-      .filter(([email]) => (email === "(unowned)" ? scope === "pursuit" : inScope(email, scope)))
-      .sort((a, b) => (b[1].assigned.length + b[1].contacted.length) - (a[1].assigned.length + a[1].contacted.length));
+    for (const c of assignedData?.data ?? []) if (inWindow(c)) bucket(c.owner_email).assigned.push(c);
+    for (const c of contactedData?.data ?? []) if (inWindow(c)) bucket(c.owner_email).contacted.push(c);
+    return { by, undated };
+  }, [assignedData, contactedData, range]);
+}
 
-    // How many entries the SCOPE hid, as opposed to none existing. Without this
-    // the empty state said "no contacts entered this period" while contacts had
-    // in fact entered — they were just unowned, or owned by someone outside the
-    // selected scope. Reported on 2026-08-12 against Jul 29–Aug 4, where one
-    // contact entered `assigned` and carried no owner.
-    const hidden = withEntries
-      .filter(([email]) => !(email === "(unowned)" ? scope === "pursuit" : inScope(email, scope)))
-      .reduce((n, [, r]) => n + r.assigned.length + r.contacted.length, 0);
-
-    // `undated` is contacts whose stage entry has no timestamp, so no period can
-    // place them. Production currently has zero of these across every stage, but
-    // the count stays because nothing guarantees that stays true — a membership
-    // written without a stamp would otherwise vanish from the totals silently.
-    return { rows: visible, undated, hidden };
-  }, [assignedData, contactedData, range, scope]);
-  if (rows.length === 0) {
-    return (
-      <div className="flex flex-col gap-3">
-        <SectionHead title="Outreach Detail" />
-        <div className="rounded-lg border border-dashed border-border-strong px-4 py-6 text-center text-[12.5px] text-ink-4">
-          {hidden > 0 ? (
-            <>
-              {hidden} contact{hidden === 1 ? "" : "s"} entered a stage in this period, but
-              {" "}none are in the current scope. Switch to Everyone to see {hidden === 1 ? "it" : "them"}.
-            </>
-          ) : (
-            <>No contacts entered the assigned or contacted stage in this period.</>
-          )}
-        </div>
-      </div>
-    );
-  }
-  return (
-    <div className="flex flex-col gap-3">
-      <SectionHead title="Outreach Detail" />
-      <div className="flex flex-col overflow-hidden rounded-xl border border-border-strong bg-surface">
-        <div className="flex flex-wrap items-baseline gap-2 border-b border-border-strong bg-surface-2 px-4 py-3">
-          <span className="text-[13px] font-bold text-ink-2">Assigned &amp; Contacted</span>
-          {/* Both columns count entries INTO a stage during the period. Contacts
-              with no stage stamp can't be placed in time, so they're named here
-              rather than quietly missing from the totals. */}
-          {undated > 0 ? (
-            <span className="text-[11px] text-ink-4"
-              title="These contacts have no stage timestamp, so no period can claim them. The stage-history grant fills most of them in.">
-              {undated} without a stage date, not counted
-            </span>
-          ) : null}
-        </div>
-        <table className="w-full text-[12.5px]">
-          <thead><tr className="bg-surface-2 text-left text-[10.5px] uppercase tracking-wide text-ink-3">
-            <th className="py-2.5 pl-3.5 pr-2 text-left font-bold">Owner</th>
-            <th className="px-2 py-2.5 text-right font-bold" title="Contacts that entered this owner's queue inside the selected period — click to list them">Assigned</th>
-            <th className="px-2 py-2.5 text-right font-bold" title="Of the contacts that entered in this period, how many reached initial outreach — click to list them">Contacted / assigned</th>
-            <th className="w-[34%] px-3 py-2.5 text-left font-bold">Progress</th>
-          </tr></thead>
-          <tbody>
-            {rows.map(([email, r]) => {
-              const total = r.assigned.length + r.contacted.length;
-              const pct = total ? Math.round((100 * r.contacted.length) / total) : 0;
-              const cell = (which: "assigned" | "contacted") => `${email}:${which}`;
-              const toggle = (which: "assigned" | "contacted") =>
-                setOpenCell(openCell === cell(which) ? null : cell(which));
-              const openWhich = openCell?.startsWith(`${email}:`)
-                ? (openCell.split(":")[1] as "assigned" | "contacted")
-                : null;
-              return (
-                <Fragment key={email}>
-                  <tr className={cn("border-t border-border-strong",
-                    owner && owner.toLowerCase() === email && "bg-accent-soft/40")}>
-                    <td className="px-3 py-1.5 font-medium text-ink">
-                      {email === "(unowned)" ? (
-                        <span className="text-ink-4">Unowned</span>
-                      ) : onSelectOwner ? (
-                        <button type="button" onClick={() => onSelectOwner(email)}
-                          title={`Filter this page to ${nameOf(email)}`}
-                          className={cn("text-left hover:text-accent hover:underline",
-                            owner && owner.toLowerCase() === email ? "text-accent" : "text-ink")}>
-                          {nameOf(email)}
-                        </button>
-                      ) : nameOf(email)}
-                    </td>
-                    <td className="px-2 py-1.5 text-right tabular-nums">
-                      {total > 0 ? (
-                        <button type="button" onClick={() => toggle("assigned")}
-                          title={`List the ${total} contacts that entered this period`}
-                          className={cn("hover:underline", openWhich === "assigned" ? "text-accent" : "text-ink-2 hover:text-accent")}>
-                          {total}
-                        </button>
-                      ) : <span className="text-ink-2">{total}</span>}
-                    </td>
-                    <td className="px-2 py-1.5 text-right tabular-nums">
-                      {r.contacted.length > 0 ? (
-                        <button type="button" onClick={() => toggle("contacted")}
-                          title={`List the ${r.contacted.length} of ${total} reached in this period`}
-                          className={cn("font-semibold hover:underline", openWhich === "contacted" ? "text-accent" : "text-green hover:text-accent")}>
-                          {r.contacted.length}
-                        </button>
-                      ) : <span className="font-semibold text-ink-4">0</span>}
-                      <span className="text-ink-4"> / {total}</span>
-                      <span className="ml-1 text-[11px] text-ink-4">({pct}%)</span>
-                    </td>
-                    <td className="px-3 py-1.5">
-                      <div className="h-1.5 overflow-hidden rounded-full border border-border-strong bg-surface-2" title={`${r.contacted.length} of ${total} contacted in this period`}>
-                        <div className="h-full rounded-full bg-green transition-all" style={{ width: `${pct}%` }} />
-                      </div>
-                    </td>
-                  </tr>
-                  {openWhich ? (
-                    <tr className="border-t border-border-strong bg-surface-2/40">
-                      <td colSpan={4} className="px-3 py-2">
-                        <ContactCellDrill
-                          label={openWhich === "assigned"
-                            ? `${nameOf(email)} · entered this period`
-                            : `${nameOf(email)} · contacted this period`}
-                          // "Assigned set" is the queue PLUS those already
-                          // contacted, so its drill must list both — otherwise
-                          // clicking 26 shows 23.
-                          contacts={openWhich === "assigned" ? [...r.assigned, ...r.contacted] : r.contacted}
-                          whenLabel={openWhich === "assigned" ? "Entered stage" : "Contacted"}
-                        />
-                      </td>
-                    </tr>
-                  ) : null}
-                </Fragment>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-
-    </div>
-  );
+/** Sum several owners' buckets into one, for the team line. Summed from the
+ *  rows on screen rather than counted separately, so the total can never
+ *  disagree with what is under it. */
+function sumAC(parts: AssignedContacted[]): AssignedContacted {
+  return {
+    assigned: parts.flatMap((p) => p.assigned),
+    contacted: parts.flatMap((p) => p.contacted),
+  };
 }
 
 /** The Activity Pipeline table, lifted out of ThisWeekBlock on 2026-09-16 so it
@@ -976,22 +868,12 @@ function DeltaChip({ actual, target }: { actual: number; target: number | null |
   const d = actual - target;
   return (
     <span className={cn("inline-flex items-center rounded px-1.5 py-0.5 text-[12.5px] font-semibold tabular-nums",
-      // Exactly on target is grey, not green (Kwame 2026-09-21). Green is for
-      // beating the number; hitting it exactly is the expected state, and
-      // colouring the expected state leaves nothing for the good one to say.
-      d === 0 ? "bg-surface-2 text-ink-3" : d > 0 ? "bg-green-soft text-green" : "bg-red-soft text-red")}>
+      // Hitting the number exactly is a pass, so 0 is green (Kwame 2026-09-21,
+      // reversing the grey we briefly shipped). Red is reserved for a shortfall
+      // — the only state that asks someone to do something.
+      d >= 0 ? "bg-green-soft text-green" : "bg-red-soft text-red")}>
       {d > 0 ? "+" : ""}{d}
     </span>
-  );
-}
-
-// ── Section header ────────────────────────────────────────────────────────────
-function SectionHead({ title, note }: { title: string; note?: string }) {
-  return (
-    <div className="flex items-baseline justify-between">
-      <h2 className="text-[13px] font-bold uppercase tracking-wider text-ink-3">{title}</h2>
-      {note && <span className="text-[12.5px] text-ink-4">{note}</span>}
-    </div>
   );
 }
 
@@ -1032,6 +914,50 @@ function OwnerCells({ m, muted, onOpen, open }: {
   );
 }
 
+/** Contacted out of assigned, with a short bar under it — the fourth Outreach
+ *  column (Kwame 2026-09-21).
+ *
+ *  Reaching the contacts you were handed is the other half of outreach volume,
+ *  and it used to sit in its own table below this one saying the same thing
+ *  about the same people. Both numbers stay clickable, so the assigned list and
+ *  the contacted list are exactly where they were, one row closer. The bar is
+ *  deliberately short: it is a glance at the ratio, not a second reading of it. */
+function ContactedCell({ r, muted, onOpen, openWhich }: {
+  r: AssignedContacted;
+  muted?: boolean;
+  onOpen?: (which: "assigned" | "contacted") => void;
+  openWhich?: "assigned" | "contacted" | null;
+}) {
+  const total = r.assigned.length + r.contacted.length;
+  const pct = total ? Math.round((100 * r.contacted.length) / total) : 0;
+  const num = (which: "assigned" | "contacted", n: number, cls: string, title: string) =>
+    onOpen && n > 0 ? (
+      <button type="button" onClick={() => onOpen(which)} title={title}
+        className={cn("rounded px-0.5 tabular-nums hover:underline",
+          openWhich === which ? "text-accent" : cls)}>
+        {n}
+      </button>
+    ) : <span className={cn("tabular-nums", cls)}>{n}</span>;
+  return (
+    <td className="px-3 py-2.5 text-center">
+      <div className="inline-flex flex-col items-center gap-1">
+        <span className="text-[13px] font-semibold">
+          {num("contacted", r.contacted.length, muted || !r.contacted.length ? "text-ink-3" : "text-green",
+            `List the ${r.contacted.length} of ${total} reached in this period`)}
+          <span className="font-normal text-ink-4"> / </span>
+          {num("assigned", total, muted ? "text-ink-3" : "text-ink-2",
+            `List the ${total} contacts that entered this period`)}
+          <span className="ml-1 text-[10.5px] font-normal text-ink-4">({pct}%)</span>
+        </span>
+        <div className="h-1 w-16 overflow-hidden rounded-full border border-border-strong bg-surface-2"
+          title={`${r.contacted.length} of ${total} contacted in this period`}>
+          <div className="h-full rounded-full bg-green transition-all" style={{ width: `${pct}%` }} />
+        </div>
+      </div>
+    </td>
+  );
+}
+
 /** The Activity Pipeline, cut by person instead of by activity type.
  *
  *  Every owner who carries a target gets a row, whether or not they sent
@@ -1050,8 +976,20 @@ function OwnerScorecardTable({ granularity, range, rangeLabel, nameOf, leading, 
   action?: React.ReactNode;
 }) {
   const { data, isLoading } = useOwnerScorecard(granularity, range);
-  const [open, setOpen] = useState<string | null>(null);   // "<owner>:<metric>"
+  // "<owner>:<metric>", where metric is an activity key or one of the two
+  // pseudo-keys the Contacted / assigned column opens.
+  const [open, setOpen] = useState<string | null>(null);
   const rows = data?.rows ?? [];
+  // Contacts handed over and reached in the same window, for the fourth
+  // Outreach column. Keyed lowercase; a row with no entries reads as 0 / 0.
+  const { by: acByOwner, undated } = useAssignedContacted(range);
+  const acOf = (email: string) => acByOwner.get(email.toLowerCase()) ?? EMPTY_AC;
+  // The team line sums the rows on screen, never the whole map: a contact owned
+  // by somebody who carries no target has no row to sit in, so counting it in
+  // the total would make the column not add up.
+  const acTotal = useMemo(() => sumAC(rows.map((r) => acOf(r.owner))),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [rows, acByOwner]);
   return (
     <div className="flex flex-col overflow-hidden rounded-xl border border-border-strong bg-surface">
       <CardHead title="Activity Pipeline" leading={leading} action={action} />
@@ -1064,7 +1002,7 @@ function OwnerScorecardTable({ granularity, range, rangeLabel, nameOf, leading, 
             {/* Same treatment as Volume / Conversion on Contact Pipeline: a
                 centred cap with a rule under it, so the three columns beneath
                 read as belonging to it. */}
-            <th className="border-l border-border px-2 pt-2 pb-1" colSpan={3}>
+            <th className="border-l border-border px-2 pt-2 pb-1" colSpan={4}>
               <span className={GROUP_CAP}>Outreach</span>
             </th>
             <th className="border-l border-border px-2 pt-2 pb-1" colSpan={3}>
@@ -1084,18 +1022,26 @@ function OwnerScorecardTable({ granularity, range, rangeLabel, nameOf, leading, 
                   </span>
                 </th>
                 <th className="px-3 pb-2 text-center font-semibold align-bottom">Δ to target</th>
+                {/* Outreach carries a fourth: contacts reached out of contacts
+                    handed over, for the same window. Calls has no equivalent. */}
+                {i === 0 && (
+                  <th className="px-3 pb-2 text-center font-semibold align-bottom"
+                    title="Of the contacts that entered this owner's queue in this period, how many reached initial outreach. Click either number for the list.">
+                    Contacted / assigned
+                  </th>
+                )}
               </Fragment>
             ))}
           </tr>
         </thead>
         <tbody>
           {isLoading && (
-            <tr><td colSpan={7} className="px-4 py-6 text-center text-[12.5px] text-ink-3">
+            <tr><td colSpan={8} className="px-4 py-6 text-center text-[12.5px] text-ink-3">
               <Loader2 size={13} className="mr-1.5 inline animate-spin" />Loading…
             </td></tr>
           )}
           {!isLoading && rows.length === 0 && (
-            <tr><td colSpan={7} className="px-4 py-6 text-center text-[12.5px] text-ink-4">
+            <tr><td colSpan={8} className="px-4 py-6 text-center text-[12.5px] text-ink-4">
               Nobody carries a target yet.
             </td></tr>
           )}
@@ -1109,6 +1055,7 @@ function OwnerScorecardTable({ granularity, range, rangeLabel, nameOf, leading, 
                 All jobs team
               </td>
               <OwnerCells m={data.totals.outreach} muted />
+              <ContactedCell r={acTotal} muted />
               <OwnerCells m={data.totals.calls} muted />
             </tr>
           )}
@@ -1123,17 +1070,39 @@ function OwnerScorecardTable({ granularity, range, rangeLabel, nameOf, leading, 
                   <td className="px-3.5 py-2.5 text-left font-medium text-ink" title={r.owner}>{nameOf(r.owner)}</td>
                   <OwnerCells m={r.outreach} open={isOpen("total_outreach_activity")}
                     onOpen={() => toggle("total_outreach_activity")} />
+                  <ContactedCell r={acOf(r.owner)} onOpen={toggle}
+                    openWhich={openMetric === "assigned" || openMetric === "contacted" ? openMetric : null} />
                   <OwnerCells m={r.calls} open={isOpen("call_discovery")}
                     onOpen={() => toggle("call_discovery")} />
                 </tr>
                 {openMetric && (
                   <tr>
-                    {/* Same drill as the Activity tab: account first, its
-                        contacts under it, five at a time, each expanding to the
-                        actual touches. Scoped to this one person by `owner`. */}
-                    <td colSpan={7} className="border-b border-border bg-bg p-0">
-                      <RowDrill kind="activity" rowKey={openMetric} granularity={granularity}
-                        scope="pursuit" owner={r.owner} range={range} nameOf={nameOf} />
+                    <td colSpan={8} className="border-b border-border bg-bg p-0">
+                      {openMetric === "assigned" || openMetric === "contacted" ? (
+                        // The contact list the Outreach Detail table used to
+                        // open, unchanged — same rows, same columns, now under
+                        // the number it belongs to.
+                        <div className="px-3 py-2">
+                          <ContactCellDrill
+                            label={openMetric === "assigned"
+                              ? `${nameOf(r.owner)} · entered this period`
+                              : `${nameOf(r.owner)} · contacted this period`}
+                            // "Assigned" is the queue PLUS those already
+                            // contacted, so its drill lists both — otherwise
+                            // clicking 26 shows 23.
+                            contacts={openMetric === "assigned"
+                              ? [...acOf(r.owner).assigned, ...acOf(r.owner).contacted]
+                              : acOf(r.owner).contacted}
+                            whenLabel={openMetric === "assigned" ? "Entered stage" : "Contacted"}
+                          />
+                        </div>
+                      ) : (
+                        // Same drill as the Activity tab: account first, its
+                        // contacts under it, five at a time, each expanding to
+                        // the actual touches. Scoped to this person by `owner`.
+                        <RowDrill kind="activity" rowKey={openMetric} granularity={granularity}
+                          scope="pursuit" owner={r.owner} range={range} nameOf={nameOf} />
+                      )}
                     </td>
                   </tr>
                 )}
@@ -1142,6 +1111,15 @@ function OwnerScorecardTable({ granularity, range, rangeLabel, nameOf, leading, 
           })}
         </tbody>
       </table>
+      {/* Contacted / assigned counts entries INTO a stage during the period.
+          Contacts with no stage stamp can't be placed in time, so they're named
+          here rather than quietly missing from the column. */}
+      {undated > 0 && (
+        <div className="border-t border-border-strong bg-surface-2 px-4 py-2 text-[11px] text-ink-4"
+          title="These contacts have no stage timestamp, so no period can claim them. The stage-history grant fills most of them in.">
+          {undated} contact{undated === 1 ? "" : "s"} without a stage date, not counted under Contacted / assigned
+        </div>
+      )}
     </div>
   );
 }
@@ -1270,8 +1248,15 @@ export function JobsOutreach() {
   const { data: staff = [] } = useJobsStaff();
   const nameOf = (email: string) => staff.find((s) => s.email.toLowerCase() === email.toLowerCase())?.name || email.split("@")[0];
   const { data: sc, isLoading, isError } = useOutreachScorecard(granularity, scope, owner || undefined, range);
-  const rangeLabel = useMemo(() => (sc ? fmtRange(sc.period.this_start, sc.period.this_end) : ""), [sc]);
-  const lastRangeLabel = useMemo(() => (sc ? fmtRange(sc.period.last_start, sc.period.last_end) : ""), [sc]);
+  // Both labels derive from the period card's own dates, never from the
+  // response — see fmtDayRange. Whatever the card says is what "This period"
+  // says, and "Last period" is the equal-length window before it.
+  const rangeLabel = useMemo(() => (from && to ? fmtDayRange(from, to) : ""), [from, to]);
+  const lastRangeLabel = useMemo(() => {
+    if (!from || !to) return "";
+    const [lf, lt] = priorDayRange(from, to);
+    return fmtDayRange(lf, lt);
+  }, [from, to]);
 
 
 
@@ -1360,16 +1345,10 @@ export function JobsOutreach() {
             range={range} nameOf={nameOf} rangeLabel={rangeLabel || undefined}
             lastRangeLabel={lastRangeLabel || undefined}
             ownerLabel={senderLabel} ownerIsPerson={!!owner} />
-          {/* Outreach Detail sits directly under the table it breaks down. */}
-          <ThisWeekBlock nameOf={nameOf}
-            scope={scope} owner={owner || undefined} range={range}
-            onSelectOwner={(email) => {
-              // The table keys owners lowercased; resolve back to the canonical
-              // staff email so exact-match server filters still hit (one staff
-              // record is "joanna@Pursuit.org").
-              const canonical = staff.find((st) => st.email.toLowerCase() === email)?.email ?? email;
-              setOwner(owner.toLowerCase() === email ? "" : canonical);
-            }} />
+          {/* Outreach Detail is gone (Kwame 2026-09-21): its two numbers and its
+              two contact lists are now the Contacted / assigned column on the
+              Activity Pipeline's Owner cut, next to the outreach volume they
+              qualify, instead of repeating the same owners in a second table. */}
 
           {/* Volume over time, and whether that volume is follow-up or one-and-
               done. They answer the same question from two sides, so they read

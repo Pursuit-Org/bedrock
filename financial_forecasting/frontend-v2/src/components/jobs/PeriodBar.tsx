@@ -38,10 +38,7 @@ function yesterday(): Date {
  *  shown in weekly buckets reads as a bug. All three are trailing windows ending
  *  yesterday.
  *
- *  Weekly is yesterday PLUS the seven days before it, so on 21 Sep it reads
- *  13–20 Sep (Kwame 2026-09-21). That is eight days, not seven, and the `8d`
- *  the bar prints beside the range is not a bug — he asked for the window by
- *  its endpoints, and this is what those endpoints span. */
+ *  Weekly is the seven days ending yesterday, so on 21 Sep it reads 14–20 Sep. */
 export const PERIOD_PRESETS: {
   key: OutreachGranularity;
   label: string;
@@ -57,10 +54,10 @@ export const PERIOD_PRESETS: {
   {
     key: "week",
     label: "Weekly",
-    title: "Yesterday and the 7 days before it",
+    title: "The 7 days ending yesterday",
     get: () => {
       const e = yesterday();
-      const s = new Date(e); s.setDate(e.getDate() - 7);
+      const s = new Date(e); s.setDate(e.getDate() - 6);
       return [iso(s), iso(e)];
     },
   },
