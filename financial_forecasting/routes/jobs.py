@@ -3958,6 +3958,134 @@ async def activity_trends(
     }
 
 
+@router.get("/activity-trends/volume")
+async def activity_trends_volume(
+    granularity: str = Query("week", pattern="^(day|week|month)$"),
+    owner: Optional[str] = Query(None, description="Scope to one staff email (else the scope)"),
+    scope: str = Query("team", pattern="^(pursuit|team|staff)$"),
+    date_from: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    date_to: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """The Activity Pipeline's four headline numbers, per bucket, over a long run.
+
+    Same four things the table shows for one period — accounts activated, total
+    outreach, total calls, opportunities converted — plotted across many, so you
+    can see whether a week was normal (Kwame 2026-09-21). The table answers "how
+    did we do"; this answers "compared to what".
+
+    Every series reads the same definition as the table: _account_touch_sql plus
+    the dormancy rule for activation, _send_events_sql and _call_events_sql for
+    volume, the membership stamp for conversions. A point on this chart and the
+    row in the table for the same window are the same number.
+
+    History runs past `date_from` on purpose for activation only: whether an
+    account was dormant depends on touches BEFORE the window, so the CTEs see
+    everything and the output is filtered at the end.
+    """
+    at = _account_touch_sql(scope, owner)
+    sends = _send_events_sql(scope, owner)
+    calls = _call_events_sql(scope, owner, f"'call_{CALL_KIND_DEFAULT}'")
+    g = granularity
+
+    rows = await conn.fetch(f"""
+        WITH at AS (SELECT * FROM {at} q),
+        acct_bucket AS (
+          SELECT company, date_trunc('{g}', activity_date) AS bucket,
+                 max(activity_date) AS last_in_bucket
+          FROM at GROUP BY 1, 2
+        ),
+        seq AS (
+          -- The previous bucket in which we touched this account at all. lag over
+          -- bucketed maxima is the same thing as "the latest touch before this
+          -- bucket started", and one pass instead of a correlated subquery.
+          SELECT company, bucket,
+                 lag(last_in_bucket) OVER (PARTITION BY company ORDER BY bucket) AS last_prior
+          FROM acct_bucket
+        ),
+        activated AS (
+          SELECT bucket, count(*) AS n FROM seq
+          WHERE last_prior IS NULL
+             OR last_prior < bucket - interval '{DORMANT_DAYS} days'
+          GROUP BY 1
+        ),
+        sent AS (SELECT date_trunc('{g}', ts) AS bucket, count(*) AS n FROM ({sends}) se GROUP BY 1),
+        called AS (SELECT date_trunc('{g}', ts) AS bucket, count(*) AS n FROM ({calls}) ce GROUP BY 1),
+        converted AS (
+          SELECT date_trunc('{g}', m.converted_at) AS bucket, count(*) AS n
+          FROM bedrock.jobs_contact_membership m
+          WHERE m.converted_at IS NOT NULL GROUP BY 1
+        ),
+        all_buckets AS (
+          SELECT bucket FROM activated UNION SELECT bucket FROM sent
+          UNION SELECT bucket FROM called UNION SELECT bucket FROM converted
+        )
+        SELECT b.bucket,
+               coalesce(a.n, 0) AS accounts_activated,
+               coalesce(s.n, 0) AS outreach,
+               coalesce(c.n, 0) AS calls,
+               coalesce(v.n, 0) AS opportunities
+        FROM all_buckets b
+        LEFT JOIN activated a USING (bucket)
+        LEFT JOIN sent      s USING (bucket)
+        LEFT JOIN called    c USING (bucket)
+        LEFT JOIN converted v USING (bucket)
+        WHERE b.bucket IS NOT NULL
+    """)
+
+    def _add_months(dt, n):
+        y, m = dt.year, dt.month + n
+        while m <= 0:
+            m += 12; y -= 1
+        while m > 12:
+            m -= 12; y += 1
+        return dt.replace(year=y, month=m, day=1)
+
+    # Zero-filled bucket spine, so a quiet week is a point at zero rather than a
+    # gap the line skips over — a chart that closes over a silent week reads as
+    # if the week never happened.
+    SERIES = ("accounts_activated", "outreach", "calls", "opportunities")
+    buckets = []
+    if date_from and date_to:
+        start_b, end_b = await conn.fetchrow(
+            f"SELECT date_trunc('{g}', $1::timestamp) AS a, date_trunc('{g}', $2::timestamp) AS b",
+            datetime.fromisoformat(date_from), datetime.fromisoformat(date_to),
+        )
+        cur, guard = start_b, 0
+        while cur <= end_b and guard < 400:
+            buckets.append({"period": cur.date().isoformat(), **{k: 0 for k in SERIES}})
+            cur = (cur + timedelta(days=1) if g == "day"
+                   else cur + timedelta(weeks=1) if g == "week" else _add_months(cur, 1))
+            guard += 1
+    else:
+        periods = 14 if g == "day" else 12
+        base = await conn.fetchval(f"SELECT date_trunc('{g}', now())")
+        for i in range(periods - 1, -1, -1):
+            start = (base - timedelta(days=i) if g == "day"
+                     else base - timedelta(weeks=i) if g == "week" else _add_months(base, -i))
+            buckets.append({"period": start.date().isoformat(), **{k: 0 for k in SERIES}})
+
+    idx = {b["period"]: b for b in buckets}
+    for r in rows:
+        b = idx.get(r["bucket"].date().isoformat()) if r["bucket"] else None
+        if b:
+            for k in SERIES:
+                b[k] = int(r[k] or 0)
+
+    return {"success": True, "data": {
+        "granularity": g,
+        "buckets": buckets,
+        "targets": {
+            "accounts_activated": activity_pipeline_target("accounts_activated", g, owner),
+            "outreach": activity_pipeline_target("total_outreach_activity", g, owner),
+            "calls": activity_pipeline_target("total_calls", g, owner),
+            "opportunities": activity_pipeline_target("converted_opportunities", g, owner),
+        },
+        "totals": {k: sum(b[k] for b in buckets) for k in SERIES},
+    }}
+
+
 @router.get("/activity-trends/detail")
 async def activity_trends_detail(
     period: str = Query(..., description="Bucket start date (ISO, the bar's period)"),
@@ -4049,7 +4177,14 @@ async def activity_trends_detail(
 # children under event counting; and the distinct-contact version silently
 # dropped every email to an address Bedrock has no contact row for.
 
+# Accounts Activated and Converted Opportunities bracket the list (Kwame
+# 2026-09-21) so the table reads as a funnel end to end: doors opened, effort
+# spent, conversations had, opportunities out. Both are depth 0 like the other
+# totals, and neither has children — they are outcomes, not roll-ups, so nothing
+# is indented beneath them. Both count exactly what the summary card above the
+# table counts, so the card and the row can never disagree.
 _OUTREACH_ACTIVITY_META = [
+    ("accounts_activated",      "Total Accounts Activated", 0),
     ("total_outreach_activity", "Total Outreach", 0),
     ("direct_email_sent",       "Direct Email Sent",       1),
     ("linkedin_message_sent",   "LinkedIn Messages Sent",  1),
@@ -4058,7 +4193,11 @@ _OUTREACH_ACTIVITY_META = [
     ("total_calls",             "Total Calls",             0),
     ("call_discovery",          "Discovery Calls",         1),
     ("call_general",            "General Calls",           1),
+    ("converted_opportunities", "Total Converted Opportunities", 0),
 ]
+# Metrics that are NOT counted from the leaf-event union: each has its own
+# definition (a dormancy rule, a membership stamp) and its own query.
+_ACTIVITY_OUTCOME_METRICS = ("accounts_activated", "converted_opportunities")
 # What kind of call it was. Asked for at log time so Total Calls can be split
 # into the three the team actually runs, rather than reconstructed from the note
 # afterwards. One definition drives the log-a-call picker, the CHECK constraint's
@@ -4082,10 +4221,12 @@ CALL_KIND_DEFAULT = "general"
 # Funnel tier per activity metric — the frontend draws a stronger rule where the
 # tier changes, which is what separates the send block from the call block.
 _ACTIVITY_TIER = {
+    "accounts_activated": 0,
     "total_outreach_activity": 1,
     "direct_email_sent": 1, "linkedin_message_sent": 1, "text_sent": 1,
     "facilitated_intro_sent": 1,
     "total_calls": 2, "call_discovery": 2, "call_general": 2,
+    "converted_opportunities": 3,
 }
 def _shift_months(dt, n):
     m = dt.month - 1 + n
@@ -4256,6 +4397,125 @@ def _call_events_sql(scope, owner, kind_expr: str) -> str:
     """
 
 
+# How long an account must go quiet before a new touch counts as re-activation
+# rather than follow-up. Kwame's ask was "2 or 3 months". Shared by the summary
+# card, the Activity Pipeline row and the trend series, so the three cannot
+# quietly use different definitions of "activated".
+DORMANT_DAYS = 90
+
+
+def _account_touch_sql(scope, owner) -> str:
+    """Every jobs touch mapped to an ACCOUNT, as (id, activity_date, company).
+
+    A parenthesised subquery, not a CTE, so a caller can name it whatever it
+    needs and still stack its own CTEs on top. Extracted on 2026-09-21 when the
+    Activity Pipeline grew an Accounts Activated row: the summary card, that row
+    and the trend series all have to mean the same thing by "an account we
+    touched", and the only way to guarantee that is one copy of the mapping.
+
+    The company comes off the COUNTERPART contact, reached three ways: the
+    nightly participant link, an email recipient, or a meeting attendee. DISTINCT
+    on (activity, company) so one email to four people at one company is one
+    account touch, which is what an account-level question means.
+    """
+    actor = _actor_sql("a", owner, scope)
+    chan = ("CASE WHEN a.source='calendar-sync' OR a.type='meeting' THEN 'meeting' "
+            "WHEN a.type IN ('email') OR a.source='gmail-sync' THEN 'email' ELSE 'other' END")
+    return f"""(
+      WITH team_act AS (
+        SELECT a.id, a.activity_date, a.participant_public_contact_id AS cid,
+               a.email_to, a.email_cc, a.meeting_attendees, {chan} AS channel
+        FROM bedrock.activity a
+        WHERE a.deleted_at IS NULL AND {actor}
+          AND {_not_autoreply('a')} AND {_jobs_relevant('a')}
+      ),
+      touch_contact AS (
+        SELECT id, activity_date, channel, cid AS contact_id FROM team_act WHERE cid IS NOT NULL
+        UNION
+        SELECT t.id, t.activity_date, t.channel, c.contact_id
+        FROM team_act t, unnest(coalesce(t.email_to,'{{}}') || coalesce(t.email_cc,'{{}}')) e
+        JOIN public.contacts c ON lower(c.email) = lower(e)
+        WHERE t.channel = 'email'
+        UNION
+        SELECT t.id, t.activity_date, t.channel, c.contact_id
+        FROM team_act t, jsonb_array_elements(coalesce(t.meeting_attendees, '[]'::jsonb)) att
+        JOIN public.contacts c ON lower(c.email) = lower(att->>'email')
+        WHERE t.channel = 'meeting'
+      )
+      SELECT DISTINCT tc.id, tc.activity_date, lower(trim(c.current_company)) AS company
+      FROM touch_contact tc
+      JOIN public.contacts c ON c.contact_id = tc.contact_id
+      WHERE coalesce(trim(c.current_company), '') <> ''
+    )"""
+
+
+async def _accounts_activated(conn, scope, owner, windows) -> list[int]:
+    """How many dormant accounts came back, for each (start, end) in `windows`.
+
+    "Activated" = touched inside the window, and silent for DORMANT_DAYS before
+    it. That covers a first-ever touch and a genuine restart alike; "first ever"
+    alone read near zero, because most of this book has been contacted at some
+    point. One pass over the account touches however many windows are asked for,
+    so the this/last pair costs what one used to.
+    """
+    at = _account_touch_sql(scope, owner)
+    parts, args = [], []
+    for i, (start, end) in enumerate(windows):
+        a, b = 2 * i + 1, 2 * i + 2
+        args += [start, end]
+        parts.append(f"""(
+          SELECT count(*) FROM (
+            SELECT DISTINCT company FROM at WHERE activity_date >= ${a} AND activity_date < ${b}
+          ) w
+          LEFT JOIN (
+            SELECT company, max(activity_date) AS last_prior FROM at
+             WHERE activity_date < ${a} GROUP BY company
+          ) p USING (company)
+          WHERE p.last_prior IS NULL
+             OR p.last_prior < (${a}::date - {DORMANT_DAYS})
+        )""")
+    row = await conn.fetchrow(
+        f"WITH at AS (SELECT * FROM {at} q) SELECT " +
+        ", ".join(f"{p} AS n{i}" for i, p in enumerate(parts)), *args)
+    return [int(row[f"n{i}"] or 0) for i in range(len(windows))]
+
+
+# Who a conversion belongs to, best effort. The membership's own owner first,
+# then the account's, then whoever did the first outreach. Worth knowing before
+# reading a per-owner conversion number: as of 2026-09-21 only ~24% of converted
+# memberships resolve to anyone at all under all three, so a per-person column is
+# a floor, not a count. The team figure never uses this — it counts every
+# conversion in the window, attributed or not.
+_CONVERSION_OWNER = """lower(coalesce(m.owner_email, ja.owner_email, m.first_outreach_by))"""
+_CONVERSION_FROM = """
+    FROM bedrock.jobs_contact_membership m
+    JOIN public.contacts c ON c.contact_id = m.contact_id
+    LEFT JOIN bedrock.jobs_account ja
+      ON ja.account_key = nullif(lower(btrim(coalesce(c.current_company, ''))), '')
+"""
+
+
+async def _converted_counts(conn, windows, owner: Optional[str] = None) -> list[int]:
+    """Contacts converted to an opportunity in each window.
+
+    Counted off the membership stamp, not the activity table: converting is a
+    pipeline decision someone records, not a touch. With `owner`, only the
+    conversions that resolve to that person (see _CONVERSION_OWNER); without,
+    every conversion in the window — which is what the Converted to Oppty card
+    counts, so the card and the row agree.
+    """
+    where = f"AND {_CONVERSION_OWNER} = lower('{owner}')" if owner and _SAFE_EMAIL.match(owner) else ""
+    parts, args = [], []
+    for i, (start, end) in enumerate(windows):
+        a, b = 2 * i + 1, 2 * i + 2
+        args += [start, end]
+        parts.append(f"count(*) FILTER (WHERE m.converted_at >= ${a} AND m.converted_at < ${b}) AS n{i}")
+    row = await conn.fetchrow(
+        f"SELECT {', '.join(parts)} {_CONVERSION_FROM} "
+        f"WHERE m.converted_at IS NOT NULL {where}", *args)
+    return [int(row[f"n{i}"] or 0) for i in range(len(windows))]
+
+
 @router.get("/outreach/scorecard")
 async def outreach_scorecard(
     granularity: str = Query("week", pattern="^(day|week|month)$"),
@@ -4326,6 +4586,16 @@ async def outreach_scorecard(
     """
     counts = {r["key"]: (r["this_period"], r["last_period"])
               for r in await conn.fetch(sql, this_start, this_end, last_start, last_end)}
+
+    # The two outcome rows are not events, so they cannot ride the union above:
+    # activation depends on what happened BEFORE the window, and a conversion is
+    # a membership stamp rather than a touch. Each is its own query, over both
+    # windows at once, and each counts exactly what the card above it counts.
+    windows = [(this_start, this_end), (last_start, last_end)]
+    act_this, act_last = await _accounts_activated(conn, scope, owner, windows)
+    conv_this, conv_last = await _converted_counts(conn, windows)
+    counts["accounts_activated"] = (act_this, act_last)
+    counts["converted_opportunities"] = (conv_this, conv_last)
 
     def _activity_row(m: str, label: str, depth: int):
         this_n, last_n = counts.get(m, (0, 0))
@@ -4543,6 +4813,11 @@ async def outreach_scorecard_by_owner(
     opened, and a check-in should not fill that quota. Note the consequence —
     until the call_kind migration lands, every call defaults to `general`, so
     this column reads 0 for everyone.
+
+    Opportunities carries a team target and no personal ones (Kwame 2026-09-21):
+    converting is a team outcome, and splitting 2 four ways would invent
+    commitments nobody made. Read the per-person numbers as a floor — see
+    _CONVERSION_OWNER for why, and `unattributed` for how far off they are.
     """
     this_start, this_end, last_start, last_end = _outreach_windows(granularity, date_from, date_to)
     has_call_kind = await _has_column("bedrock", "activity", "call_kind")
@@ -4574,10 +4849,14 @@ async def outreach_scorecard_by_owner(
                     # as the same zero.
                     "delta": None if target is None else this_n - target}
 
+        conv_this, conv_last = await _converted_counts(
+            conn, [(this_start, this_end), (last_start, last_end)], owner=email)
+
         rows.append({
             "owner": email,
             "outreach": _metric("total_outreach_activity", counts["outreach_this"], counts["outreach_last"]),
             "calls": _metric("call_discovery", counts["calls_this"], counts["calls_last"]),
+            "opportunities": _metric("converted_opportunities", conv_this, conv_last),
         })
 
     # Biggest commitment first (Kwame 2026-09-21): Devika 50, then Avni and
@@ -4591,6 +4870,10 @@ async def outreach_scorecard_by_owner(
         vals = [r[section][field] for r in rows if r[section][field] is not None]
         return sum(vals) if vals else None
 
+    conv_team_this, conv_team_last = await _converted_counts(
+        conn, [(this_start, this_end), (last_start, last_end)])
+    conv_target = activity_pipeline_target("converted_opportunities", granularity)
+
     return {"success": True, "data": {
         "granularity": granularity,
         "period": {
@@ -4598,11 +4881,27 @@ async def outreach_scorecard_by_owner(
             "last_start": last_start.isoformat(), "last_end": last_end.isoformat(),
         },
         "rows": rows,
-        # The team line, summed from the rows above rather than re-counted, so
-        # it is always exactly what the rows add up to.
+        # Outreach and calls are summed from the rows above rather than
+        # re-counted, so the team line is always exactly what the rows add up to.
+        #
+        # Opportunities cannot be, and this is the honest way round. Only about a
+        # quarter of converted memberships resolve to a person at all (see
+        # _CONVERSION_OWNER), so summing the rows would report 1 where the
+        # Activity tab and the Converted to Oppty card both say 3. The team line
+        # therefore COUNTS every conversion in the window, the owner rows carry
+        # only what can be attributed, and `unattributed` names the difference so
+        # the gap is stated rather than hidden in a column that does not add up.
         "totals": {
             "outreach": {k: _total("outreach", k) for k in ("target", "this_period", "last_period", "delta")},
             "calls":    {k: _total("calls", k)    for k in ("target", "this_period", "last_period", "delta")},
+            "opportunities": {
+                "target": activity_pipeline_target("converted_opportunities", granularity),
+                "this_period": conv_team_this, "last_period": conv_team_last,
+                "delta": (None if conv_target is None else conv_team_this - conv_target),
+            },
+        },
+        "unattributed": {
+            "opportunities": max(0, conv_team_this - sum(r["opportunities"]["this_period"] for r in rows)),
         },
     }}
 
@@ -4638,7 +4937,58 @@ async def outreach_scorecard_detail(
             "contact_id": cid, "name": name, "company": company,
             "entered_at": None, "touches": []})
 
-    if key == "facilitated_intro_sent":
+    if key == "converted_opportunities":
+        rows = await conn.fetch(f"""
+            SELECT m.contact_id, c.full_name, c.current_company, m.converted_at,
+                   {_CONVERSION_OWNER} AS actor
+            {_CONVERSION_FROM}
+            WHERE m.converted_at >= $1 AND m.converted_at < $2
+            ORDER BY m.converted_at DESC LIMIT 500
+        """, start, end)
+        for r in rows:
+            g = _contact(r["contact_id"], r["full_name"], r["current_company"])
+            g["touches"].append({
+                "date": r["converted_at"].isoformat() if r["converted_at"] else None,
+                "type": "converted", "subject": "Converted to opportunity",
+                "snippet": None, "direction": "sent",
+                # Often null: see _CONVERSION_OWNER. A blank owner is the honest
+                # answer here, and pretending otherwise would invent credit.
+                "actor": r["actor"]})
+    elif key == "accounts_activated":
+        # The accounts that came back from quiet, and the touches that woke them.
+        # Grouped by account upstream in the UI, which is the right shape: the
+        # number counts accounts, so the drill should open as a list of them.
+        at = _account_touch_sql(scope, owner)
+        rows = await conn.fetch(f"""
+            WITH at AS (SELECT * FROM {at} q),
+            woke AS (
+              SELECT w.company FROM (
+                SELECT DISTINCT company FROM at WHERE activity_date >= $1 AND activity_date < $2
+              ) w
+              LEFT JOIN (
+                SELECT company, max(activity_date) AS last_prior FROM at
+                 WHERE activity_date < $1 GROUP BY company
+              ) p USING (company)
+              WHERE p.last_prior IS NULL OR p.last_prior < ($1::date - {DORMANT_DAYS})
+            )
+            SELECT a.participant_public_contact_id AS contact_id,
+                   c.full_name, c.current_company, a.activity_date, a.type, a.subject,
+                   lower(coalesce(nullif(substring(a.email_from from '<([^>]+)>'), ''),
+                                  nullif(a.email_from, ''), a.logged_by)) AS actor
+            FROM at t
+            JOIN woke ON woke.company = t.company
+            JOIN bedrock.activity a ON a.id = t.id
+            JOIN public.contacts c ON c.contact_id = a.participant_public_contact_id
+            WHERE t.activity_date >= $1 AND t.activity_date < $2
+            ORDER BY a.activity_date DESC LIMIT 500
+        """, start, end)
+        for r in rows:
+            g = _contact(r["contact_id"], r["full_name"], r["current_company"])
+            g["touches"].append({
+                "date": r["activity_date"].isoformat() if r["activity_date"] else None,
+                "type": r["type"], "subject": r["subject"], "snippet": None,
+                "direction": "sent", "actor": r["actor"]})
+    elif key == "facilitated_intro_sent":
         rows = await conn.fetch(f"""
             SELECT ir.contact_id, c.full_name, c.current_company,
                    coalesce(ir.responded_at, ir.created_at) AS activity_date,
@@ -4775,9 +5125,8 @@ async def outreach_summary(
     same helpers behind Total Outreach and Total Calls on the scorecard, so the
     cards and the table on one page always agree.
     """
-    # How long an account must go quiet before a new touch counts as
-    # re-activation rather than follow-up. Kwame's ask was "2 or 3 months".
-    DORMANT_DAYS = 90
+    # DORMANT_DAYS is module-level now, shared with the Activity Pipeline's
+    # Accounts Activated row and the trend series — see _account_touch_sql.
     # this_end is ALREADY exclusive (_outreach_windows returns date_to + 1 day).
     # Every window below used `< ($2::date + 1)`, which added a second day and
     # made every card on this endpoint count one day more than the scorecard

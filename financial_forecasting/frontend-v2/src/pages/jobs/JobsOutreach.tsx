@@ -883,13 +883,22 @@ const GROUP_CAP =
   "block border-b border-border-strong pb-0.5 text-center text-[9.5px] font-bold uppercase tracking-[.1em] text-ink-3";
 
 /** Target, actual and gap for one metric — three cells, used six times. */
-function OwnerCells({ m, muted, onOpen, open }: {
-  m: OwnerMetric; muted?: boolean;
+/** A metric the backend has not sent yet reads as an empty one rather than
+ *  crashing the page. The Owner table grew an Opportunities section on
+ *  2026-09-21; against a backend that predates it, `totals.opportunities` is
+ *  undefined, and reading `.target` off that blanked the whole Outreach tab the
+ *  last time this happened. Normalise where the value is USED, not where it is
+ *  fetched — a cached row from React Query never passes through the queryFn. */
+const NO_METRIC: OwnerMetric = { target: null, this_period: 0, last_period: 0, delta: null };
+
+function OwnerCells({ m: raw, muted, onOpen, open }: {
+  m: OwnerMetric | undefined; muted?: boolean;
   /** Set to make the actual clickable — it opens the same account-grouped
    *  drill the Activity tab uses, filtered to this owner and metric. */
   onOpen?: () => void;
   open?: boolean;
 }) {
+  const m = raw ?? NO_METRIC;
   const n = scorecardCount(m.this_period);
   return (
     <>
@@ -1008,11 +1017,17 @@ function OwnerScorecardTable({ granularity, range, rangeLabel, nameOf, leading, 
             <th className="border-l border-border px-2 pt-2 pb-1" colSpan={3}>
               <span className={GROUP_CAP}>Discovery Calls</span>
             </th>
+            {/* Converting is a team outcome, so this group carries a target on
+                the team line only — every owner cell reads a dash by design
+                (Kwame 2026-09-21). */}
+            <th className="border-l border-border px-2 pt-2 pb-1" colSpan={3}>
+              <span className={GROUP_CAP}>Opportunities</span>
+            </th>
           </tr>
           <tr className="bg-surface-2 text-[10px] uppercase tracking-wide text-ink-4">
             {/* The window sits under "This period", the only column it qualifies.
                 It was under Owner, where it read as a property of the person. */}
-            {[0, 1].map((i) => (
+            {[0, 1, 2].map((i) => (
               <Fragment key={i}>
                 <th className="border-l border-border px-3 pb-2 text-center font-semibold align-bottom">Target</th>
                 <th className="px-3 pb-2 text-center font-semibold align-bottom">
@@ -1036,12 +1051,12 @@ function OwnerScorecardTable({ granularity, range, rangeLabel, nameOf, leading, 
         </thead>
         <tbody>
           {isLoading && (
-            <tr><td colSpan={8} className="px-4 py-6 text-center text-[12.5px] text-ink-3">
+            <tr><td colSpan={11} className="px-4 py-6 text-center text-[12.5px] text-ink-3">
               <Loader2 size={13} className="mr-1.5 inline animate-spin" />Loading…
             </td></tr>
           )}
           {!isLoading && rows.length === 0 && (
-            <tr><td colSpan={8} className="px-4 py-6 text-center text-[12.5px] text-ink-4">
+            <tr><td colSpan={11} className="px-4 py-6 text-center text-[12.5px] text-ink-4">
               Nobody carries a target yet.
             </td></tr>
           )}
@@ -1057,6 +1072,7 @@ function OwnerScorecardTable({ granularity, range, rangeLabel, nameOf, leading, 
               <OwnerCells m={data.totals.outreach} muted />
               <ContactedCell r={acTotal} muted />
               <OwnerCells m={data.totals.calls} muted />
+              <OwnerCells m={data.totals.opportunities} muted />
             </tr>
           )}
           {rows.map((r) => {
@@ -1074,10 +1090,12 @@ function OwnerScorecardTable({ granularity, range, rangeLabel, nameOf, leading, 
                     openWhich={openMetric === "assigned" || openMetric === "contacted" ? openMetric : null} />
                   <OwnerCells m={r.calls} open={isOpen("call_discovery")}
                     onOpen={() => toggle("call_discovery")} />
+                  <OwnerCells m={r.opportunities} open={isOpen("converted_opportunities")}
+                    onOpen={() => toggle("converted_opportunities")} />
                 </tr>
                 {openMetric && (
                   <tr>
-                    <td colSpan={8} className="border-b border-border bg-bg p-0">
+                    <td colSpan={11} className="border-b border-border bg-bg p-0">
                       {openMetric === "assigned" || openMetric === "contacted" ? (
                         // The contact list the Outreach Detail table used to
                         // open, unchanged — same rows, same columns, now under
@@ -1114,6 +1132,16 @@ function OwnerScorecardTable({ granularity, range, rangeLabel, nameOf, leading, 
       {/* Contacted / assigned counts entries INTO a stage during the period.
           Contacts with no stage stamp can't be placed in time, so they're named
           here rather than quietly missing from the column. */}
+      {/* The opportunities column does not add up, on purpose. Saying so beats a
+          reader discovering it (Kwame's team line counts every conversion; only
+          about a quarter of them resolve to a person at all). */}
+      {(data?.unattributed?.opportunities ?? 0) > 0 && (
+        <div className="border-t border-border-strong bg-surface-2 px-4 py-2 text-[11px] text-ink-4"
+          title="A conversion is attributed through the membership owner, the account owner, then whoever did the first outreach. Most carry none of the three.">
+          {data!.unattributed!.opportunities} of the {scorecardCount(data!.totals.opportunities?.this_period)} opportunities
+          {" "}this period carry no owner, so they sit in the team line only
+        </div>
+      )}
       {undated > 0 && (
         <div className="border-t border-border-strong bg-surface-2 px-4 py-2 text-[11px] text-ink-4"
           title="These contacts have no stage timestamp, so no period can claim them. The stage-history grant fills most of them in.">
@@ -1157,7 +1185,7 @@ function OutboundActivityFeed({ granularity, scope, owner, range }: {
       events={data?.events ?? []}
       owners={[]}
       isLoading={isLoading}
-      title="Outreach activity"
+      title="Activity"
       note="Every email, LinkedIn message and text sent in this period. Owner is who the contact belongs to; Editor is who sent it. Click a row for the contacts behind it."
       showSegments={false}
     />

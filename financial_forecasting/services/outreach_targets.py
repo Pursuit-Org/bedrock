@@ -8,9 +8,9 @@ here. If they ever need to be per-owner or editable in-app, promote to a
 call sites won't change.
 
 Keys match the metric keys the scorecard endpoint emits:
-  total_outreach_activity | direct_email_sent | linkedin_message_sent |
-  text_sent | facilitated_intro_sent | total_calls | call_discovery |
-  call_general
+  accounts_activated | total_outreach_activity | direct_email_sent |
+  linkedin_message_sent | text_sent | facilitated_intro_sent | total_calls |
+  call_discovery | call_general | converted_opportunities
 Granularity keys match the API's granularity param: day | week | month.
 
 USER_PIPELINE_TARGETS lived here until 2026-09-21, alongside the User Pipeline
@@ -88,6 +88,13 @@ ACTIVITY_PIPELINE_TARGETS: dict[str, dict[str, int]] = {
     "total_outreach_activity": _team_total("total_outreach_activity"),
     "total_calls":            _team_total("total_calls"),
     "call_discovery":         _team_total("call_discovery"),
+    # The two ends of the funnel (Kwame 2026-09-21). Typed directly rather than
+    # summed, because neither is anyone's personal number: opening a dormant
+    # account and converting one to an opportunity are team outcomes, and
+    # splitting 20 four ways would invent commitments nobody made. That is also
+    # why an owner column for either reads a dash, not a share.
+    "accounts_activated":      _weekly(20),
+    "converted_opportunities": _weekly(2),
     # Nothing else carries a number. The individual channels are a breakdown of
     # HOW a total was hit, not commitments of their own — the team owes 150
     # touches, not 150 emails — and a 0 in the Target column read as a goal of

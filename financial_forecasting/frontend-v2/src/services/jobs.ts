@@ -1283,6 +1283,50 @@ export function useActivityTrends(granularity: "day" | "week" | "month", channel
   });
 }
 
+/** One point on the Outreach Activity trend: the Activity Pipeline's four
+ *  headline numbers for a single bucket. */
+export interface VolumeTrendBucket {
+  period: string;
+  accounts_activated: number;
+  outreach: number;
+  calls: number;
+  opportunities: number;
+}
+export type VolumeSeriesKey = keyof Omit<VolumeTrendBucket, "period">;
+
+export interface VolumeTrends {
+  granularity: "day" | "week" | "month";
+  buckets: VolumeTrendBucket[];
+  /** Per-bucket goals for the same granularity, so the chart can draw the line
+   *  someone is actually managing to. Null where no target is set. */
+  targets: Record<VolumeSeriesKey, number | null>;
+  totals: Record<VolumeSeriesKey, number>;
+}
+
+/** Accounts activated, outreach, calls and opportunities over a long run.
+ *
+ *  Every series reads the same definition as the Activity Pipeline table, so a
+ *  point here and the row there for the same window are the same number. */
+export function useVolumeTrends(
+  granularity: "day" | "week" | "month",
+  owner?: string,
+  scope: OutreachScope = "team",
+  range?: OutreachRange,
+) {
+  const rangeKey = range ? `${range.from}..${range.to}` : "";
+  return useQuery<VolumeTrends>({
+    queryKey: ["jobs", "volume-trends", granularity, owner ?? scope, rangeKey],
+    queryFn: async () => {
+      const p = new URLSearchParams({ granularity, scope });
+      if (owner) p.set("owner", owner);
+      if (range) { p.set("date_from", range.from); p.set("date_to", range.to); }
+      const { data } = await api.get<ApiResponse<VolumeTrends>>(`/api/jobs/activity-trends/volume?${p}`);
+      return data.data;
+    },
+    staleTime: 60_000,
+  });
+}
+
 // ── Outreach Dashboard scorecard ──────────────────────────────────────────────
 
 export type OutreachGranularity = "day" | "week" | "month";
@@ -1582,12 +1626,21 @@ export interface OwnerScorecardRow {
   owner: string;
   outreach: OwnerMetric;
   calls: OwnerMetric;
+  /** Contacts converted to an opportunity, attributed to this person where the
+   *  data allows. Read it as a floor: only about a quarter of conversions
+   *  resolve to anyone at all — see `unattributed`. */
+  opportunities: OwnerMetric;
 }
 export interface OwnerScorecard {
   granularity: OutreachGranularity;
   period: ScorecardPeriod;
   rows: OwnerScorecardRow[];
-  totals: { outreach: OwnerMetric; calls: OwnerMetric };
+  /** Outreach and calls are the sum of the rows. Opportunities is counted over
+   *  the whole window, so it matches the Activity tab and the summary card even
+   *  though the rows below it cannot add up to it. */
+  totals: { outreach: OwnerMetric; calls: OwnerMetric; opportunities: OwnerMetric };
+  /** How much of a total no owner row could claim. */
+  unattributed?: { opportunities: number };
 }
 
 /** The Activity Pipeline cut by person. Every owner who carries a target
