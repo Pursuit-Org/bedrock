@@ -207,14 +207,51 @@ export function useDeleteAccount() {
   });
 }
 
-// Tracks patches sent to SF that haven't been confirmed by a read-back yet.
-// Shared across all useUpdateAccount instances so the post-refetch re-apply
-// works regardless of which component triggered the mutation.
+// Patches sent to SF that the read-back hasn't confirmed yet. Module-level so
+// the re-apply works regardless of which component fired the mutation.
+//
+// Keyed per account, but tracked PER FIELD: two edits to the same account
+// inside the 2s window used to overwrite each other's map entry, so the first
+// one reverted on refetch — which is the exact bug this mechanism exists to
+// prevent.
 type PendingAccountPatch = {
-  sfPatch: Record<string, unknown>;  // raw SF fields — used to detect SF confirmation
-  merged: Record<string, unknown>;   // sfPatch + displayPatch — applied to the cache
+  /** Raw SF fields still awaiting confirmation, merged across edits. */
+  fields: Record<string, unknown>;
+  /** Display-only fields (e.g. account_status) — applied, never confirmed. */
+  display: Record<string, unknown>;
+  /** Wall clock of the most recent edit, for expiry. */
+  since: number;
 };
 const pendingAccountPatches = new Map<string, PendingAccountPatch>();
+
+/** Stop re-applying after this long.
+ *
+ *  Entries used to be evicted only on exact equality, so anything Salesforce
+ *  normalizes — a trailing space trimmed, an empty string stored as null —
+ *  never matched and the patch was force-written over every later refetch for
+ *  the rest of the session. A ceiling means the worst case is a stale value
+ *  for 30s, not forever. */
+const PENDING_TTL_MS = 30_000;
+
+/** Did SF confirm this value?
+ *
+ *  Deliberately lenient: SF trims trailing whitespace and stores empty text as
+ *  null, so a strict === comparison reports "unconfirmed" for writes that in
+ *  fact landed exactly as intended. */
+function sfConfirms(actual: unknown, sent: unknown): boolean {
+  if (actual === sent) return true;
+  const norm = (v: unknown) =>
+    v == null ? "" : typeof v === "string" ? v.trim() : String(v);
+  return norm(actual) === norm(sent);
+}
+
+/** Drop expired entries. Returns true if anything is still pending. */
+function prunePending(now: number): boolean {
+  for (const [id, p] of pendingAccountPatches) {
+    if (now - p.since > PENDING_TTL_MS) pendingAccountPatches.delete(id);
+  }
+  return pendingAccountPatches.size > 0;
+}
 
 export function useUpdateAccount() {
   const qc = useQueryClient();
@@ -234,8 +271,14 @@ export function useUpdateAccount() {
     },
     onSuccess: (_data, { id, patch, displayPatch }) => {
       const merged = { ...patch, ...(displayPatch ?? {}) };
-      // Register as pending before setQueryData so re-apply logic is ready
-      pendingAccountPatches.set(id, { sfPatch: patch, merged });
+      // Merge per field rather than replacing the entry, so a second edit to
+      // the same account doesn't discard the first one's pending fields.
+      const prev = pendingAccountPatches.get(id);
+      pendingAccountPatches.set(id, {
+        fields: { ...(prev?.fields ?? {}), ...patch },
+        display: { ...(prev?.display ?? {}), ...(displayPatch ?? {}) },
+        since: Date.now(),
+      });
       const patchCache = (old: SfAccount[] | undefined) => {
         if (!old) return old;
         return old.map((a) => (a.Id === id ? ({ ...a, ...merged } as SfAccount) : a));
@@ -260,37 +303,65 @@ export function useUpdateAccount() {
       // Delayed refetch: give Salesforce a moment to propagate. After the
       // refetch lands, re-apply any patches SF hasn't confirmed yet so the UI
       // doesn't silently revert while SF is still catching up.
-      setTimeout(async () => {
-        await qc.refetchQueries({ queryKey: ["accounts"] });
-        void qc.invalidateQueries({ queryKey: ["jobs", "accounts"] });
-
-        if (pendingAccountPatches.size === 0) return;
-        const accounts = qc.getQueryData<SfAccount[]>(["accounts"]);
-        if (!accounts) return;
-
-        let needsReapply = false;
-        const reapplied = accounts.map((a) => {
-          const pending = pendingAccountPatches.get(a.Id);
-          if (!pending) return a;
-          const aRecord = a as unknown as Record<string, unknown>;
-          const confirmed = Object.entries(pending.sfPatch).every(
-            ([k, v]) => aRecord[k] === v,
-          );
-          if (confirmed) {
-            pendingAccountPatches.delete(a.Id);
-            return a;
+      setTimeout(() => {
+        // Wrapped: an async setTimeout callback returns a floating promise, so
+        // anything throwing in here surfaces as an unhandled rejection rather
+        // than a failed refresh. Pending state is cleared on the way out so a
+        // throw can't strand entries that would then be force-written.
+        void (async () => {
+          try {
+            await qc.refetchQueries({ queryKey: ["accounts"] });
+            void qc.invalidateQueries({ queryKey: ["jobs", "accounts"] });
+            reapplyPending(qc);
+          } catch (err) {
+            console.error("account read-back re-apply failed", err);
+            pendingAccountPatches.clear();
           }
-          needsReapply = true;
-          return { ...a, ...pending.merged } as SfAccount;
-        });
-
-        if (needsReapply) {
-          qc.setQueriesData<SfAccount[]>(
-            { queryKey: ["accounts"] },
-            (old) => (old ? reapplied.filter((a) => old.some((o) => o.Id === a.Id)) : old),
-          );
-        }
+        })();
       }, 2000);
     },
   });
+}
+
+/** Re-apply any field Salesforce hasn't confirmed yet. */
+function reapplyPending(qc: ReturnType<typeof useQueryClient>) {
+  {
+        if (!prunePending(Date.now())) return;
+
+        // Drop fields SF has now confirmed, judged against the canonical list.
+        const canonical = qc.getQueryData<SfAccount[]>(["accounts"]);
+        if (canonical) {
+          const byId = new Map(canonical.map((a) => [a.Id, a]));
+          for (const [id, pending] of pendingAccountPatches) {
+            const row = byId.get(id) as unknown as Record<string, unknown> | undefined;
+            if (!row) continue;
+            for (const key of Object.keys(pending.fields)) {
+              if (sfConfirms(row[key], pending.fields[key])) delete pending.fields[key];
+            }
+            if (Object.keys(pending.fields).length === 0) pendingAccountPatches.delete(id);
+          }
+        }
+        if (pendingAccountPatches.size === 0) return;
+
+        // Re-apply what's left, mapping each cached query over ITS OWN rows.
+        //
+        // The previous version built one array from the full ["accounts"] cache
+        // and wrote a filtered projection of it into every ["accounts"*] query.
+        // That made the active-only cache inherit the full list's rows and
+        // ordering, silently dropped any row present in active-only but absent
+        // from the full list, and cost a linear scan per element — O(n·m) over
+        // caches holding thousands of accounts, run synchronously on the main
+        // thread after every edit.
+        qc.setQueriesData<SfAccount[]>({ queryKey: ["accounts"] }, (old) => {
+          if (!old) return old;
+          let changed = false;
+          const next = old.map((a) => {
+            const pending = pendingAccountPatches.get(a.Id);
+            if (!pending) return a;
+            changed = true;
+            return { ...a, ...pending.fields, ...pending.display } as SfAccount;
+          });
+          return changed ? next : old;
+        });
+  }
 }
