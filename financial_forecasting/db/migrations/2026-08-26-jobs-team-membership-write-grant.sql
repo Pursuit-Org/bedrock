@@ -33,10 +33,28 @@
 -- this itself (verified: GRANT as avni_dev no-ops on jobs_contact_membership
 -- and permission-denies on jobs_membership_stage_history).
 
+-- Guarded on the role existing, matching 2026-08-03-membership-stage-history-grant.sql
+-- (the prior grant migration for this same table family). jobs_team is created
+-- by 2026-08-19-jobs-analytics-roles-board.sql, which is itself still pending an
+-- owner to apply -- so run in the wrong order an unguarded GRANT aborts the
+-- transaction with `role "jobs_team" does not exist` instead of no-opping.
+-- Idempotent: GRANT is a no-op when the privilege is already held.
+
 BEGIN;
 
-GRANT SELECT, INSERT, UPDATE, DELETE
-    ON bedrock.jobs_contact_membership, bedrock.jobs_membership_stage_history
-    TO jobs_team;
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'jobs_team') THEN
+    GRANT SELECT, INSERT, UPDATE, DELETE
+        ON bedrock.jobs_contact_membership, bedrock.jobs_membership_stage_history
+        TO jobs_team;
+  ELSE
+    RAISE NOTICE 'role jobs_team does not exist - apply 2026-08-19-jobs-analytics-roles-board.sql first, then re-run this';
+  END IF;
+END $$;
 
 COMMIT;
+
+-- Verify:
+--   SELECT has_table_privilege('jobs_team',
+--            'bedrock.jobs_contact_membership', 'INSERT');  -- expect true
