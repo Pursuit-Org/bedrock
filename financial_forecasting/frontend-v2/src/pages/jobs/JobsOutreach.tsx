@@ -213,30 +213,51 @@ function ScorecardTable({
             // rule so the three sends read as one level, then Engaged, then Replied.
             const prevTier = idx > 0 ? rows[idx - 1].tier : undefined;
             const tierStart = r.tier != null && r.tier !== prevTier && idx > 0;
+            // Hierarchy: a roll-up is bold, its components step in, and a
+            // component's own breakdown steps in again. Indentation is read off
+            // `depth` rather than a list of metric names this table would
+            // otherwise have to keep in sync with the API.
+            const depth = r.depth ?? 0;
+            const pending = r.available === false;
             return (
               <Fragment key={id}>
                 <tr
-                  onClick={() => setOpen(isOpen ? null : id)}
-                  className={cn("cursor-pointer text-[13.5px] hover:bg-surface-2",
+                  onClick={() => { if (!pending) setOpen(isOpen ? null : id); }}
+                  title={pending ? r.unavailable_reason ?? undefined : undefined}
+                  className={cn("text-[13.5px]",
+                    pending ? "cursor-default" : "cursor-pointer hover:bg-surface-2",
                     !isLast && "border-b border-border",
                     tierStart && "border-t-2 border-border")}
                 >
-                  <td className="px-3.5 py-2.5 text-left font-normal text-ink">
+                  <td className={cn("py-2.5 pr-3.5 text-left",
+                    depth === 0 ? "font-semibold text-ink" : "font-normal",
+                    pending ? "text-ink-4" : depth === 0 ? "text-ink" : "text-ink-2")}
+                    style={{ paddingLeft: `${14 + depth * 18}px` }}>
                     <span className="mr-1 inline-block w-3.5 text-ink-4">
-                      {isOpen ? <ChevronDown size={12} className="inline" /> : <ChevronRight size={12} className="inline" />}
+                      {pending ? null : isOpen
+                        ? <ChevronDown size={12} className="inline" />
+                        : <ChevronRight size={12} className="inline" />}
                     </span>
                     {r.label}
+                    {pending && <span className="ml-2 text-[10.5px] uppercase tracking-wide text-ink-4">pending migration</span>}
                   </td>
-                  <td className="px-3.5 py-2.5 text-right tabular-nums">{r.this_period.total}</td>
-                  <td className="px-3.5 py-2.5 text-right tabular-nums">{r.last_period.total}</td>
-                  <td className="px-3.5 py-2.5 text-right text-[12.5px]"><Trend current={r.this_period.total} prior={r.last_period.total} /></td>
+                  <td className={cn("px-3.5 py-2.5 text-right tabular-nums", pending && "text-ink-4")}>
+                    {pending ? "—" : r.this_period.total}
+                  </td>
+                  <td className={cn("px-3.5 py-2.5 text-right tabular-nums", pending && "text-ink-4")}>
+                    {pending ? "—" : r.last_period.total}
+                  </td>
                   <td className="px-3.5 py-2.5 text-right text-[12.5px]">
-                    {r.target ? <Trend current={r.this_period.total} prior={r.target} /> : <span className="text-ink-4">—</span>}
+                    {pending ? <span className="text-ink-4">—</span>
+                      : <Trend current={r.this_period.total} prior={r.last_period.total} />}
+                  </td>
+                  <td className="px-3.5 py-2.5 text-right text-[12.5px]">
+                    {!pending && r.target ? <Trend current={r.this_period.total} prior={r.target} /> : <span className="text-ink-4">—</span>}
                   </td>
                   {/* Target renders 0 rather than a dash when unset: the column
                       is a standing prompt that a target is owed, and an em-dash
                       reads as "not applicable". */}
-                  <td className="px-3.5 py-2.5 text-right tabular-nums text-ink-3">{r.target ?? 0}</td>
+                  <td className="px-3.5 py-2.5 text-right tabular-nums text-ink-3">{pending ? "—" : r.target ?? 0}</td>
                 </tr>
                 {isOpen && (
                   <tr>

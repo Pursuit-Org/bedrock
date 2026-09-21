@@ -186,7 +186,6 @@ export interface OpportunityFilters {
 // ── Labels & metadata ────────────────────────────────────────────────────────
 
 export const STAGE_LABELS: Record<JobStage, string> = {
-  lead_submitted:               "Lead Submitted",
   active_in_discussions:        "In Discussions",
   ask_submitted:                "Ask Submitted",
   active_opportunity_confirmed: "Opportunity Confirmed",
@@ -196,6 +195,7 @@ export const STAGE_LABELS: Record<JobStage, string> = {
   closed_won:                   "Closed — Won",
   closed_lost:                  "Closed — Lost",
   // Legacy — labelled so un-migrated rows and history read as words, not slugs.
+  lead_submitted:               "Lead Submitted",
   reviewing_builders:           "Reviewing Builders",
   initial_outreach:             "Initial Outreach",
   active_builder_interview:     "Builder Interview",
@@ -213,13 +213,14 @@ export const DEAL_TYPE_LABELS: Record<DealType, string> = {
   pilot:       "Pilot",
 };
 
-/** Board columns and pickers, in pipeline order. Nine stages as of 2026-09-21,
- *  when the middle of the funnel split from one step into four.
+/** Board columns and pickers, in pipeline order. Eight stages as of 2026-09-21,
+ *  when the middle of the funnel split from one step into four and Lead
+ *  Submitted was retired — it described a contact, not a deal, and that work
+ *  lives in the membership pipeline.
  *  Legacy values are deliberately absent: a picker must not offer a stage the
  *  team has retired. Anything still stored under one renders via STAGE_LABELS
  *  and moves to a current stage on the next edit. */
 export const STAGES_ORDERED: JobStage[] = [
-  "lead_submitted",
   "active_in_discussions",
   "ask_submitted",
   "active_opportunity_confirmed",
@@ -234,7 +235,6 @@ export const STAGES_ORDERED: JobStage[] = [
  *  the choice rather than in a doc nobody opens. Mirrors STAGE_DESCRIPTIONS in
  *  routes/jobs.py. */
 export const STAGE_DESCRIPTIONS: Partial<Record<JobStage, string>> = {
-  lead_submitted:               "A lead is in, not yet qualified.",
   active_in_discussions:        "Confirmed hiring appetite and a named decision maker.",
   ask_submitted:                "A specific ask is with the employer — role, scope or option set. Awaiting yes or no.",
   active_opportunity_confirmed: "They said yes. A real role or engagement exists.",
@@ -247,6 +247,7 @@ export const STAGE_DESCRIPTIONS: Partial<Record<JobStage, string>> = {
 
 /** Legacy stages that still exist in un-migrated data. Rendered, never offered. */
 export const LEGACY_STAGES: JobStage[] = [
+  "lead_submitted",
   "reviewing_builders",
   "initial_outreach",
   "active_builder_interview",
@@ -330,12 +331,22 @@ export interface StageOption {
   available: boolean;
   unavailable_reason?: string | null;
 }
+/** discovery | solution | general — what kind of call was logged. */
+export type CallKind = "discovery" | "solution" | "general";
+
 export interface StageVocabulary {
   opportunity_stages: StageOption[];
   membership_stages: (StageOption & { value: MembershipStage })[];
   closed_lost_reasons: StageOption[];
+  /** Call-type options for the log-a-call form, with the same availability
+   *  contract as the stage pickers. */
+  call_kinds: (StageOption & { value: CallKind })[];
   /** True once the 2026-08-05 stage migration has landed. */
   migrated: boolean;
+  /** True once the 2026-09-21 opportunity-stage expansion has landed. */
+  stages_expanded?: boolean;
+  /** True once bedrock.activity.call_kind exists. */
+  call_kinds_available?: boolean;
 }
 
 export function useStageVocabulary() {
@@ -1300,6 +1311,14 @@ export interface ScorecardRow {
   stage?: string;
   metric?: string;
   tier?: number;   // activity funnel tier: 1 = sent, 2 = engaged, 3 = replied
+  /** Nesting level: 0 = roll-up, 1 = a component of it, 2 = that component's own
+   *  breakdown. Drives indentation, so the hierarchy lives in the data rather
+   *  than in a list of metric names the table has to know about. */
+  depth?: number;
+  /** False while the column that produces this row is still pending migration —
+   *  rendered greyed with the reason rather than as a misleading zero. */
+  available?: boolean;
+  unavailable_reason?: string | null;
   label: string;
   this_period: ScorecardCell;
   last_period: ScorecardCell;
@@ -2584,6 +2603,8 @@ export interface ActivityCreateBody {
   description: string;
   activity_date?: string;
   subject?: string;
+  /** Only meaningful on a call; the API drops it on any other type. */
+  call_kind?: CallKind | null;
 }
 
 export function useLogActivity() {

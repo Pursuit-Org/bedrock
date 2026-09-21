@@ -52,12 +52,15 @@ VALID_STAGES = {
 # Post-migration stage lists, in funnel order. These drive the UI once the
 # database accepts them.
 # The 2026-09-21 expansion (Kwame): the middle of the funnel was one step where
-# the team runs four. `reviewing_builders` is retired rather than kept — it sat
-# between "profiles sent" and "in interviews" and meant either, which is exactly
-# the ambiguity these stages remove. It stays in STAGE_LABELS so the rows still
-# holding it render, and in the legacy list so it is never offered again.
+# the team runs four. Two stages are RETIRED rather than kept:
+#   `reviewing_builders` sat between "profiles sent" and "in interviews" and
+#     meant either, which is exactly the ambiguity these stages remove.
+#   `lead_submitted` sat before In Discussions and described a contact, not a
+#     deal — that work lives in the membership pipeline, and the opportunity
+#     funnel now starts where the team says it starts.
+# Both stay in STAGE_LABELS so rows still holding them render, and in the legacy
+# list so they are never offered again.
 OPPORTUNITY_STAGES_NEW = [
-    "lead_submitted",
     "active_in_discussions",
     "ask_submitted",
     "active_opportunity_confirmed",
@@ -71,7 +74,6 @@ OPPORTUNITY_STAGES_NEW = [
 # What each stage means, in the team's own words. Surfaced on the stage picker
 # so the definition lives next to the choice rather than in a doc nobody opens.
 STAGE_DESCRIPTIONS = {
-    "lead_submitted":               "A lead is in, not yet qualified.",
     "active_in_discussions":        "Confirmed hiring appetite and a named decision maker.",
     "ask_submitted":                "A specific ask is with the employer — role, scope or option set. Awaiting yes or no.",
     "active_opportunity_confirmed": "They said yes. A real role or engagement exists.",
@@ -81,6 +83,24 @@ STAGE_DESCRIPTIONS = {
     "closed_won":                   "Builder accepted.",
     "closed_lost":                  "Dead, with a reason code.",
 }
+
+# Stages that mean "this deal is live work". Derived rather than re-typed, so a
+# stage added above can never be forgotten here.
+OPPORTUNITY_STAGES_ACTIVE = [s for s in OPPORTUNITY_STAGES_NEW if not s.startswith("closed_")]
+# Same, plus the retired values rows still hold until the migration lands. Every
+# "is this deal active" filter uses this list. It replaced `stage LIKE 'active_%'`,
+# which the 2026-09-21 expansion silently broke: the four new stages dropped the
+# 'active_' prefix, so they fell out of the counts they belong in.
+OPPORTUNITY_STAGES_ACTIVE_ANY = OPPORTUNITY_STAGES_ACTIVE + [
+    "lead_submitted", "initial_outreach", "reviewing_builders", "active_builder_interview",
+]
+
+
+def _sql_in(col: str, values) -> str:
+    """`col IN ('a','b')` from a fixed, code-owned list. Never takes user input."""
+    return f"{col} IN (" + ", ".join(f"'{v}'" for v in values) + ")"
+
+
 MEMBERSHIP_STAGES_NEW = [
     "assigned", "initial_outreach", "call_booked",
     "converted_to_opportunity", "revisit", "not_a_fit",
@@ -196,6 +216,7 @@ def _jobs_activity_flag(alias: str = "a") -> str:
 
 
 STAGE_LABELS = {
+    # Retired 2026-09-21; kept so history and un-migrated rows still read as words.
     "lead_submitted":               "Lead Submitted",
     "initial_outreach":             "Initial Outreach",
     "active_in_discussions":        "In Discussions",
@@ -233,7 +254,10 @@ VALID_LIKELIHOODS = {"low", "medium", "high"}
 class OpportunityCreate(BaseModel):
     account_id: str
     account_name: Optional[str] = None
-    stage: str = "lead_submitted"
+    # An opportunity is created because a conversation is live, so the funnel's
+    # first stage is the default. (Was lead_submitted until it was retired on
+    # 2026-09-21; that value is no longer writable.)
+    stage: str = "active_in_discussions"
     deal_type: Optional[str] = None
     title: Optional[str] = None
     description: Optional[str] = None
@@ -570,10 +594,10 @@ async def metric_drilldown(
         "outreach_total":       ("Contacts Emailed — All Time",        lambda: first_touch("email", "true")),
         "calls_total":          ("Contacts Met — All Time",            lambda: first_touch("meeting", "true")),
         "calls_week":           ("New Contacts Met — Last 7 Days",     lambda: first_touch("meeting", "ext.first_touch >= now() - interval '7 days'")),
-        "active_orgs":          ("Active Orgs",              lambda: deals("stage LIKE 'active_%'")),
-        "active_companies":     ("Active Companies",         lambda: deals("stage LIKE 'active_%'")),
+        "active_orgs":          ("Active Orgs",              lambda: deals(_sql_in("stage", OPPORTUNITY_STAGES_ACTIVE_ANY))),
+        "active_companies":     ("Active Companies",         lambda: deals(_sql_in("stage", OPPORTUNITY_STAGES_ACTIVE_ANY))),
         "in_discussion":        ("In Discussion",            lambda: deals("stage='active_in_discussions'")),
-        "builder_interviews":   ("Reviewing Builders",        lambda: deals("stage IN ('reviewing_builders','active_builder_interview')")),
+        "builder_interviews":   ("Builders Submitted / Interviewing", lambda: deals(_sql_in("stage", ["builder_submitted", "builder_interviewing", "reviewing_builders", "active_builder_interview"]))),
         "placements":           ("FT Roles Secured", lambda: placements("true")),
         "ft_salaries":          ("FT Salaries", lambda: salaries("true")),
         "candidates_submitted": ("Companies w/ Candidates Submitted", lambda: companies("stage IN ('applied','interview','accepted')")),
@@ -2379,13 +2403,9 @@ async def get_funnel(
         # where the on_hold_* deals now land, so leaving it out would have hidden
         # them entirely. It sits after Closed Won as a second terminal row —
         # neither converts into anything, so no rate is drawn between them.
-        stage_order = [
-            ("active_in_discussions", "In Discussions"),
-            ("active_opportunity_confirmed", "Opportunity Confirmed"),
-            ("reviewing_builders", "Reviewing Builders"),
-            ("closed_won", "Closed — Won"),
-            ("closed_lost", "Closed — Lost"),
-        ]
+        # Derived from OPPORTUNITY_STAGES_NEW so the funnel gains a stage the day
+        # the pipeline does, rather than dropping it into no row at all.
+        stage_order = [(v, STAGE_LABELS[v]) for v in OPPORTUNITY_STAGES_NEW]
         record_columns = [
             {"key": "name", "label": "Company"},
             {"key": "deal_type", "label": "Type"},
@@ -2807,18 +2827,14 @@ async def get_funnel(
 # ── Opportunities weekly overview (Thursday pipeline meeting) ──────────────────
 # High-level, read-only view of the employer-deal pipeline. "Time in pipeline" is
 # time in the CURRENT stage (from jobs_stage_history), not age since sourced.
-# The active "set" = working-stage opps (initial_outreach + active_*).
-# 'active_%' covers the two remaining active stages; reviewing_builders is named
-# explicitly since the rename dropped its 'active_' prefix. initial_outreach is
-# retained only so un-migrated rows still count as in-set.
-_OPP_INSET = "(o.stage IN ('initial_outreach','reviewing_builders') OR o.stage LIKE 'active_%')"
-# Stage×Time heatmap rows. Initial Outreach is gone as of the 2026-08-05
-# simplification (its rows were remapped to In Discussions), so the heatmap's
-# column totals now agree with the aging bars instead of sitting below them by
-# the count of initial_outreach deals.
-_OPP_STAGE_ORDER = [
-    "active_in_discussions", "active_opportunity_confirmed", "reviewing_builders",
-]
+# The active "set" = every working stage, retired values included so rows written
+# before the migration stay in the set. canon_stage() then folds them into
+# current names on read.
+_OPP_INSET = _sql_in("o.stage", OPPORTUNITY_STAGES_ACTIVE_ANY)
+# Stage×Time heatmap rows, in funnel order. Retired stages are absent: their rows
+# arrive here already folded into a current stage by canon_stage(), so listing
+# them would only ever produce empty rows.
+_OPP_STAGE_ORDER = list(OPPORTUNITY_STAGES_ACTIVE)
 _OPP_AGE_BUCKETS = [
     ("lt2w", "< 2 weeks"), ("2_4w", "2–4 weeks"), ("4_6w", "4–6 weeks"),
     ("6_8w", "6–8 weeks"), ("8w", "8+ weeks"),
@@ -2834,8 +2850,14 @@ _OPP_STATUS_LABELS = {"new": "New (<1w)", "active": "Active", "stalled": "Stalle
 # under Reviewing Builders rather than falling into no row at all and quietly
 # vanishing from the heatmap and funnel. After the migration this is a no-op.
 _STAGE_CANON = {
-    "active_builder_interview": "reviewing_builders",
     "initial_outreach": "active_in_discussions",
+    # Retired 2026-09-21. Each maps exactly where the migration sends the rows,
+    # so pre- and post-migration reads agree. builder_submitted is the earlier of
+    # the two stages reviewing_builders straddled, so the fold never claims an
+    # interview that may not have happened.
+    "lead_submitted": "active_in_discussions",
+    "reviewing_builders": "builder_submitted",
+    "active_builder_interview": "builder_submitted",
     "on_hold_not_interested": "closed_lost",
     "on_hold_not_responsive": "closed_lost",
     "on_hold_not_selected": "closed_lost",
@@ -4011,17 +4033,52 @@ _OUTREACH_STAGE_META = [
     ("initial_outreach", "Initial Outreach"),
     ("converted_to_opportunity", "Converted to Opportunity"),
 ]
+# (metric, label, depth). Depth drives indentation in the UI: a roll-up sits at
+# 0, its components at 1, a component's own breakdown at 2. Kwame 2026-09-21 —
+# "Total Outreach Activity" up top, "Total Calls" under it, and the call itself
+# split by what kind of call it was.
+#
+# The tier-1 rows COUNT EVENTS, not distinct contacts, which is a change from
+# the first cut. Three reasons: the labels already promise volume ("Messages
+# Sent"); a parent only equals the sum of its children under event counting;
+# and the distinct-contact version silently dropped every email to an address
+# Bedrock has no contact row for. Engagements and Direct Email Responses stay
+# distinct-contact — "how many contacts engaged" is the right question there,
+# and they are outcomes rather than effort.
 _OUTREACH_ACTIVITY_META = [
-    ("direct_email_sent",      "Direct Email Sent"),
-    ("linkedin_message_sent",  "LinkedIn Messages Sent"),
-    ("facilitated_intro_sent", "Facilitated Intro"),
-    ("engagement",             "Engagements"),
-    ("direct_email_response",  "Direct Email Responses"),
+    ("total_outreach_activity", "Total Outreach Activity", 0),
+    ("direct_email_sent",       "Direct Email Sent",       1),
+    ("linkedin_message_sent",   "LinkedIn Messages Sent",  1),
+    ("facilitated_intro_sent",  "Facilitated Intro",       1),
+    ("total_calls",             "Total Calls",             1),
+    ("call_discovery",          "Discovery Calls",         2),
+    ("call_solution",           "Solution Calls",          2),
+    ("call_general",            "General Calls",           2),
+    ("call_unclassified",       "Unclassified",            2),
+    ("engagement",              "Engagements",             0),
+    ("direct_email_response",   "Direct Email Responses",  0),
 ]
+# What kind of call it was. Asked for at log time so Total Calls can be split
+# into the three the team actually runs, rather than reconstructed from the note
+# afterwards. One definition drives the log-a-call picker, the CHECK constraint's
+# accepted values and the scorecard's breakdown rows.
+CALL_KINDS = [
+    ("discovery", "Discovery", "First real conversation — learning what they need."),
+    ("solution",  "Solution",  "Working a specific role, scope or option set with them."),
+    ("general",   "General",   "Check-in, relationship or anything else."),
+]
+CALL_KIND_VALUES = {v for v, _, _ in CALL_KINDS}
+# metric name → the call_kind it counts. "Unclassified" has no kind: it is every
+# call logged before the picker existed, or logged without an answer.
+_CALL_KIND_METRIC = {f"call_{v}": v for v, _, _ in CALL_KINDS}
+_CALL_METRICS = list(_CALL_KIND_METRIC) + ["call_unclassified"]
 # Funnel tier per activity metric — the frontend uses this to visually group the
 # rows: sent touches (1) → engagements (2) → email replies (3).
 _ACTIVITY_TIER = {
+    "total_outreach_activity": 1,
     "direct_email_sent": 1, "linkedin_message_sent": 1, "facilitated_intro_sent": 1,
+    "total_calls": 1, "call_discovery": 1, "call_solution": 1, "call_general": 1,
+    "call_unclassified": 1,
     "engagement": 2, "direct_email_response": 3,
 }
 _STAGE_ENTERED_COL = {
@@ -4236,6 +4293,18 @@ async def outreach_scorecard(
             "FROM bedrock.jobs_contact_membership WHERE converted_at IS NOT NULL")
     stage_events_sql = "\n        UNION ALL\n        ".join(stage_event_parts)
 
+    # bedrock.activity.call_kind arrives with the 2026-09-21 migration (applied
+    # separately, admin role). Until it exists every call counts as unclassified
+    # and the three breakdown rows report 0 with `available: false`, so the UI
+    # can say "pending migration" instead of quietly showing zeros. Probed per
+    # request, so the rows light up the moment the column lands — no redeploy.
+    has_call_kind = await _has_column("bedrock", "activity", "call_kind")
+    call_kind_sql = ("'call_' || coalesce(a.call_kind, 'unclassified')" if has_call_kind
+                     else "'call_unclassified'")
+    call_kind_note = ("call_kind is live." if has_call_kind
+                      else "call_kind column not present yet - all calls unclassified.")
+    call_metric_in = _sql_in("metric", _CALL_METRICS)
+
     # One query, warmth computed once, two labelled result sets unioned.
     sql = f"""
     WITH {_OUTREACH_WARMTH_CTES},
@@ -4252,7 +4321,10 @@ async def outreach_scorecard(
         WHERE a.deleted_at IS NULL AND a.type = 'email' AND {_message_actor(scope, owner)}
           AND {_not_autoreply('a')} AND {_jobs_relevant('a')}
     ),
-    activity_events AS (
+    -- Leaf events: one row per thing that happened. Roll-up rows are derived
+    -- from these below rather than counted again, so a parent can never
+    -- disagree with the sum of its children.
+    leaf_events AS (
         SELECT 'direct_email_sent' AS metric, sm.ts, sm.contact_id
         FROM sent_msgs sm
         UNION ALL
@@ -4264,6 +4336,19 @@ async def outreach_scorecard(
         SELECT 'facilitated_intro_sent', coalesce(ir.responded_at, ir.created_at), ir.contact_id
         FROM bedrock.intro_request ir
         WHERE ir.status IN ('accepted','completed') AND {_scope_intro_pred(scope, owner)}
+        UNION ALL
+        -- Calls, split by what kind of call it was. {call_kind_note}
+        SELECT {call_kind_sql}, a.activity_date, a.participant_public_contact_id
+        FROM bedrock.activity a
+        WHERE a.deleted_at IS NULL AND a.type IN ('call','meeting')
+          AND {_activity_actor('a', scope, owner)} AND {_jobs_relevant('a')}
+    ),
+    activity_events AS (
+        SELECT * FROM leaf_events
+        UNION ALL
+        SELECT 'total_calls', ts, contact_id FROM leaf_events WHERE {call_metric_in}
+        UNION ALL
+        SELECT 'total_outreach_activity', ts, contact_id FROM leaf_events
     ),
     -- Outreached (activity-driven): distinct jobs contacts who RECEIVED an outreach
     -- email from the selected scope in the period (not the empty membership stamp).
@@ -4322,9 +4407,10 @@ async def outreach_scorecard(
         GROUP BY coalesce(cw.warmth,'cold')
     ),
     activity_counts AS (
+        -- count(*), not count(DISTINCT contact_id): see _OUTREACH_ACTIVITY_META.
         SELECT 'activity' AS kind, ae.metric AS key, coalesce(cw.warmth,'cold') AS warmth,
-               count(DISTINCT ae.contact_id) FILTER (WHERE ae.ts >= $1 AND ae.ts < $2) AS this_period,
-               count(DISTINCT ae.contact_id) FILTER (WHERE ae.ts >= $3 AND ae.ts < $4) AS last_period
+               count(*) FILTER (WHERE ae.ts >= $1 AND ae.ts < $2) AS this_period,
+               count(*) FILTER (WHERE ae.ts >= $3 AND ae.ts < $4) AS last_period
         FROM activity_events ae
         LEFT JOIN contact_warmth cw ON cw.contact_id = ae.contact_id
         GROUP BY ae.metric, coalesce(cw.warmth,'cold')
@@ -4411,10 +4497,25 @@ async def outreach_scorecard(
         {"stage": s, **_row("user", s, label, user_pipeline_target(s, granularity))}
         for s, label in _OUTREACH_STAGE_META
     ]
-    activity_pipeline = [
-        {"metric": m, "tier": _ACTIVITY_TIER.get(m), **_row("activity", m, label, activity_pipeline_target(m, granularity))}
-        for m, label in _OUTREACH_ACTIVITY_META
-    ]
+    def _activity_row(m: str, label: str, depth: int):
+        # A breakdown row is only meaningful once the column that produces it
+        # exists. Showing it disabled with a reason tells the truth; hiding it
+        # would read as "not built", and showing a bare 0 would read as "nobody
+        # made a discovery call this week".
+        ok = has_call_kind or m not in _CALL_KIND_METRIC
+        return {"metric": m, "depth": depth, "tier": _ACTIVITY_TIER.get(m),
+                "available": ok,
+                "unavailable_reason": None if ok else
+                "Available once the pending call-type migration is applied",
+                **_row("activity", m, label, activity_pipeline_target(m, granularity))}
+
+    activity_pipeline = [_activity_row(m, label, depth)
+                         for m, label, depth in _OUTREACH_ACTIVITY_META]
+    # Unclassified is noise once every call carries a kind — drop the row when
+    # it is empty in both periods rather than leaving a permanent zero.
+    activity_pipeline = [r for r in activity_pipeline
+                         if r["metric"] != "call_unclassified"
+                         or r["this_period"]["total"] or r["last_period"]["total"]]
     return {"success": True, "data": {
         "granularity": granularity,
         "scope": scope,
@@ -4676,23 +4777,50 @@ async def outreach_scorecard_detail(
                     "direction": "received", "actor": r["actor"]})
             rows = []  # already consumed
         else:
+            email_sent = (
+                f"a.type = 'email' AND {_not_autoreply('a')} AND {_jobs_relevant('a')} AND EXISTS ("
+                f"  SELECT 1 FROM bedrock.activity_email_message aem WHERE aem.activity_id = a.id"
+                f"  AND {_message_actor(scope, owner)} AND aem.sent_at >= $1 AND aem.sent_at < $2)")
+            # Calls and meetings are one thing to this team (Kwame 2026-08-27), so
+            # both types count as a call everywhere the scorecard says "call".
+            calls = (f"a.type IN ('call','meeting') AND {_activity_actor('a', scope, owner)} "
+                     f"AND {_jobs_relevant('a')}")
+            windowed = "a.activity_date >= $1 AND a.activity_date < $2"
+            has_call_kind = await _has_column("bedrock", "activity", "call_kind")
+            # Pre-migration there is no call_kind column to filter on, so the three
+            # subtype drills would be a syntax error rather than an empty list.
+            # They come back empty instead, matching the disabled rows above.
+            def _kind(v: str) -> str:
+                return f"{calls} AND {windowed} AND a.call_kind = '{v}'" if has_call_kind else "FALSE"
             where = {
                 # Window + actor applied per MESSAGE — a follow-up sent this week in an
                 # old thread must appear in this week's drill.
-                "direct_email_sent":
-                    f"a.type = 'email' AND {_not_autoreply('a')} AND {_jobs_relevant('a')} AND EXISTS ("
-                    f"  SELECT 1 FROM bedrock.activity_email_message aem WHERE aem.activity_id = a.id"
-                    f"  AND {_message_actor(scope, owner)} AND aem.sent_at >= $1 AND aem.sent_at < $2)",
+                "direct_email_sent": email_sent,
                 "linkedin_message_sent":
                     f"a.type = 'linkedin' AND {_activity_actor('a', scope, owner)} AND {_jobs_relevant('a')}",
                 "engagement":  # meetings/calls only here; email replies appended below
                     f"a.type IN ('meeting','call') AND {_jobs_relevant('a')} AND {_not_autoreply('a')}",
+                "total_calls": f"{calls} AND {windowed}",
+                "call_discovery": _kind("discovery"),
+                "call_solution":  _kind("solution"),
+                "call_general":   _kind("general"),
+                "call_unclassified":
+                    (f"{calls} AND {windowed} AND a.call_kind IS NULL" if has_call_kind
+                     else f"{calls} AND {windowed}"),
+                # The roll-up. Facilitated intros live in bedrock.intro_request and
+                # so aren't in this union — they have their own drillable row, and
+                # folding a second table in here would double the query for a
+                # handful of records.
+                "total_outreach_activity":
+                    f"(({email_sent}) OR (a.type = 'linkedin' AND {_activity_actor('a', scope, owner)} "
+                    f"AND {_jobs_relevant('a')} AND {windowed}) OR ({calls} AND {windowed}))",
             }.get(key)
             if where is None:
                 raise HTTPException(400, "invalid activity key")
-            # direct_email_sent windows on the message timestamps inside `where`;
-            # the other keys window on the activity row itself.
-            date_pred = ("TRUE" if key == "direct_email_sent"
+            # Keys that window inside `where` (per-message, or per-branch in the
+            # roll-up) take TRUE here; the rest window on the activity row itself.
+            date_pred = ("TRUE" if key in ("direct_email_sent", "total_outreach_activity",
+                                           "total_calls", *_CALL_METRICS)
                          else "a.activity_date >= $1 AND a.activity_date < $2")
             rows = await conn.fetch(f"""
                 SELECT a.participant_public_contact_id AS contact_id, c.full_name, c.current_company,
@@ -5968,8 +6096,8 @@ async def stage_vocabulary(user=Depends(require_auth)):
     the new ones, with no code change in between."""
     opp = await _writable_stages(
         "jobs_opportunity", "jobs_opportunity_stage_check",
-        OPPORTUNITY_STAGES_NEW + ["reviewing_builders", "initial_outreach",
-                                  "active_builder_interview",
+        OPPORTUNITY_STAGES_NEW + ["lead_submitted", "reviewing_builders",
+                                  "initial_outreach", "active_builder_interview",
                                   "on_hold_not_selected", "on_hold_not_interested",
                                   "on_hold_not_responsive"],
         # Only the 2026-09-21 constraint contains this, so the vocabulary keeps
@@ -6000,14 +6128,25 @@ async def stage_vocabulary(user=Depends(require_auth)):
     membership_target = MEMBERSHIP_STAGES_NEW
     opp_target = OPPORTUNITY_STAGES_NEW
 
+    # Call kinds ride along on the same endpoint the pickers already read, so the
+    # log-a-call form gets its options and its availability in one request.
+    has_call_kind = await _has_column("bedrock", "activity", "call_kind")
+    call_kinds = [{"value": v, "label": l, "description": d, "available": has_call_kind,
+                   "unavailable_reason": None if has_call_kind else
+                   "Available once the pending call-type migration is applied"}
+                  for v, l, d in CALL_KINDS]
+
     return {"success": True, "data": {
         "opportunity_stages": [_opt(v, STAGE_LABELS.get(v, v), opp) for v in opp_target],
         "membership_stages": [_opt(v, MEMBERSHIP_STAGE_LABELS.get(v, v), mem) for v in membership_target],
         "closed_lost_reasons": [{"value": v, "label": l, "available": True} for v, l in CLOSED_LOST_REASONS],
+        "call_kinds": call_kinds,
         # True once the 2026-08-05 membership migration has landed.
         "migrated": "call_booked" in mem,
         # True once the 2026-09-21 opportunity-stage expansion has landed.
         "stages_expanded": "offer_contracting" in opp,
+        # True once bedrock.activity.call_kind exists.
+        "call_kinds_available": has_call_kind,
     }}
 
 
@@ -10295,6 +10434,7 @@ class ActivityCreate(BaseModel):
     description:         str
     activity_date:       Optional[datetime] = None
     subject:             Optional[str] = None
+    call_kind:           Optional[str] = None    # discovery | solution | general (calls only)
 
 
 @router.post("/activity")
@@ -10308,6 +10448,16 @@ async def log_activity(
         raise HTTPException(400, f"Invalid type: {body.type}")
     if not body.jobs_opportunity_id and not body.contact_id:
         raise HTTPException(400, "Provide jobs_opportunity_id or contact_id")
+    if body.call_kind is not None and body.call_kind not in CALL_KIND_VALUES:
+        raise HTTPException(400, f"Invalid call_kind: {body.call_kind}")
+    # A kind only means something on a call. Silently dropping it on an email is
+    # kinder than a 400 the UI can't explain, and nothing downstream reads it.
+    call_kind = body.call_kind if body.type == "call" else None
+    # The column arrives with the 2026-09-21 migration, applied separately. Until
+    # it exists the kind is simply not stored — the call still logs, which is the
+    # part that matters, and the picker is disabled in the UI anyway.
+    store_kind = call_kind is not None and await _has_column("bedrock", "activity", "call_kind")
+    kind_col = ", call_kind" if store_kind else ""
 
     import uuid as _uuid
 
@@ -10327,11 +10477,11 @@ async def log_activity(
     if body.jobs_opportunity_id:
         opp_id = _uuid.UUID(body.jobs_opportunity_id)
         row_id = await conn.fetchval(
-            """
+            f"""
             INSERT INTO bedrock.activity
                 (type, subject, description, activity_date, source, jobs_opportunity_id, logged_by,
-                 email_from, jobs_relevance_override)
-            VALUES ($1, $2, $3, COALESCE($4, now()), 'manual', $5, $6, $7, $8)
+                 email_from, jobs_relevance_override{kind_col})
+            VALUES ($1, $2, $3, COALESCE($4, now()), 'manual', $5, $6, $7, $8{', $9' if store_kind else ''})
             RETURNING id
             """,
             body.type,
@@ -10342,6 +10492,7 @@ async def log_activity(
             user_email,
             user_email if is_email else None,
             relevance,
+            *([call_kind] if store_kind else []),
         )
     else:
         # Prospect-scoped log: tie to the public.contacts row, leave the deal null.
@@ -10352,12 +10503,12 @@ async def log_activity(
             contact_email = await conn.fetchval(
                 "SELECT lower(email) FROM public.contacts WHERE contact_id = $1", body.contact_id)
         row_id = await conn.fetchval(
-            """
+            f"""
             INSERT INTO bedrock.activity
                 (type, subject, description, activity_date, source,
                  participant_public_contact_id, logged_by,
-                 email_from, email_to, jobs_relevance_override)
-            VALUES ($1, $2, $3, COALESCE($4, now()), 'manual', $5, $6, $7, $8, $9)
+                 email_from, email_to, jobs_relevance_override{kind_col})
+            VALUES ($1, $2, $3, COALESCE($4, now()), 'manual', $5, $6, $7, $8, $9{', $10' if store_kind else ''})
             RETURNING id
             """,
             body.type,
@@ -10369,6 +10520,7 @@ async def log_activity(
             user_email if is_email else None,
             [contact_email] if contact_email else None,
             relevance,
+            *([call_kind] if store_kind else []),
         )
         # A logged touch IS outreach — a still-flagged contact advances to
         # initial_outreach immediately (the nightly pass covers synced email).

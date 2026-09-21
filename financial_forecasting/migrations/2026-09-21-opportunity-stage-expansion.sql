@@ -1,4 +1,4 @@
--- Opportunity pipeline: 6 stages -> 9 (Kwame, 2026-09-21).
+-- Opportunity pipeline: 6 stages -> 8 (Kwame, 2026-09-21).
 --
 -- The middle of the funnel was one step where the team runs four. Splitting it
 -- makes "where is this deal stuck" answerable:
@@ -14,15 +14,21 @@
 --   Closed Won           builder accepted
 --   Closed Lost          dead, with a reason code
 --
--- `reviewing_builders` is RETIRED. It sat between "profiles sent" and "in
--- interviews" and meant either, which is exactly the ambiguity the two new
--- stages remove. The 5 rows holding it are remapped to builder_submitted: it is
--- the earlier of the two, so the remap never claims an interview that may not
--- have happened. A row that IS in interviews gets moved forward by hand, which
--- is a smaller correction than discovering the reverse after the fact.
+-- Two stages are RETIRED:
 --
--- `lead_submitted` is untouched — it precedes In Discussion and was not part of
--- this change.
+--   `reviewing_builders` sat between "profiles sent" and "in interviews" and
+--     meant either, which is exactly the ambiguity the two new stages remove.
+--     Its 5 rows go to builder_submitted: the earlier of the two, so the remap
+--     never claims an interview that may not have happened. A row that IS in
+--     interviews gets moved forward by hand, which is a smaller correction than
+--     discovering the reverse after the fact.
+--
+--   `lead_submitted` sat before In Discussion and described a contact, not a
+--     deal - that work lives in the membership pipeline (assigned ->
+--     initial_outreach -> call_booked -> converted_to_opportunity). The funnel
+--     now starts where the team says it starts. Its 2 rows go to
+--     active_in_discussions, since an opportunity record existing at all means
+--     someone opened a conversation.
 --
 -- Order matters: remap the rows BEFORE narrowing the constraint, or the ALTER
 -- fails validation against the rows it is about to outlaw.
@@ -33,8 +39,12 @@ UPDATE bedrock.jobs_opportunity
    SET stage = 'builder_submitted'
  WHERE stage = 'reviewing_builders';
 
--- Stage history carries the retired value too; leave it, since history should
--- record what was actually chosen at the time. The UI renders it via
+UPDATE bedrock.jobs_opportunity
+   SET stage = 'active_in_discussions'
+ WHERE stage = 'lead_submitted';
+
+-- Stage history carries the retired values too; leave it, since history should
+-- record what was actually chosen at the time. The UI renders them via
 -- STAGE_LABELS, which keeps the label.
 
 ALTER TABLE bedrock.jobs_opportunity
@@ -42,7 +52,6 @@ ALTER TABLE bedrock.jobs_opportunity
 
 ALTER TABLE bedrock.jobs_opportunity
   ADD CONSTRAINT jobs_opportunity_stage_check CHECK (stage IN (
-    'lead_submitted',
     'active_in_discussions',
     'ask_submitted',
     'active_opportunity_confirmed',
@@ -57,6 +66,7 @@ COMMIT;
 
 -- Verify:
 --   SELECT stage, count(*) FROM bedrock.jobs_opportunity GROUP BY stage ORDER BY 2 DESC;
---   Expect no reviewing_builders, and builder_submitted up by 5.
+--   Expect no reviewing_builders and no lead_submitted, builder_submitted up by
+--   5, active_in_discussions up by 2.
 -- The API re-probes the constraint per request until `offer_contracting`
 -- appears, so the new stages become selectable with no restart or deploy.

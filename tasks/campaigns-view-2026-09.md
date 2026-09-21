@@ -306,7 +306,85 @@ before the route imports, so `JWT_SECRET_KEY` comes from `.env` and survives
 every backend restart. The cookie was simply cleared browser-side. Permanent
 fix remains `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` from Jac.
 
-### Phase 13 — Not started
+### Phase 13 — Stage expansion + call breakdown ✅ (2026-09-21)
+
+Kwame's two asks: more opportunity stages, and an Activity Pipeline that shows
+what kind of call was made.
+
+**Opportunity pipeline: 6 stages → 8.**
+`active_in_discussions → ask_submitted → active_opportunity_confirmed →
+builder_submitted → builder_interviewing → offer_contracting → closed_won →
+closed_lost`, each carrying the team's own definition, shown on the picker.
+
+Two stages retired:
+- `reviewing_builders` meant "profiles sent" OR "in interviews" — the exact
+  ambiguity the two new stages remove. 5 rows remap to `builder_submitted`
+  (the earlier of the two, so the remap never claims an interview that may not
+  have happened).
+- `lead_submitted` described a contact, not a deal; that work lives in the
+  membership pipeline. 2 rows remap to `active_in_discussions`.
+
+Both stay in `STAGE_LABELS` and `LEGACY_STAGES`: rendered, never offered.
+
+**Bug found and fixed while expanding.** Every "is this deal active" filter
+leaned on `stage LIKE 'active_%'`. The four new stages dropped that prefix, so
+they would have fallen out of the weekly overview, the stage heatmap, Active
+Orgs and Active Companies entirely. Replaced with a derived
+`OPPORTUNITY_STAGES_ACTIVE_ANY` list, and the opportunities funnel now derives
+its rows from `OPPORTUNITY_STAGES_NEW` so it can never again miss a stage.
+
+**Activity Pipeline hierarchy.**
+```
+Total Outreach Activity          depth 0, bold
+  Direct Email Sent              depth 1
+  LinkedIn Messages Sent         depth 1
+  Facilitated Intro              depth 1
+  Total Calls                    depth 1
+    Discovery Calls              depth 2   pending migration
+    Solution Calls               depth 2   pending migration
+    General Calls                depth 2   pending migration
+    Unclassified                 depth 2   (hidden once it hits zero)
+Engagements                      depth 0
+Direct Email Responses           depth 0
+```
+Indentation is read off a `depth` field on each row, not off a list of metric
+names the table has to keep in sync with the API.
+
+**Counting rule changed for the tier-1 rows: events, not distinct contacts.**
+Three reasons, and the numbers will move:
+1. The labels already promise volume ("Messages Sent").
+2. A parent only equals the sum of its children under event counting.
+3. `count(DISTINCT contact_id)` silently dropped every email to an address
+   Bedrock has no contact row for.
+Engagements and Direct Email Responses stay distinct-contact — they are
+outcomes, and "how many contacts engaged" is the right question there.
+
+**Call type at log time.** `CallKindPicker` (discovery / solution / general)
+appears on both log-a-call forms — the opportunity row in the Jobs pipeline and
+the account Activity tab. Options and availability come from
+`/stage-vocabulary`, the same probe the stage pickers use.
+
+**Two migrations for Jac, both probed per request so they light up with no deploy:**
+- `2026-09-21-opportunity-stage-expansion.sql` — remaps 7 rows, then narrows the
+  CHECK constraint to the 8 stages. Probe settles on `offer_contracting`.
+- `2026-09-21-activity-call-kind.sql` — adds `bedrock.activity.call_kind` plus a
+  partial index. Probe is `_has_column`.
+
+Verified against production (read-only): `call_kind` does not exist yet, so the
+three breakdown rows render disabled with "pending migration" and the picker's
+buttons are greyed. Team-scope calls last full week: 4 logged calls + 11
+meetings = 15, which is what Total Calls will read.
+
+**Open question for Kwame.** Engagements (calls/meetings + email replies) now
+overlaps Total Calls. They sit at different depths and answer different
+questions, so I left both — say the word if Engagements should drop the
+call/meeting half and become replies only.
+
+**Not built, deliberately.** The activity feed does not yet badge a call with its
+type. The Activity Pipeline breakdown is the evidence that a tag saved, and the
+column does not exist yet, so there is nothing to display until Jac applies it.
+
+### Phase 14 — Not started
 - [ ] Drill from a trend point into the underlying activity list
 - [ ] Contact table on the detail view (the `/records` endpoint already serves it)
 - [ ] Stage-entry period flow, like `outreach-pipeline-rework.md`

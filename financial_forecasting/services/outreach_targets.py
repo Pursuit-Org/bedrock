@@ -9,8 +9,10 @@ call sites won't change.
 
 Keys match the metric keys the scorecard endpoint emits:
   user pipeline     — flagged | initial_outreach | active | handed_off
-  activity pipeline — direct_email_sent | linkedin_message_sent |
-                      facilitated_intro_sent | response
+  activity pipeline — total_outreach_activity | direct_email_sent |
+                      linkedin_message_sent | facilitated_intro_sent |
+                      total_calls | call_discovery | call_solution |
+                      call_general | engagement | direct_email_response
 Granularity keys match the API's granularity param: day | week | month.
 """
 
@@ -30,6 +32,11 @@ USER_PIPELINE_TARGETS: dict[str, dict[str, int]] = {
 
 # Raw activity rows sent/received in the period.
 ACTIVITY_PIPELINE_TARGETS: dict[str, dict[str, int]] = {
+    "total_outreach_activity": dict(_ZERO),
+    "total_calls":            dict(_ZERO),
+    "call_discovery":         dict(_ZERO),
+    "call_solution":          dict(_ZERO),
+    "call_general":           dict(_ZERO),
     "direct_email_sent":      dict(_ZERO),
     "linkedin_message_sent":  dict(_ZERO),
     "facilitated_intro_sent": dict(_ZERO),

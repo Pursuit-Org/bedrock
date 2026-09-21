@@ -29,7 +29,9 @@ COMPANIES_TABLE = "tblOyUDqF6kcntIYk"
 
 STAGE_MAP = {
     # Legacy stage names (kept for older records)
-    "R+D (pre-contact)":            "lead_submitted",
+    # lead_submitted was retired 2026-09-21 and is no longer writable; these
+    # legacy Airtable rows land at the funnel's first stage instead.
+    "R+D (pre-contact)":            "active_in_discussions",
     "Reached Out":                   "initial_outreach",
     "In Discussion":                 "active_in_discussions",
     "In Contract":                   "active_in_discussions",
@@ -54,11 +56,11 @@ def _map_stage(at_stage: str | None) -> str:
     """Map an Airtable Deal Stage to our stage enum, resilient to the
     'Active: ' prefix drift (e.g. 'Active: In Discussion' → 'In Discussion')."""
     if not at_stage:
-        return "lead_submitted"
+        return "active_in_discussions"
     if at_stage in STAGE_MAP:
         return STAGE_MAP[at_stage]
     stripped = at_stage.replace("Active: ", "").strip()
-    return STAGE_MAP.get(stripped, "lead_submitted")
+    return STAGE_MAP.get(stripped, "active_in_discussions")
 
 DEAL_TYPE_MAP = {
     "Closed - Won/FTE":              "ft",

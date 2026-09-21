@@ -11,8 +11,9 @@
 -- Nullable with no default on purpose. Backfilling every historical call to
 -- 'general' would invent a classification nobody made; NULL reads honestly as
 -- "logged before we tracked this", and the UI groups those under Unclassified.
--- Only applies to type='call' — a meeting synced from a calendar has no one to
--- ask, so it stays out of the breakdown.
+-- Only the log-a-call form writes it. Calls and meetings both count toward Total
+-- Calls (they are one thing to this team), but a meeting synced from a calendar
+-- has nobody to ask, so it stays NULL and reports as Unclassified.
 
 ALTER TABLE bedrock.activity
   ADD COLUMN IF NOT EXISTS call_kind text
