@@ -596,7 +596,62 @@ short, which is the signal wanted.
 Pipeline is gone (it was the third statement of the same two dates on one
 screen), and the card reads "Outreach Activity".
 
-### Phase 19 — Not started
+### Phase 19 — Outreach collapses to one page; owner cut added ✅ (2026-09-21)
+
+**Outbound Detail is gone.** Targeting Mix was cut (Campaigns already answers
+"who are we choosing to work", with a picker and a period bar it never had), and
+Requiring attention moved to Jobs Home. With one tab left, the strip was chrome
+costing a row and answering nothing, so Outreach is one page again.
+`/outreach/targeting-mix` is still served — restoring that panel is a component,
+not an endpoint.
+
+**Requiring attention moved to Jobs Home**, extracted to
+`components/jobs/RequiringAttention.tsx` (~490 lines: the three cards plus
+RespondedPanel, StuckContactsPanel, HygieneBlock, ListControls). It is owner-
+scoped by the page's existing Me / person / Everyone selector, so picking Avni
+shows Avni's three queues. These are queues belonging to a PERSON, not
+measurements of a period — Jobs Home is where you look to see what is on your
+plate. The "Current state" divider did not come with it: nothing on Jobs Home is
+period-scoped, so it had nothing left to divide.
+
+**Activity Pipeline gains an Owner cut.** A two-tab switch in the card header:
+
+```
+Activity Pipeline  [Activity | Owner]                  ⊙ VIEWING · All jobs team
+
+Owner            │      Outreach          │        Calls
+                 │ Target  This   Δ       │ Target  This   Δ
+Avni Nahar       │   45     47   +2       │    5      8   +3
+…
+All jobs team    │  150    ...            │   15    ...
+```
+
+Rows come from `OWNER_ACTIVITY_TARGETS`, not from who happened to send
+something: a person with a goal and a silent week is exactly who the table
+exists to show, and an activity-driven list would omit them. Sorted by
+shortfall, so the conversation you need to have is at the top. The team line is
+summed from the rows, never re-counted. Counted by the same
+`_send_events_sql` / `_call_events_sql` helpers as everything else, per owner.
+
+A null target renders as a dash, never 0 — "nobody set a goal" and "exactly on
+goal" are different states.
+
+**Stage × Time shows every active stage.** The `if s in stage_heat` filter hid a
+stage the moment nobody occupied it, so the four stages added on 2026-09-21 were
+invisible until a deal moved into one. An empty row is the useful signal here.
+
+**Two stage pickers were silently stale.** `jobsEntity.tsx` and `accountTabs.tsx`
+each hard-coded a stage list written before the 2026-08-05 and 2026-09-21
+changes, still offering Initial Outreach, Builder Interview and the three On
+Hold values — three of which the database CHECK constraint rejects outright, so
+choosing one failed the save. Both now derive from `STAGES_ORDERED`.
+
+**Net new and Stalled read black** on the Pipeline summary cards. Colouring a
+headline count implies a verdict, and neither is one: net new means nothing
+without a target, and stalled already carries amber on the board below. Net
+new's delta chip still colours, which is where the judgement belongs.
+
+### Phase 20 — Not started
 - [ ] Drill from a trend point into the underlying activity list
 - [ ] Contact table on the detail view (the `/records` endpoint already serves it)
 - [ ] Stage-entry period flow, like `outreach-pipeline-rework.md`

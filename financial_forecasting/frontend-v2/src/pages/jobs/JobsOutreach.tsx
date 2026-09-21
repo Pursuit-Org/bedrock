@@ -1,44 +1,37 @@
 import { Fragment, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { BarChart3, ChevronRight, ChevronDown, Loader2, Send, Users } from "lucide-react";
+import { ChevronRight, ChevronDown, Loader2, Users } from "lucide-react";
 
-import { toast } from "sonner";
 import {
   useOutreachScorecard,
   useOutreachSummary,
   useOutreachActivity,
   useOutreachDrill,
-  useOutreachTargetingMix,
   useJobsStaff,
   useJobsContacts,
   useContactDetail,
   useContactTagCatalog,
-  useJobsAccounts,
-  useStuckContacts,
-  useRespondedContacts,
-  useUpdateJobsMembership,
   inScope,
   JOBS_TEAM_PINNED,
-  MEMBERSHIP_STAGE_LABELS,
   type OutreachGranularity,
   type OutreachScopeKind,
   type OutreachSummary,
   type OutreachDateRange,
   type ScorecardRow,
   type OutreachDrillContact,
+  useOwnerScorecard,
+  type OwnerMetric,
   useTouchDepth,
   type TouchDepthBucket,
   type JobContactWithDeal,
-  type MembershipStage,
 } from "@/services/jobs";
-import { InlineSelect } from "@/components/ui/InlineEdit";
-import { useContactStageChange } from "@/lib/useContactStageChange";
 import { JobsFunnels } from "@/components/jobs/JobsFunnels";
-import { Panel, BreakdownBars } from "./JobsOpportunitiesOverview";
+import { Panel } from "./JobsOpportunitiesOverview";
 import { ActivityTrends } from "@/components/jobs/ActivityTrends";
 import { ActivityFeed } from "@/components/jobs/ActivityFeed";
 import { DrillList } from "@/components/jobs/DrillList";
 import { PeriodBar, ScopeButtons, defaultPeriod } from "@/components/jobs/PeriodBar";
+import { SectionHead } from "@/components/jobs/RequiringAttention";
 import { relDay } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
@@ -47,13 +40,6 @@ const DRILL_PAGE = 25;
 /** Contact names listed on a collapsed account row before "+N". */
 const CONTACT_NAMES_SHOWN = 3;
 
-type OutreachSub = "overview" | "detail";
-const OUTREACH_SUBS: { key: OutreachSub; label: string; icon: typeof BarChart3; title: string }[] = [
-  { key: "overview", label: "Overview", icon: BarChart3, title: "The Monday review — volume against target, who did what, and the trend" },
-  // Still called Outbound Detail. It now holds the supporting cuts rather than
-  // the volume table, so the name is due a rethink — Kwame's call, not mine.
-  { key: "detail", label: "Outbound Detail", icon: Send, title: "Supporting detail — segment mix, touch depth and the live queues" },
-];
 /** Touches shown before "Show n older" in a contact's inline touch log. */
 const TOUCH_LOG_CAP = 5;
 /** Contacts shown per touch-depth bucket before "Show n more". */
@@ -233,6 +219,20 @@ function RowDrill({
 }
 
 // ── A scorecard table (User Pipeline / Activity Pipeline) ─────────────────────
+/** The title bar both cuts of the Activity Pipeline share, so switching tabs
+ *  changes the table and nothing else. */
+function CardHead({ title, leading, action }: {
+  title: string; leading?: React.ReactNode; action?: React.ReactNode;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-2 border-b border-border-strong bg-surface-2 px-4 py-2.5">
+      <span className="text-[13px] font-bold text-ink-2">{title}</span>
+      {leading}
+      <span className="ml-auto">{action}</span>
+    </div>
+  );
+}
+
 /** A period column heading: the label, with its window stacked underneath in
  *  grey. Side by side the dates pushed the heading off-centre and stretched the
  *  column; stacked, every number sits directly under the window it covers. */
@@ -249,7 +249,7 @@ function PeriodHead({ label, range }: { label: string; range?: string }) {
 
 function ScorecardTable({
   title, rows, idPrefix, firstColHeader, drillKind, granularity, scope, owner, range, nameOf,
-  rangeLabel, lastRangeLabel, action,
+  rangeLabel, lastRangeLabel, action, leading,
 }: {
   title: string; rows: ScorecardRow[]; idPrefix: string; firstColHeader: string;
   drillKind: "user" | "activity";
@@ -259,16 +259,15 @@ function ScorecardTable({
   lastRangeLabel?: string;
   /** Optional control rendered at the right of the title bar. */
   action?: React.ReactNode;
+  /** Optional control rendered immediately after the title. */
+  leading?: React.ReactNode;
   granularity: OutreachGranularity; scope: OutreachScopeKind; owner?: string; range?: OutreachDateRange;
   nameOf: (email: string) => string;
 }) {
   const [open, setOpen] = useState<string | null>(null);
   return (
     <div className="flex flex-col overflow-hidden rounded-xl border border-border-strong bg-surface">
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border-strong bg-surface-2 px-4 py-2.5">
-        <span className="text-[13px] font-bold text-ink-2">{title}</span>
-        {action}
-      </div>
+      <CardHead title={title} leading={leading} action={action} />
       <table className="w-full border-collapse">
         <thead>
           <tr className="bg-surface-2 text-[10.5px] uppercase tracking-wide text-ink-3">
@@ -354,33 +353,11 @@ function ScorecardTable({
     </div>
   );
 }
-// ── Targeting mix (Pipeline page's "Active set distribution" idiom) ──────────
-function TargetingPanel({ granularity, scope, owner, range }: {
-  granularity: OutreachGranularity; scope: OutreachScopeKind; owner?: string; range?: OutreachDateRange;
-}) {
-  const { data, isLoading } = useOutreachTargetingMix(granularity, scope, owner, range);
-  const dims = data?.dims ?? [];
-  const [dimKey, setDimKey] = useState<string>("tag");
-  const dim = dims.find((d) => d.key === dimKey) ?? dims[0];
-  const items = (dim?.rows ?? []).map((r) => ({ key: r.bucket, label: r.bucket, count: r.sent }));
-  return (
-    <Panel
-      title="Targeting Mix"
-      desc="Outreach across segments"
-      // Fills the grid row so its bottom edge lines up with Outreach Trends
-      // beside it — a few segment bars left a short card next to a tall chart.
-      className="h-full"
-      action={
-        <select value={dimKey} onChange={(e) => setDimKey(e.target.value)}
-          className="h-7 rounded-md border border-border-strong bg-surface px-2 text-[12px] text-ink outline-none focus:border-accent">
-          {dims.map((d) => <option key={d.key} value={d.key}>{d.label}</option>)}
-        </select>
-      }
-    >
-      <BreakdownBars items={items} dim="segment" isLoading={isLoading} />
-    </Panel>
-  );
-}
+/* TargetingPanel lived here until 2026-09-21. Kwame cut it: "who are we
+   choosing to work" is a question the Campaigns view answers with a picker and
+   a period bar, and a second segment breakdown on Outreach was the same cut
+   with less context. /outreach/targeting-mix is still served, so restoring it
+   is a component, not an endpoint. */
 
 /** The contacts behind one touch-depth bucket: name, touches, owner. Opens at
  *  five — enough to see who's in there without the panel swallowing the page —
@@ -517,15 +494,6 @@ function TouchDepthPanel({ scope, owner, nameOf, className }: {
   );
 }
 
-// ── Section header ────────────────────────────────────────────────────────────
-function SectionHead({ title, note }: { title: string; note?: string }) {
-  return (
-    <div className="flex items-baseline justify-between">
-      <h2 className="text-[13px] font-bold uppercase tracking-wider text-ink-3">{title}</h2>
-      {note && <span className="text-[12.5px] text-ink-4">{note}</span>}
-    </div>
-  );
-}
 
 // ── Daily digest — Avni's morning Slack, computed ────────────────────────────
 // The daily-digest card (digestSlackText + DailyDigestBlock) lived here until
@@ -966,13 +934,138 @@ function ActivityPipelineBlock({ activityPipeline, granularity, scope, owner, ra
   /** True when one person is selected, which is what earns the stronger chip. */
   ownerIsPerson?: boolean;
 }) {
+  // Two cuts of one table: by activity type, or by person. The tab lives in the
+  // card header rather than above the card, so it reads as "this table, viewed
+  // two ways" instead of two sections that happen to sit together.
+  const [cut, setCut] = useState<"activity" | "owner">("activity");
+  const tabs = (
+    <div className="inline-flex items-center rounded-md border border-border-strong bg-surface p-0.5">
+      {([["activity", "Activity"], ["owner", "Owner"]] as const).map(([k, label]) => (
+        <button key={k} type="button" onClick={() => setCut(k)}
+          title={k === "activity" ? "What the team did, by type of touch"
+                                  : "Who carried their number, by person"}
+          className={cn("rounded px-2 py-0.5 text-[12px] font-medium transition-colors",
+            cut === k ? "bg-accent-soft text-accent" : "text-ink-2 hover:bg-surface-2")}>
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+
+  if (cut === "owner") {
+    // No Viewing chip here: this cut shows every owner at once, so the page's
+    // sender filter has nothing to say about it.
+    return <OwnerScorecardTable granularity={granularity} range={range}
+      rangeLabel={rangeLabel} nameOf={nameOf} leading={tabs} />;
+  }
   if (!activityPipeline || activityPipeline.length === 0) return null;
   return (
     <ScorecardTable title="Activity Pipeline" firstColHeader="Activity" rows={activityPipeline}
       idPrefix="act" drillKind="activity" granularity={granularity} scope={scope}
       owner={owner} range={range} nameOf={nameOf} rangeLabel={rangeLabel}
-      lastRangeLabel={lastRangeLabel}
+      lastRangeLabel={lastRangeLabel} leading={tabs}
       action={ownerLabel ? <ViewingChip label={ownerLabel} strong={ownerIsPerson} /> : undefined} />
+  );
+}
+
+// ── Activity Pipeline · the owner cut ────────────────────────────────────────
+
+/** Target, actual and gap for one metric — three cells, used six times. */
+function OwnerCells({ m }: { m: OwnerMetric }) {
+  // A gap of exactly zero is "on target" and reads green; no target at all
+  // reads as a dash. Collapsing those two into one 0 was the thing to avoid.
+  const d = m.delta;
+  return (
+    <>
+      <td className="px-3 py-2.5 text-center tabular-nums text-ink-3">{m.target ?? "—"}</td>
+      <td className="px-3 py-2.5 text-center tabular-nums font-semibold text-ink">{m.this_period}</td>
+      <td className="px-3 py-2.5 text-center text-[12.5px]">
+        {d == null ? <span className="text-ink-4">—</span> : (
+          <span className={cn("inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 font-semibold tabular-nums",
+            d >= 0 ? "bg-green-soft text-green" : "bg-red-soft text-red")}>
+            {d >= 0 ? "+" : ""}{d}
+          </span>
+        )}
+      </td>
+    </>
+  );
+}
+
+/** The Activity Pipeline, cut by person instead of by activity type.
+ *
+ *  Every owner who carries a target gets a row, whether or not they sent
+ *  anything: a quiet week from someone with a goal is precisely what this table
+ *  is for, and a list built from activity would leave them out. Rows arrive
+ *  sorted by shortfall, so the conversation you need to have is at the top.
+ *
+ *  Not clickable. The Activity tab already drills every number behind these,
+ *  and per-owner drilling is one sender-filter click away in the period bar. */
+function OwnerScorecardTable({ granularity, range, rangeLabel, nameOf, leading, action }: {
+  granularity: OutreachGranularity;
+  range?: OutreachDateRange;
+  rangeLabel?: string;
+  nameOf: (email: string) => string;
+  leading?: React.ReactNode;
+  action?: React.ReactNode;
+}) {
+  const { data, isLoading } = useOwnerScorecard(granularity, range);
+  const rows = data?.rows ?? [];
+  return (
+    <div className="flex flex-col overflow-hidden rounded-xl border border-border-strong bg-surface">
+      <CardHead title="Activity Pipeline" leading={leading} action={action} />
+      <table className="w-full border-collapse">
+        <thead>
+          {/* Two header rows: the group spans say which three columns belong to
+              which metric, so "Target" appearing twice is never ambiguous. */}
+          <tr className="bg-surface-2 text-[10.5px] uppercase tracking-wide text-ink-3">
+            <th className="py-2 pl-3.5 pr-2 text-left font-bold align-bottom" rowSpan={2}>
+              Owner
+              {rangeLabel ? (
+                <span className="mt-0.5 block text-[10px] font-normal normal-case tracking-normal text-ink-4">{rangeLabel}</span>
+              ) : null}
+            </th>
+            <th className="border-l border-border px-2 pt-2 pb-1 text-center font-bold" colSpan={3}>Outreach</th>
+            <th className="border-l border-border px-2 pt-2 pb-1 text-center font-bold" colSpan={3}>Calls</th>
+          </tr>
+          <tr className="bg-surface-2 text-[10px] uppercase tracking-wide text-ink-4">
+            <th className="border-l border-border px-3 pb-2 text-center font-semibold">Target</th>
+            <th className="px-3 pb-2 text-center font-semibold">This period</th>
+            <th className="px-3 pb-2 text-center font-semibold">Δ to target</th>
+            <th className="border-l border-border px-3 pb-2 text-center font-semibold">Target</th>
+            <th className="px-3 pb-2 text-center font-semibold">This period</th>
+            <th className="px-3 pb-2 text-center font-semibold">Δ to target</th>
+          </tr>
+        </thead>
+        <tbody>
+          {isLoading && (
+            <tr><td colSpan={7} className="px-4 py-6 text-center text-[12.5px] text-ink-3">
+              <Loader2 size={13} className="mr-1.5 inline animate-spin" />Loading…
+            </td></tr>
+          )}
+          {!isLoading && rows.length === 0 && (
+            <tr><td colSpan={7} className="px-4 py-6 text-center text-[12.5px] text-ink-4">
+              Nobody carries a target yet.
+            </td></tr>
+          )}
+          {rows.map((r) => (
+            <tr key={r.owner} className="border-b border-border text-[13.5px]">
+              <td className="px-3.5 py-2.5 text-left font-medium text-ink" title={r.owner}>{nameOf(r.owner)}</td>
+              <OwnerCells m={r.outreach} />
+              <OwnerCells m={r.calls} />
+            </tr>
+          ))}
+          {/* The team line is the sum of the rows above, not a separate count,
+              so it can never disagree with them. */}
+          {!isLoading && rows.length > 0 && data && (
+            <tr className="bg-surface-2/60 text-[13.5px] font-semibold">
+              <td className="px-3.5 py-2.5 text-left text-ink">All jobs team</td>
+              <OwnerCells m={data.totals.outreach} />
+              <OwnerCells m={data.totals.calls} />
+            </tr>
+          )}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
@@ -1085,496 +1178,6 @@ function OutreachSummaryCards({ granularity, scope, owner, range }: {
 /** Accounts a jobs-team member owns with nobody flagged into the prospect list.
  *  Shared by the Requiring Attention card (count) and its detail table, so the
  *  headline number and the rows can never disagree. */
-function useAwaitingActivation(staffEmails: Set<string>) {
-  const { data: accounts = [] } = useJobsAccounts(undefined, "all");
-  return useMemo(() => accounts
-    .filter((a) => a.owner_email && staffEmails.has(a.owner_email.toLowerCase()) && a.prospect_count === 0)
-    .sort((a, b) => (a.owner_email ?? "").localeCompare(b.owner_email ?? "") || a.account.localeCompare(b.account)),
-    [accounts, staffEmails]);
-}
-
-function HygieneBlock({ nameOf, staffEmails }: { nameOf: (email: string) => string; staffEmails: Set<string> }) {
-  const all = useAwaitingActivation(staffEmails);
-  const [showAll, setShowAll] = useState(false);
-  const [sort, setSort] = useState("onfile");
-  const [ownerF, setOwnerF] = useState("");
-  const owners = useMemo(() => ownerOptions(all, (a) => a.owner_email), [all]);
-  // 60+ accounts is too many to scan raw — "which of mine have people I could
-  // flag today" is the actual question, so that's the default sort.
-  const noProspect = useMemo(() => {
-    const rows = ownerF
-      ? all.filter((a) => ((a.owner_email ?? "").toLowerCase() || "(unowned)") === ownerF)
-      : [...all];
-    if (sort === "name") return rows.sort((a, b) => a.account.localeCompare(b.account));
-    if (sort === "recent") return rows.sort((a, b) => (b.last_activity_at ?? "").localeCompare(a.last_activity_at ?? ""));
-    if (sort === "stalest") return rows.sort((a, b) => (a.last_activity_at ?? "").localeCompare(b.last_activity_at ?? ""));
-    return rows.sort((a, b) => (b.contact_count ?? 0) - (a.contact_count ?? 0));
-  }, [all, sort, ownerF]);
-
-  // Two different problems: contacts exist but nobody's been flagged into the
-  // pipeline (just activate one) vs genuinely nobody on file (go find someone).
-  const withPeople = useMemo(() => noProspect.filter((a) => (a.contact_count ?? 0) > 0).length, [noProspect]);
-  const shown = showAll ? noProspect : noProspect.slice(0, 10);
-  return (
-    <div className="flex flex-col gap-3">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="text-[11.5px] text-ink-3">
-          {noProspect.length} owned accounts with nobody in the prospect list — {withPeople} have contacts on file to flag,{" "}
-          {noProspect.length - withPeople} have nobody yet
-        </p>
-        <ListControls sort={sort} setSort={setSort} owner={ownerF} setOwner={setOwnerF}
-          owners={owners} nameOf={nameOf}
-          sortOpts={[
-            { value: "onfile", label: "Most contacts on file" },
-            { value: "stalest", label: "Stalest activity" },
-            { value: "recent", label: "Most recent activity" },
-            { value: "name", label: "Account name" },
-          ]} />
-      </div>
-      {noProspect.length > 0 && (
-        <div className="overflow-hidden rounded-lg border border-border-strong bg-surface">
-          <div className="bg-amber-soft px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-amber">
-            Assigned, no contact identified · {noProspect.length}
-          </div>
-          <table className="w-full text-[12.5px]">
-            <thead><tr className="bg-surface-2/60 text-left text-[10.5px] uppercase tracking-wider text-ink-3">
-              <th className="px-3 py-1.5 font-semibold">Account</th>
-              <th className="px-2 py-1.5 font-semibold">Owner</th>
-              <th className="px-2 py-1.5 font-semibold">Status</th>
-              <th className="px-2 py-1.5 text-right font-semibold" title="Contacts on file at this company, flagged or not">On file</th>
-              <th className="px-2 py-1.5 text-right font-semibold">Last activity</th>
-              <th className="px-2 py-1.5"></th>
-            </tr></thead>
-            <tbody>
-              {shown.map((a) => (
-                <tr key={a.account_key} className="border-t border-border-strong">
-                  <td className="px-3 py-1.5">
-                    <span className="font-medium text-ink">{a.account}</span>
-                    {a.prospect_sibling && (
-                      <Link to={`/jobs/accounts?q=${encodeURIComponent(a.prospect_sibling.account)}`}
-                        className="block truncate text-[10.5px] text-amber hover:underline"
-                        title="Same company filed under another name — the prospects are over there">
-                        ⤳ {a.prospect_sibling.prospects} prospects under “{a.prospect_sibling.account}” — likely the same company
-                      </Link>
-                    )}
-                  </td>
-                  <td className="px-2 py-1.5 text-ink-2">{a.owner_email ? nameOf(a.owner_email) : "—"}</td>
-                  <td className="px-2 py-1.5 text-[11.5px] text-ink-3">{a.account_status}</td>
-                  <td className={cn("px-2 py-1.5 text-right tabular-nums text-[11.5px]", (a.contact_count ?? 0) > 0 ? "text-ink-2" : "text-ink-4")}>
-                    {a.contact_count ?? 0}
-                  </td>
-                  <td className="px-2 py-1.5 text-right tabular-nums text-[11.5px] text-ink-4">{relDay(a.last_activity_at) ?? "—"}</td>
-                  <td className="px-2 py-1.5 text-right">
-                    <Link to={`/jobs/contacts?q=${encodeURIComponent(a.account)}`}
-                      className={cn("rounded-full px-2 py-0.5 text-[10.5px] font-semibold hover:underline",
-                        (a.contact_count ?? 0) > 0 ? "bg-accent-soft text-accent-ink" : "bg-surface-2 text-ink-3")}>
-                      {(a.contact_count ?? 0) > 0 ? `Flag one of ${a.contact_count} →` : "Find contacts →"}
-                    </Link>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          {noProspect.length > shown.length && (
-            <button type="button" onClick={() => setShowAll(true)}
-              className="w-full border-t border-border-strong px-3 py-1.5 text-[12px] text-accent hover:bg-surface-2/50">
-              Show all {noProspect.length}
-            </button>
-          )}
-        </div>
-      )}
-
-    </div>
-  );
-}
-
-/** Replied but still in initial outreach — the owner decides where each goes.
- *  Deliberately never auto-advances: a positive reply belongs in Converted, a
- *  neutral/negative one in On hold / Not a fit, and only a human can tell. */
-function RespondedPanel({ owner, nameOf }: { owner?: string; nameOf: (e: string) => string }) {
-  const { data: raw = [], isLoading } = useRespondedContacts(owner);
-  const [sort, setSort] = useState("oldest");
-  const [ownerF, setOwnerF] = useState("");
-  const owners = useMemo(() => ownerOptions(raw, (r) => r.owner_email), [raw]);
-  const data = useMemo(() => {
-    const rows = ownerF
-      ? raw.filter((r) => ((r.owner_email ?? "").toLowerCase() || "(unowned)") === ownerF)
-      : [...raw];
-    const key = (r: typeof rows[number]) => r.last_reply ?? "";
-    if (sort === "recent") return rows.sort((a, b) => key(b).localeCompare(key(a)));
-    if (sort === "touches") return rows.sort((a, b) => (b.touches ?? 0) - (a.touches ?? 0));
-    return rows.sort((a, b) => key(a).localeCompare(key(b)));  // oldest reply first
-  }, [raw, sort, ownerF]);
-  const update = useUpdateJobsMembership();
-  const stageChange = useContactStageChange();
-  const [showAll, setShowAll] = useState(false);
-  const move = (c: { contact_id: number; full_name: string | null }, stage: MembershipStage) => {
-    // Revisit goes through the shared handler so it asks for a date and files
-    // the follow-up task; the other decisions are one-click.
-    if (stage === "revisit") {
-      // change() now rejects when the dialog is cancelled, and this path
-      // has no InlineSelect to roll back — swallow it rather than emit an
-      // unhandled rejection every time someone changes their mind.
-      stageChange.change(c.contact_id, c.full_name ?? "Contact", stage).catch(() => {});
-      return;
-    }
-    update.mutate({ contact_id: c.contact_id, stage }, {
-      onSuccess: () => toast.success(`${c.full_name ?? "Contact"} → ${MEMBERSHIP_STAGE_LABELS[stage]}`),
-    });
-  };
-  const shown = showAll ? data : data.slice(0, 8);
-  return (
-    <Panel
-      action={
-        <ListControls sort={sort} setSort={setSort} owner={ownerF} setOwner={setOwnerF}
-          owners={owners} nameOf={nameOf}
-          sortOpts={[
-            { value: "oldest", label: "Longest un-actioned" },
-            { value: "recent", label: "Most recent reply" },
-            { value: "touches", label: "Most touches" },
-          ]} />
-      }
-      title="Replied — needs a decision"
-      badge={data.length ? String(data.length) : undefined}
-      desc="They came back to us and are still in initial outreach. Read the reply, then move them — nothing advances on its own.">
-      {isLoading ? (
-        <div className="flex items-center gap-2 py-4 text-[12.5px] text-ink-3"><Loader2 size={13} className="animate-spin" /> Loading…</div>
-      ) : data.length === 0 ? (
-        <div className="rounded-lg border border-dashed border-border-strong px-4 py-6 text-center text-[12.5px] text-ink-4">
-          No replies waiting on a decision.
-        </div>
-      ) : (
-        <div className="flex flex-col divide-y divide-border-strong">
-          {shown.map((c) => (
-            <div key={c.contact_id} className="flex flex-wrap items-start gap-x-3 gap-y-1.5 py-2.5">
-              <div className="min-w-0 flex-1">
-                <div className="flex flex-wrap items-baseline gap-x-2">
-                  <Link to={`/jobs/contacts/${c.contact_id}`} className="text-[13px] font-semibold text-ink hover:text-accent">
-                    {c.full_name || "—"}
-                  </Link>
-                  <span className="text-[11.5px] text-ink-3">{c.current_company || "—"}</span>
-                  <span className="text-[11px] text-ink-4">
-                    replied {relDay(c.last_reply) ?? "—"} ago · {c.touches} touch{c.touches === 1 ? "" : "es"}
-                  </span>
-                </div>
-                {c.snippet && <p className="mt-0.5 line-clamp-2 text-[11.5px] italic text-ink-3">“{c.snippet}”</p>}
-              </div>
-              <div className="flex shrink-0 items-center gap-1">
-                <button type="button" onClick={() => move(c, "converted_to_opportunity")}
-                  className="rounded-full border border-[var(--green)]/40 bg-[var(--green-soft)] px-2 py-0.5 text-[10.5px] font-semibold text-[var(--green)] hover:brightness-95">
-                  Converted
-                </button>
-                <button type="button" onClick={() => move(c, "revisit")}
-                  title="Park with a date — files a task for the owner"
-                  className="rounded-full border border-[var(--amber)]/40 bg-[var(--amber-soft)] px-2 py-0.5 text-[10.5px] font-semibold text-[var(--amber)] hover:brightness-95">
-                  Revisit
-                </button>
-                <button type="button" onClick={() => move(c, "not_a_fit")}
-                  className="rounded-full border border-border-strong bg-surface-2 px-2 py-0.5 text-[10.5px] font-semibold text-ink-3 hover:text-ink-2">
-                  Not a fit
-                </button>
-              </div>
-            </div>
-          ))}
-          {data.length > shown.length && (
-            <button type="button" onClick={() => setShowAll(true)}
-              className="py-2 text-left text-[12px] text-accent hover:underline">Show all {data.length}</button>
-          )}
-        </div>
-      )}
-      {stageChange.dialog}
-    </Panel>
-  );
-}
-
-/** Contacts stuck in initial outreach — 3+ touches, no reply. The cue to find a
- *  different contact at that account (replaced the account working list). */
-function StuckContactsPanel({ owner, nameOf }: { owner?: string; nameOf: (e: string) => string }) {
-  const { data: raw = [], isLoading } = useStuckContacts(3, owner);
-  const [sort, setSort] = useState("touches");
-  const [ownerF, setOwnerF] = useState("");
-  // One shared handler: it builds the options from what the database accepts
-  // (greying out anything the migration hasn't enabled) and routes Revisit
-  // through its date dialog.
-  const stageChange = useContactStageChange();
-  const owners = useMemo(() => ownerOptions(raw, (r) => r.owner_email), [raw]);
-  const data = useMemo(() => {
-    const rows = ownerF
-      ? raw.filter((r) => ((r.owner_email ?? "").toLowerCase() || "(unowned)") === ownerF)
-      : [...raw];
-    if (sort === "stalest") return rows.sort((a, b) => (a.last_touch ?? "").localeCompare(b.last_touch ?? ""));
-    if (sort === "recent") return rows.sort((a, b) => (b.last_touch ?? "").localeCompare(a.last_touch ?? ""));
-    return rows.sort((a, b) => (b.touches ?? 0) - (a.touches ?? 0));
-  }, [raw, sort, ownerF]);
-  // Stage editable in place: the usual next move here is On hold / Not a fit,
-  // or Converted if the account came good through another contact.
-  const [showAll, setShowAll] = useState(false);
-  if (isLoading) return <div className="flex items-center gap-2 px-1 py-4 text-[12.5px] text-ink-3"><Loader2 size={13} className="animate-spin" /> Loading…</div>;
-  if (data.length === 0) {
-    return <div className="rounded-lg border border-dashed border-border-strong px-4 py-6 text-center text-[12.5px] text-ink-4">
-      Nobody stuck — every contact in initial outreach has replied or is under 3 touches.
-    </div>;
-  }
-  const shown = showAll ? data : data.slice(0, 15);
-  return (
-    <div className="flex flex-col gap-2">
-      <ListControls sort={sort} setSort={setSort} owner={ownerF} setOwner={setOwnerF}
-        owners={owners} nameOf={nameOf}
-        sortOpts={[
-          { value: "touches", label: "Most touches" },
-          { value: "stalest", label: "Stalest (oldest touch)" },
-          { value: "recent", label: "Most recent touch" },
-        ]} />
-    <div className="overflow-hidden rounded-lg border border-border-strong bg-surface">
-      <table className="w-full text-[12.5px]">
-        <thead><tr className="bg-surface-2/60 text-left text-[10.5px] uppercase tracking-wider text-ink-3">
-          <th className="px-3 py-1.5 font-semibold">Contact</th>
-          <th className="px-2 py-1.5 font-semibold">Company</th>
-          <th className="px-2 py-1.5 text-right font-semibold">Touches</th>
-          <th className="px-2 py-1.5 text-right font-semibold">Last touch</th>
-          <th className="px-2 py-1.5 font-semibold">Stage</th>
-          <th className="px-2 py-1.5 text-right font-semibold" title="Other jobs prospects already identified at this company">Others at account</th>
-        </tr></thead>
-        <tbody>
-          {shown.map((c) => (
-            <tr key={c.contact_id} className="border-t border-border-strong">
-              <td className="px-3 py-1.5">
-                <Link to={`/jobs/contacts/${c.contact_id}`} className="font-medium text-ink hover:text-accent">{c.full_name || "—"}</Link>
-                {c.current_title && <span className="block truncate text-[11px] text-ink-4">{c.current_title}</span>}
-              </td>
-              <td className="px-2 py-1.5 text-ink-2">{c.current_company || "—"}</td>
-              <td className={cn("px-2 py-1.5 text-right tabular-nums font-semibold", c.touches >= 5 ? "text-red" : "text-amber")}>{c.touches}</td>
-              <td className="px-2 py-1.5 text-right tabular-nums text-[11.5px] text-ink-4">{relDay(c.last_touch) ?? "—"}</td>
-              <td className="px-2 py-1.5">
-                <InlineSelect<string>
-                  value="initial_outreach"
-                  options={stageChange.options}
-                  onSave={(v) => {
-                    if (!v || v === "initial_outreach") return Promise.resolve();
-                    return stageChange.change(c.contact_id, c.full_name ?? "this contact", v);
-                  }}
-                  renderValue={() => (
-                    <span className="rounded-full bg-surface-2 px-1.5 py-0.5 text-[10.5px] font-medium text-ink-3">Initial outreach</span>
-                  )}
-                />
-              </td>
-              <td className="px-2 py-1.5 text-right">
-                {c.other_contacts_at_account > 0 ? (
-                  <Link to={`/jobs/contacts?q=${encodeURIComponent(c.current_company ?? "")}`}
-                    className="rounded-full bg-accent-soft px-2 py-0.5 text-[10.5px] font-semibold text-accent-ink hover:underline">
-                    {c.other_contacts_at_account} other{c.other_contacts_at_account === 1 ? "" : "s"} →
-                  </Link>
-                ) : (
-                  <Link to={`/jobs/accounts?q=${encodeURIComponent(c.current_company ?? "")}`}
-                    className="text-[10.5px] font-semibold text-amber hover:underline">find a contact →</Link>
-                )}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      {data.length > shown.length && (
-        <button type="button" onClick={() => setShowAll(true)}
-          className="w-full border-t border-border-strong px-3 py-1.5 text-[12px] text-accent hover:bg-surface-2/50">
-          Show all {data.length}
-        </button>
-      )}
-    </div>
-    {stageChange.dialog}
-    </div>
-  );
-}
-
-// ── Page ──────────────────────────────────────────────────────────────────────
-// ── Requiring attention ─────────────────────────────────────────────────────
-// One place for the three queues that need a human: replies awaiting a
-// decision, contacts stuck in outreach, accounts with nobody flagged. Each card
-// is the headline; clicking it opens the same detail table that used to sit in
-// its own full-width section.
-
-type AttentionKey = "replied" | "stuck" | "activation";
-
-/** Sort + owner filter strip shared by the three Requiring Attention details —
- *  each list is long enough that scanning it unsorted is the actual work. */
-function ListControls({ sort, setSort, sortOpts, owner, setOwner, owners, nameOf }: {
-  sort: string;
-  setSort: (v: string) => void;
-  sortOpts: { value: string; label: string }[];
-  owner: string;
-  setOwner: (v: string) => void;
-  owners: string[];
-  nameOf: (email: string) => string;
-}) {
-  return (
-    <div className="flex flex-wrap items-center gap-2">
-      <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-4">Sort</span>
-      <select value={sort} onChange={(e) => setSort(e.target.value)}
-        className="h-7 rounded-md border border-border-strong bg-surface px-2 text-[12px] text-ink-2 outline-none focus:border-accent">
-        {sortOpts.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-      </select>
-      <span className="ml-1 text-[10.5px] font-semibold uppercase tracking-wider text-ink-4">Owner</span>
-      <select value={owner} onChange={(e) => setOwner(e.target.value)}
-        className="h-7 rounded-md border border-border-strong bg-surface px-2 text-[12px] text-ink-2 outline-none focus:border-accent">
-        <option value="">All owners</option>
-        {owners.map((o) => <option key={o} value={o}>{o === "(unowned)" ? "Unowned" : nameOf(o)}</option>)}
-      </select>
-    </div>
-  );
-}
-
-/** Distinct owner keys present in a list, for its filter dropdown. */
-function ownerOptions<T>(rows: T[], pick: (r: T) => string | null | undefined): string[] {
-  const set = new Set<string>();
-  for (const r of rows) set.add((pick(r) ?? "").toLowerCase() || "(unowned)");
-  return [...set].sort();
-}
-
-const DAY_MS = 86_400_000;
-
-function AttentionCard({ label, value, sub, tone, active, onClick }: {
-  label: string;
-  value: number | undefined;
-  sub: React.ReactNode;
-  tone: "ink" | "red" | "amber" | "accent";
-  active: boolean;
-  onClick: () => void;
-}) {
-  const toneCls = {
-    ink: "text-ink",
-    red: "text-red",
-    amber: "text-amber",
-    accent: "text-accent",
-  }[tone];
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-expanded={active}
-      className={cn(
-        "flex flex-col items-start gap-1 rounded-xl border bg-surface px-4 py-3 text-left transition-colors",
-        active
-          ? "border-accent ring-1 ring-accent/30"
-          : "border-border-strong hover:bg-surface-2/50",
-      )}
-    >
-      <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-4">{label}</span>
-      <span className={cn("text-[26px] font-semibold leading-none tabular-nums", toneCls)}>
-        {value ?? "—"}
-      </span>
-      <span className="text-[11px] leading-snug text-ink-3">{sub}</span>
-      <span className="mt-0.5 inline-flex items-center gap-0.5 text-[10.5px] font-semibold text-accent">
-        {active ? "Hide detail" : "See detail"}
-        {active ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
-      </span>
-    </button>
-  );
-}
-
-function RequiringAttention({ owner, nameOf, staffEmails }: {
-  owner?: string;
-  nameOf: (email: string) => string;
-  staffEmails: Set<string>;
-}) {
-  const [open, setOpen] = useState<AttentionKey | null>(null);
-  const { data: replied = [] } = useRespondedContacts(owner);
-  const { data: stuck = [] } = useStuckContacts(3, owner);
-  const awaiting = useAwaitingActivation(staffEmails);
-
-  // Trend on replies: last 7 days vs the 7 before, off each row's last_reply.
-  // There's no prior-period endpoint, so this is derived from the same payload
-  // rather than being a second fetch that could disagree with the count.
-  const replyTrend = useMemo(() => {
-    const now = Date.now();
-    let recent = 0;
-    let prior = 0;
-    for (const r of replied) {
-      if (!r.last_reply) continue;
-      const age = now - new Date(r.last_reply).getTime();
-      if (age < 7 * DAY_MS) recent += 1;
-      else if (age < 14 * DAY_MS) prior += 1;
-    }
-    return { recent, prior };
-  }, [replied]);
-
-  const stuckStats = useMemo(() => {
-    if (stuck.length === 0) return null;
-    const touches = stuck.reduce((n, s) => n + (s.touches ?? 0), 0) / stuck.length;
-    const withTouch = stuck.filter((s) => s.last_touch);
-    const days = withTouch.length
-      ? withTouch.reduce((n, s) => n + (Date.now() - new Date(s.last_touch as string).getTime()), 0)
-        / withTouch.length / DAY_MS
-      : null;
-    return { touches, days };
-  }, [stuck]);
-
-  const withPeople = awaiting.filter((a) => (a.contact_count ?? 0) > 0).length;
-
-  return (
-    <div className="flex flex-col gap-3">
-      <SectionHead title="Requiring attention" />
-
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-        <AttentionCard
-          label="Replies needing a decision"
-          value={replied.length}
-          // Black, not red: a reply is a good outcome waiting on a decision, not
-          // a failure. The 7-day trend below still colours when it's climbing.
-          tone="ink"
-          active={open === "replied"}
-          onClick={() => setOpen(open === "replied" ? null : "replied")}
-          sub={
-            <>
-              {replyTrend.recent} in the last 7d
-              {replyTrend.prior > 0 ? (
-                <>
-                  {" · "}
-                  <span className={replyTrend.recent >= replyTrend.prior ? "text-red" : "text-[var(--green)]"}>
-                    {replyTrend.recent >= replyTrend.prior ? "▲" : "▼"}{" "}
-                    {Math.abs(replyTrend.recent - replyTrend.prior)}
-                  </span>{" "}
-                  vs prior 7d
-                </>
-              ) : null}
-            </>
-          }
-        />
-        <AttentionCard
-          label="Stuck in initial outreach"
-          value={stuck.length}
-          tone="amber"
-          active={open === "stuck"}
-          onClick={() => setOpen(open === "stuck" ? null : "stuck")}
-          sub={
-            stuckStats
-              ? `avg ${stuckStats.touches.toFixed(1)} touches${
-                  stuckStats.days != null ? ` · last touch ${Math.round(stuckStats.days)}d ago` : ""
-                }`
-              : "nobody stuck — 3+ touches, no reply"
-          }
-        />
-        <AttentionCard
-          label="Accounts awaiting activation"
-          value={awaiting.length}
-          tone="accent"
-          active={open === "activation"}
-          onClick={() => setOpen(open === "activation" ? null : "activation")}
-          sub={`${withPeople} have contacts on file to flag`}
-        />
-      </div>
-
-      {open === "replied" ? <RespondedPanel owner={owner} nameOf={nameOf} /> : null}
-      {open === "stuck" ? (
-        <div className="flex flex-col gap-2">
-          <p className="text-[11.5px] text-ink-3">
-            3+ touches, no reply — time to work a different contact at the account
-          </p>
-          <StuckContactsPanel owner={owner} nameOf={nameOf} />
-        </div>
-      ) : null}
-      {open === "activation" ? <HygieneBlock nameOf={nameOf} staffEmails={staffEmails} /> : null}
-    </div>
-  );
-}
 
 export function JobsOutreach() {
   // Bucket size follows the period preset; scope is the three-way sender filter.
@@ -1594,7 +1197,6 @@ export function JobsOutreach() {
   const lastRangeLabel = useMemo(() => (sc ? fmtRange(sc.period.last_start, sc.period.last_end) : ""), [sc]);
 
 
-  const staffEmails = useMemo(() => new Set(staff.map((s) => s.email.toLowerCase())), [staff]);
 
   // The picker splits into pinned and everyone else. Pinned keeps JOBS_TEAM_PINNED's
   // order (it is a priority list, not an alphabet); the rest sorts by name.
@@ -1614,35 +1216,12 @@ export function JobsOutreach() {
     ? nameOf(owner)
     : { team: "All jobs team", staff: "Other staff", pursuit: "Everyone at Pursuit" }[scope];
 
-  // Two views over one period bar. Overview is the Monday review; Outbound
-  // Detail is the activity table that used to sit mid-scroll on it. The period,
-  // scope and sender controls govern both, so they stay above the sub-tabs.
-  const [sub, setSub] = useState<OutreachSub>("overview");
-  const onDetail = sub === "detail";
+  // One page. The Outbound Detail sub-tab is gone (Kwame 2026-09-21): Targeting
+  // Mix was cut, Requiring attention moved to Jobs Home, and a tab strip with
+  // one tab left in it is chrome that costs a row and answers nothing.
 
   return (
     <div className="flex flex-col gap-6 pt-3">
-      {/* Above the period bar on purpose: you pick the view first, then the
-          window you want to see it over. Same chrome as Overview → Campaigns. */}
-      <div className="-mt-1 flex items-center gap-1 border-b border-border-strong">
-        {OUTREACH_SUBS.map((t) => {
-          const Icon = t.icon;
-          return (
-            <button
-              key={t.key}
-              onClick={() => setSub(t.key)}
-              title={t.title}
-              className={cn(
-                "-mb-px flex items-center gap-1.5 border-b-2 px-3 py-2 text-[13px] font-medium transition-colors",
-                sub === t.key ? "border-accent text-accent" : "border-transparent text-ink-3 hover:text-ink-2",
-              )}
-            >
-              <Icon size={13} />
-              {t.label}
-            </button>
-          );
-        })}
-      </div>
       {/* ── ZONE 1 · the selected period ──────────────────────────────────
              This bar governs everything down to the Current state boundary,
              and nothing below it. It used to float above the whole page, which
@@ -1690,16 +1269,7 @@ export function JobsOutreach() {
           Activity Pipeline's own column headings directly below, so it was the
           third statement of the same two dates on one screen. */}
 
-      {/* ── The two tabs swapped contents on 2026-09-21 (Kwame) ───────────
-             Overview is now the weekly review itself: the headline numbers, the
-             pipeline table, who did what, and the trend. Outbound Detail holds
-             the supporting cuts — how the book is segmented, and the live
-             queues that ignore the period bar entirely.
-             The old split had the review's own numbers a tab away from the
-             review. ── */}
-      {!onDetail ? (
-        <>
-          {/* Contact Pipeline opens the review again — it is the top of the
+      {/* Contact Pipeline opens the review again — it is the top of the
               funnel everything below is downstream of (Kwame 2026-09-21). */}
           <JobsFunnels only="prospects" period={range} periodLabel={rangeLabel || undefined} />
 
@@ -1743,62 +1313,13 @@ export function JobsOutreach() {
 
           <OutboundActivityFeed granularity={granularity} scope={scope}
             owner={owner || undefined} range={range} />
-        </>
-      ) : (
-      <>
-      {/* ── One band ──────────────────────────────────────────────────────
-             Targeting Mix is the "who are we choosing to work" cut, which is
-             detail on the review rather than part of it. ── */}
-      <div className="flex items-center gap-3">
-        <div className="h-px flex-1 bg-border-strong" />
-        <span className="text-[11px] font-bold uppercase tracking-[.12em] text-ink-3">Segments</span>
-        <div className="h-px flex-1 bg-border-strong" />
-      </div>
-      <TargetingPanel granularity={granularity} scope={scope} owner={owner || undefined} range={range} />
-      </>
-      )}
       </section>
 
-      {/* ── ZONE 2 · current state ────────────────────────────────────────
-             Everything below this line ignores the period bar, and that is
-             correct: these are live queues and rollups, not history. Making the
-             boundary explicit was the fix for the period control appearing to
-             govern the whole page when it governs only the half above it.
-             The divider is deliberately heavier than the "Segments" rule
-             above, which heads a period-scoped panel — this one
-             separates two different notions of time. ── */}
-      {onDetail && (
-        <>
-      <ZoneBoundary />
-
-      {/* Requiring attention closes the page (moved below the trend band
-          2026-08-04): it's the action list you leave the review with, so it
-          reads better as the last thing than wedged mid-scroll. */}
-      {/* "Campaigns · coverage" lived here until 2026-09-15. Campaigns is now
-          its own view under Dashboard → Overview → Campaigns, with a picker,
-          period bar and activity feed this strip never had. One home. */}
-      <RequiringAttention owner={owner || undefined} nameOf={nameOf} staffEmails={staffEmails} />
-        </>
-      )}
     </div>
   );
 }
 
-/** The line between "the period you picked" and "right now".
- *
- *  Reads as a statement rather than a label because the whole point is to
- *  correct an expectation the period bar sets. Note the precision: scope and
- *  sender DO still apply below this line — only the period stops. Saying "the
- *  filters above don't apply" would trade one wrong belief for another. */
-/** The divider between the period-scoped zone above and the live zone below.
- *  The rule and label carry the boundary on their own — the explanatory caption
- *  that used to sit under it was permanent chrome for a one-time explanation. */
-function ZoneBoundary() {
-  return (
-    <div className="mt-8 flex items-center gap-3">
-      <div className="h-px flex-1 bg-ink-4/40" />
-      <span className="text-[11px] font-bold uppercase tracking-[.12em] text-ink-2">Current state</span>
-      <div className="h-px flex-1 bg-ink-4/40" />
-    </div>
-  );
-}
+/* ZoneBoundary — the "Current state" divider — lived here until 2026-09-21. It
+   existed to say the period bar stopped applying below it. Requiring attention
+   was the only thing below it, and that moved to Jobs Home, so the line had
+   nothing left to divide. */

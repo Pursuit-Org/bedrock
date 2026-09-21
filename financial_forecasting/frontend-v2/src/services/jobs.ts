@@ -1578,6 +1578,43 @@ export interface OutreachDrill {
   contacts: OutreachDrillContact[];
 }
 
+/** One owner's numbers for a metric: what they owe, what they did, the gap.
+ *  `target` and `delta` are null when nobody has set a goal — which is a
+ *  different statement from "on target", and must not render as the same 0. */
+export interface OwnerMetric {
+  target: number | null;
+  this_period: number;
+  last_period: number;
+  delta: number | null;
+}
+export interface OwnerScorecardRow {
+  owner: string;
+  outreach: OwnerMetric;
+  calls: OwnerMetric;
+}
+export interface OwnerScorecard {
+  granularity: OutreachGranularity;
+  period: ScorecardPeriod;
+  rows: OwnerScorecardRow[];
+  totals: { outreach: OwnerMetric; calls: OwnerMetric };
+}
+
+/** The Activity Pipeline cut by person. Every owner who carries a target
+ *  appears, including one who sent nothing — that is the row worth seeing. */
+export function useOwnerScorecard(granularity: OutreachGranularity, range?: OutreachDateRange) {
+  const rangeKey = range ? `${range.from}..${range.to}` : "";
+  return useQuery<OwnerScorecard>({
+    queryKey: ["jobs", "owner-scorecard", granularity, rangeKey],
+    queryFn: async () => {
+      const p = new URLSearchParams({ granularity });
+      if (range) { p.set("date_from", range.from); p.set("date_to", range.to); }
+      const { data } = await api.get<ApiResponse<OwnerScorecard>>(`/api/jobs/outreach/scorecard/by-owner?${p}`);
+      return data.data;
+    },
+    staleTime: 60_000,
+  });
+}
+
 /** Drill-down behind one scorecard row. `enabled` false until the row is expanded. */
 export function useOutreachDrill(
   args: { kind: "user" | "activity"; key: string; period: "this" | "last";

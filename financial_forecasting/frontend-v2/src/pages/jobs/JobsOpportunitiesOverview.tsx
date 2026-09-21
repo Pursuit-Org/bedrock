@@ -210,10 +210,16 @@ export function JobsOpportunitiesOverview() {
         <SummaryCard tone="ink" label="In the set" value={s?.in_set} isLoading={isLoading}
           sub="All active opportunities"
           onClick={() => setDrill({ title: "In the set", note: "All active opportunities", rows: data?.drills.in_set ?? [] })} />
-        <SummaryCard tone="accent" label="Net new" value={s?.net_new} sub={rangeLabel} isLoading={isLoading}
+        {/* Net new and Stalled read black like In the set (Kwame 2026-09-21).
+            Colouring a headline count implies a verdict on it, and neither is
+            one: net new is neither good nor bad without a target, and stalled
+            already carries its own amber treatment on the board below. The
+            delta chip under Net new still colours, which is where the judgement
+            actually belongs. */}
+        <SummaryCard tone="ink" label="Net new" value={s?.net_new} sub={rangeLabel} isLoading={isLoading}
           delta={s ? { n: netDelta, prev: s.net_new_prev, priorLabel: spanDays === 7 ? "last wk" : `prior ${spanDays}d` } : undefined}
           onClick={() => setDrill({ title: "Net new", note: `Created ${rangeLabel}`, rows: data?.drills.net_new ?? [] })} />
-        <SummaryCard tone="amber" label="Stalled" value={s?.stalled_6wk} isLoading={isLoading}
+        <SummaryCard tone="ink" label="Stalled" value={s?.stalled_6wk} isLoading={isLoading}
           sub="Open opportunity 6+ weeks"
           onClick={() => setDrill({ title: "Stalled 6+ weeks", note: "Open, created more than 6 weeks ago", rows: data?.drills.stalled ?? [] })} />
         {/* Stage-gate check: won on the board but the follow-through (e.g. the

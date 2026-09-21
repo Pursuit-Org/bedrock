@@ -23,6 +23,7 @@ import {
   type OpenRole,
   type CompanyBuilderRole,
   STAGE_LABELS,
+  STAGES_ORDERED,
   type JobStage,
   type DealType,
   type JobsStaff,
@@ -114,10 +115,13 @@ export function JobsOppRow({ opp, source }: { opp: OppRowData; source?: "jobs" |
   );
 }
 
-const STAGE_OPTIONS: { value: JobStage; label: string }[] = [
-  "initial_outreach", "active_in_discussions", "active_opportunity_confirmed", "active_builder_interview",
-  "closed_won", "closed_lost", "on_hold_not_selected", "on_hold_not_interested", "on_hold_not_responsive",
-].map((s) => ({ value: s as JobStage, label: STAGE_LABELS[s as JobStage] ?? s }));
+// Derived from STAGES_ORDERED, not hand-listed. This list was written before
+// the 2026-08-05 and 2026-09-21 stage changes and still offered Initial
+// Outreach, Builder Interview and the three On Hold values — every one of them
+// retired, and the first three rejected outright by the database CHECK
+// constraint. A picker that hard-codes stage names goes stale silently.
+const STAGE_OPTIONS: { value: JobStage; label: string }[] =
+  STAGES_ORDERED.map((s) => ({ value: s, label: STAGE_LABELS[s] ?? s }));
 
 /** Inline-editable opportunity row (name/stage/deal-type) used in expansions. */
 export function EditableOppRow({ opp }: { opp: OppRowData }) {

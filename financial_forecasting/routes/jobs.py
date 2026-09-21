@@ -27,7 +27,8 @@ from db import get_db, get_pool
 from dependencies import get_mcp_client, require_sf_mcp_client
 from sf_errors import sf_http_error
 from services.placement_sf import sync_placement_to_sf, record_sync_error, NotEligible, AccountAmbiguous
-from services.outreach_targets import user_pipeline_target, activity_pipeline_target
+from services.outreach_targets import (user_pipeline_target, activity_pipeline_target,
+                                       OWNER_ACTIVITY_TARGETS)
 from services.jobs_activity_link import has_membership_history
 
 logger = logging.getLogger(__name__)
@@ -3124,9 +3125,16 @@ async def opportunities_overview(
 
     # Heatmaps
     buckets = [{"key": k, "label": lbl} for k, lbl in _OPP_AGE_BUCKETS]
+    # Every active stage gets a row, empty or not (Kwame 2026-09-21). The
+    # `if s in stage_heat` that used to be here hid a stage the moment nobody
+    # was in it, so the four stages added on 2026-09-21 were invisible until
+    # someone moved a deal into them — and an empty row is the useful signal
+    # here: "no deal has an ask outstanding" is worth seeing.
     stage_rows = [
-        {"key": s, "label": STAGE_LABELS.get(s, s), "cells": stage_heat[s], "total": sum(stage_heat[s])}
-        for s in _OPP_STAGE_ORDER if s in stage_heat
+        {"key": s, "label": STAGE_LABELS.get(s, s),
+         "cells": stage_heat.get(s, [0, 0, 0, 0, 0]),
+         "total": sum(stage_heat.get(s, [0, 0, 0, 0, 0]))}
+        for s in _OPP_STAGE_ORDER
     ]
     prio_rows = [
         {"key": f"P{p}", "label": f"P{p}",
@@ -4696,6 +4704,85 @@ def _touch_actor(alias: str = "a") -> str:
           WHERE lower(e) LIKE '%@pursuit.org' LIMIT 1),
         CASE WHEN {alias}.logged_by LIKE '%@%'
              THEN lower(nullif(trim({alias}.logged_by),'')) END)"""
+
+
+@router.get("/outreach/scorecard/by-owner")
+async def outreach_scorecard_by_owner(
+    granularity: str = Query("week", pattern="^(day|week|month)$"),
+    date_from: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    date_to: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """The Activity Pipeline cut by PERSON instead of by activity type.
+
+    One row per owner who carries a target, each with outreach and calls:
+    target, what they did this period, and the gap. The Activity tab answers
+    "what did the team do"; this one answers "is each person carrying their
+    number", which is the question a one-on-one starts from (Kwame 2026-09-21).
+
+    Rows come from OWNER_ACTIVITY_TARGETS, not from who happened to send
+    something. Someone with a goal and a silent week is exactly who this table
+    exists to show, and they would be missing from a list built off activity.
+
+    Counted by the same _send_events_sql / _call_events_sql helpers as
+    everything else on this page, per owner, so a person's row and the team
+    total can never tell different stories.
+    """
+    this_start, this_end, last_start, last_end = _outreach_windows(granularity, date_from, date_to)
+
+    rows = []
+    for email in OWNER_ACTIVITY_TARGETS:
+        if not _SAFE_EMAIL.match(email):      # code-owned list; belt and braces
+            continue
+        counts = await conn.fetchrow(f"""
+            SELECT
+              (SELECT count(*) FROM ({_send_events_sql('team', email)}) se
+                WHERE se.ts >= $1 AND se.ts < $2)                    AS outreach_this,
+              (SELECT count(*) FROM ({_send_events_sql('team', email)}) se
+                WHERE se.ts >= $3 AND se.ts < $4)                    AS outreach_last,
+              (SELECT count(*) FROM ({_call_events_sql('team', email, "'call_general'")}) ce
+                WHERE ce.ts >= $1 AND ce.ts < $2)                    AS calls_this,
+              (SELECT count(*) FROM ({_call_events_sql('team', email, "'call_general'")}) ce
+                WHERE ce.ts >= $3 AND ce.ts < $4)                    AS calls_last
+        """, this_start, this_end, last_start, last_end)
+
+        def _metric(key: str, this_n: int, last_n: int):
+            target = activity_pipeline_target(key, granularity, email)
+            return {"target": target, "this_period": this_n, "last_period": last_n,
+                    # Signed, and null when there is no target: "no goal set" and
+                    # "exactly on goal" are different states and must not render
+                    # as the same zero.
+                    "delta": None if target is None else this_n - target}
+
+        rows.append({
+            "owner": email,
+            "outreach": _metric("total_outreach_activity", counts["outreach_this"], counts["outreach_last"]),
+            "calls": _metric("total_calls", counts["calls_this"], counts["calls_last"]),
+        })
+
+    # Biggest shortfall first. A row with no target sorts last: it is not a miss,
+    # it is an unanswered question, and it should not head the table.
+    rows.sort(key=lambda r: (r["outreach"]["delta"] is None, r["outreach"]["delta"] or 0))
+
+    def _total(section: str, field: str):
+        vals = [r[section][field] for r in rows if r[section][field] is not None]
+        return sum(vals) if vals else None
+
+    return {"success": True, "data": {
+        "granularity": granularity,
+        "period": {
+            "this_start": this_start.isoformat(), "this_end": this_end.isoformat(),
+            "last_start": last_start.isoformat(), "last_end": last_end.isoformat(),
+        },
+        "rows": rows,
+        # The team line, summed from the rows above rather than re-counted, so
+        # it is always exactly what the rows add up to.
+        "totals": {
+            "outreach": {k: _total("outreach", k) for k in ("target", "this_period", "last_period", "delta")},
+            "calls":    {k: _total("calls", k)    for k in ("target", "this_period", "last_period", "delta")},
+        },
+    }}
 
 
 @router.get("/outreach/scorecard/detail")

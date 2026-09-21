@@ -44,6 +44,7 @@ import {
   type CallKind,
   useUpdateOpportunity,
   STAGE_LABELS,
+  STAGES_ORDERED,
   type AccountBuilderRow,
   type AccountComment,
   type AccountTask,
@@ -61,10 +62,9 @@ import {
   initials, jobsContactPath, jobsOpportunityPath, oppRoleLabel,
 } from "./jobsEntity";
 
-const OPP_STAGE_OPTIONS: { value: JobStage; label: string }[] = ([
-  "initial_outreach", "active_in_discussions", "active_opportunity_confirmed", "active_builder_interview",
-  "closed_won", "closed_lost", "on_hold_not_selected", "on_hold_not_interested", "on_hold_not_responsive",
-] as JobStage[]).map((s) => ({ value: s, label: STAGE_LABELS[s] ?? s }));
+// Derived, never hand-listed — see the same note in jobsEntity.tsx.
+const OPP_STAGE_OPTIONS: { value: JobStage; label: string }[] =
+  STAGES_ORDERED.map((s) => ({ value: s, label: STAGE_LABELS[s] ?? s }));
 
 const jobsRef = withReferrer({ pathname: "/jobs", label: "Jobs" });
 const inputCls = "h-7 rounded border border-border-strong bg-surface px-2 text-[12.5px] text-ink-2 outline-none focus:border-accent";
