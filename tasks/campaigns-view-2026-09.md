@@ -694,7 +694,39 @@ sign, anything else is signed.
 Activity. The heatmap says where deals are piling up and the Set is the list you
 work them from; the activity feed is the narrative you read afterwards.
 
-### Phase 21 — Not started
+### Phase 21 — Fix: blank Outreach page ✅ (2026-09-21)
+
+Kwame: "When I click on outreach its just a white page."
+
+**Root cause of the BLANK part: the app had no error boundary anywhere.** React's
+answer to an uncaught render error is to unmount the whole tree, so one bad
+field on one panel took the nav, the shell and every other page with it, and put
+the only diagnosis in the browser console. `PageErrorBoundary` now wraps the
+`<Outlet />` inside AppShell, keyed on the pathname: the nav survives, the error
+message is on screen, and navigating away resets it.
+
+**Trigger: an API shape change against a still-running old backend.** Phase 20
+collapsed `ScorecardCell {warm, cold, total}` to a plain number. A backend that
+had not been restarted still returned the object, and `{r.this_period}` rendered
+an object as a React child. `useOutreachScorecard` now normalises both shapes in
+its queryFn — one place, clearly dated, deletable once no running backend
+predates 2026-09-21.
+
+**Verified in a headless browser**, not by reading. Built the page against a mock
+API on the current shapes: 0 page errors, Activity and Owner tabs both render,
+delta chips read `-79`, `0`, `+2`, `+3` as specified. The boundary itself was
+proved by an induced error — it caught it, kept the nav, and printed the message.
+The normalisation is checked against five inputs including the old shape.
+
+Two findings from the exercise worth keeping:
+- A Python syntax check does not catch a deleted module-level function, because
+  callers only reference it inside function bodies. Phase 20's warmth-CTE
+  deletion took `_send_events_sql` and `_call_events_sql` with it and still
+  parsed. Rendering the SQL outside the app is what caught it.
+- `tsc` and `vite build` both pass on code that cannot render. Neither is a
+  substitute for loading the page.
+
+### Phase 22 — Not started
 - [ ] Drill from a trend point into the underlying activity list
 - [ ] Contact table on the detail view (the `/records` endpoint already serves it)
 - [ ] Stage-entry period flow, like `outreach-pipeline-rework.md`

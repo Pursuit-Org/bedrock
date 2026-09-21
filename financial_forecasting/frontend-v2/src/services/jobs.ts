@@ -1459,6 +1459,21 @@ export function useOutreachActivity(
   });
 }
 
+/** The period counts were `{warm, cold, total}` until 2026-09-21 and are plain
+ *  numbers now. Normalised here, once, because the alternative is a component
+ *  rendering an object as a React child — which React answers by unmounting the
+ *  whole tree, i.e. a blank page. A dev machine running yesterday's backend
+ *  against today's frontend is a normal state in this workflow, and it should
+ *  cost a wrong-looking number at worst. Delete this when no running backend
+ *  predates that date. */
+function scorecardCount(v: unknown): number {
+  if (typeof v === "number") return v;
+  if (v && typeof v === "object" && typeof (v as { total?: unknown }).total === "number") {
+    return (v as { total: number }).total;
+  }
+  return 0;
+}
+
 export function useOutreachScorecard(granularity: OutreachGranularity, scope: OutreachScopeKind, owner?: string, range?: OutreachDateRange) {
   const rangeKey = range ? `${range.from}..${range.to}` : "";
   return useQuery<OutreachScorecard>({
@@ -1467,7 +1482,15 @@ export function useOutreachScorecard(granularity: OutreachGranularity, scope: Ou
       const { data } = await api.get<ApiResponse<OutreachScorecard>>(
         `/api/jobs/outreach/scorecard?${outreachParams(granularity, scope, owner, range)}`,
       );
-      return data.data;
+      const d = data.data;
+      return {
+        ...d,
+        activity_pipeline: (d.activity_pipeline ?? []).map((r) => ({
+          ...r,
+          this_period: scorecardCount(r.this_period),
+          last_period: scorecardCount(r.last_period),
+        })),
+      };
     },
     staleTime: 60_000,
   });
