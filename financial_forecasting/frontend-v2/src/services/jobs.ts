@@ -1838,6 +1838,21 @@ export interface ContactCreateBody {
   linkedin_url?: string;
 }
 
+/** Everything that changes when a contact joins or leaves the jobs pipeline.
+ *
+ *  Both paths that activate a contact — "New" and "Add existing" — used to
+ *  invalidate only ["jobs","contacts"], so the account panel you were standing
+ *  in kept showing the list it had already fetched and the contact you just
+ *  added looked like it had not been added (Kwame 2026-09-22). The account
+ *  rollup feeds that panel, and the accounts list carries the contact count.
+ *  Prefix keys, so every scope and account variant is covered. */
+function invalidateContactMembership(qc: ReturnType<typeof useQueryClient>) {
+  qc.invalidateQueries({ queryKey: ["jobs", "contacts"] });
+  qc.invalidateQueries({ queryKey: ["jobs", "account-rollup"] });
+  qc.invalidateQueries({ queryKey: ["jobs", "accounts"] });
+  qc.invalidateQueries({ queryKey: ["jobs", "funnels"] });
+}
+
 export function useCreateContact() {
   const qc = useQueryClient();
   return useMutation({
@@ -1846,7 +1861,7 @@ export function useCreateContact() {
       return data.data;
     },
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["jobs", "contacts"] });
+      invalidateContactMembership(qc);
       toast.success("Contact created");
     },
     // Surface the server's reason (e.g. the 409 duplicate naming the existing
@@ -2128,7 +2143,7 @@ export function useAddContactToJobs() {
       }
     },
     onSuccess: (_, { add }) => {
-      qc.invalidateQueries({ queryKey: ["jobs", "contacts"] });
+      invalidateContactMembership(qc);
       toast.success(add ? "Added to Jobs pipeline" : "Removed from Jobs pipeline");
     },
     onError: () => toast.error("Failed to update contact"),

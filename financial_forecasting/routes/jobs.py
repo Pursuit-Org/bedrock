@@ -5815,6 +5815,10 @@ class ContactCreate(BaseModel):
     current_company: Optional[str] = None
     contact_stage:   str = "lead"
     linkedin_url:    Optional[str] = None
+    owner_email:     Optional[str] = None
+    # False only for a caller that wants a bare public.contacts row. Every UI
+    # that creates a contact does so to work it, so activation is the default.
+    activate:        bool = True
 
 
 @router.post("/contacts")
@@ -5852,6 +5856,19 @@ async def create_contact(
                   f"{dupe['full_name']} (#{dupe['contact_id']})" if dupe
                   else "A contact with that email or LinkedIn already exists.")
         raise HTTPException(409, detail)
+    # Creating a contact from a jobs screen MEANS putting them in the jobs
+    # pipeline. Without this the row lands in public.contacts and nowhere else:
+    # /account-prospects filters on is_jobs_contact, and the Contacts list
+    # filters on an EXISTS against jobs_contact_membership, so the contact is
+    # invisible in both — while the email UNIQUE index makes a second attempt
+    # fail with "already exists". Reported 2026-09-22 (Kwame); 15 contacts had
+    # been created into that gap, and the repair script names them.
+    #
+    # Routed through _flag_contacts rather than its own INSERT so this path and
+    # the "add existing contact" button activate a contact exactly the same way
+    # — one definition of what being in the pipeline means.
+    if body.activate:
+        await _flag_contacts(conn, [cid], body.owner_email, "manual", None, _user_email(user))
     row = await conn.fetchrow("SELECT * FROM public.contacts WHERE contact_id=$1", cid)
     return {"success": True, "data": dict(row)}
 
