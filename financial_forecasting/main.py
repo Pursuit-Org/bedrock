@@ -86,6 +86,10 @@ from sf_errors import sf_http_error
 from services import pipeline_review
 from services.crm_parser import refresh_opp_cache as _refresh_opp_cache
 from services.cache import cache, CACHE_TTL_OPPORTUNITIES, CACHE_TTL_ACCOUNTS, CACHE_TTL_USERS, CACHE_TTL_CASHFLOW
+from services.record_type_bucket import (
+    bucket_soql_filter as _cashflow_bucket_soql,
+    VALID_BUCKETS as _VALID_CASHFLOW_BUCKETS,
+)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -1789,52 +1793,6 @@ async def get_acv_summary(
     except Exception as e:
         logger.error(f"Error fetching ACV summary for year {year}: {e}")
         raise sf_http_error(e, "records")
-
-
-_VALID_CASHFLOW_BUCKETS = {"all", "philanthropy", "pbc", "capital_grants", "other"}
-
-
-def _cashflow_bucket_soql(bucket: str) -> str:
-    """Return a SOQL fragment to AND into a payment query so it only
-    matches the requested record-type bucket.
-
-    Every bucket carries the ISA exclusion — ISA opps are not in scope
-    for bedrock's cashflow views.
-
-    Buckets:
-        all             — only ISA excluded
-        philanthropy    — RecordType.Name = 'Philanthropy' AND not a Capital Grant
-        capital_grants  — Philanthropy_Type__c = 'Capital Grant' (any RT, but in
-                          practice all sit under Philanthropy)
-        pbc             — RecordType.Name = 'PBC'
-        other           — neither Philanthropy nor PBC nor ISA (includes NULL RT;
-                          Capital Grants are excluded since they're RT=Philanthropy)
-    """
-    opp = "npe01__Opportunity__r"
-    isa = f" AND {opp}.RecordType.Name != 'ISA'"
-    if bucket == "all":
-        return isa
-    if bucket == "philanthropy":
-        return (
-            f" AND {opp}.RecordType.Name = 'Philanthropy' "
-            f"AND ({opp}.Philanthropy_Type__c != 'Capital Grant' "
-            f"OR {opp}.Philanthropy_Type__c = null)"
-        )
-    if bucket == "capital_grants":
-        return (
-            f" AND {opp}.Philanthropy_Type__c = 'Capital Grant'"
-            + isa
-        )
-    if bucket == "pbc":
-        return f" AND {opp}.RecordType.Name = 'PBC'"
-    if bucket == "other":
-        return (
-            f" AND ({opp}.RecordType.Name = null OR "
-            f"{opp}.RecordType.Name NOT IN ('Philanthropy', 'PBC', 'ISA')) "
-            f"AND ({opp}.Philanthropy_Type__c != 'Capital Grant' "
-            f"OR {opp}.Philanthropy_Type__c = null)"
-        )
-    return isa
 
 
 @app.get("/api/salesforce/cashflow")
