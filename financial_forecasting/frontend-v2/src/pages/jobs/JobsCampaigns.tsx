@@ -205,11 +205,19 @@ function Option({ label, sub, selected, onClick, pinned, onTogglePin }: {
 }
 
 // ── Shared chrome ───────────────────────────────────────────────────────────
-function Section({ title, note, action, children }: {
-  title: string; note?: string; action?: React.ReactNode; children: React.ReactNode;
+/** A titled block.
+ *
+ *  Unboxed by default. Activation and Outreach are grids of cards that carry
+ *  their own borders, so a container around them double-boxed every figure —
+ *  a card inside a card — which no other jobs tab does. `boxed` is for content
+ *  that isn't self-contained (the trend chart renders a bare chart), so it
+ *  still gets one surface rather than floating on the page.
+ */
+function Section({ title, note, action, boxed, children }: {
+  title: string; note?: string; action?: React.ReactNode; boxed?: boolean; children: React.ReactNode;
 }) {
   return (
-    <section className="rounded-2xl border border-border-strong bg-surface px-5 py-4">
+    <section className={cn(boxed && "rounded-2xl border border-border-strong bg-surface px-5 py-4")}>
       <div className="mb-3 flex flex-wrap items-baseline justify-between gap-3">
         <div>
           <h3 className="text-[14px] font-semibold text-ink">{title}</h3>
@@ -604,7 +612,7 @@ function CampaignDetail({ campaignKey, from, to, granularity }: {
         <OutreachStats stats={stats} events={events} loadingEvents={loadingEvents} />
       </Section>
 
-      <Section title="Outreach Trends">
+      <Section title="Outreach Trends" boxed>
         <TrendChart stats={stats} events={events} loadingEvents={loadingEvents} />
       </Section>
 
