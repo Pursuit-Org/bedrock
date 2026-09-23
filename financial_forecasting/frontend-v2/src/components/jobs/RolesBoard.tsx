@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { toast } from "sonner";
 import { Plus, X, Check, ChevronDown, ChevronRight, GripVertical } from "lucide-react";
 import { DndContext, closestCenter, PointerSensor, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
 import { SortableContext, verticalListSortingStrategy, useSortable, arrayMove } from "@dnd-kit/sortable";
@@ -14,6 +15,7 @@ import {
   useCreateRoleApplication,
   useBuilderSourcedApplications,
   useStaffSourcedApplications,
+  useMarkApplicationStaffSourced,
   useConfirmMatch,
   useReorderRolesBoard,
   useMarkRoleBuilderSourced,
@@ -167,6 +169,7 @@ function BuilderSourcedRow({
   onDismiss: (id: number) => void;
 }) {
   const confirm = useConfirmMatch();
+  const markStaffSourced = useMarkApplicationStaffSourced();
   const [expanded, setExpanded] = useState(false);
   const [addingApp, setAddingApp] = useState(false);
   return (
@@ -211,7 +214,7 @@ function BuilderSourcedRow({
                 {a.suggested_match.confidence === "exact" ? "exact match" : "likely match"}
               </>
             ) : (
-              fmtDate(a.date_applied)
+              fmtDate(a.updated_at)
             )}
           </span>
           <div className="flex flex-wrap items-center gap-3">
@@ -249,13 +252,24 @@ function BuilderSourcedRow({
                 branch of the backend union, so job_application_id is guaranteed set here —
                 only role-linked rows (which never show Dismiss) can have it be null. */}
             {!a.jobs_role_id && a.job_application_id !== null && (
-              <button
-                type="button"
-                onClick={() => onDismiss(a.job_application_id!)}
-                className="text-[11.5px] text-ink-3 hover:text-ink-2"
-              >
-                Dismiss
-              </button>
+              <>
+                <button
+                  type="button"
+                  title="Staff actually sourced this — it just never got tagged that way"
+                  onClick={() => markStaffSourced.mutate(a.job_application_id!)}
+                  disabled={markStaffSourced.isPending}
+                  className="text-[11.5px] text-ink-3 hover:text-ink-2 disabled:opacity-50"
+                >
+                  → Staff-Sourced
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onDismiss(a.job_application_id!)}
+                  className="text-[11.5px] text-ink-3 hover:text-ink-2"
+                >
+                  Dismiss
+                </button>
+              </>
             )}
           </div>
           {addingApp && a.jobs_role_id && (
@@ -347,10 +361,18 @@ function StaffSourcedGroupRow({
   // them again would create a second linked row for the same builder+role.
   const confirmable = g.applications.filter((a) => !a.already_linked);
 
-  function confirmAll() {
+  async function confirmAll() {
     if (!g.suggested_match) return;
-    for (const a of confirmable) {
-      confirm.mutate({ appId: a.job_application_id, jobsRoleId: g.suggested_match!.jobs_role_id });
+    const jobsRoleId = g.suggested_match.jobs_role_id;
+    // allSettled, not a fire-and-forget loop — each mutate() already toasts its
+    // own success/error, but with no partial-failure summary a batch of 5 with
+    // 1 failure just looked like noise. This surfaces the aggregate outcome too.
+    const results = await Promise.allSettled(
+      confirmable.map((a) => confirm.mutateAsync({ appId: a.job_application_id, jobsRoleId })),
+    );
+    const failed = results.filter((r) => r.status === "rejected").length;
+    if (failed > 0 && failed < results.length) {
+      toast.error(`${failed} of ${results.length} confirmations failed — see individual errors above.`);
     }
   }
 
@@ -413,7 +435,7 @@ function StaffSourcedGroupRow({
           )}
           <ul className="flex flex-col divide-y divide-border-strong rounded-md border border-border-strong">
             {g.applications.map((a) => (
-              <li key={a.job_application_id} className="flex items-center justify-between gap-3 px-3 py-1.5">
+              <li key={a.job_application_id} className="flex flex-col gap-1 px-3 py-1.5">
                 <span className="truncate text-[12px] text-ink">
                   {a.builder}
                   {a.already_linked && (
@@ -425,9 +447,9 @@ function StaffSourcedGroupRow({
                     </span>
                   )}
                 </span>
-                <div className="flex shrink-0 items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <StageSelect appId={a.job_application_id} stage={a.stage} />
-                  <span className="font-mono text-[10.5px] text-ink-4">{fmtDate(a.date_applied)}</span>
+                  <span className="font-mono text-[10.5px] text-ink-4">{fmtDate(a.updated_at)}</span>
                   <button
                     type="button"
                     onClick={() => onDismiss(a.job_application_id)}
@@ -1033,13 +1055,19 @@ function RoleBoardRow({ role }: { role: RolesBoardRole }) {
           {role.applications.length === 0 ? (
             <span className="text-[11.5px] text-ink-4">No builder applications matched to this role yet.</span>
           ) : (
+            /* One line per applicant: name left, stage + date + remove right.
+               The name is min-w-0/flex-1/truncate and the actions shrink-0, so a
+               long name ellipsises instead of pushing the controls out of the
+               column. An earlier one-line version let the fixed-width actions
+               squeeze the name away entirely in a narrow column — that's what
+               the two-line stack was working around. */
             <ul className="flex flex-col divide-y divide-border-strong rounded-md border border-border-strong">
               {role.applications.map((a) => (
-                <li key={a.job_application_id} className="flex items-center justify-between gap-3 px-3 py-1.5">
-                  <span className="truncate text-[12px] text-ink">{a.builder}</span>
+                <li key={a.job_application_id} className="flex items-center gap-2 px-3 py-1.5">
+                  <span className="min-w-0 flex-1 truncate text-[12px] text-ink" title={a.builder}>{a.builder}</span>
                   <div className="flex shrink-0 items-center gap-2">
                     <StageSelect appId={a.job_application_id} stage={a.stage} />
-                    <span className="font-mono text-[10.5px] text-ink-4">{fmtDate(a.date_applied)}</span>
+                    <span className="font-mono text-[10.5px] text-ink-4">{fmtDate(a.updated_at)}</span>
                     <button
                       type="button"
                       title="Remove from this role (doesn't delete the application, just unlinks it)"
@@ -1134,12 +1162,23 @@ export function RolesBoard() {
   // server order on first load or when the set of roles changes (added,
   // removed, or a filter like ft_placed drops one off the board); otherwise
   // keep the current order and just refresh each row's own data.
+  //
+  // Cancelled-ness is part of that comparison, not just row data: the server
+  // sorts closed roles to the bottom (`ORDER BY (r.status = 'cancelled')`), so
+  // closing or reopening a role changes the correct order without changing the
+  // set of ids. Comparing ids alone made "Close role" refresh the badge in
+  // place and leave the row where it was, contradicting the button's own
+  // "it'll sink to the bottom of the list" promise.
   useEffect(() => {
     if (!rolesQ.data) return;
     setItems((prev) => {
-      const prevIds = new Set(prev.map((r) => r.id));
-      const sameSet = prev.length === rolesQ.data!.length && rolesQ.data!.every((r) => prevIds.has(r.id));
-      if (prev.length && sameSet) {
+      const prevClosed = new Map(prev.map((r) => [r.id, r.status === "cancelled"]));
+      const sameOrder =
+        prev.length === rolesQ.data!.length &&
+        rolesQ.data!.every(
+          (r) => prevClosed.has(r.id) && prevClosed.get(r.id) === (r.status === "cancelled"),
+        );
+      if (prev.length && sameOrder) {
         const byId = Object.fromEntries(rolesQ.data!.map((r) => [r.id, r]));
         return prev.map((r) => byId[r.id] ?? r);
       }
