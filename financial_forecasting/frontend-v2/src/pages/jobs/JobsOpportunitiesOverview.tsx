@@ -175,7 +175,7 @@ export function JobsOpportunitiesOverview() {
   };
 
   return (
-    <div className="flex flex-col gap-6 pt-1">
+    <div className="flex flex-col gap-4 pt-1">
       <PeriodBar
         from={fmtDateInput(weekStart)} to={fmtDateInput(weekEnd)}
         onChange={(f, t) => setRange({ start: parseDateInput(f), end: parseDateInput(t) })}

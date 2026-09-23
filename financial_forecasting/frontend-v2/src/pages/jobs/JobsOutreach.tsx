@@ -1383,7 +1383,7 @@ export function JobsOutreach() {
   // one tab left in it is chrome that costs a row and answers nothing.
 
   return (
-    <div className="flex flex-col gap-6 pt-3">
+    <div className="flex flex-col gap-4 pt-3">
       {/* ── ZONE 1 · the selected period ──────────────────────────────────
              This bar governs everything down to the Current state boundary,
              and nothing below it. It used to float above the whole page, which
@@ -1392,7 +1392,7 @@ export function JobsOutreach() {
           straight on the page, and a box around half of one tab read as a
           stray outline rather than as a zone boundary. The bar itself is the
           same PeriodBar component on all three. */}
-      <section aria-label="In period" className="flex flex-col gap-6">
+      <section aria-label="In period" className="flex flex-col gap-4">
         <PeriodBar
           from={from} to={to}
           onChange={(f, t) => { setFrom(f); setTo(t); }}
@@ -1425,14 +1425,14 @@ export function JobsOutreach() {
           </div>
         </PeriodBar>
 
-
-
-      {/* Contact Pipeline opens the review again — it is the top of the
-              funnel everything below is downstream of (Kwame 2026-09-21). */}
-          <JobsFunnels only="prospects" period={range} periodLabel={rangeLabel || undefined} />
-
+          {/* Topline first: the four numbers are the answer to "how did the
+              period go", and they belong directly under the period that scopes
+              them. The Contacts Pipeline is the breakdown behind them, so it
+              reads better as the next level of detail than as a preamble. */}
           <OutreachSummaryCards granularity={granularity} scope={scope}
             owner={owner || undefined} range={range} />
+
+          <JobsFunnels only="prospects" period={range} periodLabel={rangeLabel || undefined} />
 
           {isError && <div className="rounded-lg border border-red-soft bg-red-soft px-4 py-3 text-[13px] text-red">Couldn't load the scorecard. Try again in a moment.</div>}
           {isLoading && !sc && (
