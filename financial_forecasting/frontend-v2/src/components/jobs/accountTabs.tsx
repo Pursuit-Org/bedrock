@@ -13,6 +13,7 @@
  *    chipped with what it's tagged to.
  *  - Activity: read rollup across opps+contacts + a "log activity" form.
  */
+import { useGatedStageOptions } from "@/lib/oppStageOptions";
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { Briefcase, CheckSquare, ExternalLink, MessageSquare, Plus, Trash2, User, X } from "lucide-react";
@@ -46,8 +47,6 @@ import {
   useLogActivity,
   type CallKind,
   useUpdateOpportunity,
-  STAGE_LABELS,
-  STAGES_ORDERED,
   type AccountBuilderRow,
   type AccountComment,
   type AccountTask,
@@ -65,9 +64,6 @@ import {
   initials, jobsContactPath, jobsOpportunityPath, oppRoleLabel,
 } from "./jobsEntity";
 
-// Derived, never hand-listed — see the same note in jobsEntity.tsx.
-const OPP_STAGE_OPTIONS: { value: JobStage; label: string }[] =
-  STAGES_ORDERED.map((s) => ({ value: s, label: STAGE_LABELS[s] ?? s }));
 
 const jobsRef = withReferrer({ pathname: "/jobs", label: "Jobs" });
 const inputCls = "h-7 rounded border border-border-strong bg-surface px-2 text-[12.5px] text-ink-2 outline-none focus:border-accent";
@@ -108,6 +104,9 @@ function AccountOppsTab({ account }: { account: JobsAccount }) {
   const create = useCreateOpportunity();
   const update = useUpdateOpportunity();
   const del = useDeleteOpportunity();
+  // Gated on the live CHECK constraint — the 2026-09-21 stages are rejected
+  // until that migration lands, so an ungated picker fails on save.
+  const stageOptions = useGatedStageOptions();
   const patch = (id: string, field: string, val: unknown) => update.mutateAsync({ id, [field]: val }).then(() => undefined);
   const removeOpp = (id: string, label: string) => { if (window.confirm(`Delete opportunity "${label}"? This removes it from the pipeline.`)) del.mutate(id); };
 
@@ -144,7 +143,7 @@ function AccountOppsTab({ account }: { account: JobsAccount }) {
             ) : account.opportunities.map((o) => (
               <tr key={o.id} className="border-t border-border-strong/60">
                 <td className="overflow-hidden px-2 py-1.5"><InlineText value={o.title ?? null} placeholder={oppRoleLabel(o)} onSave={(v) => patch(o.id, "title", v)} className="text-[12.5px] font-medium text-ink" /></td>
-                <td className="overflow-hidden px-2 py-1.5"><InlineSelect<JobStage> value={o.stage} options={OPP_STAGE_OPTIONS} renderValue={(v) => <DealStagePill stage={(v ?? o.stage) as JobStage} />} onSave={(v) => patch(o.id, "stage", v)} /></td>
+                <td className="overflow-hidden px-2 py-1.5"><InlineSelect<JobStage> value={o.stage} options={stageOptions} renderValue={(v) => <DealStagePill stage={(v ?? o.stage) as JobStage} />} onSave={(v) => patch(o.id, "stage", v)} /></td>
                 <td className="overflow-hidden px-2 py-1.5"><OwnerSelect owner={o.owner_email} staff={staff} onSave={(email) => patch(o.id, "owner_email", email)} /></td>
                 <td className="overflow-hidden px-2 py-1.5"><InlineSelect<string> value={o.deal_type ?? null} options={DEAL_TYPE_OPTIONS} emptyLabel="—" onSave={(v) => patch(o.id, "deal_type", v || null)} /></td>
                 <td className="overflow-hidden px-2 py-1.5"><InlineSelect<string> value={o.likelihood ?? null} options={[{ value: "low", label: "Low" }, { value: "medium", label: "Medium" }, { value: "high", label: "High" }]} emptyLabel="—" onSave={(v) => patch(o.id, "likelihood", v || null)} /></td>
@@ -161,7 +160,7 @@ function AccountOppsTab({ account }: { account: JobsAccount }) {
             {adding ? (
               <tr className="border-t border-border-strong bg-surface-2/40">
                 <td className="px-2 py-1.5"><input autoFocus value={role} onChange={(e) => setRole(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") submit(); if (e.key === "Escape") setAdding(false); }} placeholder="Opportunity name *" className="w-full border-0 bg-transparent text-[12.5px] text-ink outline-none placeholder:text-ink-4" /></td>
-                <td className="px-2 py-1.5"><select value={stage} onChange={(e) => setStage(e.target.value as JobStage)} className="h-6 w-full rounded border border-border-strong bg-surface px-1 text-[11.5px] outline-none focus:border-accent">{OPP_STAGE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</select></td>
+                <td className="px-2 py-1.5"><select value={stage} onChange={(e) => setStage(e.target.value as JobStage)} className="h-6 w-full rounded border border-border-strong bg-surface px-1 text-[11.5px] outline-none focus:border-accent">{stageOptions.map((o) => <option key={o.value} value={o.value} disabled={o.disabled} title={o.title}>{o.label}</option>)}</select></td>
                 <td className="px-2 py-1.5"><select value={owner} onChange={(e) => setOwner(e.target.value)} className={cn("h-6 w-full rounded border bg-surface px-1 text-[11.5px] outline-none focus:border-accent", owner ? "border-border-strong" : "border-amber-300")}><option value="">Owner *</option>{staff.map((s) => <option key={s.email} value={s.email}>{s.name}</option>)}</select></td>
                 <td className="px-2 py-1.5"><select value={dealType} onChange={(e) => setDealType(e.target.value as DealType | "")} className={cn("h-6 w-full rounded border bg-surface px-1 text-[11.5px] outline-none focus:border-accent", dealType ? "border-border-strong" : "border-amber-300")}><option value="">Type *</option>{DEAL_TYPE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</select></td>
                 <td className="px-2 py-1.5"><select value={likelihood} onChange={(e) => setLikelihood(e.target.value as "" | "low" | "medium" | "high")} className={cn("h-6 w-full rounded border bg-surface px-1 text-[11.5px] outline-none focus:border-accent", likelihood ? "border-border-strong" : "border-amber-300")}><option value="">— *</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select></td>

@@ -44,10 +44,19 @@ VALID_STAGES = {
     "lead_submitted",
     "active_in_discussions", "active_opportunity_confirmed", "reviewing_builders",
     "closed_won", "closed_lost",
+    # The 2026-09-21 expansion. These MUST be here as well as in
+    # OPPORTUNITY_STAGES_NEW: this set is the 400-guard on POST /opportunities
+    # and PATCH /opportunities/{id}, while the picker is built from the live
+    # CHECK constraint via _writable_stages(). Omit them and applying the
+    # migration lights up all eight stages in the UI while every save of a new
+    # one is rejected here with "Invalid stage" — the feature would be dead on
+    # arrival, and only after the migration, which is the worst time to find out.
+    "ask_submitted", "builder_submitted", "builder_interviewing", "offer_contracting",
     # legacy, pre-2026-08-05
     "initial_outreach", "active_builder_interview",
     "on_hold_not_selected", "on_hold_not_interested", "on_hold_not_responsive",
 }
+
 
 # Post-migration stage lists, in funnel order. These drive the UI once the
 # database accepts them.
@@ -70,6 +79,14 @@ OPPORTUNITY_STAGES_NEW = [
     "closed_won",
     "closed_lost",
 ]
+
+# Belt to the braces above: every stage the UI can offer post-migration must also
+# pass VALID_STAGES, the 400-guard on the opportunity write endpoints. Fails at
+# import rather than letting the picker and the API disagree at runtime.
+assert set(OPPORTUNITY_STAGES_NEW) <= VALID_STAGES, (
+    "OPPORTUNITY_STAGES_NEW contains stages VALID_STAGES would reject: "
+    f"{sorted(set(OPPORTUNITY_STAGES_NEW) - VALID_STAGES)}"
+)
 
 # What each stage means, in the team's own words. Surfaced on the stage picker
 # so the definition lives next to the choice rather than in a doc nobody opens.
@@ -2521,6 +2538,19 @@ async def builder_segments(user=Depends(require_auth), conn=Depends(get_db)):
 _NO_CONVERSION_FROM = {"converted_to_opportunity", "revisit", "not_a_fit", "on_hold",
                        "closed_won", "closed_lost"}
 
+# Stages with no entry stamp of their own, so "% of the prior stage that reached
+# this one" has nothing behind it.
+#
+# `conversion_in` is structurally the previous row's `conversion_to_next`. For
+# the contacts funnel that previous value is a COHORT rate read off entry
+# stamps, and initial_outreach's is reached_converted / reached_outreach — a
+# span from outreach all the way to converted. Inserting Scheduling between
+# initial_outreach and Call Booked therefore handed Scheduling a rate measuring
+# something it isn't part of, while Call Booked lost the number it used to show.
+# Scheduling has no `scheduling_at` column (deliberately — nothing reports on it
+# yet), so the honest answer is no rate rather than a borrowed one.
+_NO_COHORT_IN = {"scheduling"}
+
 
 @router.get("/funnel/{ftype}")
 async def get_funnel(
@@ -2975,11 +3005,16 @@ async def get_funnel(
             "key": k, "label": label, "count": cnt,
             "pct_of_max": round(100 * cnt / max_count) if max_count else 0,
             "conversion_to_next": conv_to_next[i],
-            # Same rate, addressed to the row it describes.
-            "conversion_in": conv_to_next[i - 1] if i > 0 else None,
+            # Same rate, addressed to the row it describes — unless this stage
+            # has no entry stamp, in which case the previous row's rate doesn't
+            # describe it (see _NO_COHORT_IN).
+            "conversion_in": (
+                None if k in _NO_COHORT_IN else (conv_to_next[i - 1] if i > 0 else None)
+            ),
             # Prior window of equal length, for the two trend columns.
             "count_prev": prev_counts[i] if prev_counts is not None else None,
             "conversion_in_prev": (
+                None if k in _NO_COHORT_IN else
                 prev_conv_to_next[i - 1] if (prev_conv_to_next is not None and i > 0) else None
             ),
             "records": recs,
@@ -3587,9 +3622,15 @@ async def get_contacts_summary(user=Depends(require_auth), conn=Depends(get_db))
         "active_owners":      len(JOBS_TEAM_EMAILS),
     }
 
-    active_companies = await conn.fetchval("""
+    # Not `stage LIKE 'active_%'`: the 2026-09-21 expansion dropped the
+    # 'active_' prefix from four stages, so a prefix match silently excludes
+    # ask_submitted / builder_submitted / builder_interviewing /
+    # offer_contracting. It also excluded reviewing_builders before that, which
+    # is why this card read 80 while its own drilldown (which already uses this
+    # list) listed 84.
+    active_companies = await conn.fetchval(f"""
         SELECT count(*) FROM bedrock.jobs_opportunity
-        WHERE deleted_at IS NULL AND stage LIKE 'active_%'
+        WHERE deleted_at IS NULL AND {_sql_in("stage", OPPORTUNITY_STAGES_ACTIVE_ANY)}
     """)
 
     # Account-level leads: distinct companies in the jobs pipeline (jobs contacts'

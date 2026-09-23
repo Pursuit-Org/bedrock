@@ -5,7 +5,6 @@ import {
   useJobsOpportunity,
   useUpdateOpportunity,
   useContactTagCatalog,
-  useStageVocabulary,
   useDeleteOpportunity,
   useCreateOpportunity,
   useLogActivity,
@@ -23,7 +22,6 @@ import {
   STAGE_LABELS,
   DEAL_TYPE_LABELS,
   STAGES_ORDERED,
-  LEGACY_STAGES,
   type CallKind,
   type JobStage,
   type DealType,
@@ -1317,43 +1315,11 @@ function ContactsTab({
 
 // ── Deal row ──────────────────────────────────────────────────────────────────
 
-const STAGE_OPTIONS: { value: JobStage; label: string }[] = STAGES_ORDERED.map((s) => ({
-  value: s,
-  label: STAGE_LABELS[s],
-}));
-
-// STAGES_ORDERED is already the offerable set — retired values (Lead Submitted,
-// Reviewing Builders, the pre-2026-08-05 names) live in LEGACY_STAGES and are
-// never offered. A deal still sitting on one keeps it pinned at the top of its
-// own picker, so opening the row doesn't silently propose a stage change.
-const LEGACY_SET = new Set<JobStage>(LEGACY_STAGES);
-export function stageOptionsFor(stage: JobStage): { value: JobStage; label: string }[] {
-  return LEGACY_SET.has(stage)
-    ? [{ value: stage, label: STAGE_LABELS[stage] }, ...STAGE_OPTIONS]
-    : STAGE_OPTIONS;
-}
-
-/** Opportunity stage options gated on what the database currently accepts.
- *
- *  Without this the picker offered Reviewing Builders — the one new value the
- *  pre-migration CHECK constraint rejects — so choosing it failed the save. The
- *  contact picker already worked this way; the opportunity one didn't, which is
- *  exactly the kind of asymmetry that only shows up when someone clicks it. */
-export function useOppStageOptions(stage: JobStage) {
-  const { data: vocab } = useStageVocabulary();
-  return useMemo(() => {
-    const base = stageOptionsFor(stage);
-    if (!vocab) return base;
-    const byValue = new Map(vocab.opportunity_stages.map((o) => [o.value, o]));
-    return base.map((o) => {
-      const v = byValue.get(o.value);
-      // Unknown to the vocabulary (a legacy value pinned in for the current
-      // row) stays selectable — it's already stored, so it can be written back.
-      if (!v || v.available) return o;
-      return { ...o, disabled: true, title: v.unavailable_reason ?? undefined };
-    });
-  }, [vocab, stage]);
-}
+// Moved to lib/oppStageOptions so components/jobs/* can use it without
+// closing an import cycle back through this file. Re-exported because
+// JobsHome and JobsOpportunitiesOverview already import it from here.
+export { stageOptionsFor, useOppStageOptions } from "@/lib/oppStageOptions";
+import { useOppStageOptions, useGatedStageOptions } from "@/lib/oppStageOptions";
 
 // Structured closed-lost reasons (drives the "why deals die" analysis).
 // The combined vocabulary (Kwame 2026-08-05): the seven already in use plus the
@@ -2354,9 +2320,12 @@ export function JobsTeam() {
     [],
   );
 
+  // Gated on the live CHECK constraint — an ungated list offers the four
+  // 2026-09-21 stages before the migration accepts them, so the save fails.
+  const gatedStageOptions = useGatedStageOptions();
   const selectOptions: Partial<Record<OppField, { value: string; label: string }[]>> = useMemo(
     () => ({
-      stage: STAGE_OPTIONS.map((o) => ({ value: o.value, label: o.label })),
+      stage: gatedStageOptions,
       status: STATUS_OPTIONS,
       deal_type: DEAL_TYPE_OPTIONS.map((o) => ({ value: o.value, label: o.label })),
       segment: SEGMENT_OPTIONS,
@@ -2364,7 +2333,7 @@ export function JobsTeam() {
       likelihood: LIKELIHOOD_OPTIONS.map((o) => ({ value: o.value, label: o.label })),
       owner: ownerOptions,
     }),
-    [ownerOptions],
+    [ownerOptions, gatedStageOptions],
   );
 
   const q = query.trim().toLowerCase();

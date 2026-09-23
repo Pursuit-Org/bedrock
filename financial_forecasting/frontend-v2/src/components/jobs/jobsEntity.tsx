@@ -3,6 +3,7 @@
  * panels, and the detail pages — so opportunities, contacts, owners, and the
  * contact tab-set all render and link the same way everywhere.
  */
+import { useOppStageOptions } from "@/lib/oppStageOptions";
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { Briefcase, ExternalLink, Linkedin, Plus } from "lucide-react";
@@ -23,7 +24,6 @@ import {
   type OpenRole,
   type CompanyBuilderRole,
   STAGE_LABELS,
-  STAGES_ORDERED,
   type JobStage,
   type DealType,
   type JobsStaff,
@@ -120,12 +120,13 @@ export function JobsOppRow({ opp, source }: { opp: OppRowData; source?: "jobs" |
 // Outreach, Builder Interview and the three On Hold values — every one of them
 // retired, and the first three rejected outright by the database CHECK
 // constraint. A picker that hard-codes stage names goes stale silently.
-const STAGE_OPTIONS: { value: JobStage; label: string }[] =
-  STAGES_ORDERED.map((s) => ({ value: s, label: STAGE_LABELS[s] ?? s }));
 
 /** Inline-editable opportunity row (name/stage/deal-type) used in expansions. */
 export function EditableOppRow({ opp }: { opp: OppRowData }) {
   const update = useUpdateOpportunity();
+  // Gated on the live CHECK constraint: STAGES_ORDERED carries the 2026-09-21
+  // stages, which the database rejects until that migration is applied.
+  const stageOptions = useOppStageOptions(opp.stage);
   const save = (field: string, val: unknown) => update.mutateAsync({ id: opp.id, [field]: val }).then(() => undefined);
   return (
     <div className="flex items-center gap-2.5 rounded-md border border-border-strong/70 bg-surface px-3 py-2">
@@ -137,7 +138,7 @@ export function EditableOppRow({ opp }: { opp: OppRowData }) {
         <InlineSelect<string> value={opp.deal_type ?? null} options={DEAL_TYPE_OPTIONS} emptyLabel="type" onSave={(v) => save("deal_type", v || null)} />
       </span>
       <span onClick={(e) => e.stopPropagation()} className="shrink-0">
-        <InlineSelect<JobStage> value={opp.stage} options={STAGE_OPTIONS} renderValue={(v) => <DealStagePill stage={(v ?? opp.stage) as JobStage} />} onSave={(v) => save("stage", v)} />
+        <InlineSelect<JobStage> value={opp.stage} options={stageOptions} renderValue={(v) => <DealStagePill stage={(v ?? opp.stage) as JobStage} />} onSave={(v) => save("stage", v)} />
       </span>
       <Link to={jobsOpportunityPath(opp.id)} state={jobsRef} className="shrink-0 text-ink-4 hover:text-accent" title="Open opportunity"><ExternalLink size={12} /></Link>
     </div>
