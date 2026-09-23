@@ -23,6 +23,8 @@ import {
   STAGE_LABELS,
   DEAL_TYPE_LABELS,
   STAGES_ORDERED,
+  LEGACY_STAGES,
+  type CallKind,
   type JobStage,
   type DealType,
   type JobsOpportunity,
@@ -40,6 +42,7 @@ import { OppBuilderActivity } from "@/components/jobs/OppBuilderActivity";
 import { JobsTasks } from "@/components/jobs/JobsTasks";
 import { JobsComments } from "@/components/jobs/JobsComments";
 import { CommittedRolesModal } from "@/components/jobs/CommittedRolesModal";
+import { CallKindPicker } from "@/components/jobs/CallKindPicker";
 import { RowExpandPanel, type ExpandTab } from "@/components/RowExpandPanel";
 import { InlineText, InlineSelect, InlineDate } from "@/components/ui/InlineEdit";
 import { useSort, sortBy, type SortState } from "@/lib/sort";
@@ -877,6 +880,7 @@ function LogActivityForm({ dealId }: { dealId: string }) {
   const [type, setType]   = useState<ActivityType>("call");
   const [date, setDate]   = useState(todayIso);
   const [desc, setDesc]   = useState("");
+  const [callKind, setCallKind] = useState<CallKind | null>(null);
 
   const logActivity = useLogActivity();
 
@@ -884,6 +888,7 @@ function LogActivityForm({ dealId }: { dealId: string }) {
     setType("call");
     setDate(todayIso());
     setDesc("");
+    setCallKind(null);
     setOpen(false);
   }
 
@@ -896,6 +901,9 @@ function LogActivityForm({ dealId }: { dealId: string }) {
       type: type as ActivityCreateBody["type"],
       description: desc.trim(),
       activity_date: date || todayIso(),
+      // Only a call carries a kind; the API drops it on anything else, but not
+      // sending it keeps the request honest about what was asked.
+      call_kind: type === "call" ? callKind : null,
     });
     reset();
   }
@@ -937,6 +945,9 @@ function LogActivityForm({ dealId }: { dealId: string }) {
           </button>
         ))}
       </div>
+
+      {/* Call type — only a call has one. */}
+      {type === "call" && <CallKindPicker value={callKind} onChange={setCallKind} />}
 
       {/* Date */}
       <input
@@ -1311,15 +1322,15 @@ const STAGE_OPTIONS: { value: JobStage; label: string }[] = STAGES_ORDERED.map((
   label: STAGE_LABELS[s],
 }));
 
-// Lead Submitted + Initial Outreach happen at the prospect/contact level — a deal
-// becomes an Opportunity once it's active. So the opp stage picker drops them, but
-// still shows a legacy value if a deal somehow already sits there.
-const HIDDEN_OPP_STAGES = new Set<JobStage>(["lead_submitted"]);
-const OPP_STAGE_OPTIONS = STAGE_OPTIONS.filter((o) => !HIDDEN_OPP_STAGES.has(o.value));
+// STAGES_ORDERED is already the offerable set — retired values (Lead Submitted,
+// Reviewing Builders, the pre-2026-08-05 names) live in LEGACY_STAGES and are
+// never offered. A deal still sitting on one keeps it pinned at the top of its
+// own picker, so opening the row doesn't silently propose a stage change.
+const LEGACY_SET = new Set<JobStage>(LEGACY_STAGES);
 export function stageOptionsFor(stage: JobStage): { value: JobStage; label: string }[] {
-  return HIDDEN_OPP_STAGES.has(stage)
-    ? [{ value: stage, label: STAGE_LABELS[stage] }, ...OPP_STAGE_OPTIONS]
-    : OPP_STAGE_OPTIONS;
+  return LEGACY_SET.has(stage)
+    ? [{ value: stage, label: STAGE_LABELS[stage] }, ...STAGE_OPTIONS]
+    : STAGE_OPTIONS;
 }
 
 /** Opportunity stage options gated on what the database currently accepts.
@@ -1669,7 +1680,7 @@ interface NewDealForm {
 
 const DEFAULT_NEW_DEAL_FORM: NewDealForm = {
   companyName: "",
-  stage: "lead_submitted",
+  stage: "active_in_discussions",
   dealType: "",
   name: "",
   owner: "",
@@ -2345,7 +2356,7 @@ export function JobsTeam() {
 
   const selectOptions: Partial<Record<OppField, { value: string; label: string }[]>> = useMemo(
     () => ({
-      stage: OPP_STAGE_OPTIONS.map((o) => ({ value: o.value, label: o.label })),
+      stage: STAGE_OPTIONS.map((o) => ({ value: o.value, label: o.label })),
       status: STATUS_OPTIONS,
       deal_type: DEAL_TYPE_OPTIONS.map((o) => ({ value: o.value, label: o.label })),
       segment: SEGMENT_OPTIONS,

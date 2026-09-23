@@ -76,7 +76,7 @@ const DEAL_TYPE_FILTERS: { value: string; label: string }[] = [
   ),
 ];
 
-export function JobsFunnels({ builderSegment, only, period, periodLabel, dealType: dealTypeProp }: {
+export function JobsFunnels({ builderSegment, only, period, periodLabel, dealType: dealTypeProp, defaultOpen }: {
   builderSegment?: string;
   only?: FunnelType;
   /** Pass a window to get period-flow counts (records that ENTERED each stage).
@@ -87,6 +87,9 @@ export function JobsFunnels({ builderSegment, only, period, periodLabel, dealTyp
    *  row is hidden — otherwise the Pipeline page shows two deal-type controls
    *  that can disagree with each other. */
   dealType?: string;
+  /** Open the stage breakdown on first render. Overview passes it; Outreach and
+   *  Pipeline do not, so the funnel stays out of the way of their own tables. */
+  defaultOpen?: boolean;
 } = {}) {
   const [funnel, setFunnel] = useState<FunnelType>(only ?? FUNNEL_TABS[0].type);
   // Deal-type lens. Defaults to ALL: defaulting to Full-Time silently scoped the
@@ -180,6 +183,7 @@ export function JobsFunnels({ builderSegment, only, period, periodLabel, dealTyp
         isError={isError}
         errorText={(error as { message?: string } | null)?.message ?? null}
         onRetry={() => refetch()}
+        defaultOpen={defaultOpen}
       />
 
     </div>
@@ -236,6 +240,7 @@ function FunnelCard({
   isError,
   errorText,
   onRetry,
+  defaultOpen,
 }: {
   funnel: FunnelType;
   stages: FunnelStage[];
@@ -247,9 +252,16 @@ function FunnelCard({
   isError: boolean;
   errorText: string | null;
   onRetry: () => void;
+  defaultOpen?: boolean;
 }) {
   const [expanded, setExpanded] = useState<string | null>(null);
-  const [collapsed, setCollapsed] = useState(false);
+  // Collapsed unless the page asks otherwise (Kwame 2026-09-21). On Outreach and
+  // Pipeline the funnel is context you open when a number above it raises a
+  // question, and two expanded funnels pushed the Activity Pipeline and the
+  // Opportunities Set below the fold. On Overview it IS the content, so that
+  // page passes defaultOpen. The header carries the totals either way, so
+  // collapsed defers rather than hides.
+  const [collapsed, setCollapsed] = useState(!defaultOpen);
 
   const subtitle = isPeriod
     ? `${FUNNEL_NOUN[funnel]} that entered each stage${periodLabel ? ` · ${periodLabel}` : ""}`

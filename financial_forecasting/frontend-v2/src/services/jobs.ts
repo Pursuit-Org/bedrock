@@ -38,10 +38,15 @@ function invalidateOppDependents(qc: QueryClient, extra: string[][] = []) {
 export type JobStage =
   | "lead_submitted"
   | "active_in_discussions"
+  | "ask_submitted"
   | "active_opportunity_confirmed"
-  | "reviewing_builders"
+  | "builder_submitted"
+  | "builder_interviewing"
+  | "offer_contracting"
   | "closed_won"
   | "closed_lost"
+  // legacy — retired 2026-09-21, superseded by builder_submitted / builder_interviewing
+  | "reviewing_builders"
   // legacy, pre-2026-08-05
   | "initial_outreach"
   | "active_builder_interview"
@@ -181,13 +186,17 @@ export interface OpportunityFilters {
 // ── Labels & metadata ────────────────────────────────────────────────────────
 
 export const STAGE_LABELS: Record<JobStage, string> = {
-  lead_submitted:               "Lead Submitted",
   active_in_discussions:        "In Discussions",
+  ask_submitted:                "Ask Submitted",
   active_opportunity_confirmed: "Opportunity Confirmed",
-  reviewing_builders:           "Reviewing Builders",
+  builder_submitted:            "Builder Submitted",
+  builder_interviewing:         "Builder Interviewing",
+  offer_contracting:            "Offer Contracting",
   closed_won:                   "Closed — Won",
   closed_lost:                  "Closed — Lost",
   // Legacy — labelled so un-migrated rows and history read as words, not slugs.
+  lead_submitted:               "Lead Submitted",
+  reviewing_builders:           "Reviewing Builders",
   initial_outreach:             "Initial Outreach",
   active_builder_interview:     "Builder Interview",
   on_hold_not_selected:         "Not Selected",
@@ -204,21 +213,42 @@ export const DEAL_TYPE_LABELS: Record<DealType, string> = {
   pilot:       "Pilot",
 };
 
-/** Board columns and pickers, in pipeline order. Six stages as of 2026-08-05.
+/** Board columns and pickers, in pipeline order. Eight stages as of 2026-09-21,
+ *  when the middle of the funnel split from one step into four and Lead
+ *  Submitted was retired — it described a contact, not a deal, and that work
+ *  lives in the membership pipeline.
  *  Legacy values are deliberately absent: a picker must not offer a stage the
  *  team has retired. Anything still stored under one renders via STAGE_LABELS
  *  and moves to a current stage on the next edit. */
 export const STAGES_ORDERED: JobStage[] = [
-  "lead_submitted",
   "active_in_discussions",
+  "ask_submitted",
   "active_opportunity_confirmed",
-  "reviewing_builders",
+  "builder_submitted",
+  "builder_interviewing",
+  "offer_contracting",
   "closed_won",
   "closed_lost",
 ];
 
+/** What each stage means. Shown on the picker so the definition sits next to
+ *  the choice rather than in a doc nobody opens. Mirrors STAGE_DESCRIPTIONS in
+ *  routes/jobs.py. */
+export const STAGE_DESCRIPTIONS: Partial<Record<JobStage, string>> = {
+  active_in_discussions:        "Confirmed hiring appetite and a named decision maker.",
+  ask_submitted:                "A specific ask is with the employer — role, scope or option set. Awaiting yes or no.",
+  active_opportunity_confirmed: "They said yes. A real role or engagement exists.",
+  builder_submitted:            "Named builder profiles sent to the employer.",
+  builder_interviewing:         "At least one builder in the employer's interview process.",
+  offer_contracting:            "Offer extended, or contract in redline.",
+  closed_won:                   "Builder accepted.",
+  closed_lost:                  "Dead, with a reason code.",
+};
+
 /** Legacy stages that still exist in un-migrated data. Rendered, never offered. */
 export const LEGACY_STAGES: JobStage[] = [
+  "lead_submitted",
+  "reviewing_builders",
   "initial_outreach",
   "active_builder_interview",
   "on_hold_not_selected",
@@ -228,8 +258,11 @@ export const LEGACY_STAGES: JobStage[] = [
 
 export const ACTIVE_STAGES: JobStage[] = [
   "active_in_discussions",
+  "ask_submitted",
   "active_opportunity_confirmed",
-  "reviewing_builders",
+  "builder_submitted",
+  "builder_interviewing",
+  "offer_contracting",
 ];
 
 // ── Hooks ────────────────────────────────────────────────────────────────────
@@ -290,18 +323,33 @@ export const MEMBERSHIP_STAGE_LABELS: Record<MembershipStage, string> = {
 export interface StageOption {
   value: string;
   label: string;
+  /** The team's definition of the stage, where there is one. */
+  description?: string | null;
   /** False while the database CHECK constraint still rejects it — shown in the
    *  picker but not selectable, so a pending migration reads as "coming" rather
    *  than "missing". */
   available: boolean;
   unavailable_reason?: string | null;
 }
+/** discovery | general — what kind of call was logged. Solution was specced and
+ *  cut on 2026-09-21: the line between learning a need and working it was a
+ *  judgement call at log time, and a picker that makes people hesitate gets
+ *  skipped. The live list comes from /stage-vocabulary either way. */
+export type CallKind = "discovery" | "general";
+
 export interface StageVocabulary {
   opportunity_stages: StageOption[];
   membership_stages: (StageOption & { value: MembershipStage })[];
   closed_lost_reasons: StageOption[];
+  /** Call-type options for the log-a-call form, with the same availability
+   *  contract as the stage pickers. */
+  call_kinds: (StageOption & { value: CallKind })[];
   /** True once the 2026-08-05 stage migration has landed. */
   migrated: boolean;
+  /** True once the 2026-09-21 opportunity-stage expansion has landed. */
+  stages_expanded?: boolean;
+  /** True once bedrock.activity.call_kind exists. */
+  call_kinds_available?: boolean;
 }
 
 export function useStageVocabulary() {
@@ -1282,6 +1330,50 @@ export function useActivityTrends(granularity: "day" | "week" | "month", channel
   });
 }
 
+/** One point on the Outreach Activity trend: the Activity Pipeline's four
+ *  headline numbers for a single bucket. */
+export interface VolumeTrendBucket {
+  period: string;
+  accounts_activated: number;
+  outreach: number;
+  calls: number;
+  opportunities: number;
+}
+export type VolumeSeriesKey = keyof Omit<VolumeTrendBucket, "period">;
+
+export interface VolumeTrends {
+  granularity: "day" | "week" | "month";
+  buckets: VolumeTrendBucket[];
+  /** Per-bucket goals for the same granularity, so the chart can draw the line
+   *  someone is actually managing to. Null where no target is set. */
+  targets: Record<VolumeSeriesKey, number | null>;
+  totals: Record<VolumeSeriesKey, number>;
+}
+
+/** Accounts activated, outreach, calls and opportunities over a long run.
+ *
+ *  Every series reads the same definition as the Activity Pipeline table, so a
+ *  point here and the row there for the same window are the same number. */
+export function useVolumeTrends(
+  granularity: "day" | "week" | "month",
+  owner?: string,
+  scope: OutreachScope = "team",
+  range?: OutreachRange,
+) {
+  const rangeKey = range ? `${range.from}..${range.to}` : "";
+  return useQuery<VolumeTrends>({
+    queryKey: ["jobs", "volume-trends", granularity, owner ?? scope, rangeKey],
+    queryFn: async () => {
+      const p = new URLSearchParams({ granularity, scope });
+      if (owner) p.set("owner", owner);
+      if (range) { p.set("date_from", range.from); p.set("date_to", range.to); }
+      const { data } = await api.get<ApiResponse<VolumeTrends>>(`/api/jobs/activity-trends/volume?${p}`);
+      return data.data;
+    },
+    staleTime: 60_000,
+  });
+}
+
 // ── Outreach Dashboard scorecard ──────────────────────────────────────────────
 
 export type OutreachGranularity = "day" | "week" | "month";
@@ -1296,6 +1388,23 @@ export const JOBS_TEAM_EMAILS = [
   "devika@pursuit.org",
 ];
 
+/** Who gets pinned to the top of a sender picker.
+ *
+ *  A superset of JOBS_TEAM_EMAILS on purpose (Kwame 2026-09-21). Adding someone
+ *  to JOBS_TEAM_EMAILS changes what the "Jobs Team" SCOPE counts, and therefore
+ *  every team number on every page. Pinning is only about which four names you
+ *  should not have to scroll a forty-name list to reach. Two different
+ *  questions, two different lists.
+ *
+ *  The one place that bites: Kwame carries 10 of the team's 150 weekly outreach
+ *  target (services/outreach_targets.py) but is not in the scope, so the team
+ *  view is ~10 short of its own target by construction. Closing that gap is a
+ *  deliberate decision about the scope, not a tweak to this list. */
+export const JOBS_TEAM_PINNED = [
+  ...JOBS_TEAM_EMAILS,
+  "kwame@pursuit.org",
+];
+
 /** Does this owner belong to the selected sender scope? */
 export function inScope(email: string | null | undefined, scope: OutreachScopeKind): boolean {
   if (scope === "pursuit") return true;
@@ -1305,30 +1414,29 @@ export function inScope(email: string | null | undefined, scope: OutreachScopeKi
 }
 export interface OutreachDateRange { from: string; to: string }
 
-export interface ScorecardCell { warm: number; cold: number; total: number }
-
 /** One row of either scorecard table. `stage` is set for user-pipeline rows,
  *  `metric` for activity-pipeline rows. `target` is null when unconfigured. */
 export interface ScorecardRow {
   stage?: string;
   metric?: string;
   tier?: number;   // activity funnel tier: 1 = sent, 2 = engaged, 3 = replied
+  /** Nesting level: 0 = roll-up, 1 = a component of it, 2 = that component's own
+   *  breakdown. Drives indentation, so the hierarchy lives in the data rather
+   *  than in a list of metric names the table has to know about. */
+  depth?: number;
+  /** False while the column that produces this row is still pending migration —
+   *  rendered greyed with the reason rather than as a misleading zero. */
+  available?: boolean;
+  unavailable_reason?: string | null;
   label: string;
-  this_period: ScorecardCell;
-  last_period: ScorecardCell;
+  this_period: number;
+  last_period: number;
   target: number | null;
 }
 
 export interface ScorecardPeriod {
   this_start: string; this_end: string; last_start: string; last_end: string;
 }
-export interface BySenderRow {
-  staff: string;
-  sent: { this: number; last: number };
-  warm: number;
-  cold: number;
-}
-
 export interface TouchDepthContact {
   contact_id: number;
   name: string | null;
@@ -1364,9 +1472,7 @@ export interface OutreachScorecard {
   granularity: OutreachGranularity;
   scope: OutreachScopeKind;
   period: ScorecardPeriod;
-  user_pipeline: ScorecardRow[];
   activity_pipeline: ScorecardRow[];
-  by_sender: BySenderRow[];
 }
 
 function outreachParams(granularity: OutreachGranularity, scope: OutreachScopeKind, owner?: string, range?: OutreachDateRange) {
@@ -1374,6 +1480,93 @@ function outreachParams(granularity: OutreachGranularity, scope: OutreachScopeKi
   if (owner) p.set("owner", owner);
   if (range) { p.set("date_from", range.from); p.set("date_to", range.to); }
   return p;
+}
+
+export interface DrillRow {
+  at: string | null;
+  name: string | null;
+  account: string | null;
+  owner: string | null;
+  editor: string | null;
+  detail: string | null;
+  subkind: string | null;
+  contact_id: number | null;
+}
+
+export interface OutreachSummary {
+  period: { from: string; to: string };
+  /** How long an account must go quiet before a touch counts as activation. */
+  dormant_days: number;
+  /** Accounts touched in the window that had gone quiet for `dormant_days`
+   *  before it — a first-ever touch or a genuine restart. Counting any touch
+   *  would re-activate the same account every period it got a follow-up. */
+  accounts_activated: number;
+  /** The wider number: any touch in the window. */
+  accounts_reached: number;
+  /** Send volume — emails, LinkedIn messages and texts. Meetings and calls are
+   *  excluded: those are `calls_booked`, and counting them here would inflate
+   *  the effort number with outcomes. */
+  outreach_activity: number;
+  calls_booked: number;
+  converted: number;
+  /** What each headline counts, capped — the counts above stay the source of
+   *  truth, so a truncated list can never make one of them wrong. */
+  drills: Record<"accounts_activated" | "outreach_activity" | "calls_booked" | "converted", DrillRow[]>;
+}
+
+/** The three headline numbers on the Outreach tab, over the page's own window
+ *  and sender scope. */
+export function useOutreachSummary(
+  granularity: OutreachGranularity, scope: OutreachScopeKind,
+  owner?: string, range?: OutreachDateRange,
+) {
+  const rangeKey = range ? `${range.from}..${range.to}` : "";
+  return useQuery<OutreachSummary>({
+    queryKey: ["jobs", "outreach-summary", granularity, scope, owner ?? "", rangeKey],
+    queryFn: async () => {
+      const { data } = await api.get<ApiResponse<OutreachSummary>>(
+        `/api/jobs/outreach/summary?${outreachParams(granularity, scope, owner, range)}`);
+      return data.data;
+    },
+    staleTime: 60_000,
+  });
+}
+
+/** The outbound feed for Outreach → Outbound Detail: sends only, scoped by the
+ *  page's own sender control rather than a filter of its own. */
+export function useOutreachActivity(
+  granularity: OutreachGranularity, scope: OutreachScopeKind,
+  owner?: string, range?: OutreachDateRange,
+) {
+  const rangeKey = range ? `${range.from}..${range.to}` : "";
+  return useQuery<CampaignActivity>({
+    queryKey: ["jobs", "outreach-activity", granularity, scope, owner ?? "", rangeKey],
+    queryFn: async () => {
+      const { data } = await api.get<ApiResponse<CampaignActivity>>(
+        `/api/jobs/outreach/activity?${outreachParams(granularity, scope, owner, range)}`);
+      return data.data;
+    },
+    staleTime: 60_000,
+  });
+}
+
+/** The period counts were `{warm, cold, total}` until 2026-09-21 and are plain
+ *  numbers now. Read every one of them through this.
+ *
+ *  Applied at the RENDER site, not here in the queryFn, and that distinction is
+ *  the whole point: normalising on fetch leaves rows that were already in the
+ *  React Query cache in the old shape, and after a hot reload the new component
+ *  code renders that cached object straight into the DOM. React answers an
+ *  object child by unmounting the tree — a blank page. Guarding where the value
+ *  becomes DOM covers the cache, a stale backend and a hot reload alike.
+ *
+ *  Delete this when no running backend predates 2026-09-21. */
+export function scorecardCount(v: unknown): number {
+  if (typeof v === "number") return v;
+  if (v && typeof v === "object" && typeof (v as { total?: unknown }).total === "number") {
+    return (v as { total: number }).total;
+  }
+  return 0;
 }
 
 export function useOutreachScorecard(granularity: OutreachGranularity, scope: OutreachScopeKind, owner?: string, range?: OutreachDateRange) {
@@ -1409,24 +1602,6 @@ export function useTouchDepth(scope: OutreachScopeKind, owner?: string) {
   });
 }
 
-export interface TargetingBucket { bucket: string; sent: number; responses: number }
-export interface TargetingDim { key: string; label: string; rows: TargetingBucket[] }
-
-/** Targeting Mix — outreach volume + replies cut by lead source / industry / size / stage. */
-export function useOutreachTargetingMix(granularity: OutreachGranularity, scope: OutreachScopeKind, owner?: string, range?: OutreachDateRange) {
-  const rangeKey = range ? `${range.from}..${range.to}` : "";
-  return useQuery<{ dims: TargetingDim[] }>({
-    queryKey: ["jobs", "outreach-targeting", granularity, scope, owner ?? "", rangeKey],
-    queryFn: async () => {
-      const { data } = await api.get<ApiResponse<{ dims: TargetingDim[] }>>(
-        `/api/jobs/outreach/targeting-mix?${outreachParams(granularity, scope, owner, range)}`,
-      );
-      return data.data;
-    },
-    staleTime: 60_000,
-  });
-}
-
 export interface OutreachAccountComment { author: string | null; content: string; date: string | null }
 export interface OutreachAccountTask { title: string; status: string; deadline: string | null; owner: string | null }
 export interface OutreachAccountContact { name: string | null; title: string | null }
@@ -1444,6 +1619,7 @@ export interface OutreachAccount {
 
 /** Account working list — accounts with comments/open tasks for the deep-dive discussion.
  *  With `owner`, restricts to accounts that staffer is involved with. */
+
 export function useOutreachAccounts(owner?: string) {
   return useQuery<{ accounts: OutreachAccount[] }>({
     queryKey: ["jobs", "outreach-accounts", owner ?? ""],
@@ -1482,6 +1658,52 @@ export interface OutreachDrill {
   period: "this" | "last";
   count: number;
   contacts: OutreachDrillContact[];
+}
+
+/** One owner's numbers for a metric: what they owe, what they did, the gap.
+ *  `target` and `delta` are null when nobody has set a goal — which is a
+ *  different statement from "on target", and must not render as the same 0. */
+export interface OwnerMetric {
+  target: number | null;
+  this_period: number;
+  last_period: number;
+  delta: number | null;
+}
+export interface OwnerScorecardRow {
+  owner: string;
+  outreach: OwnerMetric;
+  calls: OwnerMetric;
+  /** Contacts converted to an opportunity, attributed to this person where the
+   *  data allows. Read it as a floor: only about a quarter of conversions
+   *  resolve to anyone at all — see `unattributed`. */
+  opportunities: OwnerMetric;
+}
+export interface OwnerScorecard {
+  granularity: OutreachGranularity;
+  period: ScorecardPeriod;
+  rows: OwnerScorecardRow[];
+  /** Outreach and calls are the sum of the rows. Opportunities is counted over
+   *  the whole window, so it matches the Activity tab and the summary card even
+   *  though the rows below it cannot add up to it. */
+  totals: { outreach: OwnerMetric; calls: OwnerMetric; opportunities: OwnerMetric };
+  /** How much of a total no owner row could claim. */
+  unattributed?: { opportunities: number };
+}
+
+/** The Activity Pipeline cut by person. Every owner who carries a target
+ *  appears, including one who sent nothing — that is the row worth seeing. */
+export function useOwnerScorecard(granularity: OutreachGranularity, range?: OutreachDateRange) {
+  const rangeKey = range ? `${range.from}..${range.to}` : "";
+  return useQuery<OwnerScorecard>({
+    queryKey: ["jobs", "owner-scorecard", granularity, rangeKey],
+    queryFn: async () => {
+      const p = new URLSearchParams({ granularity });
+      if (range) { p.set("date_from", range.from); p.set("date_to", range.to); }
+      const { data } = await api.get<ApiResponse<OwnerScorecard>>(`/api/jobs/outreach/scorecard/by-owner?${p}`);
+      return data.data;
+    },
+    staleTime: 60_000,
+  });
 }
 
 /** Drill-down behind one scorecard row. `enabled` false until the row is expanded. */
@@ -1616,6 +1838,21 @@ export interface ContactCreateBody {
   linkedin_url?: string;
 }
 
+/** Everything that changes when a contact joins or leaves the jobs pipeline.
+ *
+ *  Both paths that activate a contact — "New" and "Add existing" — used to
+ *  invalidate only ["jobs","contacts"], so the account panel you were standing
+ *  in kept showing the list it had already fetched and the contact you just
+ *  added looked like it had not been added (Kwame 2026-09-22). The account
+ *  rollup feeds that panel, and the accounts list carries the contact count.
+ *  Prefix keys, so every scope and account variant is covered. */
+function invalidateContactMembership(qc: ReturnType<typeof useQueryClient>) {
+  qc.invalidateQueries({ queryKey: ["jobs", "contacts"] });
+  qc.invalidateQueries({ queryKey: ["jobs", "account-rollup"] });
+  qc.invalidateQueries({ queryKey: ["jobs", "accounts"] });
+  qc.invalidateQueries({ queryKey: ["jobs", "funnels"] });
+}
+
 export function useCreateContact() {
   const qc = useQueryClient();
   return useMutation({
@@ -1624,7 +1861,7 @@ export function useCreateContact() {
       return data.data;
     },
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["jobs", "contacts"] });
+      invalidateContactMembership(qc);
       toast.success("Contact created");
     },
     // Surface the server's reason (e.g. the 409 duplicate naming the existing
@@ -1700,7 +1937,13 @@ export interface TagCampaign {
   key: string; label: string; slugs: string[]; sort_order: number;
   contacts: number; accounts: number; in_pipeline: number;
   owner_email: string | null;
-  funnel: { not_yet: number; assigned: number; contacted: number; converted: number; on_hold: number };
+  /** Disjoint over in_pipeline: every stage plus not_yet (no stage at all).
+   *  call_booked and not_a_fit were added 2026-09 — before that they fell into
+   *  not_yet, reporting worked contacts as never contacted. */
+  funnel: {
+    not_yet: number; assigned: number; contacted: number;
+    call_booked: number; converted: number; not_a_fit: number; on_hold: number;
+  };
 }
 
 /** Tags as prioritizable outreach campaigns (Performance) — counts + order. */
@@ -1736,6 +1979,121 @@ export function useTagCampaignRecords(key: string | null) {
     queryFn: async () => {
       const { data } = await api.get<ApiResponse<{ contacts: TagCampaignContact[]; accounts: TagCampaignAccount[] }>>(
         `/api/jobs/tag-campaigns/${encodeURIComponent(key as string)}/records`);
+      return data.data;
+    },
+    staleTime: 60_000,
+  });
+}
+
+/** Same three buckets the Outreach and Pipeline period bar works in. Aliased
+ *  rather than redeclared so the shared PeriodBar can drive this page too. */
+export type CampaignGranularity = OutreachGranularity;
+
+export interface CampaignTrendPoint {
+  bucket: string; emails: number; calls_booked: number; other: number; total: number;
+}
+
+export interface TagCampaignStats {
+  key: string;
+  label: string;
+  /** Every catalog slug the campaign aggregates — five for Operation 35. */
+  slugs: string[];
+  owner_email: string | null;
+  period: { from: string; to: string; granularity: CampaignGranularity };
+  /** All-time. Activation is a state, so it never honours the period. */
+  totals: {
+    contacts: number; accounts_all: number;
+    in_pipeline: number; accounts: number; with_email: number;
+    activated_contacts: number; activated_accounts: number;
+    no_stage: number; worked: number;
+    /** Partial: the backend canonicalises on_hold into revisit, so that key
+     *  never comes back. Read through a coalescing helper, not directly. */
+    stages: Partial<Record<MembershipStage, number>>;
+  };
+  /** Period-scoped outbound volume. Calendar meetings and hand-logged calls
+   *  are one `calls_booked` channel — both are a live conversation that got
+   *  booked, and splitting them made the smaller number look like a failure. */
+  outreach: {
+    emails: number; calls_booked: number; texts: number;
+    linkedin: number; notes: number; total: number;
+    contacts_reached: number; accounts_reached: number;
+    last_touch: string | null;
+  };
+  trend: CampaignTrendPoint[];
+}
+
+/** One round trip for the campaign detail view: reach, funnel, outbound volume
+ *  and the trend. Disabled until a campaign is picked. */
+export function useTagCampaignStats(
+  key: string | null,
+  opts: { granularity?: CampaignGranularity; from?: string; to?: string } = {},
+) {
+  const { granularity = "week", from, to } = opts;
+  return useQuery<TagCampaignStats>({
+    queryKey: ["jobs", "tag-campaign-stats", key ?? "", granularity, from ?? "", to ?? ""],
+    enabled: !!key,
+    queryFn: async () => {
+      const p = new URLSearchParams({ granularity });
+      if (from) p.set("date_from", from);
+      if (to) p.set("date_to", to);
+      const { data } = await api.get<ApiResponse<TagCampaignStats>>(
+        `/api/jobs/tag-campaigns/${encodeURIComponent(key as string)}/stats?${p}`);
+      return data.data;
+    },
+    staleTime: 60_000,
+  });
+}
+
+export type CampaignEventKind = "touch" | "stage" | "added";
+
+export type CampaignEventCategory = "outreach" | "funnel";
+
+export interface CampaignEvent {
+  at: string | null;
+  kind: CampaignEventKind;
+  /** Activity type for a touch (email, meeting, call, text, linkedin, note). */
+  subkind: string | null;
+  /** Which segment filter shows this row. */
+  category: CampaignEventCategory;
+  contact_id: number;
+  contact_name: string | null;
+  account: string | null;
+  /** Assigned owner of the contact, else of their account. Null when nobody is
+   *  assigned — never inferred from who happened to touch the record. */
+  owner: string | null;
+  owner_source: "contact" | "account" | null;
+  /** Who actually made the change in Bedrock. Routinely differs from `owner`. */
+  editor: string | null;
+  subject: string | null;
+  snippet: string | null;
+  from_stage: MembershipStage | null;
+  to_stage: MembershipStage | null;
+}
+
+export interface CampaignActivity {
+  period: { from: string; to: string };
+  owners: { email: string; contacts: number }[];
+  events: CampaignEvent[];
+}
+
+/** Contact-level event feed for a campaign: touches, stage changes, and
+ *  additions, newest first. `owner` filters on the contact's owner, not on who
+ *  performed the event. */
+export function useTagCampaignActivity(
+  key: string | null,
+  opts: { from?: string; to?: string; owner?: string } = {},
+) {
+  const { from, to, owner } = opts;
+  return useQuery<CampaignActivity>({
+    queryKey: ["jobs", "tag-campaign-activity", key ?? "", from ?? "", to ?? "", owner ?? ""],
+    enabled: !!key,
+    queryFn: async () => {
+      const p = new URLSearchParams();
+      if (from) p.set("date_from", from);
+      if (to) p.set("date_to", to);
+      if (owner) p.set("owner", owner);
+      const { data } = await api.get<ApiResponse<CampaignActivity>>(
+        `/api/jobs/tag-campaigns/${encodeURIComponent(key as string)}/activity?${p}`);
       return data.data;
     },
     staleTime: 60_000,
@@ -1785,7 +2143,7 @@ export function useAddContactToJobs() {
       }
     },
     onSuccess: (_, { add }) => {
-      qc.invalidateQueries({ queryKey: ["jobs", "contacts"] });
+      invalidateContactMembership(qc);
       toast.success(add ? "Added to Jobs pipeline" : "Removed from Jobs pipeline");
     },
     onError: () => toast.error("Failed to update contact"),
@@ -2408,6 +2766,8 @@ export interface ActivityCreateBody {
   description: string;
   activity_date?: string;
   subject?: string;
+  /** Only meaningful on a call; the API drops it on any other type. */
+  call_kind?: CallKind | null;
 }
 
 export function useLogActivity() {
@@ -2669,53 +3029,8 @@ export function useOpportunitiesOverview(owner?: string, dealType?: string, week
 }
 
 // ── Daily digest (the morning Slack, computed) ───────────────────────────────
-export interface DailyDigest {
-  date: string;
-  outreach: { new_touches: number; existing_touches: number; new_accounts: number; existing_accounts: number; meetings: number };
-  submissions: { company: string; builders: number; roles: number }[];
-}
-
-export function useDailyDigest(date?: string) {
-  return useQuery<DailyDigest>({
-    queryKey: ["jobs", "daily-digest", date ?? "yesterday"],
-    queryFn: async () => {
-      const qs = date ? `?date=${date}` : "";
-      const { data } = await api.get<ApiResponse<DailyDigest>>(`/api/jobs/daily-digest${qs}`);
-      return data.data;
-    },
-    staleTime: 300_000,
-  });
-}
-
-// ── Stuck in initial outreach (replaces the account working list) ─────────────
-export interface StuckContact {
-  contact_id: number;
-  full_name: string | null;
-  current_title: string | null;
-  current_company: string | null;
-  owner_email: string | null;
-  touches: number;
-  last_touch: string | null;
-  first_outreach_at: string | null;
-  other_contacts_at_account: number;
-}
-
 /** Contacts with N+ touches in initial outreach and no reply — the cue to work
  *  a different contact at that account. */
-export function useStuckContacts(minTouches = 3, owner?: string) {
-  return useQuery<StuckContact[]>({
-    queryKey: ["jobs", "stuck-contacts", minTouches, owner ?? ""],
-    queryFn: async () => {
-      const p = new URLSearchParams({ min_touches: String(minTouches) });
-      if (owner) p.set("owner", owner);
-      const { data } = await api.get<ApiResponse<StuckContact[]>>(`/api/jobs/outreach/stuck-contacts?${p}`);
-      return data.data;
-    },
-    staleTime: 60_000,
-  });
-}
-
-// ── Responded, awaiting a decision (initial outreach → converted / on hold / not a fit) ──
 export interface RespondedContact {
   contact_id: number;
   full_name: string | null;

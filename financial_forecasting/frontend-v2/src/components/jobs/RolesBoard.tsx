@@ -637,7 +637,7 @@ function AddRoleModal({ onClose, prefill }: { onClose: () => void; prefill?: Add
   const [showAccountDialog, setShowAccountDialog] = useState(Boolean(prefill));
   const [account, setAccount] = useState<{ account_key: string; display: string } | null>(null);
   const [newOppTitle, setNewOppTitle] = useState(prefill?.roleTitle ?? "");
-  const [newOppStage, setNewOppStage] = useState<JobStage>("lead_submitted");
+  const [newOppStage, setNewOppStage] = useState<JobStage>("active_in_discussions");
   const createOpportunity = useCreateOpportunity();
 
   const [title, setTitle] = useState(prefill?.roleTitle ?? "");
