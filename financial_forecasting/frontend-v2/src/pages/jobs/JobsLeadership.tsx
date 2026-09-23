@@ -42,7 +42,7 @@ export function JobsLeadership() {
   const poolTotal =
     segment === "all"
       ? segmentsQ.data?.total ?? 0
-      : segmentsQ.data?.segments.find((s) => s.value === segment)?.count ?? 0;
+      : segmentsQ.data?.segments?.find((s) => s.value === segment)?.count ?? 0;
   const pctOfPool = (n: number) => (poolTotal ? Math.round((100 * n) / poolTotal) : 0);
 
   return (
@@ -120,7 +120,8 @@ export function JobsLeadership() {
       </SectionWrap>
 
       {/* ── ZONE 2 · The Funnel (the engine) ──────────────────────────── */}
-      <JobsFunnels builderSegment={segment} />
+      {/* Open on Overview: here the funnel is the content, not context. */}
+      <JobsFunnels builderSegment={segment} defaultOpen />
 
       {/* Hygiene line removed 2026-08-04. "Won, open tasks" is a summary card on
           the Pipeline page and the no-prospect accounts surface in Outreach's

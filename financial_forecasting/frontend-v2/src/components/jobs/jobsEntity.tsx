@@ -3,6 +3,7 @@
  * panels, and the detail pages — so opportunities, contacts, owners, and the
  * contact tab-set all render and link the same way everywhere.
  */
+import { useOppStageOptions } from "@/lib/oppStageOptions";
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { Briefcase, ExternalLink, Linkedin, Plus } from "lucide-react";
@@ -114,14 +115,18 @@ export function JobsOppRow({ opp, source }: { opp: OppRowData; source?: "jobs" |
   );
 }
 
-const STAGE_OPTIONS: { value: JobStage; label: string }[] = [
-  "initial_outreach", "active_in_discussions", "active_opportunity_confirmed", "active_builder_interview",
-  "closed_won", "closed_lost", "on_hold_not_selected", "on_hold_not_interested", "on_hold_not_responsive",
-].map((s) => ({ value: s as JobStage, label: STAGE_LABELS[s as JobStage] ?? s }));
+// Derived from STAGES_ORDERED, not hand-listed. This list was written before
+// the 2026-08-05 and 2026-09-21 stage changes and still offered Initial
+// Outreach, Builder Interview and the three On Hold values — every one of them
+// retired, and the first three rejected outright by the database CHECK
+// constraint. A picker that hard-codes stage names goes stale silently.
 
 /** Inline-editable opportunity row (name/stage/deal-type) used in expansions. */
 export function EditableOppRow({ opp }: { opp: OppRowData }) {
   const update = useUpdateOpportunity();
+  // Gated on the live CHECK constraint: STAGES_ORDERED carries the 2026-09-21
+  // stages, which the database rejects until that migration is applied.
+  const stageOptions = useOppStageOptions(opp.stage);
   const save = (field: string, val: unknown) => update.mutateAsync({ id: opp.id, [field]: val }).then(() => undefined);
   return (
     <div className="flex items-center gap-2.5 rounded-md border border-border-strong/70 bg-surface px-3 py-2">
@@ -133,7 +138,7 @@ export function EditableOppRow({ opp }: { opp: OppRowData }) {
         <InlineSelect<string> value={opp.deal_type ?? null} options={DEAL_TYPE_OPTIONS} emptyLabel="type" onSave={(v) => save("deal_type", v || null)} />
       </span>
       <span onClick={(e) => e.stopPropagation()} className="shrink-0">
-        <InlineSelect<JobStage> value={opp.stage} options={STAGE_OPTIONS} renderValue={(v) => <DealStagePill stage={(v ?? opp.stage) as JobStage} />} onSave={(v) => save("stage", v)} />
+        <InlineSelect<JobStage> value={opp.stage} options={stageOptions} renderValue={(v) => <DealStagePill stage={(v ?? opp.stage) as JobStage} />} onSave={(v) => save("stage", v)} />
       </span>
       <Link to={jobsOpportunityPath(opp.id)} state={jobsRef} className="shrink-0 text-ink-4 hover:text-accent" title="Open opportunity"><ExternalLink size={12} /></Link>
     </div>

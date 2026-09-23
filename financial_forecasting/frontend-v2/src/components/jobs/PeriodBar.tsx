@@ -36,7 +36,9 @@ function yesterday(): Date {
 
 /** Each preset sets the window AND the bucket size together — a month of dates
  *  shown in weekly buckets reads as a bug. All three are trailing windows ending
- *  yesterday, so "Weekly" on Aug 3 means Jul 27 – Aug 2. */
+ *  yesterday.
+ *
+ *  Weekly is the seven days ending yesterday, so on 21 Sep it reads 14–20 Sep. */
 export const PERIOD_PRESETS: {
   key: OutreachGranularity;
   label: string;
@@ -71,7 +73,8 @@ export const PERIOD_PRESETS: {
   },
 ];
 
-/** The default window for a page: the completed week. */
+/** The default window on Outreach and Pipeline alike, so the two pages open on
+ *  the same dates. */
 export function defaultPeriod(): [string, string] {
   return PERIOD_PRESETS[1].get();
 }
@@ -176,6 +179,9 @@ export function ScopeButtons({ value, onChange }: {
   onChange: (v: "pursuit" | "team" | "staff") => void;
 }) {
   const opts: { key: "team" | "staff" | "pursuit"; label: string; title: string }[] = [
+    // The scope is the three in JOBS_TEAM_EMAILS. Kwame is grouped under Jobs
+    // Team in the sender picker, and carries a target, but is deliberately not
+    // in this aggregate — see JOBS_TEAM_PINNED for why and what it costs.
     { key: "team", label: "Jobs Team", title: "Avni, Damon and Devika" },
     { key: "staff", label: "Other Staff", title: "Everyone else at Pursuit" },
     { key: "pursuit", label: "Everyone", title: "The whole Pursuit team" },

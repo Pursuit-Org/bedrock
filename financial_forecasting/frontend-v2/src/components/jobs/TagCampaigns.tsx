@@ -28,8 +28,10 @@ import { cn } from "@/lib/utils";
 // Converted → Contacted (initial_outreach only) → On hold → Not yet contacted (grey).
 const STAGE_LEGEND = [
   { label: "Converted", cls: "bg-green-500" },
+  { label: "Call booked", cls: "bg-teal-500" },
   { label: "Contacted", cls: "bg-accent" },
-  { label: "On hold", cls: "bg-amber-400" },
+  { label: "Revisit", cls: "bg-amber-400" },
+  { label: "Not a fit", cls: "bg-rose-300" },
   { label: "Assigned", cls: "bg-sky-400" },
   { label: "No stage", cls: "bg-stone-300" },
 ];
@@ -39,8 +41,10 @@ function FunnelBar({ f }: { f: TagCampaign["funnel"] }) {
   const n = (v: number | undefined) => v ?? 0;
   const parts = [
     { label: "Converted", cls: "bg-green-500", n: n(f.converted) },
+    { label: "Call booked", cls: "bg-teal-500", n: n(f.call_booked) },
     { label: "Contacted", cls: "bg-accent", n: n(f.contacted) },
-    { label: "On hold", cls: "bg-amber-400", n: n(f.on_hold) },
+    { label: "Revisit", cls: "bg-amber-400", n: n(f.on_hold) },
+    { label: "Not a fit", cls: "bg-rose-300", n: n(f.not_a_fit) },
     { label: "Assigned", cls: "bg-sky-400", n: n(f.assigned) },
     { label: "No stage", cls: "bg-stone-300", n: n(f.not_yet) },
   ];
@@ -52,7 +56,7 @@ function FunnelBar({ f }: { f: TagCampaign["funnel"] }) {
   );
 }
 
-const EMPTY_FUNNEL = { not_yet: 0, assigned: 0, contacted: 0, converted: 0, on_hold: 0 };
+const EMPTY_FUNNEL = { not_yet: 0, assigned: 0, contacted: 0, call_booked: 0, converted: 0, not_a_fit: 0, on_hold: 0 };
 type DrillKind = "contacts" | "accounts" | null;
 
 // ── Campaign picker ─────────────────────────────────────────────────────────

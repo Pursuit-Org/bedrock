@@ -17,13 +17,16 @@ the one Bedrock bot.
   GET    /api/jobs/contacts/{contact_id}/connectors  — staff connected to a contact
   GET    /api/jobs/intro-requests?box=inbox|sent      — my inbox / my sent asks
   POST   /api/jobs/intro-requests                     — create a staff→staff ask
+  POST   /api/jobs/intro-requests/logged              — record an intro that ALREADY happened
   PATCH  /api/jobs/intro-requests/{id}                — respond (accept/decline/complete)
+  GET    /api/jobs/intro-connectors                   — staff who can be named as a connector
 
 Modeled on the Sputnik intro_requests semantics (specific_ask, context, status
 lifecycle, response notes) per its live usage.
 """
 
 import logging
+from datetime import date, datetime, time, timezone
 from typing import Optional
 from uuid import UUID
 
@@ -100,6 +103,21 @@ class IntroRequestCreate(BaseModel):
     connector_staff_id: int
     specific_ask: Optional[str] = None    # hiring_intro | industry_advice | free text
     context: Optional[str] = None
+
+
+class IntroLogCreate(BaseModel):
+    """A facilitated intro that has already happened, logged after the fact.
+
+    The ask flow (IntroRequestCreate) models an intro you are still waiting on.
+    This one models the far more common case on the outreach side: the intro was
+    made, and it needs to land in the numbers. Credit follows requested_by_email,
+    the same column the Outreach scorecard reads, so it goes to whoever logs it.
+    """
+    contact_id: int
+    connector_staff_id: int
+    specific_ask: Optional[str] = None
+    context: Optional[str] = None
+    occurred_on: Optional[date] = None     # defaults to today
 
 
 class IntroRequestRespond(BaseModel):
@@ -272,6 +290,83 @@ async def create_intro_request(
     except Exception:  # noqa: BLE001 — notification failure never blocks the request
         logger.warning("intro-request notification failed", exc_info=True)
     return {"success": True, "data": {"id": str(r["id"]), "status": "pending"}}
+
+
+@router.get("/intro-connectors")
+async def intro_connectors(
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Staff who can be named as the connector on a logged intro.
+
+    Deliberately the whole staff map, not just the people with a LinkedIn
+    relationship to the contact (which is what /contacts/{id}/connectors
+    returns). That list answers "who could introduce me"; this one answers "who
+    did", and an intro that already happened is not evidence we imported the
+    connection.
+    """
+    rows = await conn.fetch(
+        """SELECT staff_user_id, display_name, email
+           FROM bedrock.staff_user_id_map
+           WHERE coalesce(trim(email), '') <> ''
+           ORDER BY lower(coalesce(nullif(trim(display_name), ''), email))""")
+    return {"success": True, "data": [dict(r) for r in rows]}
+
+
+@router.post("/intro-requests/logged")
+async def log_facilitated_intro(
+    body: IntroLogCreate,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Record a facilitated intro that already happened.
+
+    Three things it deliberately does NOT do, all of which the ask flow does:
+      * no staff_contact_relationships check — the intro happened, so whether we
+        imported the connector's LinkedIn is beside the point;
+      * no pending-duplicate check — nothing is pending, it is done;
+      * no notification — there is nobody to ask.
+
+    Written straight to 'completed' with responded_at on the day it happened,
+    because that is the timestamp _send_events_sql counts it by. created_at stays
+    now(): when it happened and when it was typed in are different facts.
+    """
+    email = _email(user)
+    if not await conn.fetchval("SELECT 1 FROM public.contacts WHERE contact_id=$1", body.contact_id):
+        raise HTTPException(404, "Contact not found")
+    connector = await conn.fetchrow(
+        "SELECT display_name, email FROM bedrock.staff_user_id_map WHERE staff_user_id=$1",
+        body.connector_staff_id)
+    if not connector:
+        raise HTTPException(400, "That staff member has no id mapping, so the intro can't be attributed")
+
+    when = body.occurred_on or datetime.now(timezone.utc).date()
+    if when > datetime.now(timezone.utc).date():
+        raise HTTPException(400, "An intro can't be logged in the future")
+    ts = datetime.combine(when, time(12, 0), tzinfo=timezone.utc)
+
+    # A manual form invites the double-submit, and every duplicate inflates
+    # Total Outreach by one. Same contact, same connector, same person, same
+    # day is not a second intro.
+    dup = await conn.fetchval(
+        """SELECT 1 FROM bedrock.intro_request
+           WHERE contact_id=$1 AND connector_staff_id=$2 AND lower(requested_by_email)=$3
+             AND status IN ('accepted','completed')
+             AND coalesce(responded_at, created_at)::date = $4""",
+        body.contact_id, body.connector_staff_id, email, when)
+    if dup:
+        raise HTTPException(409, "That intro is already logged for this day")
+
+    r = await conn.fetchrow(
+        """INSERT INTO bedrock.intro_request
+               (contact_id, connector_staff_id, requested_by_email, specific_ask, context,
+                status, responded_at, completed_at)
+           VALUES ($1,$2,$3,$4,$5,'completed',$6,$6)
+           RETURNING id""",
+        body.contact_id, body.connector_staff_id, email,
+        body.specific_ask, body.context, ts)
+    return {"success": True, "data": {"id": str(r["id"]), "status": "completed",
+                                      "occurred_on": when.isoformat()}}
 
 
 @router.patch("/intro-requests/{request_id}")

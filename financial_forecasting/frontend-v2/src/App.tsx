@@ -75,6 +75,9 @@ export default function App() {
         <Route path="/portfolio/:identifier" element={<PortfolioPage />} />
         <Route path="/jobs" element={<JobsPage />} />
         <Route path="/jobs/performance" element={<JobsPerformancePage />} />
+        {/* Campaigns became a Dashboard tab on 2026-09-15; the standalone
+            route stays so shared links keep resolving. */}
+        <Route path="/jobs/campaigns" element={<Navigate to="/jobs/performance?tab=campaigns" replace />} />
         <Route path="/jobs/contacts" element={<JobsContactsPage />} />
         <Route path="/jobs/accounts" element={<JobsAccountsPage />} />
         <Route path="/jobs/pipeline" element={<JobsPipelinePage />} />
