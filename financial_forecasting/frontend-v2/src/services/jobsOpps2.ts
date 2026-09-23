@@ -63,6 +63,9 @@ export interface Role {
   // Canonical derived status (server-computed), so every screen agrees.
   placement_status: "ft_placed" | "trial_active" | "committed_open" | "open_market" | "cancelled";
   placement_status_label: string;
+  // Who filled it, where the endpoint joins the name (the opportunity's role
+  // list does; the board drops filled roles entirely, so it doesn't).
+  filled_by_name?: string | null;
   // Pathfinder publishing: is this role shown to builders, and the linked posting.
   pathfinder_visible: boolean;
   job_posting_id: number | null;
@@ -87,7 +90,7 @@ interface RoleFields {
   pathfinder_visible: boolean;
 }
 
-export type RoleCreateBody = { title: string } & Partial<RoleFields>;
+export type RoleCreateBody = { title: string; allow_duplicate?: boolean } & Partial<RoleFields>;
 
 export type RolePatchBody = Partial<{ title: string; status: RoleStatus } & RoleFields>;
 
@@ -127,6 +130,17 @@ export function useOppRoles(oppId: string | null) {
   });
 }
 
+// The actionable text behind a failed role create: the rapid-duplicate guard's
+// 409 says exactly what to do instead, and losing it leaves staff staring at a
+// bare "failed" on the one error they can actually act on.
+function roleCreateErrorMessage(e: unknown): string {
+  const resp = (e as { response?: { status?: number; data?: { detail?: { message?: string } | string } } })?.response;
+  if (resp?.status !== 409) return "Failed to add role";
+  const detail = resp.data?.detail;
+  if (typeof detail === "object" && detail?.message) return detail.message;
+  return "That role was just added — use the Seats field instead of re-adding.";
+}
+
 export function useCreateRole() {
   const qc = useQueryClient();
   return useMutation({
@@ -142,16 +156,58 @@ export function useCreateRole() {
       invalidateOppDependents(qc);
       toast.success("Role added");
     },
-    onError: (e: unknown) => {
-      const resp = (e as { response?: { status?: number; data?: { detail?: { message?: string } | string } } })?.response;
-      // 409 = the rapid-duplicate guard; show its actionable message.
-      if (resp?.status === 409) {
-        const d = resp.data?.detail;
-        toast.error(typeof d === "object" && d?.message ? d.message : "That role was just added — set seats instead of re-adding.");
+    onError: (e: unknown) => toast.error(roleCreateErrorMessage(e)),
+  });
+}
+
+// Multiple seats on one req are N jobs_role rows, not a quantity column: the row
+// IS the seat — hiring stamps filled_by_user_id/employment_record_id onto it, so
+// a single row could only ever record one of the hires. Post the same body N
+// times, sequentially, and report the batch once; a seat that fails doesn't
+// discard the ones that landed. A quantity typed into Seats is explicit intent,
+// so a multi-seat add waives the server's rapid-duplicate guard outright —
+// otherwise an identical role added minutes ago silently eats the first seat and
+// the add reports 2 of 3. Seats=1 keeps the guard: that's the accidental-re-add
+// case it was written for.
+// Seats one submit may create. A req with more openings than this is rare enough
+// to add twice, and the cap keeps a mistyped quantity from filling the pipeline.
+export const MAX_SEATS_PER_ADD = 20;
+
+export function useCreateRoleSeats() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ oppId, seats, ...body }: { oppId: string; seats: number } & RoleCreateBody) => {
+      const created: Role[] = [];
+      let failed = 0;
+      let lastError: unknown = null;
+      for (let i = 0; i < seats; i++) {
+        try {
+          const { data } = await api.post<ApiResponse<Role>>(
+            `/api/jobs/opportunities/${oppId}/roles`,
+            seats > 1 ? { ...body, allow_duplicate: true } : body,
+          );
+          created.push(data.data);
+        } catch (e) {
+          failed += 1;
+          lastError = e;
+        }
+      }
+      return { created, failed, lastError };
+    },
+    onSuccess: ({ created, failed, lastError }, vars) => {
+      qc.invalidateQueries({ queryKey: ["jobs", "opp-roles", vars.oppId] });
+      invalidateOppDependents(qc);
+      if (created.length === 0) {
+        // One seat carries the server's own explanation (e.g. the duplicate
+        // guard); a whole batch failing is reported as the batch it was.
+        toast.error(vars.seats === 1 ? roleCreateErrorMessage(lastError) : "Failed to add any seats");
+      } else if (failed > 0) {
+        toast.error(`Added ${created.length} of ${vars.seats} seats — ${failed} failed.`);
       } else {
-        toast.error("Failed to add role");
+        toast.success(created.length === 1 ? "Role added" : `${created.length} seats added`);
       }
     },
+    onError: () => toast.error("Failed to add role"),
   });
 }
 

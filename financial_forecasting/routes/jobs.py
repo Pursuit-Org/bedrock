@@ -1311,7 +1311,11 @@ async def list_opp_roles(
 ):
     """All roles (any status) for an opportunity, oldest first."""
     rows = await conn.fetch(
-        "SELECT * FROM bedrock.jobs_role WHERE opportunity_id=$1 ORDER BY created_at",
+        """SELECT r.*, b.full_name AS filled_by_name
+           FROM bedrock.jobs_role r
+           LEFT JOIN LATERAL bedrock.builder_by_id(r.filled_by_user_id) b ON true
+           WHERE r.opportunity_id = $1
+           ORDER BY r.created_at""",
         opp_id,
     )
     return {"success": True, "data": [_role_dict(r) for r in rows]}
@@ -1350,7 +1354,8 @@ async def create_opp_role(
             raise HTTPException(409, {
                 "error": "duplicate_role",
                 "message": f"An open '{body.title}' role was just added to this opportunity. "
-                           "For multiple seats, set the role's number of seats instead of adding it again.",
+                           "For multiple openings, use the Seats field when adding the role "
+                           "instead of adding it again.",
             })
 
     converts_to = UUID(body.converts_to_role_id) if body.converts_to_role_id else None
@@ -1648,12 +1653,44 @@ async def roles_board(
             "updated_at": a["updated_at"].isoformat() if a["updated_at"] else None,
         })
 
+    # Applications belong to the req, not to the one opening they were matched
+    # against. A filled seat drops off this board (below) and used to take its
+    # candidates with it, so the req's remaining openings showed a partial pool —
+    # hire the seat holding 3 of 8 applicants and 3 vanished. Re-pool those onto
+    # the first still-open seat of the same req. Only the first, so the UI's
+    # per-req grouping pools each application exactly once.
+    # Deliberately looser than the UI's grouping key: same job, same employer,
+    # same shape of engagement. Salary and commitment are left out because they
+    # drift on a seat after it's filled (update_placement writes the agreed
+    # salary back onto the role), and a drifted field must not quietly strand
+    # that seat's candidates. A trial is its own kind of opening, so it splits.
+    def _req_key(d: dict) -> tuple:
+        return (
+            d["opportunity_id"],
+            (d["title"] or "").strip().lower(),
+            d["employment_type"],
+            bool(d["is_trial"]),
+        )
+
+    dicts = [_role_dict(r) for r in roles]
+    orphaned: dict[tuple, list] = {}
+    for d in dicts:
+        if d["placement_status"] == "ft_placed":
+            orphaned.setdefault(_req_key(d), []).extend(apps_by_role.get(d["id"], []))
+
     out = []
-    for r in roles:
-        d = _role_dict(r)
+    repooled: set = set()
+    for d in dicts:
         if d["placement_status"] == "ft_placed":
             continue  # already filled full-time — nothing left to track here
-        d["applications"] = apps_by_role.get(d["id"], [])
+        apps = list(apps_by_role.get(d["id"], []))
+        key = _req_key(d)
+        if key in orphaned and key not in repooled:
+            apps.extend(orphaned[key])
+            # Keep the whole pool in one date order, as a single seat's list is.
+            apps.sort(key=lambda a: a["date_applied"] or "", reverse=True)
+            repooled.add(key)
+        d["applications"] = apps
         out.append(d)
     return {"success": True, "data": out}
 

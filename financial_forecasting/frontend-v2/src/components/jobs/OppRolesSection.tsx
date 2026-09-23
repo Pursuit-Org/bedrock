@@ -1,11 +1,12 @@
 import { useState } from "react";
-import { Plus, X, Check, Trash2, UserPlus, Eye, EyeOff } from "lucide-react";
+import { Plus, X, Check, Trash2, UserPlus, Eye, EyeOff, ChevronRight, ChevronDown } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { format } from "date-fns";
 import { useBuilders, type Builder } from "@/services/jobs";
 import {
   useOppRoles,
-  useCreateRole,
+  useCreateRoleSeats,
+  MAX_SEATS_PER_ADD,
   useUpdateRole,
   useDeleteRole,
   useHireRole,
@@ -217,6 +218,22 @@ function RoleExtraFields({
   );
 }
 
+// The one-line summary under a role title. Shared so a collapsed seat group
+// describes itself exactly as the individual seats inside it do.
+function roleDetailLine(role: Role): string {
+  return (
+    [
+      fmtSalary(role.approx_salary),
+      role.pay_rate != null ? `$${role.pay_rate.toLocaleString("en-US")} ${RATE_PERIOD_SHORT[role.rate_period ?? ""] ?? ""}`.trim() : null,
+      empTypeLabel(role.employment_type),
+      role.start_date ? fmtDate(role.start_date) : null,
+      role.end_date ? `→ ${fmtDate(role.end_date)}` : null,
+    ]
+      .filter((x) => x && x !== "—")
+      .join(" · ") || "—"
+  );
+}
+
 function fmtDate(iso: string | null): string {
   if (!iso) return "—";
   try {
@@ -369,7 +386,7 @@ function HireForm({ role, oppId, onClose }: { role: Role; oppId: string; onClose
 
 // ── Single role row ───────────────────────────────────────────────────────────
 
-function RoleRow({ role, oppId, roles }: { role: Role; oppId: string; roles: Role[] }) {
+function RoleRow({ role, oppId, roles, seatLabel }: { role: Role; oppId: string; roles: Role[]; seatLabel?: string }) {
   const convertsToRole = role.converts_to_role_id
     ? roles.find((r) => r.id === role.converts_to_role_id)
     : undefined;
@@ -483,6 +500,9 @@ function RoleRow({ role, oppId, roles }: { role: Role; oppId: string; roles: Rol
         <div className="flex min-w-0 flex-col gap-0.5">
           <div className="flex items-center gap-1.5">
             <span className="truncate text-[13px] font-medium text-ink">{role.title || "Untitled role"}</span>
+            {seatLabel ? (
+              <span className="shrink-0 rounded bg-stone-100 px-1.5 py-0.5 text-[9.5px] font-semibold uppercase tracking-wide leading-none text-stone-500">{seatLabel}</span>
+            ) : null}
             {role.commitment === "open_market" ? (
               <span className="inline-flex items-center rounded-full bg-stone-100 px-1.5 py-0.5 text-[9.5px] font-semibold uppercase tracking-wide leading-none text-stone-500">Open-market</span>
             ) : null}
@@ -490,17 +510,10 @@ function RoleRow({ role, oppId, roles }: { role: Role; oppId: string; roles: Rol
               <span className="inline-flex items-center rounded-full bg-amber-50 px-1.5 py-0.5 text-[9.5px] font-semibold uppercase tracking-wide leading-none text-amber-700">Trial</span>
             ) : null}
           </div>
-          <span className="truncate text-[11.5px] text-ink-3">
-            {[
-              fmtSalary(role.approx_salary),
-              role.pay_rate != null ? `$${role.pay_rate.toLocaleString("en-US")} ${RATE_PERIOD_SHORT[role.rate_period ?? ""] ?? ""}`.trim() : null,
-              empTypeLabel(role.employment_type),
-              role.start_date ? fmtDate(role.start_date) : null,
-              role.end_date ? `→ ${fmtDate(role.end_date)}` : null,
-            ]
-              .filter((x) => x && x !== "—")
-              .join(" · ") || "—"}
-          </span>
+          <span className="truncate text-[11.5px] text-ink-3">{roleDetailLine(role)}</span>
+          {role.filled_by_name ? (
+            <span className="mt-0.5 text-[10.5px] text-ink-4">Placed: <span className="text-ink-3">{role.filled_by_name}</span></span>
+          ) : null}
           {role.is_trial && convertsToRole ? (
             <span className="mt-0.5 text-[10.5px] text-ink-4">→ converts to <span className="text-ink-3">{convertsToRole.title}</span></span>
           ) : null}
@@ -571,6 +584,148 @@ function RoleRow({ role, oppId, roles }: { role: Role; oppId: string; roles: Rol
   );
 }
 
+// ── Multi-seat grouping ────────────────────────────────────────────────────────
+// A req with N seats is stored as N jobs_role rows, because the row IS the seat:
+// hiring stamps filled_by_user_id / employment_record_id onto it, so one row can
+// only ever record one hire. That keeps every placement metric honest but reads
+// as noise — five identical "Software Engineer" lines. Collapse them for display
+// only. A filled or cancelled role never groups: each carries its own builder and
+// outcome, and those are exactly what staff come to this section to read.
+function seatGroupKey(r: Role): string | null {
+  if (r.status !== "open") return null;
+  return JSON.stringify([
+    (r.title ?? "").trim().toLowerCase(),
+    r.commitment,
+    r.is_trial,
+    r.employment_type ?? "",
+    r.approx_salary,
+    r.pay_rate,
+    r.rate_period ?? "",
+    r.start_date ?? "",
+    r.end_date ?? "",
+    (r.notes ?? "").trim(),
+    // Terms that differ make these different reqs, even where the collapsed row
+    // wouldn't show it — a seat converting into a different FT role especially.
+    r.converts_to_role_id ?? "",
+    r.pay_cadence ?? "",
+    r.benefits ?? "",
+    r.payment_schedule ?? "",
+    r.negotiation_notes ?? "",
+    r.jd_url ?? "",
+  ]);
+}
+
+// Roles in their existing order, with identical open seats gathered into the
+// position their first seat already occupied.
+function groupSeats(roles: Role[]): Role[][] {
+  const groups: Role[][] = [];
+  const byKey = new Map<string, Role[]>();
+  for (const r of roles) {
+    const key = seatGroupKey(r);
+    if (key === null) {
+      groups.push([r]);
+      continue;
+    }
+    const seats = byKey.get(key);
+    if (seats) {
+      seats.push(r);
+      continue;
+    }
+    const fresh = [r];
+    byKey.set(key, fresh);
+    groups.push(fresh);
+  }
+  return groups;
+}
+
+function SeatGroupRow({ seats, oppId, roles }: { seats: Role[]; oppId: string; roles: Role[] }) {
+  const [expanded, setExpanded] = useState(false);
+  const [hiring, setHiring] = useState(false);
+  const head = seats[0];
+  const published = seats.filter((s) => s.pathfinder_visible).length;
+  const convertsToRole = head.converts_to_role_id
+    ? roles.find((r) => r.id === head.converts_to_role_id)
+    : undefined;
+
+  return (
+    <>
+      <li className="flex flex-col px-3 py-2.5">
+        <div className="flex items-start justify-between gap-2">
+          <div className="flex min-w-0 flex-col gap-0.5">
+            <div className="flex items-center gap-1.5">
+              <span className="truncate text-[13px] font-medium text-ink">{head.title || "Untitled role"}</span>
+              <span className="shrink-0 inline-flex items-center rounded-full bg-accent/10 px-1.5 py-0.5 text-[9.5px] font-semibold uppercase tracking-wide leading-none text-accent">
+                {seats.length} seats
+              </span>
+              {head.commitment === "open_market" ? (
+                <span className="inline-flex items-center rounded-full bg-stone-100 px-1.5 py-0.5 text-[9.5px] font-semibold uppercase tracking-wide leading-none text-stone-500">Open-market</span>
+              ) : null}
+              {head.is_trial ? (
+                <span className="inline-flex items-center rounded-full bg-amber-50 px-1.5 py-0.5 text-[9.5px] font-semibold uppercase tracking-wide leading-none text-amber-700">Trial</span>
+              ) : null}
+            </div>
+            <span className="truncate text-[11.5px] text-ink-3">{roleDetailLine(head)}</span>
+            {head.is_trial && convertsToRole ? (
+              <span className="mt-0.5 text-[10.5px] text-ink-4">→ converts to <span className="text-ink-3">{convertsToRole.title}</span></span>
+            ) : null}
+            {head.notes ? (
+              <span className="mt-0.5 whitespace-pre-wrap text-[11px] text-ink-3">{head.notes}</span>
+            ) : null}
+            {published > 0 && published < seats.length ? (
+              <span className="mt-0.5 text-[10.5px] text-ink-4">{published} of {seats.length} published to Pathfinder</span>
+            ) : null}
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <span
+              className={cn(
+                "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium leading-none",
+                PLACEMENT_STATUS_STYLES[head.placement_status] ?? ROLE_STATUS_STYLES[head.status],
+              )}
+            >
+              {head.placement_status_label ?? ROLE_STATUS_LABELS[head.status]}
+            </span>
+            <button
+              type="button"
+              onClick={() => setHiring((v) => !v)}
+              title="Hire a builder into one of these seats"
+              className="flex items-center gap-1 rounded border border-border-strong bg-surface px-1.5 py-0.5 text-[10.5px] font-medium text-ink-2 transition-colors hover:border-accent hover:text-accent"
+            >
+              <UserPlus size={11} />
+              Hire
+            </button>
+            <button
+              type="button"
+              onClick={() => setExpanded((v) => !v)}
+              title={expanded ? "Collapse the individual seats" : "Edit, publish or delete an individual seat"}
+              className="flex items-center gap-0.5 rounded border border-border-strong bg-surface px-1.5 py-0.5 text-[10.5px] font-medium text-ink-2 transition-colors hover:border-accent hover:text-accent"
+            >
+              {expanded ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+              Seats
+            </button>
+          </div>
+        </div>
+        {hiring ? (
+          <>
+            <span className="mt-1 text-[10.5px] text-ink-4">
+              Hiring into one seat — the other {seats.length - 1} stay open.
+            </span>
+            <HireForm role={head} oppId={oppId} onClose={() => setHiring(false)} />
+          </>
+        ) : null}
+      </li>
+      {expanded ? (
+        <li className="px-3 py-2">
+          <ul className="flex flex-col divide-y divide-border-strong rounded-md border border-border-strong">
+            {seats.map((s, i) => (
+              <RoleRow key={s.id} role={s} oppId={oppId} roles={roles} seatLabel={`Seat ${i + 1}`} />
+            ))}
+          </ul>
+        </li>
+      ) : null}
+    </>
+  );
+}
+
 // ── Add-role inline form ───────────────────────────────────────────────────────
 
 function AddRoleForm({ oppId, roles }: { oppId: string; roles: Role[] }) {
@@ -580,8 +735,11 @@ function AddRoleForm({ oppId, roles }: { oppId: string; roles: Role[] }) {
   const [empType, setEmpType] = useState("");
   const [startDate, setStartDate] = useState("");
   const [notes, setNotes] = useState("");
+  const [seats, setSeats] = useState("1");
   const [extras, setExtras] = useState<RoleExtras>(EMPTY_EXTRAS);
-  const createRole = useCreateRole();
+  const createSeats = useCreateRoleSeats();
+
+  const seatCount = Math.min(Math.max(parseInt(seats, 10) || 1, 1), MAX_SEATS_PER_ADD);
 
   function reset() {
     setTitle("");
@@ -589,6 +747,7 @@ function AddRoleForm({ oppId, roles }: { oppId: string; roles: Role[] }) {
     setEmpType("");
     setStartDate("");
     setNotes("");
+    setSeats("1");
     setExtras(EMPTY_EXTRAS);
     setOpen(false);
   }
@@ -597,9 +756,10 @@ function AddRoleForm({ oppId, roles }: { oppId: string; roles: Role[] }) {
     e.preventDefault();
     if (!title.trim()) return;
     const salaryNum = salary.trim() ? Number(salary.replace(/[^0-9.]/g, "")) : undefined;
-    createRole.mutate(
+    createSeats.mutate(
       {
         oppId,
+        seats: seatCount,
         title: title.trim(),
         approx_salary: salaryNum != null && !isNaN(salaryNum) ? salaryNum : undefined,
         employment_type: empType.trim() || undefined,
@@ -633,7 +793,19 @@ function AddRoleForm({ oppId, roles }: { oppId: string; roles: Role[] }) {
         autoFocus
         className="w-full rounded border border-border-strong bg-surface px-2 py-1 text-[12px] text-ink-2 placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
       />
-      <div className="grid grid-cols-3 gap-2">
+      <div className="grid grid-cols-4 gap-2">
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[10px] font-medium text-ink-4">Seats</span>
+          <input
+            type="number"
+            value={seats}
+            onChange={(e) => setSeats(e.target.value)}
+            min={1}
+            max={MAX_SEATS_PER_ADD}
+            title="How many identical openings for this role"
+            className="w-full rounded border border-border-strong bg-surface px-2 py-1 text-[11.5px] text-ink-2 placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
+          />
+        </label>
         <label className="flex flex-col gap-0.5">
           <span className="text-[10px] font-medium text-ink-4">Salary</span>
           <input
@@ -679,11 +851,11 @@ function AddRoleForm({ oppId, roles }: { oppId: string; roles: Role[] }) {
       <div className="flex items-center gap-3">
         <button
           type="submit"
-          disabled={!title.trim() || createRole.isPending}
+          disabled={!title.trim() || createSeats.isPending}
           className="flex items-center gap-1.5 rounded bg-accent px-2.5 py-1 text-[11.5px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
         >
-          {createRole.isPending ? <Spinner /> : <Plus size={12} />}
-          Add role
+          {createSeats.isPending ? <Spinner /> : <Plus size={12} />}
+          {seatCount > 1 ? `Add ${seatCount} seats` : "Add role"}
         </button>
         <button type="button" onClick={reset} className="text-[11.5px] text-ink-3 hover:text-ink-2">
           Cancel
@@ -708,9 +880,13 @@ export function OppRolesSection({ oppId }: { oppId: string }) {
         <span className="text-[12px] text-ink-4">No roles committed yet.</span>
       ) : (
         <ul className="flex flex-col divide-y divide-border-strong rounded-md border border-border-strong">
-          {roles.map((r) => (
-            <RoleRow key={r.id} role={r} oppId={oppId} roles={roles} />
-          ))}
+          {groupSeats(roles).map((group) =>
+            group.length === 1 ? (
+              <RoleRow key={group[0].id} role={group[0]} oppId={oppId} roles={roles} />
+            ) : (
+              <SeatGroupRow key={group[0].id} seats={group} oppId={oppId} roles={roles} />
+            ),
+          )}
         </ul>
       )}
       <AddRoleForm oppId={oppId} roles={roles} />
