@@ -1388,13 +1388,11 @@ export function JobsOutreach() {
              This bar governs everything down to the Current state boundary,
              and nothing below it. It used to float above the whole page, which
              is what made it look like it filtered Requiring Attention too. ── */}
-      <section
-        aria-label="In period"
-        // Deliberately unfilled: the border + radius carry the zone boundary on
-        // their own. The pale blue fill (bg-accent-soft) that used to sit here
-        // read as a highlight on half the page rather than as a container.
-        className="flex flex-col gap-6 rounded-2xl border border-border-strong p-3 sm:p-4"
-      >
+      {/* No container of its own. Pipeline and Campaigns put the period bar
+          straight on the page, and a box around half of one tab read as a
+          stray outline rather than as a zone boundary. The bar itself is the
+          same PeriodBar component on all three. */}
+      <section aria-label="In period" className="flex flex-col gap-6">
         <PeriodBar
           from={from} to={to}
           onChange={(f, t) => { setFrom(f); setTo(t); }}
@@ -1405,8 +1403,10 @@ export function JobsOutreach() {
               rather than broken out into buttons: four names you reach without
               scrolling is the whole benefit, and a button strip spent a row of
               the card to save the same click (Kwame 2026-09-21). */}
+          <div className="flex items-center gap-2">
+          <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">Sender</span>
           <select value={owner} onChange={(e) => setOwner(e.target.value)}
-            className="h-7 max-w-[190px] rounded-md border border-border-strong bg-surface px-2 text-[12.5px] text-ink-2 outline-none focus:border-accent"
+            className="h-7 max-w-[190px] rounded-md border border-border-strong bg-surface px-2 text-[12.5px] text-ink outline-none focus:border-accent"
             title="Filter every section to one person">
             <option value="">All senders</option>
             {pinnedStaff.length > 0 && (
@@ -1422,6 +1422,7 @@ export function JobsOutreach() {
               ))}
             </optgroup>
           </select>
+          </div>
         </PeriodBar>
 
 

@@ -272,7 +272,16 @@ function FunnelCard({
 
   return (
     <section
-      className="overflow-hidden rounded-2xl border border-white/60 shadow-[0_1px_2px_rgba(20,18,14,0.04),0_8px_24px_-16px_rgba(20,18,14,0.3)]"
+      className={cn(
+        "overflow-hidden rounded-2xl border",
+        // Collapsed this is a single header row, so the lifted-card treatment
+        // (near-invisible white edge + deep shadow) left it floating with a
+        // dangling bottom border and nothing under it. Collapsed it reads as a
+        // bar: real border, no shadow. Expanded it's a card again.
+        collapsed
+          ? "border-border-strong"
+          : "border-white/60 shadow-[0_1px_2px_rgba(20,18,14,0.04),0_8px_24px_-16px_rgba(20,18,14,0.3)]",
+      )}
       style={{ background: "var(--surface)" }}
     >
       {/* Header bar — soft gradient band. Clicking it collapses the stage rows,
@@ -282,7 +291,11 @@ function FunnelCard({
         onClick={() => setCollapsed((c) => !c)}
         aria-expanded={!collapsed}
         title={collapsed ? "Show the stages" : "Hide the stages"}
-        className="flex w-full items-center gap-2 border-b border-border-strong px-5 py-2.5 text-left"
+        className={cn(
+          "flex w-full items-center gap-2 px-5 py-2.5 text-left",
+          // Only divide from something. Collapsed there are no rows below.
+          !collapsed && "border-b border-border-strong",
+        )}
         style={{ background: "linear-gradient(135deg, #f4f3ff 0%, #fbfaff 70%)" }}
       >
         <span className="text-[#4f3fe0]">
