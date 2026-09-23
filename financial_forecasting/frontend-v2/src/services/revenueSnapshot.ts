@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
+import type { CashflowBucket } from "@/services/cashflow";
 
 export type SourceCategory = "Foundation" | "Corporate" | "Individual" | "Government" | "Other";
 
@@ -59,12 +60,12 @@ export interface RevenueSnapshotDetail {
   sf_instance_url: string | null;
 }
 
-export function useRevenueSnapshot(year: number) {
+export function useRevenueSnapshot(year: number, recordBucket: CashflowBucket) {
   return useQuery({
-    queryKey: ["revenue-snapshot", year],
+    queryKey: ["revenue-snapshot", year, recordBucket],
     queryFn: async () => {
       const { data } = await api.get<RevenueSnapshot>(
-        `/api/salesforce/revenue-snapshot?year=${year}`,
+        `/api/salesforce/revenue-snapshot?year=${year}&record_bucket=${recordBucket}`,
       );
       return data;
     },
@@ -76,12 +77,13 @@ export function useRevenueSnapshotDetail(
   year: number,
   bucket: BucketKey | null,
   source: string | null,
+  recordBucket: CashflowBucket,
 ) {
   return useQuery({
-    queryKey: ["revenue-snapshot-detail", year, bucket, source],
+    queryKey: ["revenue-snapshot-detail", year, bucket, source, recordBucket],
     queryFn: async () => {
       const { data } = await api.get<RevenueSnapshotDetail>(
-        `/api/salesforce/revenue-snapshot/detail?year=${year}&bucket=${bucket}&source=${source}`,
+        `/api/salesforce/revenue-snapshot/detail?year=${year}&bucket=${bucket}&source=${source}&record_bucket=${recordBucket}`,
       );
       return data;
     },

@@ -24,7 +24,8 @@ from auth import decrypt_tokens
 from dependencies import require_sf_mcp_client
 from mcp_client import UnifiedMCPClient
 from routes.permissions import check_permission
-from services.cache import cache, CACHE_TTL_CASHFLOW
+from services.cache import cache, CACHE_TTL_REVENUE_SNAPSHOT
+from services.record_type_bucket import bucket_soql_filter
 from sf_errors import sf_http_error
 
 
@@ -130,15 +131,18 @@ def _total(d: dict[str, float]) -> float:
 @router.get("")
 async def get_revenue_snapshot(
     year: int = Query(..., ge=2000, le=2100),
+    record_bucket: str = Query("all", regex="^(all|philanthropy|pbc|capital_grants|other)$"),
     client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     _user=Depends(check_permission("view_revenue_dashboard")),
 ):
     """YTD revenue snapshot for the given fiscal year.
 
     Returns three cumulative revenue buckets plus a multi-year secured tracker.
-    Cached at the cashflow TTL (~10 min) since this data is SF-live.
+    `record_bucket` mirrors the dashboard's All/Philanthropy/PBC/Capital
+    Grants/Other record-type filter. Cached briefly (~1 min) since this data
+    is meant to be SF-live.
     """
-    cache_key = f"revenue_snapshot:{year}"
+    cache_key = f"revenue_snapshot:{year}:{record_bucket}"
     cached = cache.get(cache_key)
     if cached is not None:
         return cached
@@ -147,6 +151,8 @@ async def get_revenue_snapshot(
         sf = client.salesforce
         today = date.today().isoformat()
         future_end = year + 2  # track 3 years total (current + 2)
+        direct_clause = bucket_soql_filter(record_bucket, opp_prefix="")
+        related_clause = bucket_soql_filter(record_bucket)
 
         # Q1 — Won opps by CloseDate: full deal value (Opportunity.Amount)
         soql_closed = f"""
@@ -155,8 +161,8 @@ async def get_revenue_snapshot(
             WHERE StageName IN {_WON_STAGES_SOQL}
             AND CloseDate >= {year}-01-01
             AND CloseDate <= {year}-12-31
-            AND RecordType.Name != 'ISA'
             AND Amount != null
+            {direct_clause}
             LIMIT 2000
         """
 
@@ -173,8 +179,8 @@ async def get_revenue_snapshot(
             AND npe01__Scheduled_Date__c >= {year}-01-01
             AND npe01__Scheduled_Date__c <= {future_end}-12-31
             AND npe01__Written_Off__c = false
-            AND npe01__Opportunity__r.RecordType.Name != 'ISA'
             AND npe01__Payment_Amount__c != null
+            {related_clause}
             LIMIT 5000
         """
 
@@ -190,8 +196,8 @@ async def get_revenue_snapshot(
             AND npe01__Scheduled_Date__c >= {year}-01-01
             AND npe01__Scheduled_Date__c <= {year}-12-31
             AND npe01__Written_Off__c = false
-            AND npe01__Opportunity__r.RecordType.Name != 'ISA'
             AND npe01__Payment_Amount__c != null
+            {related_clause}
             LIMIT 2000
         """
 
@@ -268,7 +274,7 @@ async def get_revenue_snapshot(
                 },
             },
         }
-        cache.set(cache_key, result, CACHE_TTL_CASHFLOW)
+        cache.set(cache_key, result, CACHE_TTL_REVENUE_SNAPSHOT)
         return result
 
     except HTTPException:
@@ -291,10 +297,16 @@ async def get_revenue_snapshot_detail(
     year: int = Query(..., ge=2000, le=2100),
     bucket: str = Query(...),
     source: str = Query(...),
+    record_bucket: str = Query("all", regex="^(all|philanthropy|pbc|capital_grants|other)$"),
     client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     _user=Depends(check_permission("view_revenue_dashboard")),
 ):
-    """Drill-down records for one bucket + source category."""
+    """Drill-down records for one bucket + source category.
+
+    `record_bucket` mirrors the dashboard's All/Philanthropy/PBC/Capital
+    Grants/Other record-type filter (unrelated to `bucket`, which selects
+    revenue_closed/cash_secured/projected_total).
+    """
     if bucket not in _BUCKET_LABELS:
         raise HTTPException(status_code=400, detail="Invalid bucket")
     if source not in _CATEGORIES and source != "__all__":
@@ -302,7 +314,7 @@ async def get_revenue_snapshot_detail(
 
     instance_url = _sf_instance_url(request)
 
-    cache_key = f"revenue_snapshot_detail:{year}:{bucket}:{source}"
+    cache_key = f"revenue_snapshot_detail:{year}:{bucket}:{source}:{record_bucket}"
     cached = cache.get(cache_key)
     if cached is not None:
         # Always inject the (session-specific) instance URL — it's not cached
@@ -313,15 +325,16 @@ async def get_revenue_snapshot_detail(
 
         if bucket == "revenue_closed":
             filt_clause = "" if source == "__all__" else f"AND {_source_filter(source, 'Account.Type')}"
+            record_clause = bucket_soql_filter(record_bucket, opp_prefix="")
             soql = f"""
                 SELECT Id, Name, Account.Name, Amount, CloseDate
                 FROM Opportunity
                 WHERE StageName IN {_WON_STAGES_SOQL}
                 AND CloseDate >= {year}-01-01
                 AND CloseDate <= {year}-12-31
-                AND RecordType.Name != 'ISA'
                 AND Amount != null
                 {filt_clause}
+                {record_clause}
                 ORDER BY Amount DESC
                 LIMIT 500
             """
@@ -341,6 +354,7 @@ async def get_revenue_snapshot_detail(
 
         elif bucket == "cash_secured":
             filt_clause = "" if source == "__all__" else f"AND {_source_filter(source, 'npe01__Opportunity__r.Account.Type')}"
+            record_clause = bucket_soql_filter(record_bucket)
             soql = f"""
                 SELECT Id, npe01__Opportunity__r.Id, npe01__Opportunity__r.Name,
                        npe01__Opportunity__r.Account.Name,
@@ -350,9 +364,9 @@ async def get_revenue_snapshot_detail(
                 AND npe01__Scheduled_Date__c >= {year}-01-01
                 AND npe01__Scheduled_Date__c <= {year}-12-31
                 AND npe01__Written_Off__c = false
-                AND npe01__Opportunity__r.RecordType.Name != 'ISA'
                 AND npe01__Payment_Amount__c != null
                 {filt_clause}
+                {record_clause}
                 ORDER BY npe01__Payment_Amount__c DESC
                 LIMIT 500
             """
@@ -372,6 +386,7 @@ async def get_revenue_snapshot_detail(
 
         else:  # projected_total — secured (won) + pipeline (open, weighted)
             filt_clause = "" if source == "__all__" else f"AND {_source_filter(source, 'npe01__Opportunity__r.Account.Type')}"
+            record_clause = bucket_soql_filter(record_bucket)
             soql_s = f"""
                 SELECT Id, npe01__Opportunity__r.Id, npe01__Opportunity__r.Name,
                        npe01__Opportunity__r.Account.Name,
@@ -381,9 +396,9 @@ async def get_revenue_snapshot_detail(
                 AND npe01__Scheduled_Date__c >= {year}-01-01
                 AND npe01__Scheduled_Date__c <= {year}-12-31
                 AND npe01__Written_Off__c = false
-                AND npe01__Opportunity__r.RecordType.Name != 'ISA'
                 AND npe01__Payment_Amount__c != null
                 {filt_clause}
+                {record_clause}
                 LIMIT 500
             """
             soql_p = f"""
@@ -398,9 +413,9 @@ async def get_revenue_snapshot_detail(
                 AND npe01__Scheduled_Date__c >= {year}-01-01
                 AND npe01__Scheduled_Date__c <= {year}-12-31
                 AND npe01__Written_Off__c = false
-                AND npe01__Opportunity__r.RecordType.Name != 'ISA'
                 AND npe01__Payment_Amount__c != null
                 {filt_clause}
+                {record_clause}
                 LIMIT 500
             """
             secured_res, pipeline_res = await asyncio.gather(
@@ -448,7 +463,7 @@ async def get_revenue_snapshot_detail(
             "total": total,
             "sf_instance_url": instance_url,
         }
-        cache.set(cache_key, result, CACHE_TTL_CASHFLOW)
+        cache.set(cache_key, result, CACHE_TTL_REVENUE_SNAPSHOT)
         return result
 
     except HTTPException:
