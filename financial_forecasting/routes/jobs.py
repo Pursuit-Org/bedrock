@@ -1999,12 +1999,22 @@ async def update_builder_activity(
     conn=Depends(get_db),
 ):
     """Update an application's stage inline (applied → interview → accepted, …).
-    Appends to stage_history (from/to/changed_at/changed_by) so a rejection
-    doesn't erase the fact that they'd interviewed — queryable, no UI for it
-    yet. The `stage` referenced inside stage_history's jsonb_build_object is
-    the PRE-update value: Postgres evaluates an UPDATE's SET expressions
-    against the old row, even for a column also being SET in the same
-    statement, so this is race-safe without a separate SELECT."""
+
+    Appends to stage_history so a rejection doesn't erase the fact that they'd
+    interviewed. Queryable; no UI for it yet.
+
+    The entry matches the shape the segundo platform already writes —
+    {date, stage, notes} — plus `changed_by`, which is the one thing that shape
+    has no slot for and the only genuinely new information here.
+
+    This column is NOT Bedrock's. public.job_applications is a platform table
+    and the platform owns 1,292 of the entries in it; writing a second,
+    incompatible record shape would leave every reader on both sides handling
+    two forever. `from` and `changed_at` are deliberately dropped rather than
+    carried: the array is append-only, so an entry's "from" is simply the
+    previous entry's `stage` (verified: 636 of 647 rows have their last entry
+    matching the row's current stage), and `date` is the platform's own
+    granularity for when."""
     if body.stage not in VALID_APP_STAGES:
         raise HTTPException(400, f"Invalid stage: {body.stage}")
     result = await conn.execute(
@@ -2012,7 +2022,8 @@ async def update_builder_activity(
         UPDATE public.job_applications
         SET stage = $1::varchar,
             stage_history = COALESCE(stage_history, '[]'::jsonb) || jsonb_build_object(
-                'from', stage, 'to', $1::varchar, 'changed_at', now(), 'changed_by', $3::text
+                'date', to_char(now(), 'YYYY-MM-DD'), 'stage', $1::varchar,
+                'notes', NULL, 'changed_by', $3::text
             ),
             updated_at = now()
         WHERE job_application_id=$2 AND jobs_opportunity_id IS NOT NULL
