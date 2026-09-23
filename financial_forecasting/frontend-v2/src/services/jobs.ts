@@ -301,17 +301,19 @@ export interface JobContactWithDeal extends JobContact {
 // date and files a task). It stays in the union so rows written before the
 // migration still type-check and render a label.
 export type MembershipStage =
-  | "assigned" | "initial_outreach" | "call_booked"
+  | "assigned" | "initial_outreach" | "scheduling" | "call_booked"
   | "converted_to_opportunity" | "revisit" | "not_a_fit"
   | "on_hold";
 /** Offered stages. `on_hold` is absent on purpose — Revisit replaces it, and the
  *  API canonicalises any row still stored as on_hold, so it never reaches here.
  *  It stays in MembershipStage and the label map for safety, not as a choice. */
 export const MEMBERSHIP_STAGES: MembershipStage[] = [
-  "assigned", "initial_outreach", "call_booked", "converted_to_opportunity", "revisit", "not_a_fit",
+  "assigned", "initial_outreach", "scheduling", "call_booked",
+  "converted_to_opportunity", "revisit", "not_a_fit",
 ];
 export const MEMBERSHIP_STAGE_LABELS: Record<MembershipStage, string> = {
-  assigned: "Assigned", initial_outreach: "Initial outreach", call_booked: "Call booked",
+  assigned: "Assigned", initial_outreach: "Initial outreach", scheduling: "Scheduling",
+  call_booked: "Call booked",
   converted_to_opportunity: "Converted to opportunity", revisit: "Revisit", not_a_fit: "Not a fit",
   on_hold: "On hold",
 };
