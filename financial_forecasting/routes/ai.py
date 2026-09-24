@@ -677,3 +677,337 @@ Activity log (most recent first):
     except Exception as e:
         logger.error(f"Account activity summary failed: {e}")
         raise HTTPException(status_code=500, detail="Failed to generate summary")
+
+
+# ---------------------------------------------------------------------------
+# POST /api/ai/account-intelligence
+# ---------------------------------------------------------------------------
+
+_VALID_FOCUS = {"overview", "prospecting", "narrative_fit", "health"}
+
+
+@router.post("/api/ai/account-intelligence")
+async def account_intelligence(
+    body: Dict[str, Any] = Body(...),
+    client: UnifiedMCPClient = Depends(get_mcp_client),
+    conn=Depends(get_db),
+    user=Depends(require_auth),
+):
+    """Generate a multi-source relationship brief for a Salesforce account.
+
+    The frontend ships pre-loaded account/contacts/opps/activities so we
+    avoid redundant SF round-trips. The backend adds Fireflies transcripts
+    and similar-account SOQL (when SF tokens are available) then calls
+    Claude Sonnet to synthesize the 4-section brief.
+
+    Body shape::
+
+        {
+          "account_id":   "0013600001XXXXX",
+          "account_name": "Robin Hood Foundation",
+          "account_type": "Foundation",
+          "account_website": "robinhood.org",
+          "owner_name":   "Amy Sun",
+          "focus":        "overview" | "prospecting" | "narrative_fit" | "health",
+          "contacts":     [{"Name": ..., "Title": ..., "Email": ..., "LinkedIn_URL__c": ...}, ...],
+          "opps":         [{"Name": ..., "StageName": ..., "Amount": ..., "CloseDate": ...,
+                            "RecordType": {"Name": ...}}, ...],
+          "activities":   [{"date": ..., "type": ..., "subject": ..., "snippet": ...}, ...]
+        }
+    """
+    if not ANTHROPIC_API_KEY:
+        raise HTTPException(
+            status_code=503,
+            detail="AI intelligence not configured (missing ANTHROPIC_API_KEY)",
+        )
+
+    account_id: str = (body.get("account_id") or "").strip()
+    if account_id:
+        validate_salesforce_id(account_id, "account_id")
+    account_name: str = (body.get("account_name") or "this account").strip()
+    # Sanitize to prevent prompt injection via crafted account names
+    account_name = re.sub(r"[\r\n]+", " ", account_name)[:200]
+    account_type: str = (body.get("account_type") or "").strip()
+    account_website: str = (body.get("account_website") or "").strip()
+    owner_name: str = (body.get("owner_name") or "").strip()
+    focus: str = (body.get("focus") or "overview").strip().lower()
+    if focus not in _VALID_FOCUS:
+        focus = "overview"
+
+    contacts: List[Dict[str, Any]] = body.get("contacts") or []
+    opps: List[Dict[str, Any]] = body.get("opps") or []
+    activities: List[Dict[str, Any]] = (body.get("activities") or [])[:50]
+
+    # Built up incrementally — only list sources that actually returned data
+    sources_used: List[str] = []
+    if contacts or opps:
+        sources_used.append("salesforce_cache")
+
+    # ── 1. Format contacts ──────────────────────────────────────────────────
+    contact_lines: List[str] = []
+    for c in contacts[:20]:
+        name = (c.get("Name") or "").strip()
+        title = (c.get("Title") or "").strip()
+        email = (c.get("Email") or "").strip()
+        linkedin = (c.get("LinkedIn_URL__c") or "").strip()
+        parts = [name]
+        if title:
+            parts.append(f"| {title}")
+        if email:
+            parts.append(f"| {email}")
+        if linkedin:
+            parts.append(f"| {linkedin}")
+        contact_lines.append(" ".join(parts))
+    contacts_block = "\n".join(contact_lines) if contact_lines else "No contacts on file."
+
+    # ── 2. Format opportunities ─────────────────────────────────────────────
+    opp_lines: List[str] = []
+    for o in opps[:30]:
+        name = (o.get("Name") or "").strip()
+        stage = (o.get("StageName") or "").strip()
+        amount = o.get("Amount")
+        close = (o.get("CloseDate") or "").strip()
+        rt = (o.get("RecordType") or {}).get("Name") or ""
+        amount_str = f"${int(amount):,}" if amount else ""
+        parts = [name, stage]
+        if amount_str:
+            parts.append(amount_str)
+        if close:
+            parts.append(close)
+        if rt:
+            parts.append(f"[{rt}]")
+        opp_lines.append(" — ".join(p for p in parts if p))
+    opps_block = "\n".join(opp_lines) if opp_lines else "No opportunities on file."
+
+    # ── 3. Format email activities ──────────────────────────────────────────
+    activity_lines: List[str] = []
+    for a in activities:
+        date = (a.get("date") or "").strip()
+        atype = (a.get("type") or "").strip()
+        subject = (a.get("subject") or "").strip()[:150]
+        snippet = (a.get("snippet") or "").strip()[:300]
+        owner = (a.get("owner") or "").strip()
+        bits = [f"[{date}]"]
+        if atype:
+            bits.append(f"({atype})")
+        if owner:
+            bits.append(f"by {owner}")
+        bits.append("—")
+        bits.append(subject or "(no subject)")
+        if snippet and snippet != subject:
+            bits.append(f"// {snippet}")
+        activity_lines.append(" ".join(bits))
+    # ── 3b. Augment with direct bedrock.activity query ─────────────────────
+    # The frontend supplies a pre-loaded slice; the DB query fetches the full
+    # recent history by account_id, which may include older records.
+    if account_id and conn:
+        try:
+            db_rows = await conn.fetch(
+                "SELECT type, subject, activity_date, email_snippet, owner_name "
+                "FROM bedrock.activity "
+                "WHERE account_id = $1 AND deleted_at IS NULL "
+                "ORDER BY activity_date DESC LIMIT 50",
+                account_id,
+            )
+            if db_rows:
+                db_lines: List[str] = []
+                for row in db_rows:
+                    date = str(row["activity_date"] or "")
+                    subj = (row["subject"] or "")[:150]
+                    snip = (row["email_snippet"] or "")[:300]
+                    owner = (row["owner_name"] or "")
+                    atype = (row["type"] or "")
+                    bits = [f"[{date}]"]
+                    if atype:
+                        bits.append(f"({atype})")
+                    if owner:
+                        bits.append(f"by {owner}")
+                    bits.append("—")
+                    bits.append(subj or "(no subject)")
+                    if snip and snip != subj:
+                        bits.append(f"// {snip}")
+                    db_lines.append(" ".join(bits))
+                # DB result is authoritative; merge with frontend lines (dedupe by subject+date)
+                seen = {l for l in activity_lines}
+                for dl in db_lines:
+                    if dl not in seen:
+                        activity_lines.append(dl)
+                        seen.add(dl)
+        except Exception as e:
+            logger.warning(f"bedrock.activity query failed for account intelligence: {e}")
+
+    activities_block = "\n".join(activity_lines[:60]) if activity_lines else "No email activity on file."
+    if activity_lines:
+        sources_used.append("email_activity")
+
+    # ── 4. Fireflies transcripts ────────────────────────────────────────────
+    fireflies_block = ""
+    try:
+        ff_service = client.services.get("fireflies") if client and client.services else None
+        if ff_service:
+            meetings = await ff_service.get_account_meetings(account_name, limit=10)
+            if meetings:
+                ff_lines = []
+                for m in meetings[:10]:
+                    title = m.get("title") or ""
+                    date = m.get("date") or ""
+                    summary = (m.get("summary") or m.get("transcript_summary") or "")[:400]
+                    ff_lines.append(f"[{date}] {title}\n  {summary}")
+                fireflies_block = "\n\n".join(ff_lines)
+                sources_used.append("fireflies")
+    except Exception as e:
+        logger.warning(f"Fireflies fetch failed for account intelligence: {e}")
+        fireflies_block = ""
+
+    # ── 5. Slack search ────────────────────────────────────────────────────
+    slack_block = ""
+    try:
+        slack_svc = client.services.get("slack") if client and client.services else None
+        if slack_svc:
+            slack_result = await slack_svc.search_messages(account_name, count=20)
+            matches = (
+                (slack_result or {}).get("messages", {}).get("matches")
+                or (slack_result or {}).get("matches")
+                or []
+            )
+            if matches:
+                slack_lines: List[str] = []
+                for msg in matches[:15]:
+                    text = (msg.get("text") or "")[:300]
+                    user = (msg.get("username") or msg.get("user") or "").strip()
+                    channel = (msg.get("channel") or {}).get("name") or ""
+                    ts = msg.get("ts") or ""
+                    slack_lines.append(f"[{ts}] #{channel} {user}: {text}")
+                slack_block = "\n".join(slack_lines)
+                sources_used.append("slack")
+    except Exception as e:
+        logger.warning(f"Slack search failed for account intelligence: {e}")
+        slack_block = ""
+
+    # ── 6. Similar accounts via SF ─────────────────────────────────────────
+    similar_block = ""
+    try:
+        sf = client.services.get("salesforce") if client and client.services else None
+        if sf and account_type:
+            safe_type = account_type.replace("'", "\\'")
+            similar_q = (
+                f"SELECT Id, Name, Type, "
+                f"(SELECT Name, StageName, Amount, CloseDate FROM Opportunities "
+                f" ORDER BY CloseDate DESC NULLS LAST LIMIT 1) "
+                f"FROM Account "
+                f"WHERE Type = '{safe_type}' "
+                f"AND Id != '{account_id}' "
+                f"AND (LastActivityDate = LAST_N_DAYS:730 OR "
+                f"     Id IN (SELECT AccountId FROM Opportunity WHERE IsClosed = true)) "
+                f"LIMIT 8"
+            )
+            sim_result = await sf.query(similar_q)
+            sim_records = (sim_result or {}).get("records", [])[:5]
+            if sim_records:
+                sim_lines = []
+                for r in sim_records:
+                    rname = r.get("Name") or ""
+                    rtype = r.get("Type") or ""
+                    opps_r = (r.get("Opportunities") or {}).get("records") or []
+                    opp_str = ""
+                    if opps_r:
+                        o0 = opps_r[0]
+                        opp_str = f" | Last opp: {o0.get('StageName','')} {o0.get('CloseDate','')}"
+                    sim_lines.append(f"- {rname} ({rtype}){opp_str}")
+                similar_block = "\n".join(sim_lines)
+                sources_used.append("salesforce_similar")
+    except Exception as e:
+        logger.warning(f"Similar accounts query failed: {e}")
+        similar_block = ""
+
+    # ── 7. Focus-specific instruction ──────────────────────────────────────
+    focus_instruction = {
+        "prospecting": (
+            "In the Relationship Summary, emphasize the best re-engagement angle, "
+            "who the warmest contacts are, and what the right first ask would be."
+        ),
+        "narrative_fit": (
+            "In the Relationship Summary, emphasize how this account aligns with "
+            "Pursuit's mission (workforce development, economic mobility) and what "
+            "kind of partnership story could be told."
+        ),
+        "health": (
+            "In the Relationship Summary, emphasize open loops, warning signs, "
+            "and the trajectory of the relationship — is it warming, cooling, or stalled?"
+        ),
+    }.get(focus, "")
+
+    # ── 8. Build synthesis prompt ───────────────────────────────────────────
+    fireflies_section = (
+        f"\n\nFireflies Meeting Transcripts:\n{fireflies_block}"
+        if fireflies_block
+        else "\n\nFireflies: No meeting transcripts found."
+    )
+    slack_section = (
+        f"\n\nSlack (internal mentions):\n{slack_block}"
+        if slack_block
+        else "\n\nSlack: No relevant messages found."
+    )
+    similar_section = (
+        f"\n\nSimilar Accounts ({account_type}):\n{similar_block}"
+        if similar_block
+        else "\n\nSimilar Accounts: Not available from Salesforce."
+    )
+    focus_line = f"\n\nFocus instruction: {focus_instruction}" if focus_instruction else ""
+
+    system_prompt = (
+        "You are an enterprise CRM analyst producing relationship briefs for "
+        "Pursuit, a workforce development nonprofit. Your audience is a new "
+        "Relationship Manager who has zero prior knowledge of the account — "
+        "write as a cold-start orientation tool, not for someone with a hunch. "
+        "Be direct and specific. Editorialize lightly when data clearly supports it. "
+        "Sparse records are fine — say so plainly and still deliver what you can. "
+        "Never invent facts. If a source returned nothing, say so inline."
+    )
+
+    user_prompt = f"""Produce an account history brief for {account_name}. Begin with a single header line: "Account History: {account_name}". Then use this structure:
+
+**Summary** — 2-4 sentences on the nature of the relationship (funder-only, hiring-only, hybrid, dormant, active, prospect, etc.). This is a judgment call — don't just list facts.
+
+**Timeline** — bullet list, `**Date/Range** — description`. Only entries that matter to understanding the trajectory. Favor specific sourced detail over vague summary.
+
+**Key Contacts** — table: Name | Title | Email | LinkedIn | Last Touch
+
+**Similar Accounts** — 5 comparable accounts. Use the SF similar accounts list if provided. When that list is empty or thin, draw on your knowledge of comparable organizations (same org type, sector, philanthropic model, or relationship kind) that are structurally or relationally similar to this account — note briefly that they are included as benchmarking context rather than as existing Pursuit CRM records. For each: name, one-sentence relationship brief, and why it's similar. Do not mention Salesforce field limitations or data constraints in this section — just write the accounts.
+{focus_line}
+
+---
+Account: {account_name}
+Type: {account_type or 'Unknown'}
+Website: {account_website or 'Not on file'}
+Owner: {owner_name or 'Not assigned'}
+
+Contacts ({len(contacts)} total):
+{contacts_block}
+
+Opportunity History ({len(opps)} total):
+{opps_block}
+
+Email Activity (last {len(activity_lines)} records, most recent first):
+{activities_block}{fireflies_section}{slack_section}{similar_section}
+"""
+
+    try:
+        import anthropic
+        ai_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        response = ai_client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=2000,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_prompt}],
+        )
+        brief = response.content[0].text.strip()
+        return {
+            "brief": brief,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "sources_used": sources_used,
+            "focus": focus,
+        }
+    except Exception as e:
+        logger.error(f"Account intelligence failed: {e}")
+        raise HTTPException(status_code=500, detail="Failed to generate account brief")
