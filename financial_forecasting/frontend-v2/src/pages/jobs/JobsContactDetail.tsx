@@ -11,6 +11,7 @@ import { AccountAvatar } from "@/components/AccountAvatar";
 import { BackLink, EditField, SectionCard, Stat } from "@/components/detail";
 import { JobsComments } from "@/components/jobs/JobsComments";
 import { JobsTasks } from "@/components/jobs/JobsTasks";
+import { ContactJobsFields } from "@/components/jobs/ContactJobsFields";
 import { PromoteContactDialog } from "@/components/jobs/PromoteContactDialog";
 import { RequestIntroDialog } from "@/components/jobs/RequestIntroDialog";
 import {
@@ -99,9 +100,11 @@ export function JobsContactDetailPage() {
         <Stat label="Connections" value={String(connectedStaff.length)} />
       </div>
 
-      {/* Details — inline editable */}
+      {/* Details — inline editable. The jobs fields lead: they are what the
+          Contacts list edits and what this page could only display. */}
       <SectionCard title="Details" collapsible={false} storageScope="jobs-contact">
         <div className="grid grid-cols-2 gap-x-8 gap-y-3 px-5 py-4 md:grid-cols-3">
+          <ContactJobsFields contact={c} />
           <EditField label="Title"><InlineText value={c.current_title} onSave={(v) => patch("current_title", v)} placeholder="—" /></EditField>
           <EditField label="Company"><InlineText value={c.current_company} onSave={(v) => patch("current_company", v)} placeholder="—" /></EditField>
           <EditField label="Email"><InlineText value={c.email} onSave={(v) => patch("email", v)} placeholder="—" /></EditField>

@@ -17,6 +17,7 @@ import { JobsTasks } from "@/components/jobs/JobsTasks";
 import { HandoffToPbcDialog } from "@/components/jobs/HandoffToPbcDialog";
 import { OppBuilderActivity } from "@/components/jobs/OppBuilderActivity";
 import { OppRolesSection } from "@/components/jobs/OppRolesSection";
+import { OppLogActivityForm } from "@/components/jobs/OppLogActivityForm";
 import {
   DealStagePill,
   DEAL_TYPE_LABELS,
@@ -167,7 +168,12 @@ export function JobsOpportunityDetailPage() {
           <div className="flex flex-col gap-1.5 p-4">{o.contacts.map((c) => <JobsContactRow key={c.contact_id} contact={c} />)}</div>
         ) : <div className="px-4 py-6 text-[12.5px] text-ink-3">No contacts linked.</div>}
       </SectionCard>
-      <SectionCard title="Activity" storageScope="jobs-opportunity"><JobsActivityList entries={o.activity ?? []} /></SectionCard>
+      <SectionCard title="Activity" storageScope="jobs-opportunity">
+        {/* Same log form as the Pipeline drawer, so a deal can be worked from
+            its own page too. */}
+        <OppLogActivityForm dealId={o.id} contacts={o.contacts ?? []} />
+        <JobsActivityList entries={o.activity ?? []} />
+      </SectionCard>
       <SectionCard title="Tasks" storageScope="jobs-opportunity"><div className="px-3 py-2"><JobsTasks parentType="opportunity" parentId={o.id} /></div></SectionCard>
       <SectionCard title="Comments" storageScope="jobs-opportunity"><div className="px-3 py-2"><JobsComments parentType="opportunity" parentId={o.id} /></div></SectionCard>
     </div>

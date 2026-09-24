@@ -52,7 +52,8 @@ export type ProspectActivityType = "call" | "text" | "linkedin" | "email";
 export interface ProspectActivityBody {
   contact_id: number;
   type: ProspectActivityType;
-  description: string;
+  /** Optional on every type — the server stores NULL when it is blank. */
+  description?: string;
   /** ISO date — lets a call/text from a few days ago be logged retroactively
    *  (TKT-126). Omitted → the server stamps now(). */
   activity_date?: string;
@@ -152,6 +153,10 @@ export function useLogFacilitatedIntro() {
     onSuccess: (_d, vars) => {
       qc.invalidateQueries({ queryKey: ["jobs", "contact", vars.contact_id] });
       qc.invalidateQueries({ queryKey: ["jobs", "intro-requests"] });
+      // Deal and account feeds fold intros in, so an intro logged from either
+      // should appear there without a reload.
+      qc.invalidateQueries({ queryKey: ["jobs", "opportunity"] });
+      qc.invalidateQueries({ queryKey: ["jobs", "account-rollup"] });
       // The intro is outreach, so the scorecard and its drills are now stale.
       qc.invalidateQueries({ queryKey: ["jobs", "outreach"] });
       qc.invalidateQueries({ queryKey: ["jobs", "owner-scorecard"] });

@@ -7,7 +7,6 @@ import {
   useContactTagCatalog,
   useDeleteOpportunity,
   useCreateOpportunity,
-  useLogActivity,
   useDeleteActivity,
   useBuilders,
   useContactSearch,
@@ -22,13 +21,11 @@ import {
   STAGE_LABELS,
   DEAL_TYPE_LABELS,
   STAGES_ORDERED,
-  type CallKind,
   type JobStage,
   type DealType,
   type JobsOpportunity,
   type JobsOpportunityDetail,
   type JobContact,
-  type ActivityCreateBody,
   type Builder,
   type ContactSearchResult,
   type OppPlacement,
@@ -36,11 +33,11 @@ import {
 import { ActivitySourceIcon } from "@/components/ActivitySourceIcon";
 import { jobsOpportunityPath } from "@/components/jobs/jobsEntity";
 import { OppRolesSection } from "@/components/jobs/OppRolesSection";
+import { OppLogActivityForm } from "@/components/jobs/OppLogActivityForm";
 import { OppBuilderActivity } from "@/components/jobs/OppBuilderActivity";
 import { JobsTasks } from "@/components/jobs/JobsTasks";
 import { JobsComments } from "@/components/jobs/JobsComments";
 import { CommittedRolesModal } from "@/components/jobs/CommittedRolesModal";
-import { CallKindPicker } from "@/components/jobs/CallKindPicker";
 import { RowExpandPanel, type ExpandTab } from "@/components/RowExpandPanel";
 import { InlineText, InlineSelect, InlineDate } from "@/components/ui/InlineEdit";
 import { useSort, sortBy, type SortState } from "@/lib/sort";
@@ -759,8 +756,8 @@ export function DealExpandPanel({
           <TabLoading />
         ) : (
           <div className="flex flex-col">
+            <OppLogActivityForm dealId={deal.id} contacts={detail?.contacts ?? []} />
             <ActivityTab entries={detail?.activity ?? []} />
-            <LogActivityForm dealId={deal.id} />
           </div>
         ),
     },
@@ -856,132 +853,6 @@ function Field({
       <span className="text-[10.5px] uppercase tracking-wider text-ink-4">{label}</span>
       <div>{children}</div>
     </div>
-  );
-}
-
-// ── Log Activity inline form ──────────────────────────────────────────────────
-
-type ActivityType = "call" | "text" | "linkedin";
-
-const ACTIVITY_TYPES: { value: ActivityType; label: string }[] = [
-  { value: "call",     label: "Call" },
-  { value: "text",     label: "Text" },
-  { value: "linkedin", label: "LinkedIn" },
-];
-
-function todayIso(): string {
-  return new Date().toISOString().slice(0, 10);
-}
-
-function LogActivityForm({ dealId }: { dealId: string }) {
-  const [open, setOpen] = useState(false);
-  const [type, setType]   = useState<ActivityType>("call");
-  const [date, setDate]   = useState(todayIso);
-  const [desc, setDesc]   = useState("");
-  const [callKind, setCallKind] = useState<CallKind | null>(null);
-
-  const logActivity = useLogActivity();
-
-  function reset() {
-    setType("call");
-    setDate(todayIso());
-    setDesc("");
-    setCallKind(null);
-    setOpen(false);
-  }
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!desc.trim()) return;
-    await logActivity.mutateAsync({
-      jobs_opportunity_id: dealId,
-      // Server accepts call/text/linkedin; ActivityCreateBody type is narrower.
-      type: type as ActivityCreateBody["type"],
-      description: desc.trim(),
-      activity_date: date || todayIso(),
-      // Only a call carries a kind; the API drops it on anything else, but not
-      // sending it keeps the request honest about what was asked.
-      call_kind: type === "call" ? callKind : null,
-    });
-    reset();
-  }
-
-  if (!open) {
-    return (
-      <div className="border-t border-border-strong px-4 py-2">
-        <button
-          type="button"
-          onClick={() => setOpen(true)}
-          className="text-[12px] text-accent hover:underline"
-        >
-          + Log Activity
-        </button>
-      </div>
-    );
-  }
-
-  return (
-    <form
-      onSubmit={(e) => void handleSubmit(e)}
-      className="border-t border-border-strong px-4 py-3 flex flex-col gap-2"
-    >
-      {/* Type selector — button group */}
-      <div className="flex gap-1">
-        {ACTIVITY_TYPES.map((t) => (
-          <button
-            key={t.value}
-            type="button"
-            onClick={() => setType(t.value)}
-            className={cn(
-              "rounded border px-2 py-0.5 text-[11px] font-medium transition-colors",
-              type === t.value
-                ? "border-accent bg-accent/5 text-accent"
-                : "border-border-strong bg-surface text-ink-3 hover:text-ink-2",
-            )}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
-
-      {/* Call type — only a call has one. */}
-      {type === "call" && <CallKindPicker value={callKind} onChange={setCallKind} />}
-
-      {/* Date */}
-      <input
-        type="date"
-        value={date}
-        onChange={(e) => setDate(e.target.value)}
-        className="w-full rounded border border-border-strong bg-surface px-2 py-1 text-[12px] text-ink-2 focus:outline-none focus:ring-1 focus:ring-accent/40"
-      />
-
-      {/* Description */}
-      <textarea
-        rows={3}
-        value={desc}
-        onChange={(e) => setDesc(e.target.value)}
-        placeholder="What happened?"
-        className="w-full resize-none rounded border border-border-strong bg-surface px-2 py-1 text-[12px] text-ink-2 placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
-      />
-
-      {/* Actions */}
-      <div className="flex items-center gap-3">
-        <button
-          type="submit"
-          disabled={logActivity.isPending || !desc.trim()}
-          className="rounded bg-accent px-3 py-1 text-[12px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
-        >
-          {logActivity.isPending ? "Logging…" : "Log"}
-        </button>
-        <button
-          type="button"
-          onClick={reset}
-          className="text-[12px] text-ink-3 hover:text-ink-2"
-        >
-          Cancel
-        </button>
-      </div>
-    </form>
   );
 }
 

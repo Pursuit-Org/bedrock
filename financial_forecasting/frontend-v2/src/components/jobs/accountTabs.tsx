@@ -99,7 +99,7 @@ function ScopeChip({ scope, label, parentId }: { scope: "opportunity" | "contact
 }
 
 // ── Opportunities — table (Role / Stage / Owner / Deal type), create row on top ───────
-function AccountOppsTab({ account }: { account: JobsAccount }) {
+export function AccountOppsTab({ account }: { account: JobsAccount }) {
   const { data: staff = [] } = useJobsStaff();
   const create = useCreateOpportunity();
   const update = useUpdateOpportunity();
@@ -187,7 +187,7 @@ function AccountOppsTab({ account }: { account: JobsAccount }) {
 }
 
 // ── Contacts — add/search ABOVE the list ─────────────────────────────────────────────
-function AccountContactsTab({ account, scope = "engaged" }: { account: JobsAccount; scope?: "engaged" | "all" }) {
+export function AccountContactsTab({ account, scope = "engaged" }: { account: JobsAccount; scope?: "engaged" | "all" }) {
   const [mode, setMode] = useState<null | "existing" | "new">(null);
   const [search, setSearch] = useState("");
   const { data: prospects = [] } = useAccountProspects(account.account_key, scope);
@@ -245,7 +245,7 @@ function AccountContactsTab({ account, scope = "engaged" }: { account: JobsAccou
 }
 
 // ── Activity ─────────────────────────────────────────────────────────────────────────
-function AccountActivityTab({ account, scope = "engaged" }: { account: JobsAccount; scope?: "engaged" | "all" }) {
+export function AccountActivityTab({ account, scope = "engaged" }: { account: JobsAccount; scope?: "engaged" | "all" }) {
   const { data, isLoading } = useAccountActivity(account.account_key);
   const { data: prospects = [] } = useAccountProspects(account.account_key, scope);
   const log = useLogActivity();
@@ -268,12 +268,12 @@ function AccountActivityTab({ account, scope = "engaged" }: { account: JobsAccou
   // An intro lives in bedrock.intro_request, whose contact_id is NOT NULL and
   // which has no opportunity variant — so it can only be tagged to a person.
   const targetOptions = isIntro ? [] : account.opportunities;
-  // The note is optional on an intro, matching the contact form: "Joanna
-  // introduced me to Jane on the 14th" is a complete record, and demanding
-  // prose to log it loses intros.
+  // The note is optional on every type, matching the contact form (Kwame
+  // 2026-09-24): "I texted Jane on the 14th" is a complete record, and
+  // demanding prose to log it loses touches. What it is tagged to is not.
   const canSubmit = isIntro
     ? targetKind === "contact" && !!connectorId
-    : !!target && !!note.trim();
+    : !!target;
 
   const reset = () => { setNote(""); setCallKind(null); setConnectorId(""); setOpen(false); };
 
@@ -289,7 +289,7 @@ function AccountActivityTab({ account, scope = "engaged" }: { account: JobsAccou
       return;
     }
     const body = targetKind === "opp" ? { jobs_opportunity_id: targetId } : { contact_id: Number(targetId) };
-    log.mutate({ ...body, type, description: note.trim(), activity_date: date || undefined,
+    log.mutate({ ...body, type, description: note.trim() || undefined, activity_date: date || undefined,
                  call_kind: type === "call" ? callKind : null } as Parameters<typeof log.mutate>[0],
       { onSuccess: reset });
   };
@@ -339,7 +339,7 @@ function AccountActivityTab({ account, scope = "engaged" }: { account: JobsAccou
           )}
           <input type="date" value={date} max={new Date().toISOString().slice(0, 10)} onChange={(e) => setDate(e.target.value)} className={inputCls} />
           <input value={note} onChange={(e) => setNote(e.target.value)}
-            placeholder={isIntro ? "Context (optional)" : "Note"} className={cn(inputCls, "min-w-[200px] flex-1")} />
+            placeholder={isIntro ? "Context (optional)" : "Note (optional)"} className={cn(inputCls, "min-w-[200px] flex-1")} />
           <button type="button" disabled={!canSubmit || log.isPending || introPending} onClick={submit} className="h-7 rounded bg-accent px-3 text-[12px] font-medium text-white hover:opacity-90 disabled:opacity-50">Log</button>
           {/* Full-width so the picker keeps its label instead of being squeezed
               between the note field and the Log button. */}
@@ -363,7 +363,7 @@ function TaskRollupRow({ t }: { t: AccountTask }) {
   );
 }
 
-function AccountTasksTab({ accountKey }: { accountKey: string }) {
+export function AccountTasksTab({ accountKey }: { accountKey: string }) {
   const { data = [], isLoading } = useAccountTasks(accountKey);
   return (
     <div className="flex flex-col gap-3 p-3">
@@ -392,7 +392,7 @@ function CommentRollupRow({ c }: { c: AccountComment }) {
   );
 }
 
-function AccountCommentsTab({ accountKey }: { accountKey: string }) {
+export function AccountCommentsTab({ accountKey }: { accountKey: string }) {
   const { data = [], isLoading } = useAccountComments(accountKey);
   return (
     <div className="flex flex-col gap-3 p-3">
@@ -419,7 +419,7 @@ function OppTag({ oppId, title }: { oppId: string; title: string | null }) {
 /** Roles for the account — the SAME full editor as the opportunity detail
  *  (OppRolesSection: add/edit title, salary, commitment, trial, hire, delete),
  *  grouped per opportunity so each role stays linked to its deal. */
-function AccountRolesTab({ account }: { account: JobsAccount }) {
+export function AccountRolesTab({ account }: { account: JobsAccount }) {
   const opps = account.opportunities;
   if (opps.length === 0) {
     return <div className="p-3 text-[11.5px] text-ink-4">Add an opportunity first — roles link to one.</div>;
@@ -476,7 +476,7 @@ function AddBuilderForm({ oppId, roleId, roleTitle, onDone }: { oppId: string; r
   );
 }
 
-function AccountBuildersTab({ account }: { account: JobsAccount }) {
+export function AccountBuildersTab({ account }: { account: JobsAccount }) {
   const key = account.account_key;
   const { data, isLoading } = useAccountBuilders(key);
   const { data: accountRoles = [] } = useAccountRoles(key);

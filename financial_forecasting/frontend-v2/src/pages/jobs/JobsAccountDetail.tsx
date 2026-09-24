@@ -8,7 +8,7 @@ import { Link, useParams } from "react-router-dom";
 import { Cloud, CloudOff, ExternalLink, Info } from "lucide-react";
 
 import { AccountAvatar } from "@/components/AccountAvatar";
-import { BackLink, SectionCard } from "@/components/detail";
+import { BackLink, EditField, SectionCard } from "@/components/detail";
 import { Tag } from "@/components/ui/Tag";
 import { Tooltip } from "@/components/ui/Tooltip";
 import { toast } from "sonner";
@@ -17,7 +17,6 @@ import { cn } from "@/lib/utils";
 import { accountStatusVariant } from "@/lib/accountStatus";
 import { useUpdateAccount } from "@/services/accounts";
 import {
-  useAccountProspects,
   useJobsAccounts,
   useJobsStaff,
   useUpdateJobsAccount,
@@ -26,9 +25,13 @@ import {
 import { isSfAccountId } from "@/services/jobsSf";
 import { PromoteAccountDialog } from "@/components/jobs/PromoteAccountDialog";
 
-import { ContactsLinkTab, OppsTab, OwnerSelect, jobsAccountPath } from "@/components/jobs/jobsEntity";
-import { JobsComments } from "@/components/jobs/JobsComments";
-import { JobsTasks } from "@/components/jobs/JobsTasks";
+import { OwnerSelect, jobsAccountPath } from "@/components/jobs/jobsEntity";
+// The same tab bodies the Accounts list opens under a row, so the page can do
+// everything the list can (Kwame 2026-09-24) and the two cannot drift apart.
+import {
+  AccountActivityTab, AccountBuildersTab, AccountCommentsTab, AccountContactsTab,
+  AccountOppsTab, AccountRolesTab, AccountTasksTab,
+} from "@/components/jobs/accountTabs";
 
 function relativeDays(iso: string | null): string {
   if (!iso) return "—";
@@ -59,9 +62,9 @@ function InvestorField({ account, accounts }: { account: JobsAccount; accounts: 
     [accounts, account.account_key]);
 
   return (
-    <div className="flex flex-col gap-2 rounded-lg border border-border-strong bg-surface px-3 py-2.5">
+    <div className="flex flex-col gap-2">
       <div className="flex flex-wrap items-center gap-2">
-        <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-4">Investor</span>
+        <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">Investor</span>
         {editing ? (
           <>
             <select
@@ -108,6 +111,14 @@ function InvestorField({ account, accounts }: { account: JobsAccount; accounts: 
   );
 }
 
+function ReadField({ label, value }: { label: string; value: string | null | undefined }) {
+  return (
+    <EditField label={label}>
+      <span className={cn("text-[12.5px]", value ? "text-ink-2" : "text-ink-4")}>{value || "—"}</span>
+    </EditField>
+  );
+}
+
 function Stat({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <div className="flex flex-col gap-0.5 rounded-lg border border-border-strong bg-surface px-3 py-2">
@@ -121,9 +132,20 @@ export function JobsAccountDetailPage() {
   const { accountKey } = useParams<{ accountKey: string }>();
   const key = decodeURIComponent(accountKey ?? "");
 
-  const { data: accounts = [], isLoading, isError, refetch } = useJobsAccounts();
+  // The engaged scope first: it is what the list loads by default, so arriving
+  // from the list is instant. An account outside it (no touches yet, say) used
+  // to read "not found"; now the page falls back to the full book for it.
+  const engagedQ = useJobsAccounts();
+  const inEngaged = useMemo(
+    () => (engagedQ.data ?? []).some((a) => a.account_key === key), [engagedQ.data, key]);
+  const allQ = useJobsAccounts(undefined, "all", { enabled: engagedQ.isSuccess && !inEngaged });
+  const scope: "engaged" | "all" = inEngaged ? "engaged" : "all";
+  const accounts = useMemo(
+    () => (inEngaged ? engagedQ.data : allQ.data) ?? [], [inEngaged, engagedQ.data, allQ.data]);
+  const isLoading = engagedQ.isLoading || (engagedQ.isSuccess && !inEngaged && allQ.isLoading);
+  const isError = engagedQ.isError || allQ.isError;
+  const refetch = () => { void engagedQ.refetch(); if (!inEngaged) void allQ.refetch(); };
   const account = useMemo(() => accounts.find((a) => a.account_key === key), [accounts, key]);
-  const { data: prospects = [] } = useAccountProspects(account?.account_key ?? null);
 
   const { data: staff = [] } = useJobsStaff();
   const updateAccount = useUpdateJobsAccount();
@@ -235,14 +257,6 @@ export function JobsAccountDetailPage() {
             </div>
           );
         })()}
-        <div className="ml-auto flex items-center gap-2">
-          <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">Owner</span>
-          <OwnerSelect
-            owner={account.owner_email}
-            staff={staff}
-            onSave={(email) => updateAccount.mutateAsync({ account: account.account, owner_email: email })}
-          />
-        </div>
       </div>
 
       {/* Stats */}
@@ -253,35 +267,60 @@ export function JobsAccountDetailPage() {
         <Stat label="Last activity" value={relativeDays(account.last_activity)} />
       </div>
 
-      {/* Firmographics — read-only, from public.companies. Bedrock shows them;
-          the enrichment pipeline owns them, so there's nothing to edit here. */}
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-        <Stat label="Company size" value={account.size_bucket || "—"} />
-        <Stat label="HQ" value={account.hq_location || "—"} />
-        <Stat label="Industry" value={account.industry || "—"} />
-        <Stat label="Company stage" value={account.company_stage || "—"} />
-      </div>
+      {/* Details — what you set on this account, in one place. Owner lived in
+          the header's far corner, where it read as a label rather than a
+          field. Firmographics sit alongside, read-only: public.companies owns
+          them and the enrichment pipeline fills them. */}
+      <SectionCard title="Details" collapsible={false} storageScope="jobs-account">
+        <div className="grid grid-cols-2 gap-x-8 gap-y-3 px-5 py-4 md:grid-cols-4">
+          <EditField label="Owner">
+            <OwnerSelect
+              owner={account.owner_email}
+              staff={staff}
+              onSave={(email) => updateAccount.mutateAsync({ account: account.account, owner_email: email }).then(() => undefined)}
+            />
+          </EditField>
+          <ReadField label="Company size" value={account.size_bucket} />
+          <ReadField label="HQ" value={account.hq_location} />
+          <ReadField label="Industry" value={account.industry} />
+          <ReadField label="Company stage" value={account.company_stage} />
+        </div>
+        {/* Investor — a relationship, not a label: the investor is itself an
+            account, so this links straight to it, and an investor's own page
+            lists the companies it owns. */}
+        <div className="border-t border-border-strong px-5 py-3">
+          <InvestorField account={account} accounts={accounts} />
+        </div>
+      </SectionCard>
 
-      {/* Investor — a relationship, not a label: the investor is itself an
-          account, so this links straight to it, and an investor's own page
-          lists the companies it owns. */}
-      <InvestorField account={account} accounts={accounts} />
-
-      {/* Sections */}
+      {/* Sections — in the order you work an account: the deals, the people,
+          what you did with them, then the roles and builders behind the deals. */}
       <SectionCard title={`Opportunities (${account.opp_count})`} storageScope="jobs-account" defaultOpen>
-        <OppsTab opps={account.opportunities} />
+        <AccountOppsTab account={account} />
       </SectionCard>
 
       <SectionCard title={`Contacts (${account.prospect_count})`} storageScope="jobs-account" defaultOpen>
-        <ContactsLinkTab contacts={prospects} />
+        <AccountContactsTab account={account} scope={scope} />
+      </SectionCard>
+
+      <SectionCard title="Activity" storageScope="jobs-account" defaultOpen>
+        <AccountActivityTab account={account} scope={scope} />
+      </SectionCard>
+
+      <SectionCard title="Roles" storageScope="jobs-account">
+        <AccountRolesTab account={account} />
+      </SectionCard>
+
+      <SectionCard title="Builders" storageScope="jobs-account">
+        <AccountBuildersTab account={account} />
       </SectionCard>
 
       <SectionCard title="Tasks" storageScope="jobs-account">
-        <div className="px-3 py-2"><JobsTasks parentType="account" parentId={account.account_key} /></div>
+        <AccountTasksTab accountKey={account.account_key} />
       </SectionCard>
 
       <SectionCard title="Comments" storageScope="jobs-account">
-        <div className="px-3 py-2"><JobsComments parentType="account" parentId={account.account_key} /></div>
+        <AccountCommentsTab accountKey={account.account_key} />
       </SectionCard>
 
       {promoteOpen && (

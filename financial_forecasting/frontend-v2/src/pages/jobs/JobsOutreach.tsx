@@ -189,7 +189,7 @@ function RowDrill({
             {open && (
               <div className="flex flex-col gap-3 bg-bg px-4 py-2 pl-10">
                 {g.contacts.map((c) => (
-                  <div key={c.contact_id} className="flex flex-col gap-1">
+                  <div key={c.contact_id ?? `unlinked:${c.name}`} className="flex flex-col gap-1">
                     <div className="flex items-baseline gap-2">
                       <span className="text-[12.5px] font-medium text-ink">{c.name || "Unknown contact"}</span>
                       <span className="text-[11px] text-ink-4">{c.touches.length} touch{c.touches.length === 1 ? "" : "es"}</span>

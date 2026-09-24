@@ -4215,6 +4215,8 @@ async def activity_trends_volume(
     at = _account_touch_sql(scope, owner)
     sends = _send_events_sql(scope, owner)
     calls = _call_events_sql(scope, owner, f"'call_{CALL_KIND_DEFAULT}'")
+    conv_owner = (f"AND {_CONVERSION_OWNER} = lower('{owner}')"
+                  if owner and _SAFE_EMAIL.match(owner) else "")
     g = granularity
 
     rows = await conn.fetch(f"""
@@ -4241,9 +4243,11 @@ async def activity_trends_volume(
         sent AS (SELECT date_trunc('{g}', ts) AS bucket, count(*) AS n FROM ({sends}) se GROUP BY 1),
         called AS (SELECT date_trunc('{g}', ts) AS bucket, count(*) AS n FROM ({calls}) ce GROUP BY 1),
         converted AS (
+          -- Same rows _converted_counts counts, owner filter included, so a
+          -- point on the line matches the Opportunities row for that window.
           SELECT date_trunc('{g}', m.converted_at) AS bucket, count(*) AS n
-          FROM bedrock.jobs_contact_membership m
-          WHERE m.converted_at IS NOT NULL GROUP BY 1
+          {_CONVERSION_FROM}
+          WHERE m.converted_at IS NOT NULL {conv_owner} GROUP BY 1
         ),
         all_buckets AS (
           SELECT bucket FROM activated UNION SELECT bucket FROM sent
@@ -4560,7 +4564,7 @@ def _scope_email_pred(col, scope):
 # queries (spliced in after WITH). Warm iff the contact's company had a Bedrock
 # presence — an opportunity, or another jobs-pipeline contact (membership) —
 # predating this contact's first touch; else cold. Decided once per contact.
-def _send_events_sql(scope, owner) -> str:
+def _send_events_sql(scope, owner, refs: bool = False) -> str:
     """Every outbound touch the scope made, one row each, as (metric, ts, contact_id).
 
     ONE definition, read by both the Outreach Activity card on
@@ -4574,16 +4578,28 @@ def _send_events_sql(scope, owner) -> str:
     Grain is the finest available. An email thread contributes one row per
     parsed message; a row with nothing parsed (hand-logged, Salesforce-sourced)
     contributes itself. The NOT EXISTS keeps those two disjoint.
+
+    `refs` adds (act_id, intro_id, actor): the row behind each event and who
+    sent it. The scorecard drill reads these same rows, so what a drill lists is
+    by construction what its number counted (Kwame 2026-09-24). It was a second
+    hand-written query and disagreed in three ways: a thread was one touch where
+    the count saw one per message, hand-logged emails and intros were missing,
+    and a touch with no linked contact was dropped by an inner join.
     """
+    act = ", a.id AS act_id, NULL::uuid AS intro_id" if refs else ""
+    msg_actor = ", lower(aem.from_email) AS actor" if refs else ""
+    row_actor = f", {_touch_actor('a')} AS actor" if refs else ""
+    intro_ref = (", NULL::uuid AS act_id, ir.id AS intro_id, "
+                 "lower(ir.requested_by_email) AS actor") if refs else ""
     return f"""
         SELECT 'direct_email_sent' AS metric, aem.sent_at AS ts,
-               a.participant_public_contact_id AS contact_id
+               a.participant_public_contact_id AS contact_id{act}{msg_actor}
         FROM bedrock.activity a
         JOIN bedrock.activity_email_message aem ON aem.activity_id = a.id
         WHERE a.deleted_at IS NULL AND a.type = 'email' AND {_message_actor(scope, owner)}
           AND {_not_autoreply('a')} AND {_jobs_relevant('a')}
         UNION ALL
-        SELECT 'direct_email_sent', a.activity_date, a.participant_public_contact_id
+        SELECT 'direct_email_sent', a.activity_date, a.participant_public_contact_id{act}{row_actor}
         FROM bedrock.activity a
         WHERE a.deleted_at IS NULL AND a.type = 'email'
           AND {_activity_actor('a', scope, owner)}
@@ -4591,34 +4607,36 @@ def _send_events_sql(scope, owner) -> str:
           AND NOT EXISTS (SELECT 1 FROM bedrock.activity_email_message m
                            WHERE m.activity_id = a.id)
         UNION ALL
-        SELECT 'linkedin_message_sent', a.activity_date, a.participant_public_contact_id
+        SELECT 'linkedin_message_sent', a.activity_date, a.participant_public_contact_id{act}{row_actor}
         FROM bedrock.activity a
         WHERE a.deleted_at IS NULL AND a.type = 'linkedin'
           AND {_activity_actor('a', scope, owner)} AND {_jobs_relevant('a')}
         UNION ALL
-        SELECT 'text_sent', a.activity_date, a.participant_public_contact_id
+        SELECT 'text_sent', a.activity_date, a.participant_public_contact_id{act}{row_actor}
         FROM bedrock.activity a
         WHERE a.deleted_at IS NULL AND a.type = 'text'
           AND {_activity_actor('a', scope, owner)} AND {_jobs_relevant('a')}
         UNION ALL
         -- Facilitated intro that was acted on.
-        SELECT 'facilitated_intro_sent', coalesce(ir.responded_at, ir.created_at), ir.contact_id
+        SELECT 'facilitated_intro_sent', coalesce(ir.responded_at, ir.created_at), ir.contact_id{intro_ref}
         FROM bedrock.intro_request ir
         WHERE ir.status IN ('accepted','completed') AND {_scope_intro_pred(scope, owner)}
     """
 
 
-def _call_events_sql(scope, owner, kind_expr: str) -> str:
+def _call_events_sql(scope, owner, kind_expr: str, refs: bool = False) -> str:
     """Every call the scope logged, as (metric, ts, contact_id).
 
     Same contract as _send_events_sql and the same reason: Calls Booked on the
     summary card and Total Calls on the scorecard are the same question.
     `kind_expr` is the call_kind SQL, which differs only by whether the column
-    exists yet.
+    exists yet. `refs` adds (act_id, intro_id, actor), as on _send_events_sql.
     """
+    extra = (f", a.id AS act_id, NULL::uuid AS intro_id, {_touch_actor('a')} AS actor"
+             if refs else "")
     return f"""
         SELECT {kind_expr} AS metric, a.activity_date AS ts,
-               a.participant_public_contact_id AS contact_id
+               a.participant_public_contact_id AS contact_id{extra}
         FROM bedrock.activity a
         WHERE a.deleted_at IS NULL AND a.type IN ('call','meeting')
           AND {_activity_actor('a', scope, owner)} AND {_jobs_relevant('a')}
@@ -4632,7 +4650,7 @@ def _call_events_sql(scope, owner, kind_expr: str) -> str:
 DORMANT_DAYS = 90
 
 
-def _account_touch_sql(scope, owner) -> str:
+def _account_touch_sql(scope, owner, with_contact: bool = False) -> str:
     """Every jobs touch mapped to an ACCOUNT, as (id, activity_date, company).
 
     A parenthesised subquery, not a CTE, so a caller can name it whatever it
@@ -4645,8 +4663,15 @@ def _account_touch_sql(scope, owner) -> str:
     nightly participant link, an email recipient, or a meeting attendee. DISTINCT
     on (activity, company) so one email to four people at one company is one
     account touch, which is what an account-level question means.
+
+    `with_contact` adds the counterpart's contact_id, one row per (activity,
+    contact). Only the Accounts Activated drill wants it: it has to name the
+    person at the account, and reaching them through the participant link alone
+    missed every account woken by an email to a recipient (Kwame 2026-09-24).
+    Anything counting accounts still counts DISTINCT company, so it is unmoved.
     """
     actor = _actor_sql("a", owner, scope)
+    contact_col = ", tc.contact_id" if with_contact else ""
     chan = ("CASE WHEN a.source='calendar-sync' OR a.type='meeting' THEN 'meeting' "
             "WHEN a.type IN ('email') OR a.source='gmail-sync' THEN 'email' ELSE 'other' END")
     return f"""(
@@ -4670,7 +4695,7 @@ def _account_touch_sql(scope, owner) -> str:
         JOIN public.contacts c ON lower(c.email) = lower(att->>'email')
         WHERE t.channel = 'meeting'
       )
-      SELECT DISTINCT tc.id, tc.activity_date, lower(trim(c.current_company)) AS company
+      SELECT DISTINCT tc.id, tc.activity_date, lower(trim(c.current_company)) AS company{contact_col}
       FROM touch_contact tc
       JOIN public.contacts c ON c.contact_id = tc.contact_id
       WHERE coalesce(trim(c.current_company), '') <> ''
@@ -4821,7 +4846,10 @@ async def outreach_scorecard(
     # windows at once, and each counts exactly what the card above it counts.
     windows = [(this_start, this_end), (last_start, last_end)]
     act_this, act_last = await _accounts_activated(conn, scope, owner, windows)
-    conv_this, conv_last = await _converted_counts(conn, windows)
+    # Follows the sender filter like every other row (Kwame 2026-09-24). It used
+    # to count the whole team even with one person selected, so "Viewing: Damon"
+    # showed the team's conversions and the drill disagreed with the row.
+    conv_this, conv_last = await _converted_counts(conn, windows, owner=owner)
     counts["accounts_activated"] = (act_this, act_last)
     counts["converted_opportunities"] = (conv_this, conv_last)
 
@@ -5166,11 +5194,17 @@ async def outreach_scorecard_detail(
             "entered_at": None, "touches": []})
 
     if key == "converted_opportunities":
+        # With an owner, only the conversions that resolve to them — the same
+        # predicate _converted_counts applies to that owner's number. Without
+        # this the Owner tab's drill listed the whole team's conversions under
+        # every person's count (Damon: 0, drill: 7).
+        owner_pred = (f"AND {_CONVERSION_OWNER} = lower('{owner}')"
+                      if owner and _SAFE_EMAIL.match(owner) else "")
         rows = await conn.fetch(f"""
             SELECT m.contact_id, c.full_name, c.current_company, m.converted_at,
                    {_CONVERSION_OWNER} AS actor
             {_CONVERSION_FROM}
-            WHERE m.converted_at >= $1 AND m.converted_at < $2
+            WHERE m.converted_at >= $1 AND m.converted_at < $2 {owner_pred}
             ORDER BY m.converted_at DESC LIMIT 500
         """, start, end)
         for r in rows:
@@ -5186,7 +5220,7 @@ async def outreach_scorecard_detail(
         # The accounts that came back from quiet, and the touches that woke them.
         # Grouped by account upstream in the UI, which is the right shape: the
         # number counts accounts, so the drill should open as a list of them.
-        at = _account_touch_sql(scope, owner)
+        at = _account_touch_sql(scope, owner, with_contact=True)
         rows = await conn.fetch(f"""
             WITH at AS (SELECT * FROM {at} q),
             woke AS (
@@ -5199,14 +5233,16 @@ async def outreach_scorecard_detail(
               ) p USING (company)
               WHERE p.last_prior IS NULL OR p.last_prior < ($1::date - {DORMANT_DAYS})
             )
-            SELECT a.participant_public_contact_id AS contact_id,
+            SELECT t.contact_id,
                    c.full_name, c.current_company, a.activity_date, a.type, a.subject,
                    lower(coalesce(nullif(substring(a.email_from from '<([^>]+)>'), ''),
                                   nullif(a.email_from, ''), a.logged_by)) AS actor
             FROM at t
             JOIN woke ON woke.company = t.company
             JOIN bedrock.activity a ON a.id = t.id
-            JOIN public.contacts c ON c.contact_id = a.participant_public_contact_id
+            -- The contact the helper mapped the touch through (participant,
+            -- recipient or attendee), so the company shown is the one counted.
+            JOIN public.contacts c ON c.contact_id = t.contact_id
             WHERE t.activity_date >= $1 AND t.activity_date < $2
             ORDER BY a.activity_date DESC LIMIT 500
         """, start, end)
@@ -5216,102 +5252,67 @@ async def outreach_scorecard_detail(
                 "date": r["activity_date"].isoformat() if r["activity_date"] else None,
                 "type": r["type"], "subject": r["subject"], "snippet": None,
                 "direction": "sent", "actor": r["actor"]})
-    elif key == "facilitated_intro_sent":
-        rows = await conn.fetch(f"""
-            SELECT ir.contact_id, c.full_name, c.current_company,
-                   coalesce(ir.responded_at, ir.created_at) AS activity_date,
-                   ir.specific_ask AS subject, ir.context AS snippet,
-                   lower(ir.requested_by_email) AS actor
-            FROM bedrock.intro_request ir
-            JOIN public.contacts c ON c.contact_id = ir.contact_id
-            WHERE ir.status IN ('accepted','completed')
-              AND {_scope_intro_pred(scope, owner)}
-              AND coalesce(ir.responded_at, ir.created_at) >= $1
-              AND coalesce(ir.responded_at, ir.created_at) < $2
-            ORDER BY activity_date DESC LIMIT 500
-        """, start, end)
-        for r in rows:
-            g = _contact(r["contact_id"], r["full_name"], r["current_company"])
-            g["touches"].append({
-                "date": r["activity_date"].isoformat() if r["activity_date"] else None,
-                "type": "intro", "subject": r["subject"], "snippet": r["snippet"],
-                "direction": "sent", "actor": r["actor"]})
     else:
-        email_sent = (
-            f"a.type = 'email' AND {_not_autoreply('a')} AND {_jobs_relevant('a')} AND EXISTS ("
-            f"  SELECT 1 FROM bedrock.activity_email_message aem WHERE aem.activity_id = a.id"
-            f"  AND {_message_actor(scope, owner)} AND aem.sent_at >= $1 AND aem.sent_at < $2)")
-        # Calls and meetings are one thing to this team (Kwame 2026-08-27), so
-        # both types count as a call everywhere the scorecard says "call".
-        calls = (f"a.type IN ('call','meeting') AND {_activity_actor('a', scope, owner)} "
-                 f"AND {_jobs_relevant('a')}")
-        windowed = "a.activity_date >= $1 AND a.activity_date < $2"
-        has_call_kind = await _has_column("bedrock", "activity", "call_kind")
-        # Pre-migration there is no call_kind column to filter on, so the three
-        # subtype drills would be a syntax error rather than an empty list.
-        # They come back empty instead, matching the disabled rows above.
-        def _kind(v: str) -> str:
-            if not has_call_kind:
-                # No column to filter on. Every call is general by default,
-                # so the general drill lists them all and the other two are
-                # empty, matching the rows above.
-                return f"{calls} AND {windowed}" if v == CALL_KIND_DEFAULT else "FALSE"
-            pred = (f"a.call_kind = '{v}'" if v != CALL_KIND_DEFAULT
-                    else f"coalesce(a.call_kind, '{CALL_KIND_DEFAULT}') = '{CALL_KIND_DEFAULT}'")
-            return f"{calls} AND {windowed} AND {pred}"
-        where = {
-            # Window + actor applied per MESSAGE — a follow-up sent this week in an
-            # old thread must appear in this week's drill.
-            "direct_email_sent": email_sent,
-            "linkedin_message_sent":
-                f"a.type = 'linkedin' AND {_activity_actor('a', scope, owner)} AND {_jobs_relevant('a')}",
-            "text_sent":
-                f"a.type = 'text' AND {_activity_actor('a', scope, owner)} AND {_jobs_relevant('a')}",
-            "total_calls": f"{calls} AND {windowed}",
-            "call_discovery": _kind("discovery"),
-            "call_general":   _kind("general"),
-            # The send roll-up. Calls are deliberately absent: they roll up
-            # to Total Calls instead, and the two totals are disjoint.
-            # Facilitated intros live in bedrock.intro_request and so aren't
-            # in this union either — they have their own drillable row, and
-            # folding a second table in here would double the query for a
-            # handful of records.
-            "total_outreach_activity":
-                f"(({email_sent}) OR (a.type IN ('linkedin','text') AND {_activity_actor('a', scope, owner)} "
-                f"AND {_jobs_relevant('a')} AND {windowed}))",
-        }.get(key)
-        if where is None:
+        # Every event row comes from _send_events_sql / _call_events_sql — the
+        # SAME SQL the scorecard counts — so a drill lists exactly the touches
+        # behind its number: one line per sent message, hand-logged rows and
+        # facilitated intros included, and touches with no linked contact
+        # grouped under their recipient rather than silently dropped.
+        from routes.jobs_intro import ASK_LABELS   # local: keeps the import one-way
+        send_keys = {"direct_email_sent", "linkedin_message_sent", "text_sent",
+                     "facilitated_intro_sent"}
+        if key in send_keys or key == "total_outreach_activity":
+            src = _send_events_sql(scope, owner, refs=True)
+            metric_pred = "TRUE" if key == "total_outreach_activity" else f"ev.metric = '{key}'"
+        elif key == "total_calls" or key in _CALL_METRICS:
+            has_call_kind = await _has_column("bedrock", "activity", "call_kind")
+            # Identical to the scorecard's kind expression, so pre-migration the
+            # subtype drills come back empty exactly when their rows read 0.
+            kind_sql = (f"'call_' || coalesce(a.call_kind, '{CALL_KIND_DEFAULT}')" if has_call_kind
+                        else f"'call_{CALL_KIND_DEFAULT}'")
+            src = _call_events_sql(scope, owner, kind_sql, refs=True)
+            metric_pred = "TRUE" if key == "total_calls" else f"ev.metric = '{key}'"
+        else:
             raise HTTPException(400, "invalid activity key")
-        # Keys that window inside `where` (per-message, or per-branch in the
-        # roll-up) take TRUE here; the rest window on the activity row itself.
-        date_pred = ("TRUE" if key in ("direct_email_sent", "total_outreach_activity",
-                                       "total_calls", *_CALL_METRICS)
-                     else "a.activity_date >= $1 AND a.activity_date < $2")
         rows = await conn.fetch(f"""
-            SELECT a.participant_public_contact_id AS contact_id, c.full_name, c.current_company,
-                   a.activity_date, a.type, a.subject, a.email_snippet, a.email_from,
-                   -- Prefer the per-message sender: a thread row carries only the
-                   -- FIRST message's author, so a follow-up sent this week by
-                   -- someone else would otherwise be credited to the wrong person.
-                   coalesce(lower(msg.from_email), {_touch_actor('a')}) AS actor
-            FROM bedrock.activity a
-            JOIN public.contacts c ON c.contact_id = a.participant_public_contact_id
-            LEFT JOIN LATERAL (
-                SELECT aem.from_email
-                FROM bedrock.activity_email_message aem
-                WHERE aem.activity_id = a.id AND {_message_actor(scope, owner)}
-                  AND aem.sent_at >= $1 AND aem.sent_at < $2
-                ORDER BY aem.sent_at LIMIT 1
-            ) msg ON true
-            WHERE a.deleted_at IS NULL AND {date_pred} AND {where}
-            ORDER BY c.current_company NULLS LAST, a.activity_date DESC LIMIT 500
+            SELECT ev.metric, ev.ts, ev.contact_id, ev.actor,
+                   c.full_name, c.current_company,
+                   a.type, a.subject, a.email_snippet, a.email_from,
+                   (a.email_to)[1] AS first_to,
+                   ir.specific_ask, ir.context
+            FROM ({src}) ev
+            LEFT JOIN bedrock.activity a ON a.id = ev.act_id
+            LEFT JOIN bedrock.intro_request ir ON ir.id = ev.intro_id
+            LEFT JOIN public.contacts c ON c.contact_id = ev.contact_id
+            WHERE ev.ts >= $1 AND ev.ts < $2 AND {metric_pred}
+            ORDER BY ev.ts DESC
+            LIMIT 2000
         """, start, end)
         for r in rows:
-            g = _contact(r["contact_id"], r["full_name"], r["current_company"])
+            if r["contact_id"] is not None:
+                g = _contact(r["contact_id"], r["full_name"], r["current_company"])
+            else:
+                # No contact linked (an email to someone not in the CRM, or a
+                # deal-level log). Still a touch the number counted, so it is
+                # listed — under the address it went to when there is one.
+                who = (r["first_to"] or "").strip().lower() or "Not linked to a contact"
+                g = contacts.setdefault(f"unlinked:{who}", {
+                    "contact_id": None, "name": who, "company": None,
+                    "entered_at": None, "touches": []})
+            if r["metric"] == "facilitated_intro_sent":
+                g["touches"].append({
+                    "date": r["ts"].isoformat() if r["ts"] else None,
+                    "type": "intro",
+                    "subject": ASK_LABELS.get(r["specific_ask"] or "", r["specific_ask"]) or "Facilitated intro",
+                    "snippet": r["context"], "direction": "sent", "actor": r["actor"]})
+                continue
             g["touches"].append({
-                "date": r["activity_date"].isoformat() if r["activity_date"] else None,
+                "date": r["ts"].isoformat() if r["ts"] else None,
                 "type": r["type"], "subject": r["subject"], "snippet": r["email_snippet"],
-                "direction": _touch_direction(r["type"], r["email_from"]),
+                # Every send event is outbound by definition; a call or meeting
+                # keeps its own label.
+                "direction": ("sent" if r["metric"] in send_keys
+                              else _touch_direction(r["type"], r["email_from"])),
                 "actor": r["actor"]})
     items = sorted(contacts.values(), key=lambda g: (-(len(g["touches"])), g["company"] or ""))
     # Distinct actors per contact, so the collapsed row can name who worked it
@@ -7973,39 +7974,7 @@ async def get_contact(
     # the Outreach scorecard counts is the one touch missing from the contact's
     # own timeline. Shaped like an activity row rather than given a section of
     # its own: it is a touch, and it belongs in sequence with the rest.
-    from routes.jobs_intro import ASK_LABELS   # local: keeps the import one-way
-
-    rows_intro = await conn.fetch(
-        """
-        SELECT ir.id, ir.specific_ask, ir.context, ir.status, ir.requested_by_email,
-               coalesce(ir.responded_at, ir.created_at) AS activity_date,
-               m.display_name AS connector_name, m.email AS connector_email
-        FROM bedrock.intro_request ir
-        LEFT JOIN bedrock.staff_user_id_map m ON m.staff_user_id = ir.connector_staff_id
-        WHERE ir.contact_id = $1 AND ir.status IN ('accepted', 'completed')
-        ORDER BY coalesce(ir.responded_at, ir.created_at) DESC
-        LIMIT 50
-        """,
-        contact_id,
-    )
-    for r in rows_intro:
-        via = r["connector_name"] or r["connector_email"] or "a colleague"
-        ask = ASK_LABELS.get(r["specific_ask"] or "", r["specific_ask"])
-        all_activity.append({
-            "id": str(r["id"]),
-            "type": "intro",
-            "subject": f"Facilitated intro via {via}" + (f" · {ask}" if ask else ""),
-            "description": r["context"],
-            "activity_date": r["activity_date"],
-            "logged_by": r["requested_by_email"],
-            "source": "manual",
-            "email_from": None, "email_snippet": None,
-            "meeting_duration_minutes": None, "deleted_at": None,
-            # An intro is a jobs touch by definition — it is only ever created
-            # from the jobs tools — so it never goes through the classifier.
-            "jobs_relevance": "jobs", "jobs_relevance_override": "jobs",
-            "is_jobs": True,
-        })
+    all_activity.extend(await _intro_activity_rows(conn, [contact_id]))
 
     all_activity.sort(key=lambda x: x.get("activity_date") or "", reverse=True)
     activity = all_activity[:150]
@@ -8091,6 +8060,13 @@ async def get_contact(
     elif row["deal_id2"]:
         deal = {"id": str(row["deal_id2"]), "account_name": row["deal_account2"], "stage": row["deal_stage2"], "owner_email": None}
 
+    # User-facing tags only — the curated catalog, same rule as the list, so a
+    # system marker (email_review) never reaches the tag editor.
+    crm_tags = await conn.fetchval(
+        "SELECT ARRAY(SELECT t FROM unnest(coalesce($1::text[], '{}'::text[])) t "
+        "WHERE t IN (SELECT slug FROM bedrock.contact_tag_catalog))",
+        list(row["tags"] or []))
+
     return {
         "success": True,
         "data": {
@@ -8104,6 +8080,11 @@ async def get_contact(
             "contact_stage":   row["contact_stage"],
             "linkedin_url":    row["linkedin_url"],
             "airtable_id":     row["airtable_id"],
+            # The three the Contacts list edits and this page didn't return, so
+            # the detail page and drawer can edit them too (Kwame 2026-09-24).
+            "owner_email":     row["owner_email"],
+            "is_jobs_contact": row["is_jobs_contact"],
+            "crm_tags":        list(crm_tags or []),
             "deal":            deal,
             "activity":        [dict(a) for a in activity],
             "connected_staff": connected_staff,
@@ -8120,6 +8101,50 @@ CONTACT_SELECT = """
     SELECT contact_id, first_name, last_name, full_name, email,
            current_title, current_company, contact_stage, linkedin_url, source, airtable_id
 """
+
+async def _intro_activity_rows(conn, contact_ids: list[int], limit: int = 50) -> list[dict]:
+    """Acted-on facilitated intros for these contacts, shaped like activity rows.
+
+    Shared by the contact timeline and the opportunity timeline, so an intro
+    logged from either place reads the same in both (Kwame 2026-09-24)."""
+    if not contact_ids:
+        return []
+    from routes.jobs_intro import ASK_LABELS   # local: keeps the import one-way
+
+    rows = await conn.fetch(
+        """
+        SELECT ir.id, ir.specific_ask, ir.context, ir.status, ir.requested_by_email,
+               coalesce(ir.responded_at, ir.created_at) AS activity_date,
+               m.display_name AS connector_name, m.email AS connector_email
+        FROM bedrock.intro_request ir
+        LEFT JOIN bedrock.staff_user_id_map m ON m.staff_user_id = ir.connector_staff_id
+        WHERE ir.contact_id = ANY($1::int[]) AND ir.status IN ('accepted', 'completed')
+        ORDER BY coalesce(ir.responded_at, ir.created_at) DESC
+        LIMIT $2
+        """,
+        contact_ids, limit,
+    )
+    out = []
+    for r in rows:
+        via = r["connector_name"] or r["connector_email"] or "a colleague"
+        ask = ASK_LABELS.get(r["specific_ask"] or "", r["specific_ask"])
+        out.append({
+            "id": str(r["id"]),
+            "type": "intro",
+            "subject": f"Facilitated intro via {via}" + (f" · {ask}" if ask else ""),
+            "description": r["context"],
+            "activity_date": r["activity_date"],
+            "logged_by": r["requested_by_email"],
+            "source": "manual",
+            "email_from": None, "email_snippet": None,
+            "meeting_duration_minutes": None, "deleted_at": None,
+            # An intro is a jobs touch by definition — it is only ever created
+            # from the jobs tools — so it never goes through the classifier.
+            "jobs_relevance": "jobs", "jobs_relevance_override": "jobs",
+            "is_jobs": True,
+        })
+    return out
+
 
 async def _resolve_contacts(conn, sf_contact_ids: list[str]) -> list[dict]:
     """Resolve contact refs to public.contacts records.
@@ -8437,12 +8462,18 @@ async def get_opportunity(
         opp_id,
         account_id,
     )
+    # Intros for the deal's contacts, so one logged from the Pipeline drawer
+    # shows up in the deal's own feed as well as the contact's.
+    all_activity = [dict(a) for a in activity]
+    all_activity.extend(await _intro_activity_rows(
+        conn, [c["contact_id"] for c in contacts if c.get("contact_id") is not None]))
+    all_activity.sort(key=lambda x: x.get("activity_date") or "", reverse=True)
     return {
         "success": True,
         "data": {
             **_norm_opp(dict(row)),
             "stage_history": [dict(h) for h in history],
-            "activity":      [dict(a) for a in activity],
+            "activity":      all_activity,
             "contacts":      contacts,
         },
     }
@@ -10646,7 +10677,10 @@ class ActivityCreate(BaseModel):
     jobs_opportunity_id: Optional[str] = None
     contact_id:          Optional[int] = None   # log against a prospect instead of a deal
     type:                str                     # call | text | linkedin | email
-    description:         str
+    # Optional (Kwame 2026-09-24): "I texted her" is a complete record, and
+    # demanding prose before the touch will save is how touches go unlogged.
+    # The column is nullable, and synced rows already carry NULL here.
+    description:         Optional[str] = None
     activity_date:       Optional[datetime] = None
     subject:             Optional[str] = None
     call_kind:           Optional[str] = None    # discovery | solution | general (calls only)
@@ -10688,6 +10722,7 @@ async def log_activity(
     #      register as emailed.
     is_email = body.type == "email"
     relevance = "jobs" if is_email else None
+    description = (body.description or "").strip() or None
 
     if body.jobs_opportunity_id:
         opp_id = _uuid.UUID(body.jobs_opportunity_id)
@@ -10701,7 +10736,7 @@ async def log_activity(
             """,
             body.type,
             body.subject or f"{body.type.capitalize()} — {user_email}",
-            body.description,
+            description,
             body.activity_date,
             opp_id,
             user_email,
@@ -10728,7 +10763,7 @@ async def log_activity(
             """,
             body.type,
             body.subject or f"{body.type.capitalize()} — {user_email}",
-            body.description,
+            description,
             body.activity_date,
             body.contact_id,
             user_email,
