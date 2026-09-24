@@ -5,12 +5,14 @@ import { ExternalLink, Linkedin, Mail, Phone } from "lucide-react";
 import { Drawer } from "@/components/ui/Drawer";
 import { StageChip } from "@/components/ui/StageChip";
 import { Tag } from "@/components/ui/Tag";
+import { TaskListTab } from "@/components/expand/TaskListTab";
 import { fmtDate, fmtMoney, initials } from "@/lib/format";
 import { isOpen, stageStatus } from "@/lib/stages";
 import { useActivities } from "@/services/activities";
 import { useContacts } from "@/services/contacts";
-import { useOpportunities } from "@/services/opportunities";
-import type { SfContact } from "@/types/salesforce";
+import { useContactTasks, useCreateGenericTask, useOpportunities } from "@/services/opportunities";
+import { useActiveUsers } from "@/services/users";
+import type { SfContact, SfTask } from "@/types/salesforce";
 
 export function ContactDrawer({
   contact,
@@ -62,6 +64,15 @@ function ContactDrawerBody({ contact }: { contact: SfContact }) {
     contactId: contact.Id,
     limit: 30,
   });
+
+  const { data: tasks = [], isLoading: tasksLoading } = useContactTasks(contact.Id);
+  const usersQ = useActiveUsers();
+  const ownerOptions = useMemo(
+    () => (usersQ.data ?? []).map((u) => ({ value: u.Id, label: u.Name })),
+    [usersQ.data],
+  );
+  const createTask = useCreateGenericTask();
+  const taskContextResolver = (t: SfTask) => t.WhatName ?? null;
 
   // Account count: union of AccountId + Primary Affiliation across all
   // contact rows for this person (deduped). For one human across multiple
@@ -216,26 +227,23 @@ function ContactDrawerBody({ contact }: { contact: SfContact }) {
         )}
       </Section>
 
-      {/* Tasks — placeholder. No backend endpoint exists for per-contact
-          SF tasks (WhoId-keyed). The Account drawer queries tasks per opp,
-          which won't include unrelated tasks logged directly against this
-          person. Surfaced explicitly so we don't quietly under-report. */}
       <Section title="Tasks">
-        <div className="px-4 py-4 text-[12px] text-ink-3">
-          <div className="font-medium text-ink-2">
-            Per-contact tasks: backend endpoint{" "}
-            <code className="rounded bg-surface-2 px-1 py-px text-[11px]">
-              /api/salesforce/contacts/{"{id}"}/tasks
-            </code>{" "}
-            doesn't exist yet.
-          </div>
-          <div className="mt-1 text-ink-3">
-            TODO: add a server route that returns SF tasks where{" "}
-            <code className="text-[11px]">WhoId</code> = the contact id, then
-            wire it here. For now, opp-scoped tasks live on the Account
-            drawer.
-          </div>
-        </div>
+        <TaskListTab
+          tasks={tasks}
+          isLoading={tasksLoading}
+          placeholder="Add a task linked to this contact — Enter to create"
+          emptyMessage="No tasks linked to this contact."
+          ownerOptions={ownerOptions}
+          onCreate={async ({ subject, ownerId, activityDate }) => {
+            await createTask.mutateAsync({
+              Subject: subject,
+              WhoId: contact.Id,
+              OwnerId: ownerId ?? undefined,
+              ActivityDate: activityDate ?? undefined,
+            });
+          }}
+          contextResolver={taskContextResolver}
+        />
       </Section>
 
       {/* Activity timeline */}
