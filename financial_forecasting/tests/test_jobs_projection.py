@@ -39,19 +39,19 @@ def test_quarter_buckets_and_split():
         _row(1, tcd=date(2026, 11, 3), est=5, roles=2),
         # roles beyond the estimate never go negative
         _row(2, tcd=date(2026, 12, 1), est=1, roles=3),
-        # won this quarter with roles; won last quarter with no roles -> estimate
+        # won this quarter with roles; won this quarter with no roles -> estimate
         _row(3, stage="closed_won", won_at=datetime(2026, 8, 1, tzinfo=timezone.utc), est=9, roles=2),
-        _row(4, stage="closed_won", won_at=datetime(2026, 5, 1, tzinfo=timezone.utc), est=4, roles=0),
+        _row(4, stage="closed_won", won_at=datetime(2026, 9, 1, tzinfo=timezone.utc), est=4, roles=0),
         # open: past-due and undated
         _row(5, tcd=date(2026, 3, 1), est=2),
         _row(6, est=3, roles=1),
         # won with no date anywhere: counted, not plotted
         _row(7, stage="closed_won", won_at=None, roles=1),
     ])
-    assert list(b)[:5] == ["2026-04-01", "2026-07-01", "2026-10-01", "2027-01-01", "2027-04-01"]
+    # Starts at the current quarter.
+    assert list(b)[:4] == ["2026-07-01", "2026-10-01", "2027-01-01", "2027-04-01"]
     assert b["2026-10-01"]["confirmed"] == 5 and b["2026-10-01"]["estimated"] == 3
-    assert b["2026-07-01"]["won"] == 2 and b["2026-07-01"]["kind"] == "current"
-    assert b["2026-04-01"]["won"] == 4
+    assert b["2026-07-01"]["won"] == 6 and b["2026-07-01"]["kind"] == "current"
     assert b["overdue"]["estimated"] == 2
     assert b["undated"]["confirmed"] == 1 and b["undated"]["estimated"] == 2
     assert d["won_undated"] == 1
@@ -72,9 +72,9 @@ def test_month_targets_are_a_third_of_the_quarter():
     assert b["2026-10-01"]["target"] == 12 and b["2026-07-01"]["target"] is None
     b, _ = _get([], granularity="month")
     assert b["2026-11-01"]["target"] == 4.0
-    # Months cover whole quarters: Apr 2026 (last quarter) .. Mar 2027.
+    # Months cover the same four whole quarters: Jul 2026 .. Jun 2027.
     months = [k for k in b if k not in ("overdue", "undated")]
-    assert months[0] == "2026-04-01" and months[-1] == "2027-03-01" and len(months) == 12
+    assert months[0] == "2026-07-01" and months[-1] == "2027-06-01" and len(months) == 12
     assert b["2026-11-01"]["quarter"] == "2026-10-01" and b["2026-11-01"]["quarter_label"] == "Q4 2026"
 
 

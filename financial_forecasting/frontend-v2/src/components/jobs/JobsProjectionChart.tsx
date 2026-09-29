@@ -4,28 +4,44 @@ import { Loader2 } from "lucide-react";
 
 import { Drawer } from "@/components/ui/Drawer";
 import { cn } from "@/lib/utils";
+import { DeltaChip } from "@/components/jobs/DeltaChip";
 import {
   DEAL_TYPE_LABELS, useJobsProjection,
   type ProjectionBucket, type ProjectionGranularity,
 } from "@/services/jobs";
 
 /**
- * Jobs projection (Kwame 2026-09-29): per quarter or month, the jobs already
- * won, the roles confirmed on open deals, and the roles still only estimated,
- * against the jobs target. A table, not a chart (Kwame 2026-09-29): the
- * numbers are what gets read, and the bars added nothing the row totals
- * didn't already say.
+ * Jobs projection (Kwame 2026-09-29): one row per period, starting with the
+ * current quarter, and the columns Target, Closed Won Jobs, Delta to Target,
+ * Confirmed Roles, Estimated Jobs. Delta sits beside Closed Won because it is
+ * the gap on what has actually landed: Closed Won minus Target, in the same
+ * chip the Outreach Activity Pipeline uses.
  *
- * Monthly adds a quarter row above the months, so a month is always read
- * inside its quarter (and next to the quarter's target).
+ * Monthly nests each quarter's months under a quarter row, so a month is
+ * always read inside its quarter.
  */
-const ROWS = [
-  { key: "won",       label: "Closed Won",      note: "Roles on won deals (or the estimate, if none were logged), by close date" },
-  { key: "confirmed", label: "Confirmed Roles", note: "Roles created on open deals (cancelled excluded), by target close" },
-  { key: "estimated", label: "Estimated Roles", note: "Estimated jobs not yet backed by a created role, by target close" },
-] as const;
+type Row = {
+  key: string; label: string; target: number | null; won: number; confirmed: number;
+  estimated: number; current: boolean; level: "quarter" | "month" | "catchall";
+  bucket: ProjectionBucket;
+};
+
+const COLS = ["Target", "Closed Won Jobs", "Delta to Target", "Confirmed Roles", "Estimated Jobs"];
 
 const fmt = (n: number) => (Number.isInteger(n) ? String(n) : n.toFixed(1));
+
+/** One quarter's months rolled into a single bucket (for the quarter row and its drill). */
+function rollUp(label: string, key: string, months: ProjectionBucket[]): ProjectionBucket {
+  const sum = (k: "won" | "confirmed" | "estimated") => months.reduce((n, m) => n + m[k], 0);
+  const targets = months.map((m) => m.target).filter((t): t is number => t != null);
+  return {
+    ...months[0], key, label, kind: months.some((m) => m.kind === "current") ? "current" : months[0].kind,
+    won: sum("won"), confirmed: sum("confirmed"), estimated: sum("estimated"),
+    total: sum("won") + sum("confirmed") + sum("estimated"),
+    target: targets.length ? Math.round(targets.reduce((a, b) => a + b, 0)) : null,
+    deals: months.flatMap((m) => m.deals),
+  };
+}
 
 export function JobsProjectionChart({ granularity, owner, dealType, nameOf }: {
   granularity: ProjectionGranularity;
@@ -43,109 +59,59 @@ export function JobsProjectionChart({ granularity, owner, dealType, nameOf }: {
     return <div className="flex h-[100px] items-center justify-center text-[12px] text-ink-4">Couldn't load the projection.</div>;
   }
 
-  const buckets = data.buckets;
-  const monthly = data.granularity === "month";
-
-  // Quarter header groups for the monthly view: consecutive months that share
-  // a quarter, then one cell per catch-all.
-  const groups: { key: string; label: string; span: number; target: number | null; current: boolean }[] = [];
-  if (monthly) {
-    for (const b of buckets) {
-      const last = groups[groups.length - 1];
-      const key = b.quarter ?? b.key;
-      if (b.quarter && last && last.key === key) {
-        last.span += 1;
-        if (b.target != null) last.target = (last.target ?? 0) + b.target;
-        last.current ||= b.kind === "current";
-      } else {
-        groups.push({ key, label: b.quarter_label ?? "", span: 1, target: b.quarter ? b.target : null, current: b.kind === "current" });
-      }
+  const toRow = (b: ProjectionBucket, level: Row["level"]): Row => ({
+    key: b.key, label: b.label, target: b.target, won: b.won, confirmed: b.confirmed,
+    estimated: b.estimated, current: b.kind === "current", level, bucket: b,
+  });
+  const periods = data.buckets.filter((b) => b.start);
+  const catchalls = data.buckets.filter((b) => !b.start);
+  const rows: Row[] = [];
+  if (data.granularity === "month") {
+    const byQ = new Map<string, ProjectionBucket[]>();
+    for (const b of periods) (byQ.get(b.quarter!) ?? byQ.set(b.quarter!, []).get(b.quarter!)!).push(b);
+    for (const [q, months] of byQ) {
+      rows.push(toRow(rollUp(months[0].quarter_label ?? q, `q-${q}`, months), "quarter"));
+      for (const m of months) rows.push(toRow(m, "month"));
     }
+  } else {
+    for (const b of periods) rows.push(toRow(b, "quarter"));
   }
-
-  const cellCls = (b: ProjectionBucket, first: boolean) => cn(
-    "px-2 py-1.5 text-right",
-    b.kind === "current" && "bg-accent-soft/40",
-    // A rule where each quarter starts, and before the catch-alls.
-    first && "border-l border-border-strong",
-  );
-  const startsGroup = (i: number) =>
-    i > 0 && (monthly
-      ? (buckets[i].quarter ?? buckets[i].key) !== (buckets[i - 1].quarter ?? buckets[i - 1].key)
-      : buckets[i].kind === "overdue");
+  for (const b of catchalls) rows.push(toRow(b, "catchall"));
 
   return (
     <div className="overflow-x-auto">
-      <table className={cn("w-full text-[12.5px] tabular-nums", monthly ? "min-w-[1100px]" : "min-w-[680px]")}>
+      <table className="w-full min-w-[640px] text-[12.5px] tabular-nums">
         <thead>
-          {monthly && (
-            <tr className="text-[11px] font-semibold text-ink-2">
-              <th />
-              {groups.map((g, gi) => (
-                <th key={g.key} colSpan={g.span}
-                  className={cn("px-2 pb-1 pt-0.5 text-center", g.current && "text-ink",
-                    gi > 0 && "border-l border-border-strong")}>
-                  {g.label ? (
-                    <>
-                      {g.label}{g.current ? " · now" : ""}
-                      <span className="ml-1.5 font-normal text-ink-4">
-                        {g.target != null ? `target ${Math.round(g.target)}` : "no target"}
-                      </span>
-                    </>
-                  ) : null}
-                </th>
-              ))}
-            </tr>
-          )}
           <tr className="border-b border-border-strong text-[10.5px] uppercase tracking-wider text-ink-3">
-            <th className="py-1.5 pr-3 text-left font-semibold">Jobs</th>
-            {buckets.map((b, i) => (
-              <th key={b.key} className={cn(cellCls(b, startsGroup(i)), "font-semibold", b.kind === "current" && "text-ink")}>
-                {monthly && b.start ? b.label.split(" ")[0] : b.label}
-                {!monthly && b.kind === "current" ? " · now" : ""}
-              </th>
-            ))}
+            <th className="py-1.5 pr-3 text-left font-semibold">Period</th>
+            {COLS.map((c) => <th key={c} className="px-3 py-1.5 text-right font-semibold">{c}</th>)}
           </tr>
         </thead>
         <tbody>
-          {ROWS.map((r) => (
-            <tr key={r.key} className="border-t border-border">
-              <td className="py-1.5 pr-3 text-ink-2" title={r.note}>{r.label}</td>
-              {buckets.map((b, i) => (
-                <td key={b.key} className={cn(cellCls(b, startsGroup(i)), "text-ink-2")}>{b[r.key] || "—"}</td>
-              ))}
-            </tr>
-          ))}
-          <tr className="border-t border-border-strong font-semibold">
-            <td className="py-1.5 pr-3 text-ink">Total</td>
-            {buckets.map((b, i) => (
-              <td key={b.key} className={cellCls(b, startsGroup(i))}>
-                <button type="button" onClick={() => setDrill(b)} disabled={b.deals.length === 0}
-                  className="text-ink hover:text-accent hover:underline disabled:cursor-default disabled:text-ink-4 disabled:no-underline"
-                  title={b.deals.length ? "Show the deals" : undefined}>
-                  {b.total || "—"}
-                </button>
-              </td>
-            ))}
-          </tr>
-          <tr className="border-t border-border">
-            <td className="py-1.5 pr-3 text-ink-3">Target</td>
-            {buckets.map((b, i) => (
-              <td key={b.key} className={cn(cellCls(b, startsGroup(i)), "text-ink-3")}>{b.target != null ? fmt(b.target) : "—"}</td>
-            ))}
-          </tr>
-          <tr className="border-t border-border">
-            <td className="py-1.5 pr-3 text-ink-3">vs target</td>
-            {buckets.map((b, i) => {
-              const gap = b.target == null ? null : b.total - b.target;
-              return (
-                <td key={b.key} className={cn(cellCls(b, startsGroup(i)),
-                  gap == null ? "text-ink-4" : gap >= 0 ? "text-[var(--green)]" : "text-[var(--red)]")}>
-                  {gap == null ? "—" : `${gap > 0 ? "+" : ""}${fmt(gap)}`}
+          {rows.map((r, i) => {
+            const firstCatchall = r.level === "catchall" && rows[i - 1]?.level !== "catchall";
+            const isQuarterInMonthly = data.granularity === "month" && r.level === "quarter";
+            return (
+              <tr key={r.key}
+                onClick={() => r.bucket.deals.length && setDrill(r.bucket)}
+                title={r.bucket.deals.length ? "Show the deals" : undefined}
+                className={cn("border-t", r.bucket.deals.length && "cursor-pointer hover:bg-surface-2/60",
+                  firstCatchall ? "border-t-2 border-border-strong" : isQuarterInMonthly && i > 0 ? "border-border-strong" : "border-border",
+                  isQuarterInMonthly && "bg-surface-2/50",
+                  r.current && r.level !== "month" && "bg-accent-soft/40")}>
+                <td className={cn("py-2 pr-3",
+                  r.level === "month" ? "pl-5 text-ink-2" : r.level === "catchall" ? "text-ink-3" : "font-semibold text-ink")}>
+                  {r.label}
+                  {r.current && r.level !== "month" && <span className="ml-1.5 text-[10.5px] font-semibold uppercase tracking-wider text-accent-ink">now</span>}
                 </td>
-              );
-            })}
-          </tr>
+                <td className="px-3 py-2 text-right text-ink-2">{r.target != null ? fmt(r.target) : "—"}</td>
+                <td className={cn("px-3 py-2 text-right", r.level === "month" ? "text-ink-2" : "font-semibold text-ink")}>{r.won || "—"}</td>
+                <td className="px-3 py-2 text-right"><DeltaChip actual={r.won} target={r.target} /></td>
+                <td className="px-3 py-2 text-right text-ink-2">{r.confirmed || "—"}</td>
+                <td className="px-3 py-2 text-right text-ink-2">{r.estimated || "—"}</td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
 

@@ -1,4 +1,5 @@
 import { Fragment, useMemo, useState } from "react";
+import { DeltaChip } from "@/components/jobs/DeltaChip";
 import { Link } from "react-router-dom";
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip as ReTooltip } from "recharts";
 import { ChevronRight, ChevronDown, Loader2, Users } from "lucide-react";
@@ -927,27 +928,6 @@ function ActivityPipelineBlock({ activityPipeline, granularity, scope, owner, ra
 }
 
 // ── Activity Pipeline · the owner cut ────────────────────────────────────────
-
-/** The gap to a target, as a signed number.
- *
- *  One component for both cuts of the Activity Pipeline (Kwame 2026-09-21). The
- *  Activity tab used to show this as a percentage, which asked you to do
- *  arithmetic to answer "how many more do I owe" — the only question the column
- *  is there for. Three states, deliberately distinct: no target is a dash,
- *  exactly on target is a green 0 with no sign, and anything else is signed. */
-function DeltaChip({ actual, target }: { actual: number; target: number | null | undefined }) {
-  if (target == null) return <span className="text-ink-4">—</span>;
-  const d = actual - target;
-  return (
-    <span className={cn("inline-flex items-center rounded px-1.5 py-0.5 text-[12.5px] font-semibold tabular-nums",
-      // Hitting the number exactly is a pass, so 0 is green (Kwame 2026-09-21,
-      // reversing the grey we briefly shipped). Red is reserved for a shortfall
-      // — the only state that asks someone to do something.
-      d >= 0 ? "bg-green-soft text-green" : "bg-red-soft text-red")}>
-      {d > 0 ? "+" : ""}{d}
-    </span>
-  );
-}
 
 /** A column-group cap: centred, ruled underneath. Mirrors Volume / Conversion
  *  on Contact Pipeline so the two tables read as one system. */

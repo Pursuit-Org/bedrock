@@ -3199,9 +3199,9 @@ async def opportunities_projection(
     conn=Depends(get_db),
 ):
     """Jobs by period: won, confirmed, and estimated-not-yet-confirmed, with the
-    jobs target (Kwame 2026-09-29). Quarterly: last quarter, this one and the
-    next three. Monthly: the twelve months of last quarter through the next
-    two, so months group cleanly under quarter headers. Plus two catch-alls.
+    jobs target (Kwame 2026-09-29). Quarterly: this quarter and the next
+    three. Monthly: the same twelve months, grouped under quarter headers.
+    Plus two catch-alls.
 
     Per deal:
       * Closed Won lands in the period it closed (closed_at). Its jobs are the
@@ -3222,12 +3222,13 @@ async def opportunities_projection(
     anchor = today or datetime.now(timezone.utc).date()
     g = granularity
     cur = _period_start(anchor, g)
+    # Starts at the current quarter (Kwame 2026-09-29): this quarter and the
+    # next three. Monthly covers the same four quarters as whole quarters, so
+    # its months group under quarter headers.
+    q0 = _period_start(anchor, "quarter")
     if g == "quarter":
-        starts = [_period_shift(cur, g, k) for k in range(-1, 4)]
+        starts = [_period_shift(q0, g, k) for k in range(4)]
     else:
-        # Whole quarters, so the monthly view can group its months under
-        # quarter headers: last quarter, this one, and the next two.
-        q0 = _period_shift(_period_start(anchor, "quarter"), "quarter", -1)
         starts = [_period_shift(q0, "month", k) for k in range(12)]
     first, end = starts[0], _period_shift(starts[-1], g, 1)
 
