@@ -92,3 +92,13 @@ def test_past_quarters_prepended():
     assert keys[:3] == ["2026-01-01", "2026-04-01", "2026-07-01"]
     assert b["2026-01-01"]["kind"] == "past" and b["2026-01-01"]["won"] == 3
     assert b["2026-07-01"]["kind"] == "current"
+
+
+def test_past_close_date_is_measured_against_today():
+    # Target close earlier this quarter, still open: late in both views.
+    rows = [_row(1, tcd=date(2026, 8, 15), est=2), _row(2, tcd=date(2026, 9, 30), est=1)]
+    for g in ("quarter", "month"):
+        b, _ = _get(rows, granularity=g)
+        assert b["overdue"]["estimated"] == 2 and b["overdue"]["label"] == "Past close date"
+    b, _ = _get(rows, granularity="quarter")
+    assert b["2026-07-01"]["estimated"] == 1

@@ -21,7 +21,8 @@ import {
  * The bar in each row is a bullet chart: closed, confirmed and estimated
  * stacked from most to least certain (one hue, three validated steps), with
  * a tick at the target. Past quarters (toggle) carry closed and target only:
- * an open deal dated in the past sits in Overdue, not in its old quarter.
+ * an open deal whose close date has passed sits in "Past close date", not in
+ * its old quarter.
  */
 const SEG = [
   { key: "won",       label: "Closed Won",      color: "#104281" },
@@ -123,7 +124,7 @@ export function JobsProjectionChart({ granularity, showPast, owner, dealType, na
               <th />
             </tr>
             <tr className="border-b border-border-strong text-[10.5px] uppercase tracking-wider text-ink-3">
-              <th className="py-1.5 pr-3 text-left font-semibold">Period</th>
+              <th className="py-1.5 pl-2 pr-3 text-left font-semibold">Period</th>
               <th className="px-3 py-1.5 text-right font-semibold">Target</th>
               <th className="px-3 py-1.5 text-right font-semibold">Closed Won</th>
               <th className="px-3 py-1.5 text-right font-semibold" title="Closed Won minus Target">Delta to Target</th>
@@ -153,11 +154,13 @@ export function JobsProjectionChart({ granularity, showPast, owner, dealType, na
                     quarterInMonthly && "bg-surface-2/50",
                     current && "bg-accent-soft/40",
                     past && "text-ink-3")}>
-                  <td className={cn("whitespace-nowrap py-2 pr-3",
+                  <td className={cn("whitespace-nowrap py-2 pl-2 pr-3",
+                    // The quarter we're in: an accent bar down its left edge
+                    // on top of the row tint, instead of a label.
+                    current && "shadow-[inset_3px_0_0_var(--accent)]",
                     r.level === "month" ? "pl-5 text-ink-2" : r.level === "catchall" ? "text-ink-3" : "font-semibold text-ink",
                     past && "text-ink-3")}>
                     {r.label}
-                    {current && <span className="ml-1.5 text-[10.5px] font-semibold uppercase tracking-wider text-accent-ink">now</span>}
                   </td>
                   <td className="px-3 py-2 text-right text-ink-2">{r.target != null ? fmt(r.target) : "—"}</td>
                   <td className={cn("px-3 py-2 text-right", r.level === "month" ? "text-ink-2" : "font-semibold text-ink")}>{r.won || "—"}</td>
@@ -221,37 +224,27 @@ export function JobsProjectionChart({ granularity, showPast, owner, dealType, na
   );
 }
 
-/** The current quarter in one sentence: closed vs target, what's in flight,
- *  and whether that covers the gap. */
+/** The current quarter at a glance: four figures, no sentence. Figures that
+ *  need a target are left out until one is set. */
 function Headline({ b }: { b: ProjectionBucket }) {
   const inflight = b.confirmed + b.estimated;
-  const gap = b.target == null ? null : b.target - b.won;
-  const cover = b.target == null ? null : b.won + inflight - b.target;
+  const hasTarget = b.target != null;
+  const toGo = hasTarget ? Math.max(0, b.target! - b.won) : null;
+  const Stat = ({ label, children }: { label: string; children: React.ReactNode }) => (
+    <div className="flex flex-col gap-0.5 border-l border-border-strong pl-4 first:border-l-0 first:pl-0">
+      <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">{label}</span>
+      <span className="text-[17px] font-semibold leading-tight tabular-nums text-ink">{children}</span>
+    </div>
+  );
   return (
-    <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1 rounded-lg border border-border-strong bg-surface-2/50 px-4 py-2.5 text-[13px] text-ink-2">
-      <span className="font-semibold text-ink">{b.label}</span>
-      {b.target == null ? (
-        <span>
-          <b className="text-ink">{b.won}</b> closed · <b className="text-ink">{inflight}</b> roles in flight
-          ({b.confirmed} confirmed + {b.estimated} estimated) · <span className="text-ink-3">no jobs target set</span>
-        </span>
-      ) : (
-        <>
-          <span><b className="text-ink">{b.won}</b> of <b className="text-ink">{fmt(b.target)}</b> closed</span>
-          <span className="text-ink-4">·</span>
-          <span>{gap! > 0 ? <><b className="text-ink">{fmt(gap!)}</b> to go</> : <b className="text-[var(--green)]">target met</b>}</span>
-          <span className="text-ink-4">·</span>
-          <span><b className="text-ink">{inflight}</b> roles in flight ({b.confirmed} confirmed + {b.estimated} estimated)</span>
-          <span className="text-ink-4">→</span>
-          {cover! >= 0 ? (
-            <span className="font-semibold text-[var(--green)]">
-              {gap! > 0 ? `covers the gap${cover! > 0 ? ` with ${fmt(cover!)} to spare` : " exactly"}` : "already there"}
-            </span>
-          ) : (
-            <span className="font-semibold text-[var(--red)]">{fmt(-cover!)} short even if all of it closes</span>
-          )}
-        </>
-      )}
+    <div className="flex flex-wrap items-center gap-x-6 gap-y-2 rounded-lg border border-border-strong border-l-[3px] border-l-accent bg-accent-soft/30 px-4 py-2.5">
+      <span className="text-[13px] font-semibold text-ink">{b.label}</span>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+        <Stat label="Closed">{b.won}{hasTarget && <span className="text-[13px] font-normal text-ink-3"> / {fmt(b.target!)}</span>}</Stat>
+        {hasTarget && <Stat label="To go">{fmt(toGo!)}</Stat>}
+        <Stat label="In flight">{inflight}</Stat>
+        {hasTarget && <Stat label="Pipeline vs gap"><DeltaChip actual={b.won + inflight} target={b.target} /></Stat>}
+      </div>
     </div>
   );
 }

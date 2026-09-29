@@ -3211,8 +3211,8 @@ async def opportunities_projection(
         the roles created on it (any commitment, cancelled excluded); its
         estimated jobs are the estimate minus those, floored at 0, so the
         stack never counts the same job twice.
-      * An open deal whose target close is before the current period is
-        "Overdue"; one with no target close is "No close date".
+      * An open deal whose target close date has passed (before today) is
+        "Past close date"; one with no target close is "No close date".
     Closed Lost and on-hold deals are excluded.
 
     Targets are quarterly (Settings > Targets > Jobs); a month reads its
@@ -3271,7 +3271,7 @@ async def opportunities_projection(
     buckets = {st: _bucket(st.isoformat(), _period_label(st, g),
                            "past" if st < cur else "current" if st == cur else "future", st)
                for st in starts}
-    overdue = _bucket("overdue", "Overdue", "overdue")
+    overdue = _bucket("overdue", "Past close date", "overdue")
     undated = _bucket("undated", "No close date", "undated")
     won_undated = 0   # won with no close date anywhere: can't be placed
 
@@ -3301,7 +3301,10 @@ async def opportunities_projection(
         tcd = r["target_close_date"]
         if tcd is None:
             b = undated
-        elif tcd < cur:
+        elif tcd < anchor:
+            # Past its close date and still open (Kwame 2026-09-29). Measured
+            # against today, not the period start, so quarterly and monthly
+            # agree on which deals are late.
             b = overdue
         else:
             b = buckets.get(_period_start(tcd, g))
