@@ -3169,6 +3169,156 @@ def _opp_age_bucket(days: int) -> int:
     return 4
 
 
+# ── Jobs projection (estimated vs confirmed vs won, against target) ───────────
+
+def _period_start(d: date, granularity: str) -> date:
+    if granularity == "month":
+        return date(d.year, d.month, 1)
+    return date(d.year, 3 * ((d.month - 1) // 3) + 1, 1)
+
+
+def _period_shift(start: date, granularity: str, n: int) -> date:
+    months = n * (1 if granularity == "month" else 3)
+    y, m = divmod(start.month - 1 + months, 12)
+    return date(start.year + y, m + 1, 1)
+
+
+def _period_label(start: date, granularity: str) -> str:
+    if granularity == "month":
+        return start.strftime("%b %Y")
+    return f"Q{(start.month - 1) // 3 + 1} {start.year}"
+
+
+@router.get("/opportunities/projection")
+async def opportunities_projection(
+    granularity: str = Query("quarter", pattern="^(quarter|month)$"),
+    owner: Optional[str] = Query(None),
+    deal_type: Optional[str] = Query(None),
+    today: Optional[date] = Query(None, description="Anchor date for 'current' (testing); defaults to today."),
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Jobs by period: won, confirmed, and estimated-not-yet-confirmed, with the
+    jobs target (Kwame 2026-09-29). Buckets run from one period back (quarter)
+    or two (month) to three quarters / five months ahead, plus two catch-alls.
+
+    Per deal:
+      * Closed Won lands in the period it closed (closed_at). Its jobs are the
+        roles created on it, or its estimate when nobody logged roles.
+      * An open deal lands in its target-close period. Its confirmed jobs are
+        the roles created on it (any commitment, cancelled excluded); its
+        estimated jobs are the estimate minus those, floored at 0, so the
+        stack never counts the same job twice.
+      * An open deal whose target close is before the current period is
+        "Overdue"; one with no target close is "No close date".
+    Closed Lost and on-hold deals are excluded.
+
+    Targets are quarterly (Settings > Targets > Jobs); a month reads its
+    quarter's target divided by three.
+    """
+    owner_f = owner if owner and owner != "all" else None
+    dt_f = _parse_deal_types(deal_type)
+    anchor = today or datetime.now(timezone.utc).date()
+    g = granularity
+    cur = _period_start(anchor, g)
+    back, ahead = (1, 3) if g == "quarter" else (2, 5)
+    starts = [_period_shift(cur, g, k) for k in range(-back, ahead + 1)]
+    first, end = starts[0], _period_shift(starts[-1], g, 1)
+
+    rows = await conn.fetch(f"""
+        SELECT o.id, o.account_name, o.title, o.stage, o.deal_type, o.owner_email,
+               o.target_close_date, w.won_at,
+               (to_jsonb(o) ->> 'estimated_jobs')::int AS estimated_jobs,
+               (SELECT count(*) FROM bedrock.jobs_role r
+                 WHERE r.opportunity_id = o.id AND r.status <> 'cancelled') AS roles
+        FROM bedrock.jobs_opportunity o
+        -- 26 of 42 won deals have no closed_at (it was only stamped from
+        -- mid-2026); the stage history dates most of the rest.
+        LEFT JOIN LATERAL (
+            SELECT coalesce(o.closed_at,
+                            (SELECT max(h.changed_at) FROM bedrock.jobs_stage_history h
+                              WHERE h.opportunity_id = o.id AND h.to_stage = 'closed_won')) AS won_at
+        ) w ON true
+        WHERE o.deleted_at IS NULL
+          AND ({_OPP_INSET} OR (o.stage = 'closed_won'
+                                AND (w.won_at IS NULL
+                                     OR (w.won_at >= $3::date AND w.won_at < $4::date))))
+          AND ($1::text IS NULL OR o.owner_email = $1)
+          AND {_deal_type_sql('o.deal_type', 2)}
+    """, owner_f, dt_f, first, end)
+
+    def _bucket(key, label, kind, start=None):
+        return {"key": key, "label": label, "kind": kind,
+                "start": start.isoformat() if start else None,
+                "won": 0, "confirmed": 0, "estimated": 0, "target": None, "deals": []}
+
+    buckets = {st: _bucket(st.isoformat(), _period_label(st, g),
+                           "past" if st < cur else "current" if st == cur else "future", st)
+               for st in starts}
+    overdue = _bucket("overdue", "Overdue", "overdue")
+    undated = _bucket("undated", "No close date", "undated")
+    won_undated = 0   # won with no close date anywhere: can't be placed
+
+    for r in rows:
+        roles = int(r["roles"] or 0)
+        est = r["estimated_jobs"]
+        deal = {
+            "opportunity_id": str(r["id"]), "account": r["account_name"], "title": r["title"],
+            "stage": canon_stage(r["stage"]),
+            "stage_label": STAGE_LABELS.get(canon_stage(r["stage"]), r["stage"]),
+            "owner": r["owner_email"], "deal_type": r["deal_type"],
+            "target_close_date": r["target_close_date"].isoformat() if r["target_close_date"] else None,
+            "estimated_jobs": est, "roles": roles,
+        }
+        if r["stage"] == "closed_won":
+            if r["won_at"] is None:
+                won_undated += 1
+                continue
+            b = buckets.get(_period_start(r["won_at"].date(), g))
+            if b is None:
+                continue
+            won = roles if roles > 0 else (est or 0)
+            b["won"] += won
+            b["deals"].append({**deal, "category": "won", "won": won, "confirmed": 0, "estimated": 0})
+            continue
+        remaining = max((est or 0) - roles, 0)
+        tcd = r["target_close_date"]
+        if tcd is None:
+            b = undated
+        elif tcd < cur:
+            b = overdue
+        else:
+            b = buckets.get(_period_start(tcd, g))
+            if b is None:          # beyond the window: not plotted
+                continue
+        b["confirmed"] += roles
+        b["estimated"] += remaining
+        b["deals"].append({**deal, "category": "open", "won": 0, "confirmed": roles, "estimated": remaining})
+
+    targets = jobs_targets_store.pipeline_targets()
+    for st, b in buckets.items():
+        q = _period_start(st, "quarter")
+        t = targets.get(q)
+        if t is not None:
+            b["target"] = t if g == "quarter" else round(t / 3, 1)
+
+    out = [buckets[st] for st in starts] + [overdue, undated]
+    for b in out:
+        b["deals"].sort(key=lambda d: (-(d["won"] + d["confirmed"] + d["estimated"]), d["account"] or ""))
+        b["total"] = b["won"] + b["confirmed"] + b["estimated"]
+
+    return {"success": True, "data": {
+        "granularity": g,
+        "current": cur.isoformat(),
+        "buckets": out,
+        # The chart needs to say why a bar is short: before the migration no
+        # deal can carry an estimate, and most deals predate required dates.
+        "estimated_available": await _has_column("bedrock", "jobs_opportunity", "estimated_jobs"),
+        "targets_available": jobs_targets_store.available(),
+        "won_undated": won_undated,
+    }}
+
+
 @router.get("/opportunities/overview")
 async def opportunities_overview(
     owner: Optional[str] = Query(None),

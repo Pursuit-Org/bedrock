@@ -50,6 +50,7 @@ import { InlineDate, InlineSelect, InlineText } from "@/components/ui/InlineEdit
 import { parseEstimatedJobs } from "@/lib/estimatedJobs";
 import { Drawer } from "@/components/ui/Drawer";
 import { JobsFunnels } from "@/components/jobs/JobsFunnels";
+import { JobsProjectionChart } from "@/components/jobs/JobsProjectionChart";
 import { PeriodBar, defaultPeriod } from "@/components/jobs/PeriodBar";
 import { CommittedRolesModal } from "@/components/jobs/CommittedRolesModal";
 import { DealExpandPanel, PlacementsModal, ClosedLostModal, useOppStageOptions, displayPriority } from "./JobsTeam";
@@ -164,6 +165,7 @@ export function JobsOpportunitiesOverview() {
   // into Closed won beside them. Multi-select; `dealType` is the one query value
   // every panel on the page reads.
   const [dealTypes, setDealTypes] = useState<string[]>(["ft"]);
+  const [projGranularity, setProjGranularity] = useSessionState<"quarter" | "month">("jobsPipeline.projection.granularity", "quarter");
   const dealType = dealTypeParam(dealTypes);
   const [dim, setDim] = useState<OppBreakdownDim>("status");
   // Y axis of the single concentration heatmap. Stage is the default because
@@ -316,6 +318,25 @@ export function JobsOpportunitiesOverview() {
         periodLabel={rangeLabel}
         dealType={dealType}
       />
+
+      {/* ── Jobs projection: won / confirmed / estimated vs target ───────── */}
+      <Panel
+        title="Jobs Projection"
+        desc="Jobs by close period: won, confirmed on open deals, and still estimated, against the jobs target"
+        action={
+          <div className="flex rounded-md border border-border-strong p-0.5 text-[11.5px]">
+            {(["quarter", "month"] as const).map((g) => (
+              <button key={g} type="button" onClick={() => setProjGranularity(g)}
+                className={cn("rounded px-2 py-0.5 font-medium capitalize",
+                  projGranularity === g ? "bg-accent-soft text-accent-ink" : "text-ink-3 hover:text-ink-2")}>
+                {g === "quarter" ? "Quarterly" : "Monthly"}
+              </button>
+            ))}
+          </div>
+        }
+      >
+        <JobsProjectionChart granularity={projGranularity} owner={owner} dealType={dealType} nameOf={nameOf} />
+      </Panel>
 
       {/* ── Aging + Breakdown ─────────────────────────────────────────── */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">

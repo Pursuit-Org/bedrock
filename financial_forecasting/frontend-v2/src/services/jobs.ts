@@ -3120,3 +3120,63 @@ export async function exportJobsRows(
   // Safari before it starts.
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
+
+// ── Jobs projection (estimated vs confirmed vs won, against target) ──────────
+
+export type ProjectionGranularity = "quarter" | "month";
+
+export interface ProjectionDeal {
+  opportunity_id: string;
+  account: string | null;
+  title: string | null;
+  stage: JobStage;
+  stage_label: string;
+  owner: string | null;
+  deal_type: DealType | null;
+  target_close_date: string | null;
+  estimated_jobs: number | null;
+  roles: number;
+  category: "won" | "open";
+  won: number;
+  confirmed: number;
+  estimated: number;
+}
+
+export interface ProjectionBucket {
+  key: string;
+  label: string;
+  kind: "past" | "current" | "future" | "overdue" | "undated";
+  start: string | null;
+  won: number;
+  confirmed: number;
+  estimated: number;
+  total: number;
+  /** Jobs target for the period (a month reads its quarter's ÷ 3); null = none set. */
+  target: number | null;
+  deals: ProjectionDeal[];
+}
+
+export interface JobsProjection {
+  granularity: ProjectionGranularity;
+  current: string;
+  buckets: ProjectionBucket[];
+  estimated_available: boolean;
+  targets_available: boolean;
+  won_undated: number;
+}
+
+export function useJobsProjection(granularity: ProjectionGranularity, owner?: string, dealType?: string) {
+  const o = owner && owner !== "all" ? owner : undefined;
+  const dt = dealType && dealType !== "all" ? dealType : undefined;
+  return useQuery<JobsProjection>({
+    queryKey: ["jobs", "opportunities", "projection", granularity, o ?? "all", dt ?? "all"],
+    queryFn: async () => {
+      const p = new URLSearchParams({ granularity });
+      if (o) p.set("owner", o);
+      if (dt) p.set("deal_type", dt);
+      const { data } = await api.get<ApiResponse<JobsProjection>>(`/api/jobs/opportunities/projection?${p}`);
+      return data.data;
+    },
+    staleTime: 30_000,
+  });
+}
