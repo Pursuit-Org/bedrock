@@ -19,15 +19,19 @@ import {
  * lands: closed + in flight − target.
  *
  * The bar in each row is a bullet chart: closed, confirmed and estimated
- * stacked from most to least certain (one hue, three validated steps), with
+ * stacked from most to least certain (three distinct hues), with
  * a tick at the target. Past quarters (toggle) carry closed and target only:
  * an open deal whose close date has passed sits in "Past close date", not in
  * its old quarter.
  */
+// Three distinct hues (Kwame 2026-09-29: the one-hue ramp was too close to
+// tell apart). The app's own series colours, validated as a categorical set:
+// CVD and normal-vision separation pass; amber is below 3:1 on white, which
+// the numbers printed beside every bar cover.
 const SEG = [
-  { key: "won",       label: "Closed Won",      color: "#104281" },
-  { key: "confirmed", label: "Confirmed Roles", color: "#256abf" },
-  { key: "estimated", label: "Estimated Roles", color: "#86b6ef" },
+  { key: "won",       label: "Closed Won",      color: "#4242ea" },
+  { key: "confirmed", label: "Confirmed Roles", color: "#0ea5a4" },
+  { key: "estimated", label: "Estimated Roles", color: "#f59e0b" },
 ] as const;
 
 type Row = {
@@ -103,17 +107,6 @@ export function JobsProjectionChart({ granularity, showPast, owner, dealType, na
     <div className="flex flex-col gap-3">
       {currentQuarter && <Headline b={currentQuarter} />}
 
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11.5px] text-ink-2">
-        {SEG.map((s) => (
-          <span key={s.key} className="inline-flex items-center gap-1.5">
-            <span className="h-2.5 w-2.5 rounded-sm" style={{ background: s.color }} />{s.label}
-          </span>
-        ))}
-        <span className="inline-flex items-center gap-1.5">
-          <span className="h-3 w-0.5 rounded bg-ink" />Target
-        </span>
-      </div>
-
       <div className="overflow-x-auto">
         <table className="w-full min-w-[980px] text-[12.5px] tabular-nums">
           <thead>
@@ -182,6 +175,17 @@ export function JobsProjectionChart({ granularity, showPast, owner, dealType, na
             })}
           </tbody>
         </table>
+      </div>
+
+      <div className="flex flex-wrap items-center justify-end gap-x-4 gap-y-1 text-[11.5px] text-ink-2">
+        {SEG.map((s) => (
+          <span key={s.key} className="inline-flex items-center gap-1.5">
+            <span className="h-2.5 w-2.5 rounded-sm" style={{ background: s.color }} />{s.label}
+          </span>
+        ))}
+        <span className="inline-flex items-center gap-1.5">
+          <span className="h-3 w-0.5 rounded bg-ink" />Target
+        </span>
       </div>
 
       {drill && (
