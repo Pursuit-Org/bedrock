@@ -84,3 +84,11 @@ def test_deal_type_filter_bound():
     c.get(f"/api/jobs/opportunities/projection?today={TODAY}&deal_type=ft,unset")
     q, args = next((x[1], x[2]) for x in conn.calls if "FROM bedrock.jobs_opportunity o" in x[1])
     assert args[1] == ["ft", "unset"] and "status <> 'cancelled'" in q
+
+
+def test_past_quarters_prepended():
+    b, _ = _get([_row(1, stage="closed_won", won_at=datetime(2026, 2, 10, tzinfo=timezone.utc), roles=3)], past=2)
+    keys = [k for k in b if k not in ("overdue", "undated")]
+    assert keys[:3] == ["2026-01-01", "2026-04-01", "2026-07-01"]
+    assert b["2026-01-01"]["kind"] == "past" and b["2026-01-01"]["won"] == 3
+    assert b["2026-07-01"]["kind"] == "current"

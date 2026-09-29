@@ -3195,6 +3195,7 @@ async def opportunities_projection(
     owner: Optional[str] = Query(None),
     deal_type: Optional[str] = Query(None),
     today: Optional[date] = Query(None, description="Anchor date for 'current' (testing); defaults to today."),
+    past: int = Query(0, ge=0, le=8, description="Quarters before the current one to include (won + target only)."),
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
@@ -3225,11 +3226,14 @@ async def opportunities_projection(
     # Starts at the current quarter (Kwame 2026-09-29): this quarter and the
     # next three. Monthly covers the same four quarters as whole quarters, so
     # its months group under quarter headers.
-    q0 = _period_start(anchor, "quarter")
+    # `past` prepends earlier quarters (Show past quarters): they carry the
+    # target and what was won; open deals dated back then stay in Overdue.
+    q0 = _period_shift(_period_start(anchor, "quarter"), "quarter", -past)
+    n_quarters = 4 + past
     if g == "quarter":
-        starts = [_period_shift(q0, g, k) for k in range(4)]
+        starts = [_period_shift(q0, g, k) for k in range(n_quarters)]
     else:
-        starts = [_period_shift(q0, "month", k) for k in range(12)]
+        starts = [_period_shift(q0, "month", k) for k in range(3 * n_quarters)]
     first, end = starts[0], _period_shift(starts[-1], g, 1)
 
     rows = await conn.fetch(f"""

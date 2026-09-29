@@ -166,6 +166,7 @@ export function JobsOpportunitiesOverview() {
   // every panel on the page reads.
   const [dealTypes, setDealTypes] = useState<string[]>(["ft"]);
   const [projGranularity, setProjGranularity] = useSessionState<"quarter" | "month">("jobsPipeline.projection.granularity", "quarter");
+  const [projPast, setProjPast] = useSessionState<boolean>("jobsPipeline.projection.past", false);
   const dealType = dealTypeParam(dealTypes);
   const [dim, setDim] = useState<OppBreakdownDim>("status");
   // Y axis of the single concentration heatmap. Stage is the default because
@@ -319,25 +320,6 @@ export function JobsOpportunitiesOverview() {
         dealType={dealType}
       />
 
-      {/* ── Jobs projection: won / confirmed / estimated vs target ───────── */}
-      <Panel
-        title="Jobs Projection"
-        desc="Jobs target, closed won and the gap to it, then confirmed roles and estimated jobs, by close period. Click a row for its deals."
-        action={
-          <div className="flex rounded-md border border-border-strong p-0.5 text-[11.5px]">
-            {(["quarter", "month"] as const).map((g) => (
-              <button key={g} type="button" onClick={() => setProjGranularity(g)}
-                className={cn("rounded px-2 py-0.5 font-medium capitalize",
-                  projGranularity === g ? "bg-accent-soft text-accent-ink" : "text-ink-3 hover:text-ink-2")}>
-                {g === "quarter" ? "Quarterly" : "Monthly"}
-              </button>
-            ))}
-          </div>
-        }
-      >
-        <JobsProjectionChart granularity={projGranularity} owner={owner} dealType={dealType} nameOf={nameOf} />
-      </Panel>
-
       {/* ── Aging + Breakdown ─────────────────────────────────────────── */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <Panel title="Time in Pipeline">
@@ -393,6 +375,35 @@ export function JobsOpportunitiesOverview() {
             nameOf={nameOf}
           />
         )}
+      </Panel>
+
+      {/* ── Jobs projection: closed vs target, and whether the pipeline closes
+          the gap. Sits right above the Opportunities Set (Kwame 2026-09-29):
+          the projection says how short the quarter is, the set below is
+          where you work the deals that close it. */}
+      <Panel
+        title="Jobs Projection"
+        desc="Closed against target, and whether the roles in flight close the gap. Click a row for its deals."
+        action={
+          <div className="flex items-center gap-2">
+          <button type="button" onClick={() => setProjPast(!projPast)} aria-pressed={projPast}
+            className={cn("h-7 rounded-md border px-2 text-[11.5px] font-medium",
+              projPast ? "border-accent/40 bg-accent-soft text-accent-ink" : "border-border-strong text-ink-3 hover:text-ink-2")}>
+            {projPast ? "Hide past quarters" : "Show past quarters"}
+          </button>
+          <div className="flex rounded-md border border-border-strong p-0.5 text-[11.5px]">
+            {(["quarter", "month"] as const).map((g) => (
+              <button key={g} type="button" onClick={() => setProjGranularity(g)}
+                className={cn("rounded px-2 py-0.5 font-medium capitalize",
+                  projGranularity === g ? "bg-accent-soft text-accent-ink" : "text-ink-3 hover:text-ink-2")}>
+                {g === "quarter" ? "Quarterly" : "Monthly"}
+              </button>
+            ))}
+          </div>
+          </div>
+        }
+      >
+        <JobsProjectionChart granularity={projGranularity} showPast={projPast} owner={owner} dealType={dealType} nameOf={nameOf} />
       </Panel>
 
       {/* ── Opportunities Set (grouped by priority; owner view = the walkthrough) ──

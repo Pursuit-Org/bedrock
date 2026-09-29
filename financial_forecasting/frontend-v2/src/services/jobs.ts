@@ -3168,13 +3168,14 @@ export interface JobsProjection {
   won_undated: number;
 }
 
-export function useJobsProjection(granularity: ProjectionGranularity, owner?: string, dealType?: string) {
+export function useJobsProjection(granularity: ProjectionGranularity, owner?: string, dealType?: string, past = 0) {
   const o = owner && owner !== "all" ? owner : undefined;
   const dt = dealType && dealType !== "all" ? dealType : undefined;
   return useQuery<JobsProjection>({
-    queryKey: ["jobs", "opportunities", "projection", granularity, o ?? "all", dt ?? "all"],
+    queryKey: ["jobs", "opportunities", "projection", granularity, o ?? "all", dt ?? "all", past],
     queryFn: async () => {
       const p = new URLSearchParams({ granularity });
+      if (past > 0) p.set("past", String(past));
       if (o) p.set("owner", o);
       if (dt) p.set("deal_type", dt);
       const { data } = await api.get<ApiResponse<JobsProjection>>(`/api/jobs/opportunities/projection?${p}`);
