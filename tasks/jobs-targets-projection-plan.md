@@ -1,7 +1,7 @@
 # Jobs: estimated jobs, jobs projection chart, Jobs targets page
 
 Requested by Kwame, 2026-09-29. Branch `claude/charming-maxwell-z9lsbr` (no PR yet).
-Status: **plan, awaiting answers to the open questions below.**
+Status: **built on the branch (2026-09-29); migrations pending Jac.** See Review at the bottom.
 
 ## Findings that shape the design
 
@@ -107,3 +107,30 @@ Migration `2026-09-29-jobs-targets.sql`:
   and the "pending migration" states can be checked; writes need Jac's migration and a
   writable role.
 - Scope is large. Commit per phase; suggest a PR per phase when ready.
+
+## Review (2026-09-29)
+
+Shipped on `claude/charming-maxwell-z9lsbr`, one commit per piece:
+- Phase 1: estimated jobs + required target close. Migration `2026-09-29-jobs-estimated-jobs.sql`.
+- Phase 3 backend: `jobs_team_member`, `jobs_target`, the `manage_jobs_targets` permission, and
+  `/api/jobs/targets`. Migration `2026-09-29-jobs-targets.sql`. The team list now drives every
+  Jobs metric.
+- Opportunity Set redesign (added mid-session): Owner, Account, Opportunity, Stage, Target close,
+  Est. jobs, Open tasks, Recent comment, Activity.
+- Phase 2: the Jobs Projection chart and `/api/jobs/opportunities/projection`.
+- Phase 3 UI: Settings > Targets > Jobs (Team, Outreach, Pipeline).
+
+Verified:
+- pytest shows the same failure list as `main`; 30 new tests pass.
+- `tsc` and `vite build` pass.
+- Headless renders with fake data: Pipeline tab, Opportunity Set, projection (quarterly and
+  monthly, tooltip), and the Targets page in both states. All three Targets saves were checked
+  for payload.
+- Production read-only checks for the projection and comment queries.
+
+Known and deliberate:
+- Kwame's 10/wk personal outreach target isn't seeded, so the team target reads 140 until he
+  joins the team.
+- 6 won deals have no close date anywhere; they're reported, not plotted.
+- 79 of 80 open deals have no target close date; the "No close date" bucket shows them until
+  they're filled in.
