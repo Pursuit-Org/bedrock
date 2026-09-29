@@ -105,3 +105,36 @@ def test_reverted_close_reads_as_move_in_feed():
     assert d["summary"]["moved_committed"] == 1
     assert [e["type"] for e in d["recent_activity"] if e["account"] == "Mesa"] == ["won"]
     assert all(e["type"] == "moved" for e in d["recent_activity"] if e["account"] == "RXR")
+
+
+# ── multi-select deal type ─────────────────────────────────────────────────────
+
+def test_parse_deal_types():
+    from routes.jobs import _parse_deal_types, VALID_DEAL_TYPES
+    assert _parse_deal_types(None) is None
+    assert _parse_deal_types("all") is None
+    assert _parse_deal_types("ft") == ["ft"]
+    assert _parse_deal_types("unset, ft") == ["ft", "unset"]
+    # Every box ticked is the same as no filter.
+    assert _parse_deal_types(",".join(sorted(VALID_DEAL_TYPES)) + ",unset") is None
+    # Unknown-only never widens to all.
+    assert _parse_deal_types("bogus") == []
+
+
+def test_overview_binds_deal_type_list():
+    conn = OverviewConn([])
+    c = make_jobs_client(conn)
+    c.get("/api/jobs/opportunities/overview?deal_type=ft,unset")
+    q, args = next((call[1], call[2]) for call in conn.calls if "WITH acct_last" in call[1])
+    assert args[1] == ["ft", "unset"]
+    assert "o.deal_type = ANY($2::text[])" in q
+    assert "'unset' = ANY($2::text[]) AND o.deal_type IS NULL" in q
+
+
+def test_opportunity_list_binds_deal_type_list():
+    conn = FakeConn(lists={"FROM bedrock.jobs_opportunity o": []}, vals={"count(": 0})
+    c = make_jobs_client(conn)
+    r = c.get("/api/jobs/opportunities?deal_type=ft,unset")
+    assert r.status_code == 200
+    calls = [call for call in conn.calls if "o.deal_type = ANY(" in call[1]]
+    assert calls and ["ft", "unset"] in list(calls[0][2])

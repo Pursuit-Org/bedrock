@@ -21,10 +21,10 @@
  * bar, heatmap cell) drills into the SAME `active_set` array from the
  * endpoint, so a drill list can never disagree with the count above it.
  */
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { format } from "date-fns";
-import { AlertTriangle, ArrowRight, ChevronRight, Clock, Minus, Plus, TrendingDown, TrendingUp, Trophy, X, XCircle } from "lucide-react";
+import { AlertTriangle, ArrowRight, ChevronDown, ChevronRight, Clock, Minus, Plus, TrendingDown, TrendingUp, Trophy, X, XCircle } from "lucide-react";
 
 import {
   useOpportunitiesOverview,
@@ -63,10 +63,82 @@ const DIMS: { key: OppBreakdownDim; label: string }[] = [
   { key: "owner", label: "Owner" },
 ];
 
-const DEAL_TYPE_FILTERS: { value: string; label: string }[] = [
-  { value: "all", label: "All deal types" },
+// Deal-type filter options. "unset" is the API token for opportunities with no
+// deal type, shown as Untagged so they can be pulled into (or kept out of) a view.
+const DEAL_TYPE_UNSET = "unset";
+const DEAL_TYPE_OPTIONS: { value: string; label: string }[] = [
   ...(Object.entries(DEAL_TYPE_LABELS) as [DealType, string][]).map(([value, label]) => ({ value, label })),
+  { value: DEAL_TYPE_UNSET, label: "Untagged" },
 ];
+const ALL_DEAL_TYPES = DEAL_TYPE_OPTIONS.map((o) => o.value);
+
+/** Selection → the `deal_type` query value: "all" when every box is ticked,
+ *  otherwise a comma-separated list the API reads as OR. */
+function dealTypeParam(selected: string[]): string {
+  return selected.length === ALL_DEAL_TYPES.length
+    ? "all"
+    : ALL_DEAL_TYPES.filter((v) => selected.includes(v)).join(",");
+}
+
+function dealTypeSummary(selected: string[]): string {
+  if (selected.length === ALL_DEAL_TYPES.length) return "All deal types";
+  const labels = DEAL_TYPE_OPTIONS.filter((o) => selected.includes(o.value)).map((o) => o.label);
+  return labels.length <= 2 ? labels.join(" + ") : `${labels[0]} + ${labels.length - 1} more`;
+}
+
+/** Checkbox popover for deal type. At least one box stays ticked: an empty
+ *  selection would either show nothing or quietly mean "all", and both read
+ *  as a bug. "All" ticks every box, Untagged included. */
+function DealTypeFilter({ selected, onChange }: { selected: string[]; onChange: (next: string[]) => void }) {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [open]);
+  const allOn = selected.length === ALL_DEAL_TYPES.length;
+  const toggle = (v: string) => {
+    const next = selected.includes(v) ? selected.filter((x) => x !== v) : [...selected, v];
+    if (next.length > 0) onChange(next);
+  };
+  return (
+    <div ref={wrapRef} className="relative">
+      <button type="button" onClick={() => setOpen((o) => !o)} aria-haspopup="listbox" aria-expanded={open}
+        className="flex h-7 min-w-[140px] items-center justify-between gap-2 rounded-md border border-border-strong bg-surface px-2 text-[12.5px] text-ink outline-none hover:border-ink-3 focus:border-accent">
+        <span className="truncate">{dealTypeSummary(selected)}</span>
+        <ChevronDown size={12} className="shrink-0 text-ink-4" />
+      </button>
+      {open && (
+        <div className="absolute right-0 top-full z-50 mt-1 w-[200px] rounded-md border border-border-strong bg-surface py-1 shadow-lg">
+          <label className="flex cursor-pointer items-center gap-2 border-b border-border px-3 py-1.5 text-[12px] font-semibold text-ink hover:bg-surface-2">
+            <input type="checkbox" className="accent-[var(--accent)]" checked={allOn}
+              onChange={() => onChange(allOn ? ["ft"] : [...ALL_DEAL_TYPES])} />
+            All deal types
+          </label>
+          {DEAL_TYPE_OPTIONS.map((o) => {
+            const on = selected.includes(o.value);
+            const last = on && selected.length === 1;
+            return (
+              <label key={o.value}
+                className={cn("flex items-center gap-2 px-3 py-1.5 text-[12px] text-ink hover:bg-surface-2",
+                  last ? "cursor-not-allowed" : "cursor-pointer",
+                  o.value === DEAL_TYPE_UNSET && "border-t border-border text-ink-2")}
+                title={last ? "At least one deal type stays selected" : undefined}>
+                <input type="checkbox" className="accent-[var(--accent)]" checked={on} disabled={last}
+                  onChange={() => toggle(o.value)} />
+                {o.label}
+              </label>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
 
 const ownerShort = (e: string | null) => (e ? e.split("@")[0] : "—");
 // Fallback full-ish name when staff lookup misses: "avni.nahar@…" → "Avni Nahar".
@@ -88,8 +160,10 @@ export function JobsOpportunitiesOverview() {
   const [owner, setOwner] = useState<string>("all");
   // Full-time by default (Kwame 2026-09-29): the pipeline review is about
   // full-time placements, and "all" rolled capstones, part-time and contracts
-  // into Closed won beside them. One state drives every panel on the page.
-  const [dealType, setDealType] = useState<string>("ft");
+  // into Closed won beside them. Multi-select; `dealType` is the one query value
+  // every panel on the page reads.
+  const [dealTypes, setDealTypes] = useState<string[]>(["ft"]);
+  const dealType = dealTypeParam(dealTypes);
   const [dim, setDim] = useState<OppBreakdownDim>("status");
   // Y axis of the single concentration heatmap. Stage is the default because
   // it is always populated; priority can legitimately be empty.
@@ -136,7 +210,7 @@ export function JobsOpportunitiesOverview() {
   // attention): stage edits inline, rows expand to the full DealExpandPanel.
   const { data: oppsData } = useJobsOpportunities({
     owner_email: owner !== "all" ? owner : undefined,
-    deal_type: dealType !== "all" ? (dealType as DealType) : undefined,
+    deal_type: dealType !== "all" ? dealType : undefined,
     limit: 500,
   });
   const { data: allTasks = [] } = useAllJobsTasks();
@@ -197,12 +271,7 @@ export function JobsOpportunitiesOverview() {
         </div>
         <div className="flex items-center gap-2">
           <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">Deal type</span>
-          <select value={dealType} onChange={(e) => setDealType(e.target.value)}
-            className="h-7 rounded-md border border-border-strong bg-surface px-2 text-[12.5px] text-ink outline-none focus:border-accent">
-            {DEAL_TYPE_FILTERS.map((d) => (
-              <option key={d.value} value={d.value}>{d.label}</option>
-            ))}
-          </select>
+          <DealTypeFilter selected={dealTypes} onChange={setDealTypes} />
         </div>
       </PeriodBar>
 
@@ -498,7 +567,7 @@ const SALARY_ORDER_LABELS = ["Under $80k", "$80k–100k", "$100k–120k", "$120k
 
 const OPP_FILTER_FIELDS: OppFilterField[] = [
   { key: "deal_type", label: "Deal type",
-    bucket: (o) => (o.deal_type ? DEAL_TYPE_LABELS[o.deal_type] ?? o.deal_type : "Not set") },
+    bucket: (o) => (o.deal_type ? DEAL_TYPE_LABELS[o.deal_type] ?? o.deal_type : "Untagged") },
   { key: "stage", label: "Stage",
     bucket: (o) => STAGE_LABELS[o.stage] ?? o.stage },
   { key: "segment", label: "Segment",
@@ -1056,7 +1125,7 @@ function ownerLabel(key: string, nameOf?: (e: string | null) => string): string 
 
 function breakdownLabel(dim: OppBreakdownDim, key: string, label: string,
                         nameOf?: (e: string | null) => string): string {
-  if (dim === "deal_type") return DEAL_TYPE_LABELS[key as DealType] ?? label;
+  if (dim === "deal_type") return key === "(unset)" ? "Untagged" : DEAL_TYPE_LABELS[key as DealType] ?? label;
   if (dim === "owner") return ownerLabel(key, nameOf);
   return label;
 }

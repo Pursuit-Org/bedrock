@@ -137,6 +137,32 @@ CLOSED_LOST_REASONS = [
 
 VALID_DEAL_TYPES = {"ft", "pt_contract", "capstone", "volunteer", "workshop", "pilot"}
 
+# Deal-type filter token for opportunities with no deal type set.
+DEAL_TYPE_UNSET = "unset"
+
+
+def _parse_deal_types(raw: Optional[str]) -> Optional[list]:
+    """`deal_type` query param → list of deal types, or None for no filter.
+
+    Takes one value or a comma-separated list ("ft,pt_contract,unset"), so the
+    single-value callers keep working unchanged. "unset" selects opportunities
+    with no deal type. "all", empty, or a list naming every type (untagged
+    included) mean no filter. Unknown tokens are dropped; a list of nothing
+    but unknown tokens matches nothing rather than silently widening to all."""
+    if not raw or raw == "all":
+        return None
+    toks = {t.strip() for t in raw.split(",") if t.strip()}
+    known = toks & (VALID_DEAL_TYPES | {DEAL_TYPE_UNSET})
+    if known == VALID_DEAL_TYPES | {DEAL_TYPE_UNSET}:
+        return None
+    return sorted(known)
+
+
+def _deal_type_sql(col: str, n: int) -> str:
+    """SQL predicate for a `_parse_deal_types` list bound as parameter $n."""
+    return (f"(${n}::text[] IS NULL OR {col} = ANY(${n}::text[]) "
+            f"OR ('{DEAL_TYPE_UNSET}' = ANY(${n}::text[]) AND {col} IS NULL))")
+
 # The jobs team's mailboxes. The Outreach and Calls/Mtgs dashboard metrics count
 # FIRST TOUCHES by these senders only: each external contact counts once, ever,
 # across the whole team (3 emails to the same person in a week = 1; emailing
@@ -2594,7 +2620,7 @@ async def get_funnel(
     opportunities by their own deal_type; prospects to contacts at companies
     that have a deal of that type; builders to applications on such opps.
     """
-    dt = deal_type if deal_type and deal_type != "all" else None
+    dt = _parse_deal_types(deal_type)
 
     # Period mode is opt-in and only meaningful where we stamp stage entry.
     period: Optional[tuple] = None
@@ -2631,7 +2657,7 @@ async def get_funnel(
         # Per-opp roles rollup so the drill shows what "Opportunity Confirmed"
         # actually contains — each role with its status and whether it's a
         # committed seat or open-market (feedback 2026-07-16).
-        rows = await conn.fetch("""
+        rows = await conn.fetch(f"""
             SELECT o.stage, o.account_name AS name, o.deal_type, o.owner_email AS owner,
                    (SELECT string_agg(
                             coalesce(r.title, 'Role') || ' — ' ||
@@ -2643,7 +2669,7 @@ async def get_funnel(
                             '  ·  ' ORDER BY r.created_at)
                       FROM bedrock.jobs_role r WHERE r.opportunity_id = o.id) AS roles
             FROM bedrock.jobs_opportunity o
-            WHERE o.deleted_at IS NULL AND ($1::text IS NULL OR o.deal_type = $1)
+            WHERE o.deleted_at IS NULL AND {_deal_type_sql('o.deal_type', 1)}
             ORDER BY o.account_name
         """, dt)
         by_stage: dict = {}
@@ -2660,14 +2686,14 @@ async def get_funnel(
         # DISTINCT ON keeps only each opp's MOST RECENT transition in the window —
         # so an opp that moved twice shows once (its current stage + where it came
         # from on the latest hop), not a duplicate per hop.
-        hist = await conn.fetch("""
+        hist = await conn.fetch(f"""
             SELECT DISTINCT ON (h.opportunity_id)
                    h.from_stage, h.to_stage, h.changed_at, o.account_name
             FROM bedrock.jobs_stage_history h
             JOIN bedrock.jobs_opportunity o ON o.id = h.opportunity_id
             WHERE h.from_stage IS NOT NULL
               AND h.changed_at >= now() - interval '30 days'
-              AND ($1::text IS NULL OR o.deal_type = $1)
+              AND {_deal_type_sql('o.deal_type', 1)}
             ORDER BY h.opportunity_id, h.changed_at DESC
             LIMIT 100
         """, dt)
@@ -2788,10 +2814,11 @@ async def get_funnel(
         period_entries = {k: [] for k, _ in stage_order}
 
         if ftype == "prospects":
-            company_lens = """
-                AND ($3::text IS NULL OR lower(c.current_company) IN (
-                      SELECT lower(account_name) FROM bedrock.jobs_opportunity
-                      WHERE deleted_at IS NULL AND deal_type = $3 AND account_name IS NOT NULL))
+            company_lens = f"""
+                AND ($3::text[] IS NULL OR lower(c.current_company) IN (
+                      SELECT lower(o.account_name) FROM bedrock.jobs_opportunity o
+                      WHERE o.deleted_at IS NULL AND {_deal_type_sql('o.deal_type', 3)}
+                        AND o.account_name IS NOT NULL))
             """
             # The three managed stages each have their own entry stamp on the
             # membership row, which is more reliable than the history table
@@ -2873,7 +2900,7 @@ async def get_funnel(
             ]
 
         else:  # opportunities
-            orows = await conn.fetch("""
+            orows = await conn.fetch(f"""
                 WITH hist AS (
                     SELECT DISTINCT ON (h.opportunity_id, h.to_stage)
                            h.opportunity_id AS oid, h.to_stage AS stage,
@@ -2882,7 +2909,7 @@ async def get_funnel(
                     JOIN bedrock.jobs_opportunity o ON o.id = h.opportunity_id
                     WHERE o.deleted_at IS NULL
                       AND h.changed_at >= $1 AND h.changed_at < $2
-                      AND ($3::text IS NULL OR o.deal_type = $3)
+                      AND {_deal_type_sql('o.deal_type', 3)}
                     ORDER BY h.opportunity_id, h.to_stage, h.changed_at
                 ),
                 created AS (
@@ -2893,7 +2920,7 @@ async def get_funnel(
                     FROM bedrock.jobs_opportunity o
                     WHERE o.deleted_at IS NULL
                       AND o.created_at >= $1 AND o.created_at < $2
-                      AND ($3::text IS NULL OR o.deal_type = $3)
+                      AND {_deal_type_sql('o.deal_type', 3)}
                       AND NOT EXISTS (SELECT 1 FROM bedrock.jobs_stage_history h2
                                       WHERE h2.opportunity_id = o.id)
                 )
@@ -2954,15 +2981,15 @@ async def get_funnel(
                         ) x
                     """)
             else:
-                last_movement_at = await conn.fetchval("""
+                last_movement_at = await conn.fetchval(f"""
                     SELECT max(t) FROM (
                         SELECT max(h.changed_at) AS t
                         FROM bedrock.jobs_stage_history h
                         JOIN bedrock.jobs_opportunity o ON o.id = h.opportunity_id
-                        WHERE o.deleted_at IS NULL AND ($1::text IS NULL OR o.deal_type = $1)
+                        WHERE o.deleted_at IS NULL AND {_deal_type_sql('o.deal_type', 1)}
                         UNION ALL
                         SELECT max(o.created_at) FROM bedrock.jobs_opportunity o
-                        WHERE o.deleted_at IS NULL AND ($1::text IS NULL OR o.deal_type = $1)
+                        WHERE o.deleted_at IS NULL AND {_deal_type_sql('o.deal_type', 1)}
                     ) x
                 """, dt)
 
@@ -3130,7 +3157,7 @@ async def opportunities_overview(
     as-of reference (Saturday-to-Saturday) — ages and the net-new / moved-to-committed
     windows are measured back from it."""
     owner_f = owner if owner and owner != "all" else None
-    dt_f = deal_type if deal_type and deal_type != "all" else None
+    dt_f = _parse_deal_types(deal_type)
     # `ref` = the as-of instant: midnight after the selected week-ending Saturday,
     # so the trailing 7-day window is that Sat–Sat week. Defaults to now.
     if week_end:
@@ -3225,7 +3252,7 @@ async def opportunities_overview(
           AND (o.closed_at IS NULL OR o.closed_at >= $3::timestamptz)
           AND ({_OPP_INSET} OR (o.closed_at IS NOT NULL AND o.closed_at >= $3::timestamptz))
           AND ($1::text IS NULL OR o.owner_email = $1)
-          AND ($2::text IS NULL OR o.deal_type = $2)
+          AND {_deal_type_sql('o.deal_type', 2)}
         )
         SELECT base.*,
                GREATEST(opp_activity, account_activity) AS last_touch,
@@ -3242,7 +3269,7 @@ async def opportunities_overview(
         WHERE o.deleted_at IS NULL
           AND o.created_at >= $4::timestamptz AND o.created_at < $3::timestamptz
           AND ($1::text IS NULL OR o.owner_email = $1)
-          AND ($2::text IS NULL OR o.deal_type = $2)
+          AND {_deal_type_sql('o.deal_type', 2)}
         ORDER BY o.created_at DESC
     """, owner_f, dt_f, ref, win_start)
     net_new = len(net_new_rows)
@@ -3251,7 +3278,7 @@ async def opportunities_overview(
         WHERE o.deleted_at IS NULL
           AND o.created_at >= $4::timestamptz AND o.created_at < $3::timestamptz
           AND ($1::text IS NULL OR o.owner_email = $1)
-          AND ($2::text IS NULL OR o.deal_type = $2)
+          AND {_deal_type_sql('o.deal_type', 2)}
     """, owner_f, dt_f, win_start, prev_start)
     # Closed won / lost = opps whose LATEST stage change before `ref` moved them
     # into that stage, inside the window. Counting every history row that ever
@@ -3271,7 +3298,7 @@ async def opportunities_overview(
                 WHERE h.changed_at < $3::timestamptz
                   AND o.deleted_at IS NULL
                   AND ($1::text IS NULL OR o.owner_email = $1)
-                  AND ($2::text IS NULL OR o.deal_type = $2)
+                  AND {_deal_type_sql('o.deal_type', 2)}
                 ORDER BY h.opportunity_id, h.changed_at DESC
             ) last_change
             WHERE to_stage = $5 AND at >= $4::timestamptz
@@ -3421,7 +3448,7 @@ async def opportunities_overview(
         WHERE o.deleted_at IS NULL
           AND o.created_at >= $4::timestamptz AND o.created_at < $3::timestamptz
           AND ($1::text IS NULL OR o.owner_email = $1)
-          AND ($2::text IS NULL OR o.deal_type = $2)
+          AND {_deal_type_sql('o.deal_type', 2)}
     """, owner_f, dt_f, ref, win_start)
     moved_rows = await conn.fetch(f"""
         SELECT o.id, o.account_name, o.deal_type, h.from_stage, h.to_stage,
@@ -3431,7 +3458,7 @@ async def opportunities_overview(
         WHERE o.deleted_at IS NULL AND h.from_stage IS NOT NULL
           AND h.changed_at >= $4::timestamptz AND h.changed_at < $3::timestamptz
           AND ($1::text IS NULL OR o.owner_email = $1)
-          AND ($2::text IS NULL OR o.deal_type = $2)
+          AND {_deal_type_sql('o.deal_type', 2)}
     """, owner_f, dt_f, ref, win_start)
 
     recent_activity = []
@@ -3464,7 +3491,8 @@ async def opportunities_overview(
     recent_activity = sorted((e for e in recent_activity if e["at"]), key=lambda e: e["at"], reverse=True)
 
     return {"success": True, "data": {
-        "filters": {"owner": owner_f, "deal_type": dt_f, "week_end": week_end},
+        "filters": {"owner": owner_f, "deal_type": ",".join(dt_f) if dt_f is not None else None,
+                    "week_end": week_end},
         "aging_basis": "time_in_stage",
         "summary": {
             "in_set": in_set, "net_new": net_new, "net_new_prev": net_new_prev,
@@ -8302,8 +8330,9 @@ async def list_opportunities(
         filters.append(f"o.owner_email = ${i}"); params.append(owner_email); i += 1
     if account_id:
         filters.append(f"o.account_id = ${i}"); params.append(account_id); i += 1
-    if deal_type:
-        filters.append(f"o.deal_type = ${i}"); params.append(deal_type); i += 1
+    dts = _parse_deal_types(deal_type)
+    if dts is not None:
+        filters.append(_deal_type_sql("o.deal_type", i)); params.append(dts); i += 1
 
     where = " AND ".join(filters)
     rows = await conn.fetch(

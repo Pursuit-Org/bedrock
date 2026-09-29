@@ -178,7 +178,8 @@ export interface OpportunityFilters {
   stage_group?: "lead" | "initial" | "active" | "closed" | "on_hold";
   owner_email?: string;
   account_id?: string;
-  deal_type?: DealType;
+  /** One deal type, or a comma-separated list ("ft,unset"). "unset" = untagged. */
+  deal_type?: string;
   limit?: number;
   offset?: number;
 }
