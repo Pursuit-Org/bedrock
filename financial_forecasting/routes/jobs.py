@@ -27,11 +27,21 @@ from db import get_db, get_pool
 from dependencies import get_mcp_client, require_sf_mcp_client
 from sf_errors import sf_http_error
 from services.placement_sf import sync_placement_to_sf, record_sync_error, NotEligible, AccountAmbiguous
-from services.outreach_targets import activity_pipeline_target, OWNER_ACTIVITY_TARGETS
+from services.outreach_targets import activity_pipeline_target, scorecard_owners
+from services import jobs_targets_store
 from services.jobs_activity_link import has_membership_history
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/jobs", tags=["jobs"])
+
+
+async def _refresh_jobs_targets():
+    """Keep the Jobs team + targets snapshot current (at most one reload per
+    TTL). Many SQL builders here read the team synchronously, so it has to be
+    loaded before the handler runs."""
+    await jobs_targets_store.refresh(get_pool())
+
+
+router = APIRouter(prefix="/api/jobs", tags=["jobs"], dependencies=[Depends(_refresh_jobs_targets)])
 
 # Every stage the app UNDERSTANDS, old and new. The 2026-08-05 simplification
 # drops initial_outreach and the three on_hold_* values and renames
@@ -171,7 +181,17 @@ def _deal_type_sql(col: str, n: int) -> str:
 # Core jobs team — default scope for outreach/activation metrics. Per the
 # 2026-07-06 review ("remove everyone except Damon, Avni, Devika"); other
 # staff remain reachable via the per-person owner filter (staff drill).
-JOBS_TEAM_EMAILS = ["avni@pursuit.org", "damon.kornhauser@pursuit.org", "devika@pursuit.org"]
+# Editable since 2026-09-29 (Settings > Targets > Jobs, bedrock.jobs_team_member).
+# Read the live list through _jobs_team(); this constant is the fallback used
+# until that migration runs.
+JOBS_TEAM_EMAILS = jobs_targets_store.DEFAULT_TEAM
+
+
+def _jobs_team() -> list[str]:
+    """The Jobs team right now. Addresses are validated against a strict
+    @pursuit.org pattern on write and on load, which is what makes the
+    string interpolation in the SQL builders below safe."""
+    return jobs_targets_store.team_emails()
 
 _FT_EXTERNAL = """
         WHERE counterpart NOT LIKE '%@pursuit.org' AND counterpart NOT LIKE '%@pursuit.com'
@@ -193,9 +213,9 @@ def _first_touch_email_cte() -> str:
     exist to sort deliberate outreach out of a synced mailbox; a row someone
     typed into the jobs tool is deliberate by construction, and the sender
     gate would otherwise silently drop logs from anyone outside the hardcoded
-    JOBS_TEAM_EMAILS list.
+    _jobs_team() list.
     """
-    sender = " OR ".join(f"a.email_from ILIKE '%{e}%'" for e in JOBS_TEAM_EMAILS)
+    sender = " OR ".join(f"a.email_from ILIKE '%{e}%'" for e in _jobs_team())
     return f"""
     WITH outbound AS (
       SELECT lower(e) AS counterpart, a.activity_date
@@ -219,7 +239,7 @@ def _first_touch_email_cte() -> str:
 def _first_touch_meeting_cte() -> str:
     """CTE `ext(counterpart, first_touch)`: external attendees of meetings on
     the jobs team's calendars, with each person's first-ever meeting date."""
-    team = ", ".join(f"'{e}'" for e in JOBS_TEAM_EMAILS)
+    team = ", ".join(f"'{e}'" for e in _jobs_team())
     return f"""
     WITH mtg AS (
       SELECT lower(att->>'email') AS counterpart, a.activity_date
@@ -248,7 +268,7 @@ def _jobs_activity_flag(alias: str = "a") -> str:
     "a structured or team-driven touch" within that already-scoped feed."""
     team = " OR ".join(
         f"{alias}.email_from ILIKE '%{e}%' OR {alias}.logged_by ILIKE '%{e}%'"
-        for e in JOBS_TEAM_EMAILS
+        for e in _jobs_team()
     )
     return (
         f"({alias}.jobs_opportunity_id IS NOT NULL "
@@ -3682,7 +3702,7 @@ async def get_contacts_summary(user=Depends(require_auth), conn=Depends(get_db))
           )
     """)
 
-    # Outreach / Calls = FIRST TOUCHES by the jobs team (JOBS_TEAM_EMAILS).
+    # Outreach / Calls = FIRST TOUCHES by the jobs team (_jobs_team()).
     # Outreach: each external contact counts once — the week number is contacts
     # whose first-ever outbound email from the team landed in the last 7 days.
     # Calls/Mtgs: same first-touch rule over external attendees of meetings on
@@ -3707,7 +3727,7 @@ async def get_contacts_summary(user=Depends(require_auth), conn=Depends(get_db))
         "calls_total":        mt["total"],
         "calls_this_week":    mt["wk"],
         "meetings_total":     mt["total"],
-        "active_owners":      len(JOBS_TEAM_EMAILS),
+        "active_owners":      len(_jobs_team()),
     }
 
     # Not `stage LIKE 'active_%'`: the 2026-09-21 expansion dropped the
@@ -3760,7 +3780,7 @@ def _team_actor(alias: str = "a") -> str:
     """SQL: this activity row was authored BY the jobs team (Avni/Damon) — they
     sent the email, or it's on their synced calendar / a manual log they made."""
     conds = []
-    for e in JOBS_TEAM_EMAILS:
+    for e in _jobs_team():
         conds.append(f"{alias}.email_from ILIKE '%{e}%'")
         conds.append(f"{alias}.logged_by ILIKE '%{e}%'")
     return "(" + " OR ".join(conds) + ")"
@@ -4098,7 +4118,7 @@ def _staff_actor(alias: str = "a") -> str:
     'staff mobilization' scope. Paired with _jobs_relevant, this surfaces jobs
     outreach the wider staff do on top of their day jobs (kept out of the core
     Outreach & Activation number, which stays Avni/Damon/Devika)."""
-    excl = ",".join(f"'{e.lower()}'" for e in JOBS_TEAM_EMAILS)
+    excl = ",".join(f"'{e.lower()}'" for e in _jobs_team())
     return (f"(EXISTS (SELECT 1 FROM public.org_users o WHERE o.is_active "
             f"AND lower(o.email) NOT IN ({excl}) AND o.email IS NOT NULL "
             f"AND ({alias}.email_from ILIKE '%'||o.email||'%' OR {alias}.logged_by ILIKE '%'||o.email||'%')))")
@@ -4594,8 +4614,8 @@ def _message_actor(scope, owner, aem: str = "aem") -> str:
     them (thread rows carry only the first message's author/date)."""
     if owner and _SAFE_EMAIL.match(owner):
         return f"{aem}.from_email ILIKE '%{owner}%'"
-    team = " OR ".join(f"{aem}.from_email ILIKE '%{e}%'" for e in JOBS_TEAM_EMAILS)
-    excl = ",".join(f"'{e.lower()}'" for e in JOBS_TEAM_EMAILS)
+    team = " OR ".join(f"{aem}.from_email ILIKE '%{e}%'" for e in _jobs_team())
+    excl = ",".join(f"'{e.lower()}'" for e in _jobs_team())
     staff = (f"EXISTS (SELECT 1 FROM public.org_users o WHERE o.is_active "
              f"AND o.email IS NOT NULL AND lower(o.email) NOT IN ({excl}) "
              f"AND {aem}.from_email ILIKE '%'||o.email||'%')")
@@ -4623,7 +4643,7 @@ def _email_addr(alias="a"):
 
 def _scope_email_pred(col, scope):
     """Predicate: this email column belongs to the chosen staff scope."""
-    core = ",".join(f"'{e.lower()}'" for e in JOBS_TEAM_EMAILS)
+    core = ",".join(f"'{e.lower()}'" for e in _jobs_team())
     if scope == "team":
         return f"lower({col}) IN ({core})"
     staff = (f"EXISTS (SELECT 1 FROM public.org_users o WHERE o.is_active "
@@ -5105,7 +5125,7 @@ async def outreach_scorecard_by_owner(
     "what did the team do"; this one answers "is each person carrying their
     number", which is the question a one-on-one starts from (Kwame 2026-09-21).
 
-    Rows come from OWNER_ACTIVITY_TARGETS, not from who happened to send
+    Rows come from the Jobs team list (scorecard_owners), not from who happened to send
     something. Someone with a goal and a silent week is exactly who this table
     exists to show, and they would be missing from a list built off activity.
 
@@ -5130,8 +5150,8 @@ async def outreach_scorecard_by_owner(
                      else f"'call_{CALL_KIND_DEFAULT}'")
 
     rows = []
-    for email in OWNER_ACTIVITY_TARGETS:
-        if not _SAFE_EMAIL.match(email):      # code-owned list; belt and braces
+    for email in scorecard_owners():
+        if not _SAFE_EMAIL.match(email):      # validated on write and load; belt and braces
             continue
         calls = _call_events_sql('team', email, call_kind_sql)
         counts = await conn.fetchrow(f"""
@@ -5175,6 +5195,17 @@ async def outreach_scorecard_by_owner(
         vals = [r[section][field] for r in rows if r[section][field] is not None]
         return sum(vals) if vals else None
 
+    def _team_line(section: str, metric: str) -> dict:
+        """Counts summed from the rows. The target is the team's own once
+        targets are editable, because a team total can be SET rather than
+        summed (e.g. a team number while people carry 0)."""
+        line = {k: _total(section, k) for k in ("target", "this_period", "last_period", "delta")}
+        if jobs_targets_store.available():
+            t = activity_pipeline_target(metric, granularity)
+            line["target"] = t
+            line["delta"] = None if t is None else (line["this_period"] or 0) - t
+        return line
+
     conv_team_this, conv_team_last = await _converted_counts(
         conn, [(this_start, this_end), (last_start, last_end)])
     conv_target = activity_pipeline_target("converted_opportunities", granularity)
@@ -5197,8 +5228,8 @@ async def outreach_scorecard_by_owner(
         # only what can be attributed, and `unattributed` names the difference so
         # the gap is stated rather than hidden in a column that does not add up.
         "totals": {
-            "outreach": {k: _total("outreach", k) for k in ("target", "this_period", "last_period", "delta")},
-            "calls":    {k: _total("calls", k)    for k in ("target", "this_period", "last_period", "delta")},
+            "outreach": _team_line("outreach", "total_outreach_activity"),
+            "calls":    _team_line("calls", "call_discovery"),
             "opportunities": {
                 "target": conv_target,
                 "this_period": conv_team_this, "last_period": conv_team_last,
@@ -5775,7 +5806,7 @@ async def outreach_responded_contacts(
     converted_to_opportunity, a neutral/negative one in on_hold / not_a_fit, but
     nothing here moves automatically: the owner reads the reply and picks. Sorted
     by how long the reply has gone un-actioned."""
-    team_aem = " OR ".join(f"aem.from_email ILIKE '%{e}%'" for e in JOBS_TEAM_EMAILS)
+    team_aem = " OR ".join(f"aem.from_email ILIKE '%{e}%'" for e in _jobs_team())
     params: list = []
     if owner:
         owner_where = "AND lower(coalesce(c.owner_email,'')) = lower($1)"
@@ -5784,7 +5815,7 @@ async def outreach_responded_contacts(
         # Default to the jobs team's own contacts. Prospects owned by PBD folks
         # (Nick/Greg/David) surfaced replies that aren't this team's queue to
         # triage; the per-sender select can still target anyone explicitly.
-        owner_list = ", ".join(f"'{e}'" for e in JOBS_TEAM_EMAILS)
+        owner_list = ", ".join(f"'{e}'" for e in _jobs_team())
         owner_where = f"AND lower(coalesce(c.owner_email,'')) IN ({owner_list})"
     rows = await conn.fetch(f"""
         WITH sends AS (
@@ -6400,12 +6431,12 @@ async def jobs_accounts(
     # Every input below is an independent read. Run sequentially on one
     # connection they cost ~2.6s; gather them across the pool so wall-time ≈ the
     # single slowest query (~0.8s). (Was 3s+ end-to-end for the whole endpoint.)
-    team_sender = " OR ".join(f"a.email_from ILIKE '%{e}%'" for e in JOBS_TEAM_EMAILS)
+    team_sender = " OR ".join(f"a.email_from ILIKE '%{e}%'" for e in _jobs_team())
     # SQL expr → the jobs-team member who authored a row (NULL if none), so we can
     # aggregate the distinct set of team members who've touched each account.
     actor_case = "CASE " + " ".join(
         f"WHEN a.email_from ILIKE '%{e}%' OR a.logged_by ILIKE '%{e}%' THEN '{e}'"
-        for e in JOBS_TEAM_EMAILS
+        for e in _jobs_team()
     ) + " END"
     pool = get_pool()
     (
@@ -7868,10 +7899,10 @@ async def list_contacts(
     # Per-contact activity for warmth: recent volume (90d), recency (last touch),
     # and whether they've RESPONDED (a meeting/call, or an inbound email — not
     # just our outbound).
-    team_sender = " OR ".join(f"a.email_from ILIKE '%{e}%'" for e in JOBS_TEAM_EMAILS)
+    team_sender = " OR ".join(f"a.email_from ILIKE '%{e}%'" for e in _jobs_team())
     actor_case = "CASE " + " ".join(
         f"WHEN a.email_from ILIKE '%{e}%' OR a.logged_by ILIKE '%{e}%' THEN '{e}'"
-        for e in JOBS_TEAM_EMAILS
+        for e in _jobs_team()
     ) + " END"
     activity_by_contact: dict[int, dict] = {}
     if contact_ids:
