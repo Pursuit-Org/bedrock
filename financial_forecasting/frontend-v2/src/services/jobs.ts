@@ -3147,6 +3147,9 @@ export interface ProjectionBucket {
   label: string;
   kind: "past" | "current" | "future" | "overdue" | "undated";
   start: string | null;
+  /** Quarter the period sits in (null for the catch-alls). */
+  quarter: string | null;
+  quarter_label: string | null;
   won: number;
   confirmed: number;
   estimated: number;

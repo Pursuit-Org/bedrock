@@ -72,6 +72,10 @@ def test_month_targets_are_a_third_of_the_quarter():
     assert b["2026-10-01"]["target"] == 12 and b["2026-07-01"]["target"] is None
     b, _ = _get([], granularity="month")
     assert b["2026-11-01"]["target"] == 4.0
+    # Months cover whole quarters: Apr 2026 (last quarter) .. Mar 2027.
+    months = [k for k in b if k not in ("overdue", "undated")]
+    assert months[0] == "2026-04-01" and months[-1] == "2027-03-01" and len(months) == 12
+    assert b["2026-11-01"]["quarter"] == "2026-10-01" and b["2026-11-01"]["quarter_label"] == "Q4 2026"
 
 
 def test_deal_type_filter_bound():

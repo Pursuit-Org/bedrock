@@ -3199,8 +3199,9 @@ async def opportunities_projection(
     conn=Depends(get_db),
 ):
     """Jobs by period: won, confirmed, and estimated-not-yet-confirmed, with the
-    jobs target (Kwame 2026-09-29). Buckets run from one period back (quarter)
-    or two (month) to three quarters / five months ahead, plus two catch-alls.
+    jobs target (Kwame 2026-09-29). Quarterly: last quarter, this one and the
+    next three. Monthly: the twelve months of last quarter through the next
+    two, so months group cleanly under quarter headers. Plus two catch-alls.
 
     Per deal:
       * Closed Won lands in the period it closed (closed_at). Its jobs are the
@@ -3221,8 +3222,13 @@ async def opportunities_projection(
     anchor = today or datetime.now(timezone.utc).date()
     g = granularity
     cur = _period_start(anchor, g)
-    back, ahead = (1, 3) if g == "quarter" else (2, 5)
-    starts = [_period_shift(cur, g, k) for k in range(-back, ahead + 1)]
+    if g == "quarter":
+        starts = [_period_shift(cur, g, k) for k in range(-1, 4)]
+    else:
+        # Whole quarters, so the monthly view can group its months under
+        # quarter headers: last quarter, this one, and the next two.
+        q0 = _period_shift(_period_start(anchor, "quarter"), "quarter", -1)
+        starts = [_period_shift(q0, "month", k) for k in range(12)]
     first, end = starts[0], _period_shift(starts[-1], g, 1)
 
     rows = await conn.fetch(f"""
@@ -3248,8 +3254,13 @@ async def opportunities_projection(
     """, owner_f, dt_f, first, end)
 
     def _bucket(key, label, kind, start=None):
+        q = _period_start(start, "quarter") if start else None
         return {"key": key, "label": label, "kind": kind,
                 "start": start.isoformat() if start else None,
+                # The quarter a period belongs to, for the monthly view's
+                # quarter header row.
+                "quarter": q.isoformat() if q else None,
+                "quarter_label": _period_label(q, "quarter") if q else None,
                 "won": 0, "confirmed": 0, "estimated": 0, "target": None, "deals": []}
 
     buckets = {st: _bucket(st.isoformat(), _period_label(st, g),

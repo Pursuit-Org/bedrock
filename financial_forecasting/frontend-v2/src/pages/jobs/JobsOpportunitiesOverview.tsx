@@ -322,7 +322,7 @@ export function JobsOpportunitiesOverview() {
       {/* ── Jobs projection: won / confirmed / estimated vs target ───────── */}
       <Panel
         title="Jobs Projection"
-        desc="Jobs by close period: won, confirmed on open deals, and still estimated, against the jobs target"
+        desc="Closed Won, Confirmed Roles and Estimated Roles by close period, against the jobs target. Click a total for its deals."
         action={
           <div className="flex rounded-md border border-border-strong p-0.5 text-[11.5px]">
             {(["quarter", "month"] as const).map((g) => (
