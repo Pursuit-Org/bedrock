@@ -45,7 +45,7 @@ export function DashboardPage() {
 
       <div className="flex flex-col gap-6">
         {/* YTD Revenue Snapshot */}
-        <RevenueSnapshotPanel year={fy} />
+        <RevenueSnapshotPanel year={fy} bucket={bucket} />
 
         {/* Record-type filter */}
         <div className="inline-flex flex-wrap gap-1.5">

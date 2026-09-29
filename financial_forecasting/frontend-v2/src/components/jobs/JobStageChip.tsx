@@ -5,12 +5,18 @@ import { DEAL_TYPE_LABELS, STAGE_LABELS } from "@/services/jobs";
 const STAGE_STYLES: Record<JobStage, string> = {
   lead_submitted:               "bg-stone-100 text-stone-600",
   active_in_discussions:        "bg-amber-50 text-amber-700",
+  // Warming through the middle of the funnel, so a glance at a board column
+  // reads as progress rather than as six unrelated colours.
+  ask_submitted:                "bg-orange-50 text-orange-700",
   active_opportunity_confirmed: "bg-emerald-50 text-emerald-700",
-  reviewing_builders:           "bg-emerald-100 text-emerald-800 font-semibold",
+  builder_submitted:            "bg-teal-50 text-teal-700",
+  builder_interviewing:         "bg-teal-100 text-teal-800",
+  offer_contracting:            "bg-emerald-100 text-emerald-800 font-semibold",
   closed_won:                   "bg-green-100 text-green-800 font-semibold",
   closed_lost:                  "bg-red-50 text-red-600",
   // Legacy — kept so an un-migrated row still gets its colour rather than
   // falling through to the neutral default.
+  reviewing_builders:           "bg-emerald-100 text-emerald-800 font-semibold",
   initial_outreach:             "bg-blue-50 text-blue-700",
   active_builder_interview:     "bg-emerald-100 text-emerald-800 font-semibold",
   on_hold_not_selected:         "bg-stone-100 text-stone-500",

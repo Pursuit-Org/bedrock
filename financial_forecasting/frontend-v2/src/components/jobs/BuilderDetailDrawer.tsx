@@ -272,12 +272,14 @@ function LinkChip({ href, icon, label }: { href?: string | null; icon: ReactNode
   );
 }
 
-// job_applications stages → JobStage chip vocabulary (best-effort map)
+// job_applications stages → JobStage chip vocabulary (best-effort map).
+// Display only — nothing here is written back to jobs_opportunity.
 function appStage(s: string): JobStage {
   const m: Record<string, JobStage> = {
-    interview: "active_builder_interview",
+    applied: "builder_submitted",
+    interview: "builder_interviewing",
     accepted: "closed_won",
     rejected: "closed_lost",
   };
-  return m[s] ?? "lead_submitted";
+  return m[s] ?? "active_in_discussions";
 }

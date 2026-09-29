@@ -51,8 +51,9 @@ def test_funnel_opportunities_starts_with_in_discussions():
     assert stages[0]["count"] == 2   # legacy initial_outreach folded in
     # full ordered pipeline present
     assert [s["key"] for s in stages] == [
-        "active_in_discussions", "active_opportunity_confirmed",
-        "reviewing_builders", "closed_won", "closed_lost"]
+        "active_in_discussions", "ask_submitted", "active_opportunity_confirmed",
+        "builder_submitted", "builder_interviewing", "offer_contracting",
+        "closed_won", "closed_lost"]
 
 
 def test_funnel_unknown_type_404():

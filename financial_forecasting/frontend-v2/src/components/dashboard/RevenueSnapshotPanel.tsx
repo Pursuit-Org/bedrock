@@ -6,6 +6,7 @@ import {
   type SourceBreakdown,
   type BucketKey,
 } from "@/services/revenueSnapshot";
+import type { CashflowBucket } from "@/services/cashflow";
 import { fmtMoney, fmtMoneyMD } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { Tooltip } from "@/components/ui/Tooltip";
@@ -21,6 +22,17 @@ const SOURCE_COLORS: Record<string, string> = {
 };
 
 const SOURCE_LABELS = ["Foundation", "Corporate", "Individual", "Government", "Other"] as const;
+
+// Display text shown to the user — kept separate from SOURCE_LABELS (the
+// SourceBreakdown keys used for lookups, colors, and API params) so a label
+// can read differently from the category key it maps to.
+const SOURCE_DISPLAY_LABELS: Record<string, string> = {
+  Foundation: "Foundation / Corp Foundation",
+  Corporate:  "Corporate",
+  Individual: "Individual",
+  Government: "Government",
+  Other:      "Other",
+};
 
 function sortedSources(bySource: SourceBreakdown) {
   return [...SOURCE_LABELS]
@@ -81,7 +93,7 @@ function SourceBar({
               content={
                 <span className="flex items-center gap-1.5">
                   <span className={cn("h-2 w-2 flex-none rounded-full", SOURCE_COLORS[cat])} />
-                  <span>{cat}</span>
+                  <span>{SOURCE_DISPLAY_LABELS[cat] ?? cat}</span>
                   <span className="font-mono font-semibold">{fmtMoney(v)}</span>
                 </span>
               }
@@ -125,7 +137,7 @@ function SourceRows({
           >
             <div className="flex min-w-0 items-center gap-1.5">
               <span className={cn("h-2 w-2 flex-none rounded-full", SOURCE_COLORS[cat])} />
-              <span className="truncate text-[11px] text-ink-3">{cat}</span>
+              <span className="truncate text-[11px] text-ink-3">{SOURCE_DISPLAY_LABELS[cat] ?? cat}</span>
             </div>
             <span
               className={cn(
@@ -230,16 +242,18 @@ function DetailPanel({
   year,
   bucket,
   source,
+  recordBucket,
   currentYear,
   onClose,
 }: {
   year: number;
   bucket: BucketKey;
   source: string;
+  recordBucket: CashflowBucket;
   currentYear: number;
   onClose: () => void;
 }) {
-  const { data, isLoading } = useRevenueSnapshotDetail(year, bucket, source);
+  const { data, isLoading } = useRevenueSnapshotDetail(year, bucket, source, recordBucket);
   const isProjected = bucket === "projected_total";
 
   return (
@@ -252,7 +266,7 @@ function DetailPanel({
           <span className="text-[13px] font-semibold text-ink">
             {BUCKET_LABELS[bucket]}
             <span className="mx-1.5 text-ink-4">·</span>
-            {source === "__all__" ? "All Sources" : source}
+            {source === "__all__" ? "All Sources" : (SOURCE_DISPLAY_LABELS[source] ?? source)}
             {year !== currentYear && (
               <span className="ml-1 text-ink-3"> ({year})</span>
             )}
@@ -415,8 +429,8 @@ function FutureYearsTable({
 
 // ── Main panel ─────────────────────────────────────────────────────────────
 
-export function RevenueSnapshotPanel({ year }: { year: number }) {
-  const { data, isLoading, isError } = useRevenueSnapshot(year);
+export function RevenueSnapshotPanel({ year, bucket: recordBucket }: { year: number; bucket: CashflowBucket }) {
+  const { data, isLoading, isError } = useRevenueSnapshot(year, recordBucket);
   const [activeDetail, setActiveDetail] = useState<{
     year: number;
     bucket: BucketKey;
@@ -480,30 +494,34 @@ export function RevenueSnapshotPanel({ year }: { year: number }) {
           </Tooltip>
         </div>
 
-        {/* Segmented progress bar — each color = a source */}
-        <div className="mt-3">
-          <div className="mb-1.5 flex items-center justify-between text-[11px] text-ink-3">
-            <span>{pct.toFixed(0)}% toward {fmtMoney(annual_target)} goal</span>
-            <span className="font-mono">{fmtMoney(annual_target - revenue_closed.total)} remaining</span>
+        {/* Segmented progress bar toward the $20M goal — the goal is a
+            Philanthropy-specific fundraising target, so it's meaningless
+            (and misleading) against PBC/Capital Grants/Other totals. */}
+        {recordBucket === "philanthropy" && (
+          <div className="mt-3">
+            <div className="mb-1.5 flex items-center justify-between text-[11px] text-ink-3">
+              <span>{pct.toFixed(0)}% toward {fmtMoney(annual_target)} goal</span>
+              <span className="font-mono">{fmtMoney(annual_target - revenue_closed.total)} remaining</span>
+            </div>
+            <div
+              className="flex h-4 w-full overflow-hidden rounded-full bg-surface-2"
+              style={{
+                backgroundImage:
+                  "repeating-linear-gradient(-45deg, rgba(148,163,184,0.45) 0, rgba(148,163,184,0.45) 1.5px, transparent 0, transparent 50%)",
+                backgroundSize: "7px 7px",
+              }}
+            >
+              {sortedSources(revenue_closed.by_source).map(({ cat, v }) => (
+                <div
+                  key={cat}
+                  className={cn("h-full transition-[width] duration-500", SOURCE_COLORS[cat])}
+                  style={{ width: `${(v / annual_target) * 100}%` }}
+                  title={`${SOURCE_DISPLAY_LABELS[cat] ?? cat}: ${fmtMoney(v)}`}
+                />
+              ))}
+            </div>
           </div>
-          <div
-            className="flex h-4 w-full overflow-hidden rounded-full bg-surface-2"
-            style={{
-              backgroundImage:
-                "repeating-linear-gradient(-45deg, rgba(148,163,184,0.45) 0, rgba(148,163,184,0.45) 1.5px, transparent 0, transparent 50%)",
-              backgroundSize: "7px 7px",
-            }}
-          >
-            {sortedSources(revenue_closed.by_source).map(({ cat, v }) => (
-              <div
-                key={cat}
-                className={cn("h-full transition-[width] duration-500", SOURCE_COLORS[cat])}
-                style={{ width: `${(v / annual_target) * 100}%` }}
-                title={`${cat}: ${fmtMoney(v)}`}
-              />
-            ))}
-          </div>
-        </div>
+        )}
 
         {/* Clickable source breakdown — same as tile rows */}
         <div className="mt-3">
@@ -525,6 +543,7 @@ export function RevenueSnapshotPanel({ year }: { year: number }) {
           year={activeDetail.year}
           bucket={activeDetail.bucket}
           source={activeDetail.source}
+          recordBucket={recordBucket}
           currentYear={year}
           onClose={() => setActiveDetail(null)}
         />
@@ -573,6 +592,7 @@ export function RevenueSnapshotPanel({ year }: { year: number }) {
           year={activeDetail.year}
           bucket={activeDetail.bucket}
           source={activeDetail.source}
+          recordBucket={recordBucket}
           currentYear={year}
           onClose={() => setActiveDetail(null)}
         />

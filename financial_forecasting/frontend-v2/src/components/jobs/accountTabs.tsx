@@ -13,10 +13,15 @@
  *    chipped with what it's tagged to.
  *  - Activity: read rollup across opps+contacts + a "log activity" form.
  */
+import { useGatedStageOptions } from "@/lib/oppStageOptions";
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { Briefcase, CheckSquare, ExternalLink, MessageSquare, Plus, Trash2, User, X } from "lucide-react";
 
+import { CallKindPicker } from "@/components/jobs/CallKindPicker";
+import {
+  useIntroConnectors, useLogFacilitatedIntro, INTRO_ASKS,
+} from "@/services/jobsAccounts";
 import { JobsActivityList } from "@/components/jobs/JobsActivityList";
 import { JobsComments } from "@/components/jobs/JobsComments";
 import { JobsTasks } from "@/components/jobs/JobsTasks";
@@ -40,8 +45,8 @@ import {
   useDeleteOpportunity,
   useJobsStaff,
   useLogActivity,
+  type CallKind,
   useUpdateOpportunity,
-  STAGE_LABELS,
   type AccountBuilderRow,
   type AccountComment,
   type AccountTask,
@@ -59,13 +64,25 @@ import {
   initials, jobsContactPath, jobsOpportunityPath, oppRoleLabel,
 } from "./jobsEntity";
 
-const OPP_STAGE_OPTIONS: { value: JobStage; label: string }[] = ([
-  "initial_outreach", "active_in_discussions", "active_opportunity_confirmed", "active_builder_interview",
-  "closed_won", "closed_lost", "on_hold_not_selected", "on_hold_not_interested", "on_hold_not_responsive",
-] as JobStage[]).map((s) => ({ value: s, label: STAGE_LABELS[s] ?? s }));
 
 const jobsRef = withReferrer({ pathname: "/jobs", label: "Jobs" });
 const inputCls = "h-7 rounded border border-border-strong bg-surface px-2 text-[12.5px] text-ink-2 outline-none focus:border-accent";
+
+/** What can be logged against an account.
+ *
+ *  Email is here to catch sends the Gmail sync missed; it lands in the same
+ *  numbers as synced mail and cannot double-count, because the metric counts
+ *  distinct people. Facilitated Intro is not a bedrock.activity row at all —
+ *  activity.type has no 'intro' in its CHECK — so it posts to the intro
+ *  endpoint instead, which is what the Outreach scorecard counts. */
+const ACTIVITY_LOG_TYPES = [
+  { value: "call",     label: "Call" },
+  { value: "email",    label: "Email" },
+  { value: "text",     label: "Text" },
+  { value: "linkedin", label: "LinkedIn" },
+  { value: "intro",    label: "Facilitated Intro" },
+] as const;
+type ActivityLogType = (typeof ACTIVITY_LOG_TYPES)[number]["value"];
 
 function Loading() { return <div className="px-4 py-6 text-[12.5px] text-ink-3">Loading…</div>; }
 function Empty({ children }: { children: React.ReactNode }) { return <div className="px-4 py-6 text-[12.5px] text-ink-3">{children}</div>; }
@@ -87,6 +104,9 @@ function AccountOppsTab({ account }: { account: JobsAccount }) {
   const create = useCreateOpportunity();
   const update = useUpdateOpportunity();
   const del = useDeleteOpportunity();
+  // Gated on the live CHECK constraint — the 2026-09-21 stages are rejected
+  // until that migration lands, so an ungated picker fails on save.
+  const stageOptions = useGatedStageOptions();
   const patch = (id: string, field: string, val: unknown) => update.mutateAsync({ id, [field]: val }).then(() => undefined);
   const removeOpp = (id: string, label: string) => { if (window.confirm(`Delete opportunity "${label}"? This removes it from the pipeline.`)) del.mutate(id); };
 
@@ -123,7 +143,7 @@ function AccountOppsTab({ account }: { account: JobsAccount }) {
             ) : account.opportunities.map((o) => (
               <tr key={o.id} className="border-t border-border-strong/60">
                 <td className="overflow-hidden px-2 py-1.5"><InlineText value={o.title ?? null} placeholder={oppRoleLabel(o)} onSave={(v) => patch(o.id, "title", v)} className="text-[12.5px] font-medium text-ink" /></td>
-                <td className="overflow-hidden px-2 py-1.5"><InlineSelect<JobStage> value={o.stage} options={OPP_STAGE_OPTIONS} renderValue={(v) => <DealStagePill stage={(v ?? o.stage) as JobStage} />} onSave={(v) => patch(o.id, "stage", v)} /></td>
+                <td className="overflow-hidden px-2 py-1.5"><InlineSelect<JobStage> value={o.stage} options={stageOptions} renderValue={(v) => <DealStagePill stage={(v ?? o.stage) as JobStage} />} onSave={(v) => patch(o.id, "stage", v)} /></td>
                 <td className="overflow-hidden px-2 py-1.5"><OwnerSelect owner={o.owner_email} staff={staff} onSave={(email) => patch(o.id, "owner_email", email)} /></td>
                 <td className="overflow-hidden px-2 py-1.5"><InlineSelect<string> value={o.deal_type ?? null} options={DEAL_TYPE_OPTIONS} emptyLabel="—" onSave={(v) => patch(o.id, "deal_type", v || null)} /></td>
                 <td className="overflow-hidden px-2 py-1.5"><InlineSelect<string> value={o.likelihood ?? null} options={[{ value: "low", label: "Low" }, { value: "medium", label: "Medium" }, { value: "high", label: "High" }]} emptyLabel="—" onSave={(v) => patch(o.id, "likelihood", v || null)} /></td>
@@ -140,7 +160,7 @@ function AccountOppsTab({ account }: { account: JobsAccount }) {
             {adding ? (
               <tr className="border-t border-border-strong bg-surface-2/40">
                 <td className="px-2 py-1.5"><input autoFocus value={role} onChange={(e) => setRole(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") submit(); if (e.key === "Escape") setAdding(false); }} placeholder="Opportunity name *" className="w-full border-0 bg-transparent text-[12.5px] text-ink outline-none placeholder:text-ink-4" /></td>
-                <td className="px-2 py-1.5"><select value={stage} onChange={(e) => setStage(e.target.value as JobStage)} className="h-6 w-full rounded border border-border-strong bg-surface px-1 text-[11.5px] outline-none focus:border-accent">{OPP_STAGE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</select></td>
+                <td className="px-2 py-1.5"><select value={stage} onChange={(e) => setStage(e.target.value as JobStage)} className="h-6 w-full rounded border border-border-strong bg-surface px-1 text-[11.5px] outline-none focus:border-accent">{stageOptions.map((o) => <option key={o.value} value={o.value} disabled={o.disabled} title={o.title}>{o.label}</option>)}</select></td>
                 <td className="px-2 py-1.5"><select value={owner} onChange={(e) => setOwner(e.target.value)} className={cn("h-6 w-full rounded border bg-surface px-1 text-[11.5px] outline-none focus:border-accent", owner ? "border-border-strong" : "border-amber-300")}><option value="">Owner *</option>{staff.map((s) => <option key={s.email} value={s.email}>{s.name}</option>)}</select></td>
                 <td className="px-2 py-1.5"><select value={dealType} onChange={(e) => setDealType(e.target.value as DealType | "")} className={cn("h-6 w-full rounded border bg-surface px-1 text-[11.5px] outline-none focus:border-accent", dealType ? "border-border-strong" : "border-amber-300")}><option value="">Type *</option>{DEAL_TYPE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</select></td>
                 <td className="px-2 py-1.5"><select value={likelihood} onChange={(e) => setLikelihood(e.target.value as "" | "low" | "medium" | "high")} className={cn("h-6 w-full rounded border bg-surface px-1 text-[11.5px] outline-none focus:border-accent", likelihood ? "border-border-strong" : "border-amber-300")}><option value="">— *</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select></td>
@@ -229,16 +249,49 @@ function AccountActivityTab({ account, scope = "engaged" }: { account: JobsAccou
   const { data, isLoading } = useAccountActivity(account.account_key);
   const { data: prospects = [] } = useAccountProspects(account.account_key, scope);
   const log = useLogActivity();
+  const { mutateAsync: logIntro, isPending: introPending } = useLogFacilitatedIntro();
+  const { data: connectors = [] } = useIntroConnectors();
   const [open, setOpen] = useState(false);
-  const [type, setType] = useState<"call" | "text" | "linkedin">("call");
+  // Email and Facilitated Intro added 2026-09-21 (Kwame): an intro or a
+  // hand-logged email gets worked at the account just as often as at the
+  // contact, and the account view is where people already are.
+  const [type, setType] = useState<ActivityLogType>("call");
   const [target, setTarget] = useState("");          // "opp:<id>" | "contact:<id>"
   const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [note, setNote] = useState("");
+  const [callKind, setCallKind] = useState<CallKind | null>(null);
+  const [connectorId, setConnectorId] = useState("");
+  const [ask, setAsk] = useState("hiring_intro");
+
+  const isIntro = type === "intro";
+  const [targetKind, targetId] = target.split(":");
+  // An intro lives in bedrock.intro_request, whose contact_id is NOT NULL and
+  // which has no opportunity variant — so it can only be tagged to a person.
+  const targetOptions = isIntro ? [] : account.opportunities;
+  // The note is optional on an intro, matching the contact form: "Joanna
+  // introduced me to Jane on the 14th" is a complete record, and demanding
+  // prose to log it loses intros.
+  const canSubmit = isIntro
+    ? targetKind === "contact" && !!connectorId
+    : !!target && !!note.trim();
+
+  const reset = () => { setNote(""); setCallKind(null); setConnectorId(""); setOpen(false); };
 
   const submit = () => {
-    const [kind, id] = target.split(":");
-    const body = kind === "opp" ? { jobs_opportunity_id: id } : { contact_id: Number(id) };
-    log.mutate({ ...body, type, description: note.trim(), activity_date: date || undefined } as Parameters<typeof log.mutate>[0], { onSuccess: () => { setNote(""); setOpen(false); } });
+    if (isIntro) {
+      void logIntro({
+        contact_id: Number(targetId),
+        connector_staff_id: Number(connectorId),
+        specific_ask: ask || null,
+        context: note.trim() || null,
+        occurred_on: date || undefined,
+      }).then(reset, () => {});
+      return;
+    }
+    const body = targetKind === "opp" ? { jobs_opportunity_id: targetId } : { contact_id: Number(targetId) };
+    log.mutate({ ...body, type, description: note.trim(), activity_date: date || undefined,
+                 call_kind: type === "call" ? callKind : null } as Parameters<typeof log.mutate>[0],
+      { onSuccess: reset });
   };
 
   return (
@@ -249,17 +302,48 @@ function AccountActivityTab({ account, scope = "engaged" }: { account: JobsAccou
       </div>
       {open && (
         <div className="mx-3 mb-2 flex flex-wrap items-center gap-2 rounded-md border border-dashed border-border-strong bg-surface-2/40 px-3 py-2">
-          <select value={type} onChange={(e) => setType(e.target.value as typeof type)} className={inputCls}>
-            <option value="call">Call</option><option value="text">Text</option><option value="linkedin">LinkedIn</option>
+          <select value={type}
+            onChange={(e) => {
+              const next = e.target.value as ActivityLogType;
+              setType(next);
+              // An intro can only be tagged to a contact, so a selected
+              // opportunity would otherwise sit there looking valid and then
+              // submit a NaN contact_id.
+              if (next === "intro" && target.startsWith("opp:")) setTarget("");
+            }}
+            className={inputCls}>
+            {ACTIVITY_LOG_TYPES.map((t) => (
+              <option key={t.value} value={t.value}>{t.label}</option>
+            ))}
           </select>
           <select value={target} onChange={(e) => setTarget(e.target.value)} className={cn(inputCls, "max-w-[220px]")}>
-            <option value="">Tag to…</option>
-            {account.opportunities.map((o) => <option key={o.id} value={`opp:${o.id}`}>Opp · {oppRoleLabel(o)}</option>)}
+            <option value="">{isIntro ? "Who was introduced…" : "Tag to…"}</option>
+            {targetOptions.map((o) => <option key={o.id} value={`opp:${o.id}`}>Opp · {oppRoleLabel(o)}</option>)}
             {prospects.map((c) => <option key={c.contact_id} value={`contact:${c.contact_id}`}>Contact · {c.full_name}</option>)}
           </select>
+          {isIntro && (
+            <>
+              <select value={connectorId} onChange={(e) => setConnectorId(e.target.value)}
+                title="Who made the intro. Credit for it goes to you, the person logging it."
+                className={cn(inputCls, "max-w-[190px]")}>
+                <option value="">Introduced by…</option>
+                {connectors.map((c) => (
+                  <option key={c.staff_user_id} value={c.staff_user_id}>{c.display_name || c.email}</option>
+                ))}
+              </select>
+              <select value={ask} onChange={(e) => setAsk(e.target.value)}
+                title="What the intro was for" className={cn(inputCls, "max-w-[170px]")}>
+                {INTRO_ASKS.map((a) => <option key={a.value} value={a.value}>{a.label}</option>)}
+              </select>
+            </>
+          )}
           <input type="date" value={date} max={new Date().toISOString().slice(0, 10)} onChange={(e) => setDate(e.target.value)} className={inputCls} />
-          <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Note" className={cn(inputCls, "min-w-[200px] flex-1")} />
-          <button type="button" disabled={!target || !note.trim() || log.isPending} onClick={submit} className="h-7 rounded bg-accent px-3 text-[12px] font-medium text-white hover:opacity-90 disabled:opacity-50">Log</button>
+          <input value={note} onChange={(e) => setNote(e.target.value)}
+            placeholder={isIntro ? "Context (optional)" : "Note"} className={cn(inputCls, "min-w-[200px] flex-1")} />
+          <button type="button" disabled={!canSubmit || log.isPending || introPending} onClick={submit} className="h-7 rounded bg-accent px-3 text-[12px] font-medium text-white hover:opacity-90 disabled:opacity-50">Log</button>
+          {/* Full-width so the picker keeps its label instead of being squeezed
+              between the note field and the Log button. */}
+          {type === "call" && <CallKindPicker value={callKind} onChange={setCallKind} className="basis-full" />}
         </div>
       )}
       {isLoading ? <Loading /> : <JobsActivityList entries={data ?? []} emptyMessage="No activity across this account's opportunities or contacts yet." />}
