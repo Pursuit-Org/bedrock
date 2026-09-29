@@ -8,7 +8,14 @@ export type NotificationType =
   | "sf_task_assigned"
   | "sf_opp_owner_changed"
   | "intro_request"
-  | "intro_response";
+  | "intro_response"
+  | "account_owner_changed"
+  | "contact_owner_changed"
+  | "account_comment_added"
+  | "contact_comment_added"
+  | "account_file_uploaded"
+  | "account_task_assigned"
+  | "contact_task_assigned";
 
 export type SlackDeliveryStatus =
   | "pending"
@@ -55,6 +62,11 @@ export interface NotificationPayload {
   role?: "gained" | "lost" | string | null;
   opp_name?: string | null;
   new_owner_name?: string | null;
+
+  // Account/Contact owner-change + owner-activity fields.
+  account_name?: string | null;
+  file_name?: string | null;
+  assignee_name?: string | null;
 }
 
 export interface BedrockNotification {
@@ -151,6 +163,11 @@ export function useMarkNotificationRead() {
   });
 }
 
+/** Mark-all-read clears the bell: rows that were unread at the time of
+ *  the click are removed from the cached lists entirely (not just
+ *  dimmed), so the dropdown visibly empties out. The rows still exist
+ *  server-side (read_at is set, not deleted) and remain visible on the
+ *  full history page. */
 export function useMarkAllNotificationsRead() {
   const qc = useQueryClient();
   return useMutation({
@@ -159,13 +176,12 @@ export function useMarkAllNotificationsRead() {
     },
     onMutate: async () => {
       await qc.cancelQueries({ queryKey: ["notifications"] });
-      const nowIso = new Date().toISOString();
       const prevList = qc.getQueryData<BedrockNotification[]>(["notifications", false]);
       const prevUnread = qc.getQueryData<BedrockNotification[]>(["notifications", true]);
       const prevCount = qc.getQueryData<number>(["notifications", "unread-count"]);
       for (const key of [["notifications", false], ["notifications", true]] as const) {
         qc.setQueryData<BedrockNotification[]>(key, (rows) =>
-          (rows ?? []).map((r) => (r.read_at ? r : { ...r, read_at: nowIso })),
+          (rows ?? []).filter((r) => !!r.read_at),
         );
       }
       qc.setQueryData<number>(["notifications", "unread-count"], 0);
@@ -179,6 +195,62 @@ export function useMarkAllNotificationsRead() {
     },
     onSettled: () => {
       qc.invalidateQueries({ queryKey: ["notifications"] });
+    },
+  });
+}
+
+/** Full history (up to the backend's 200-row cap, bounded further by the
+ *  2-week retention window), used by the notification history page —
+ *  distinct query key from the bell's ["notifications", false] so the
+ *  bell's mark-all-read clearing doesn't affect this list. */
+export function useNotificationHistory() {
+  return useQuery({
+    queryKey: ["notifications", "history"],
+    queryFn: async () => {
+      const { data } = await api.get<ListResponse>("/api/notifications?limit=200");
+      return data.data ?? [];
+    },
+    staleTime: 15_000,
+  });
+}
+
+export interface NotificationPreferences {
+  slack_enabled: boolean;
+  account_activity_enabled: boolean;
+  contact_activity_enabled: boolean;
+  opportunity_activity_enabled: boolean;
+}
+
+interface PreferencesResponse {
+  success: boolean;
+  data: NotificationPreferences;
+}
+
+/** Per-user delivery/activity preferences (Settings → Notifications tab).
+ *  In-app (bell) delivery is always on and isn't represented here. */
+export function useNotificationPreferences() {
+  return useQuery({
+    queryKey: ["notifications", "preferences"],
+    queryFn: async () => {
+      const { data } = await api.get<PreferencesResponse>("/api/notifications/preferences");
+      return data.data;
+    },
+    staleTime: 30_000,
+  });
+}
+
+export function useUpdateNotificationPreferences() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (prefs: NotificationPreferences) => {
+      const { data } = await api.put<PreferencesResponse>(
+        "/api/notifications/preferences",
+        prefs,
+      );
+      return data.data;
+    },
+    onSuccess: (data) => {
+      qc.setQueryData(["notifications", "preferences"], data);
     },
   });
 }

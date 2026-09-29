@@ -21,8 +21,21 @@ from pydantic import BaseModel
 
 from auth import require_auth
 from db import get_db
+from dependencies import get_mcp_client
+from mcp_client import UnifiedMCPClient
+from services.entity_owner import find_org_user, resolve_entity_owner
+from services.notifications import (
+    TYPE_ACCOUNT_COMMENT_ADDED,
+    TYPE_CONTACT_COMMENT_ADDED,
+    enqueue_notification,
+)
 
 logger = logging.getLogger(__name__)
+
+_OWNER_NOTIF_TYPE_BY_ENTITY = {
+    "account": TYPE_ACCOUNT_COMMENT_ADDED,
+    "contact": TYPE_CONTACT_COMMENT_ADDED,
+}
 router = APIRouter(prefix="/api", tags=["comments"])
 
 VALID_ENTITY_TYPES = {"account", "opportunity", "contact"}
@@ -91,6 +104,7 @@ async def create_entity_comment(
     body: EntityCommentCreate,
     user=Depends(require_auth),
     conn=Depends(get_db),
+    client: UnifiedMCPClient = Depends(get_mcp_client),
 ):
     _check_entity_type(body.entity_type)
     content = (body.content or "").strip()
@@ -111,7 +125,58 @@ async def create_entity_comment(
                      content, created_at, updated_at""",
         body.entity_type, body.entity_id, author_id, author_email, content,
     )
+
+    await _notify_owner_of_comment(
+        conn, client, entity_type=body.entity_type, entity_id=body.entity_id,
+        author_email=author_email, content=content,
+    )
+
     return {"success": True, "data": _serialize(row)}
+
+
+async def _notify_owner_of_comment(
+    conn, client, *, entity_type: str, entity_id: str, author_email: str, content: str,
+) -> None:
+    """Best-effort: notify the account/contact owner that someone else
+    commented on a record they own. Opportunity comments don't get this
+    (product decision — only account/contact are in scope). Never raises
+    — a Salesforce hiccup shouldn't fail the comment POST."""
+    notif_type = _OWNER_NOTIF_TYPE_BY_ENTITY.get(entity_type)
+    if not notif_type:
+        return
+    try:
+        sf = client.salesforce if client else None
+        if not sf:
+            return
+        owner = await resolve_entity_owner(sf, entity_type, entity_id)
+        if not owner:
+            return
+        if owner["owner_email"].strip().lower() == (author_email or "").strip().lower():
+            return  # commenting on your own record — no self-ping
+        org_row = await find_org_user(conn, owner["owner_email"])
+        if not org_row:
+            return
+        name_field = "account_name" if entity_type == "account" else "contact_name"
+        preview = content if len(content) <= 280 else content[:277] + "..."
+        await enqueue_notification(
+            conn,
+            recipient_email=org_row["email"],
+            type=notif_type,
+            payload={
+                "title": f"New comment on an {entity_type} you own",
+                "subtitle": owner["record_name"],
+                name_field: owner["record_name"],
+                "entity_id": entity_id,
+                "comment_body": preview,
+                "actor_display_name": author_email,
+                "target_url": f"/{entity_type}s/{entity_id}",
+            },
+            actor_email=author_email,
+        )
+    except Exception as e:
+        logger.warning(
+            "_notify_owner_of_comment: failed for %s %s: %s", entity_type, entity_id, e,
+        )
 
 
 @router.patch("/entity-comments/{comment_id}")

@@ -67,6 +67,13 @@ TYPE_SF_TASK_ASSIGNED = "sf_task_assigned"
 TYPE_SF_OPP_OWNER_CHANGED = "sf_opp_owner_changed"
 TYPE_INTRO_REQUEST = "intro_request"
 TYPE_INTRO_RESPONSE = "intro_response"
+TYPE_ACCOUNT_OWNER_CHANGED = "account_owner_changed"
+TYPE_CONTACT_OWNER_CHANGED = "contact_owner_changed"
+TYPE_ACCOUNT_COMMENT_ADDED = "account_comment_added"
+TYPE_CONTACT_COMMENT_ADDED = "contact_comment_added"
+TYPE_ACCOUNT_FILE_UPLOADED = "account_file_uploaded"
+TYPE_ACCOUNT_TASK_ASSIGNED = "account_task_assigned"
+TYPE_CONTACT_TASK_ASSIGNED = "contact_task_assigned"
 
 ALL_TYPES = {
     TYPE_PROJECT_TASK_ASSIGNED,
@@ -75,6 +82,28 @@ ALL_TYPES = {
     TYPE_SF_OPP_OWNER_CHANGED,
     TYPE_INTRO_REQUEST,
     TYPE_INTRO_RESPONSE,
+    TYPE_ACCOUNT_OWNER_CHANGED,
+    TYPE_CONTACT_OWNER_CHANGED,
+    TYPE_ACCOUNT_COMMENT_ADDED,
+    TYPE_CONTACT_COMMENT_ADDED,
+    TYPE_ACCOUNT_FILE_UPLOADED,
+    TYPE_ACCOUNT_TASK_ASSIGNED,
+    TYPE_CONTACT_TASK_ASSIGNED,
+}
+
+# Types gated by bedrock.notification_preference's per-entity buckets — a
+# user can mute these entirely (no bell row, no Slack) independent of the
+# other, ungated notification types (task-assigned-to-me, @-mentions,
+# intro requests), which always fire.
+_ACTIVITY_BUCKET_BY_TYPE = {
+    TYPE_ACCOUNT_OWNER_CHANGED: "account_activity_enabled",
+    TYPE_ACCOUNT_COMMENT_ADDED: "account_activity_enabled",
+    TYPE_ACCOUNT_FILE_UPLOADED: "account_activity_enabled",
+    TYPE_ACCOUNT_TASK_ASSIGNED: "account_activity_enabled",
+    TYPE_CONTACT_OWNER_CHANGED: "contact_activity_enabled",
+    TYPE_CONTACT_COMMENT_ADDED: "contact_activity_enabled",
+    TYPE_CONTACT_TASK_ASSIGNED: "contact_activity_enabled",
+    TYPE_SF_OPP_OWNER_CHANGED: "opportunity_activity_enabled",
 }
 
 
@@ -84,6 +113,26 @@ def _slack_service():
     if not client:
         return None
     return client.services.get("slack")
+
+
+async def _get_preference(conn, user_email: str) -> Dict[str, bool]:
+    """Fetch a user's notification preference row, defaulting every
+    bucket to enabled when no row exists yet (opt-out, not opt-in)."""
+    defaults = {
+        "slack_enabled": True,
+        "account_activity_enabled": True,
+        "contact_activity_enabled": True,
+        "opportunity_activity_enabled": True,
+    }
+    row = await conn.fetchrow(
+        "SELECT slack_enabled, account_activity_enabled, contact_activity_enabled, "
+        "opportunity_activity_enabled FROM bedrock.notification_preference "
+        "WHERE user_email = $1",
+        user_email,
+    )
+    if not row:
+        return defaults
+    return {**defaults, **dict(row)}
 
 
 async def enqueue_notification(
@@ -97,7 +146,8 @@ async def enqueue_notification(
     """Insert a notification row and fire-and-forget the Slack DM.
 
     Returns the inserted row's id (UUID as str), or None when the insert
-    was skipped (recipient missing). Never raises on Slack failure — the
+    was skipped (recipient missing, or the recipient has muted this
+    notification's activity bucket). Never raises on Slack failure — the
     Slack worker logs and updates ``slack_status`` on the row.
     """
     if not recipient_email:
@@ -107,6 +157,17 @@ async def enqueue_notification(
         raise ValueError(f"Unknown notification type: {type}")
 
     recipient_norm = recipient_email.strip().lower()
+
+    bucket = _ACTIVITY_BUCKET_BY_TYPE.get(type)
+    if bucket:
+        pref = await _get_preference(conn, recipient_norm)
+        if not pref[bucket]:
+            logger.debug(
+                "enqueue_notification: skip (recipient muted %s) type=%s recipient=%s",
+                bucket, type, recipient_norm,
+            )
+            return None
+
     payload_json = json.dumps(payload, default=_json_default)
 
     row = await conn.fetchrow(
@@ -143,6 +204,11 @@ async def _dispatch_slack(
 
     try:
         async with pool.acquire() as conn:
+            pref = await _get_preference(conn, recipient_email)
+            if not pref["slack_enabled"]:
+                await _mark_slack(conn, notif_id, "disabled", note="user_disabled_slack")
+                return
+
             slack_id = await _resolve_slack_id(conn, recipient_email)
             if not slack_id:
                 await _mark_slack(conn, notif_id, "skipped", note="no_slack_id")
@@ -338,6 +404,51 @@ def _format_slack_message(
             section_lines.append(f"*Contact:* *{payload['contact_name']}*")
         if payload.get("response_note"):
             section_lines.append(f"*Note:* {payload['response_note']}")
+    elif type in (TYPE_ACCOUNT_OWNER_CHANGED, TYPE_CONTACT_OWNER_CHANGED):
+        noun = "account" if type == TYPE_ACCOUNT_OWNER_CHANGED else "contact"
+        role = payload.get("role")
+        name = payload.get("account_name") or payload.get("contact_name") or payload.get("subtitle") or ""
+        if role == "gained":
+            headline = f":handshake: *{actor}* made you the owner"
+            if name:
+                section_lines.append(f"*{noun.capitalize()}:* *{name}*")
+        elif role == "lost":
+            headline = f":handshake: *{actor}* reassigned an {noun}"
+            if name:
+                section_lines.append(f"*{noun.capitalize()}:* {name}")
+            if payload.get("new_owner_name"):
+                section_lines.append(f"*Now owned by:* {payload['new_owner_name']}")
+        else:
+            headline = f":handshake: *{noun.capitalize()} ownership changed*"
+            if name:
+                section_lines.append(f"*{name}*")
+    elif type in (TYPE_ACCOUNT_COMMENT_ADDED, TYPE_CONTACT_COMMENT_ADDED):
+        noun = "account" if type == TYPE_ACCOUNT_COMMENT_ADDED else "contact"
+        name = payload.get("account_name") or payload.get("contact_name") or ""
+        headline = f":speech_balloon: *{actor}* commented on an {noun} you own"
+        if name:
+            section_lines.append(f"*{noun.capitalize()}:* *{name}*")
+        body = payload.get("comment_body") or payload.get("subtitle") or ""
+        if body:
+            section_lines.append(f"*Comment:* {body}")
+    elif type == TYPE_ACCOUNT_FILE_UPLOADED:
+        name = payload.get("account_name") or ""
+        headline = f":paperclip: *{actor}* uploaded a file to an account you own"
+        if name:
+            section_lines.append(f"*Account:* *{name}*")
+        if payload.get("file_name"):
+            section_lines.append(f"*File:* {payload['file_name']}")
+    elif type in (TYPE_ACCOUNT_TASK_ASSIGNED, TYPE_CONTACT_TASK_ASSIGNED):
+        noun = "account" if type == TYPE_ACCOUNT_TASK_ASSIGNED else "contact"
+        name = payload.get("account_name") or payload.get("contact_name") or ""
+        headline = f":bell: *{actor}* assigned a task on an {noun} you own"
+        if name:
+            section_lines.append(f"*{noun.capitalize()}:* *{name}*")
+        task = payload.get("task_title") or payload.get("subtitle")
+        if task:
+            section_lines.append(f"*Task:* {task}")
+        if payload.get("assignee_name"):
+            section_lines.append(f"*Assigned to:* {payload['assignee_name']}")
     else:
         headline = payload.get("title") or "Bedrock notification"
         sub = payload.get("subtitle") or ""

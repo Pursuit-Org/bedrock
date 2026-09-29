@@ -3,22 +3,24 @@ import { useSearchParams } from "react-router-dom";
 
 import { PageHeader } from "@/components/PageHeader";
 import { ConnectionsTab } from "@/pages/settings/ConnectionsTab";
+import { NotificationsTab } from "@/pages/settings/NotificationsTab";
 import { ProfilesTab } from "@/pages/settings/ProfilesTab";
 import { TargetsTab } from "@/pages/settings/TargetsTab";
 import { UsersTab } from "@/pages/settings/UsersTab";
 import { cn } from "@/lib/utils";
 import { usePerm } from "@/services/permissions";
 
-type TabKey = "connections" | "targets" | "users" | "profiles";
+type TabKey = "connections" | "targets" | "users" | "profiles" | "notifications";
 
 const TABS: { key: TabKey; label: string }[] = [
   { key: "connections", label: "Connections" },
   { key: "targets", label: "Targets" },
   { key: "users", label: "Users" },
   { key: "profiles", label: "Permission Profiles" },
+  { key: "notifications", label: "Notifications" },
 ];
 
-const VALID_TABS = new Set<TabKey>(["connections", "targets", "users", "profiles"]);
+const VALID_TABS = new Set<TabKey>(["connections", "targets", "users", "profiles", "notifications"]);
 
 export function SettingsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -117,6 +119,7 @@ export function SettingsPage() {
       {activeTab === "profiles" && isAdmin ? (
         <ProfilesTab isAdmin={isAdmin} canEdit={canEditProfiles} />
       ) : null}
+      {activeTab === "notifications" ? <NotificationsTab /> : null}
     </div>
   );
 }

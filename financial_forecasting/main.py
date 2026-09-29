@@ -86,6 +86,8 @@ from sf_errors import sf_http_error
 from services import pipeline_review
 from services.crm_parser import refresh_opp_cache as _refresh_opp_cache
 from services.cache import cache, CACHE_TTL_OPPORTUNITIES, CACHE_TTL_ACCOUNTS, CACHE_TTL_USERS, CACHE_TTL_CASHFLOW
+from services.entity_owner import find_org_user, notify_owner_changed, resolve_entity_owner
+from services.notifications import TYPE_ACCOUNT_FILE_UPLOADED, enqueue_notification
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -274,6 +276,15 @@ async def startup_event():
         logger.info("intro_notification_poller started")
     except Exception as e:
         logger.warning(f"intro_notification_poller failed to start: {e}")
+
+    # Prunes bedrock.notification rows past the 2-week retention window.
+    # Postgres-only — starts unconditionally.
+    try:
+        from services.notification_cleanup import run_forever as _notif_cleanup_loop
+        asyncio.create_task(_notif_cleanup_loop())
+        logger.info("notification_cleanup started")
+    except Exception as e:
+        logger.warning(f"notification_cleanup failed to start: {e}")
 
     logger.info(f"API started — connected services: {client.connected_services or ['none']}")
 
@@ -1584,6 +1595,7 @@ async def upload_account_file(
     title: Optional[str] = Form(None),
     client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user=Depends(require_auth),
+    conn=Depends(get_db),
 ):
     """Upload a file and attach it to an Account.
 
@@ -1623,6 +1635,30 @@ async def upload_account_file(
         )
         records = version_q.get("records", []) or []
         content_document_id = records[0].get("ContentDocumentId") if records else None
+
+        try:
+            uploader_email = (user.get("email") or "").strip()
+            owner = await resolve_entity_owner(salesforce, "account", account_id)
+            if owner and owner["owner_email"].strip().lower() != uploader_email.lower():
+                org_row = await find_org_user(conn, owner["owner_email"])
+                if org_row:
+                    await enqueue_notification(
+                        conn,
+                        recipient_email=org_row["email"],
+                        type=TYPE_ACCOUNT_FILE_UPLOADED,
+                        payload={
+                            "title": "New file uploaded to an account you own",
+                            "subtitle": owner["record_name"],
+                            "account_name": owner["record_name"],
+                            "entity_id": account_id,
+                            "file_name": display_title,
+                            "actor_display_name": uploader_email,
+                            "target_url": f"/accounts/{account_id}",
+                        },
+                        actor_email=uploader_email,
+                    )
+        except Exception as e:
+            logger.warning("account file-upload notification failed for %s: %s", account_id, e)
 
         return ApiResponse(
             success=True,
@@ -2277,6 +2313,7 @@ async def update_account(
     update_request: AccountUpdateRequest,
     client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user = Depends(check_permission_or_internal("edit_accounts")),
+    conn=Depends(get_db),
 ):
     """Update a Salesforce account.
 
@@ -2310,9 +2347,25 @@ async def update_account(
                 update_request.updates["Drive_Strategy_Folder_URL__c"],
                 "Drive_Strategy_Folder_URL__c",
             )
+        # Read the current owner before the write so an OwnerId change can
+        # be diffed afterward — update_record returns only a bool, no
+        # record data.
+        _owner_before = None
+        if "OwnerId" in update_request.updates:
+            _owner_before = await resolve_entity_owner(salesforce, "account", account_id)
         success = await salesforce.update_record("Account", account_id, update_request.updates)
         if not success:
             raise HTTPException(400, "Salesforce rejected the update")
+        if _owner_before is not None:
+            try:
+                _owner_after = await resolve_entity_owner(salesforce, "account", account_id)
+                await notify_owner_changed(
+                    conn, entity_type="account", entity_id=account_id,
+                    old_owner=_owner_before, new_owner=_owner_after,
+                    actor_email=(user.get("email") or "").strip(),
+                )
+            except Exception as e:
+                logger.warning("account owner-change notification failed for %s: %s", account_id, e)
         # For Active__c writes, read the field back immediately so the frontend
         # receives the server-authoritative value rather than assuming the write
         # persisted (Salesforce field-level security can silently ignore writes).
@@ -2492,6 +2545,7 @@ async def update_contact(
     update_request: ContactUpdateRequest,
     client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user = Depends(check_permission_or_internal("edit_contacts")),
+    conn=Depends(get_db),
 ):
     """Update a Salesforce contact.
 
@@ -2507,9 +2561,22 @@ async def update_contact(
     try:
         salesforce = client.salesforce
         await _enforce_record_ownership(salesforce, "Contact", contact_id, user)
+        _owner_before = None
+        if "OwnerId" in update_request.updates:
+            _owner_before = await resolve_entity_owner(salesforce, "contact", contact_id)
         success = await salesforce.update_record("Contact", contact_id, update_request.updates)
         if not success:
             raise HTTPException(400, "Salesforce rejected the update")
+        if _owner_before is not None:
+            try:
+                _owner_after = await resolve_entity_owner(salesforce, "contact", contact_id)
+                await notify_owner_changed(
+                    conn, entity_type="contact", entity_id=contact_id,
+                    old_owner=_owner_before, new_owner=_owner_after,
+                    actor_email=(user.get("email") or "").strip(),
+                )
+            except Exception as e:
+                logger.warning("contact owner-change notification failed for %s: %s", contact_id, e)
         cache.invalidate_prefix("contacts:")
         logger.info(f"Contact {contact_id} updated by {user['user_id']}")
         return ApiResponse(success=True, data={"id": contact_id, "message": "Contact updated"})

@@ -6,10 +6,16 @@ Endpoints (all scoped to the authenticated user):
     GET    /api/notifications/unread-count   — small payload for the bell badge
     POST   /api/notifications/{id}/read      — mark a single row read
     POST   /api/notifications/read-all       — mark every unread row read
+    GET    /api/notifications/preferences    — read delivery/activity preferences
+    PUT    /api/notifications/preferences    — update delivery/activity preferences
 
 Notifications are private to the recipient; the SELECT WHERE clause
 keys on the authenticated user's email so a user can't read another
 user's bell by guessing IDs.
+
+Rows older than 14 days are purged by services/notification_cleanup.py;
+the list query below also filters on that window as defense-in-depth
+so a slow cleanup cycle can't surface stale notifications.
 """
 
 from __future__ import annotations
@@ -19,12 +25,22 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
 
 from auth import require_auth
 from db import get_db
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/notifications", tags=["notifications"])
+
+RETENTION_DAYS = 14
+
+
+class NotificationPreferenceUpdate(BaseModel):
+    slack_enabled: bool
+    account_activity_enabled: bool
+    contact_activity_enabled: bool
+    opportunity_activity_enabled: bool
 
 
 def _serialize(row) -> Dict[str, Any]:
@@ -60,16 +76,18 @@ async def list_notifications(
             "SELECT id, type, payload, actor_email, read_at, slack_status, created_at "
             "FROM bedrock.notification "
             "WHERE recipient_email = $1 AND read_at IS NULL "
+            "AND created_at > now() - make_interval(days => $3) "
             "ORDER BY created_at DESC LIMIT $2",
-            recipient, limit,
+            recipient, limit, RETENTION_DAYS,
         )
     else:
         rows = await conn.fetch(
             "SELECT id, type, payload, actor_email, read_at, slack_status, created_at "
             "FROM bedrock.notification "
             "WHERE recipient_email = $1 "
+            "AND created_at > now() - make_interval(days => $3) "
             "ORDER BY created_at DESC LIMIT $2",
-            recipient, limit,
+            recipient, limit, RETENTION_DAYS,
         )
     return {"success": True, "data": [_serialize(r) for r in rows]}
 
@@ -132,3 +150,57 @@ async def mark_all_read(
     except Exception:
         n = 0
     return {"success": True, "data": {"marked": n}}
+
+
+_PREFERENCE_DEFAULTS: Dict[str, bool] = {
+    "slack_enabled": True,
+    "account_activity_enabled": True,
+    "contact_activity_enabled": True,
+    "opportunity_activity_enabled": True,
+}
+
+
+@router.get("/preferences")
+async def get_preferences(
+    conn=Depends(get_db),
+    user=Depends(require_auth),
+) -> Dict[str, Any]:
+    """Current user's notification delivery + activity preferences.
+    In-app (bell) delivery isn't represented here — it's always on."""
+    recipient = _recipient_from_user(user)
+    row = await conn.fetchrow(
+        "SELECT slack_enabled, account_activity_enabled, contact_activity_enabled, "
+        "opportunity_activity_enabled FROM bedrock.notification_preference "
+        "WHERE user_email = $1",
+        recipient,
+    )
+    data = {**_PREFERENCE_DEFAULTS, **dict(row)} if row else dict(_PREFERENCE_DEFAULTS)
+    return {"success": True, "data": data}
+
+
+@router.put("/preferences")
+async def update_preferences(
+    body: NotificationPreferenceUpdate,
+    conn=Depends(get_db),
+    user=Depends(require_auth),
+) -> Dict[str, Any]:
+    recipient = _recipient_from_user(user)
+    row = await conn.fetchrow(
+        """
+        INSERT INTO bedrock.notification_preference
+            (user_email, slack_enabled, account_activity_enabled,
+             contact_activity_enabled, opportunity_activity_enabled)
+        VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (user_email) DO UPDATE SET
+            slack_enabled = EXCLUDED.slack_enabled,
+            account_activity_enabled = EXCLUDED.account_activity_enabled,
+            contact_activity_enabled = EXCLUDED.contact_activity_enabled,
+            opportunity_activity_enabled = EXCLUDED.opportunity_activity_enabled,
+            updated_at = now()
+        RETURNING slack_enabled, account_activity_enabled,
+                  contact_activity_enabled, opportunity_activity_enabled
+        """,
+        recipient, body.slack_enabled, body.account_activity_enabled,
+        body.contact_activity_enabled, body.opportunity_activity_enabled,
+    )
+    return {"success": True, "data": dict(row)}

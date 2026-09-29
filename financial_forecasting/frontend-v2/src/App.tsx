@@ -21,6 +21,7 @@ import { ContactsPage } from "./pages/Contacts";
 import { ContactDetailPage } from "./pages/ContactDetail";
 import { LoginPage } from "./pages/Login";
 import { SettingsPage } from "./pages/Settings";
+import { NotificationsHistoryPage } from "./pages/NotificationsHistoryPage";
 import { CashFlowPage } from "./pages/CashFlow";
 import { PlatformIntakePage } from "./pages/PlatformIntake";
 import { PortfolioPage } from "./pages/Portfolio";
@@ -88,6 +89,7 @@ export default function App() {
         <Route path="/home" element={<HomeIndexPage />} />
         <Route path="/home/:slug" element={<HomePage />} />
         <Route path="/settings" element={<SettingsPage />} />
+        <Route path="/notifications" element={<NotificationsHistoryPage />} />
 
         {/* Backend redirects to /priorities after Google OAuth — alias it */}
         <Route path="/priorities" element={<Navigate to="/dashboard" replace />} />
