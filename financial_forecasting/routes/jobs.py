@@ -8389,6 +8389,12 @@ async def list_opportunities(
             (SELECT count(*) FROM bedrock.jobs_task t
                WHERE t.parent_type='opportunity' AND t.parent_id = o.id::text
                  AND t.deleted_at IS NULL AND t.status <> 'Completed') AS open_tasks,
+            -- Comments on the deal: how many, and the latest (Opportunities Set
+            -- shows the latest one inline so a row carries its last word).
+            lc.comment_count,
+            lc.last_comment,
+            lc.last_comment_by,
+            lc.last_comment_at,
             -- Suggested priority (1–5, 5 = highest) the team can override. Bumped by
             -- signals: committed roles, multiple contacts, recent activity, and
             -- builders already applying. AI-first scoring can replace this later.
@@ -8417,6 +8423,16 @@ async def list_opportunities(
                 OR (o.account_id <> 'UNKNOWN' AND a.account_id = o.account_id)
               )
         ) act ON true
+        LEFT JOIN LATERAL (
+            SELECT count(*) OVER () AS comment_count,
+                   left(jc.content, 280) AS last_comment,
+                   jc.author_email AS last_comment_by,
+                   jc.created_at AS last_comment_at
+            FROM bedrock.jobs_comment jc
+            WHERE jc.parent_type = 'opportunity' AND jc.parent_id = o.id::text
+            ORDER BY jc.created_at DESC
+            LIMIT 1
+        ) lc ON true
         WHERE {where}
         ORDER BY o.updated_at DESC
         LIMIT ${i} OFFSET ${i+1}

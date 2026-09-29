@@ -46,7 +46,8 @@ import {
 } from "@/services/jobs";
 import { useAllJobsTasks } from "@/services/jobsTasks";
 import { useSessionState } from "@/lib/useSessionState";
-import { InlineSelect } from "@/components/ui/InlineEdit";
+import { InlineDate, InlineSelect, InlineText } from "@/components/ui/InlineEdit";
+import { parseEstimatedJobs } from "@/lib/estimatedJobs";
 import { Drawer } from "@/components/ui/Drawer";
 import { JobsFunnels } from "@/components/jobs/JobsFunnels";
 import { PeriodBar, defaultPeriod } from "@/components/jobs/PeriodBar";
@@ -379,7 +380,9 @@ export function JobsOpportunitiesOverview() {
           the list you work them from. The activity feed is the narrative you
           read afterwards, not the thing you act on. */}
       <Panel title="Opportunities Set">
-        <div className="max-h-[520px] overflow-y-auto">
+        {/* Scrolls both ways: the header is sticky within this box, and the
+            nine columns keep their width on narrow screens instead of squashing. */}
+        <div className="max-h-[520px] overflow-auto">
           <OwnerWalkthrough openOpps={openOpps} needsById={needsById} nextTaskByOpp={nextTaskByOpp}
             nameOf={nameOf} {...rowHandlers} />
         </div>
@@ -467,9 +470,34 @@ interface RowHandlers {
   onCommittedRoles: (d: { id: string; account_name: string }) => void;
 }
 
-function ManagedOppRow({ o, sub, detail, right, nextTask, expandedId, setExpandedId, onRecordPlacements, onClosedLost, onCommittedRoles }: {
+// Opportunities Set columns (Kwame 2026-09-29): who owns it, which account,
+// which deal, where it stands, when it should close and how many jobs it
+// should yield, then the follow-through (tasks) and the latest word (comment).
+// One template for the header and every row, so the columns always line up.
+const OPP_SET_GRID =
+  "grid grid-cols-[118px_minmax(120px,1fr)_minmax(120px,1fr)_138px_92px_52px_minmax(110px,0.9fr)_minmax(150px,1.3fr)_52px] items-center gap-2";
+const OPP_SET_MIN_W = "min-w-[1060px]";
+
+function OppSetHeader() {
+  return (
+    <div className={cn(OPP_SET_GRID, "sticky top-0 z-10 border-y border-border-strong bg-surface px-2.5 py-1.5",
+      "whitespace-nowrap text-[10.5px] font-semibold uppercase tracking-wider text-ink-3")}>
+      <span className="pl-[18px]">Owner</span>
+      <span>Account</span>
+      <span>Opportunity</span>
+      <span>Stage</span>
+      <span>Target close</span>
+      <span className="text-right" title="Estimated jobs">Est. jobs</span>
+      <span>Open tasks</span>
+      <span>Recent comment</span>
+      <span className="text-right" title="Last activity">Activity</span>
+    </div>
+  );
+}
+
+function ManagedOppRow({ o, nameOf, detail, right, nextTask, expandedId, setExpandedId, onRecordPlacements, onClosedLost, onCommittedRoles }: {
   o: JobsOpportunity;
-  sub?: string | null;
+  nameOf: (e: string | null) => string;
   detail?: React.ReactNode;
   right?: React.ReactNode;
   nextTask?: { title: string; deadline: string | null };
@@ -480,6 +508,8 @@ function ManagedOppRow({ o, sub, detail, right, nextTask, expandedId, setExpande
   // until the 2026-08-05 migration lands, so it shows disabled here
   // rather than failing the save.
   const oppStageOptions = useOppStageOptions(o.stage);
+  const overdue = !!o.target_close_date && !o.stage.startsWith("closed")
+    && o.target_close_date.slice(0, 10) < new Date().toISOString().slice(0, 10);
   // Keep in sync with DealRow.saveStage (JobsTeam.tsx) — same modal gating.
   function saveStage(stage: JobStage) {
     if (stage === o.stage) return Promise.resolve();
@@ -500,19 +530,29 @@ function ManagedOppRow({ o, sub, detail, right, nextTask, expandedId, setExpande
     <>
       <div
         onClick={() => setExpandedId((p) => (p === o.id ? null : o.id))}
-        className={cn(
-          "grid cursor-pointer grid-cols-[1fr_150px_minmax(0,220px)_70px] items-center gap-2 border-t border-border-strong px-2.5 py-2 hover:bg-surface-2/40",
-          expanded && "bg-surface-2/40",
-        )}
+        className={cn(OPP_SET_GRID, "cursor-pointer border-t border-border-strong px-2.5 py-2 hover:bg-surface-2/40",
+          expanded && "bg-surface-2/40")}
       >
+        {/* Owner */}
         <span className="flex min-w-0 items-center gap-1.5">
           <ChevronRight size={12} className={cn("shrink-0 text-ink-4 transition-transform", expanded && "rotate-90")} />
-          <span className="min-w-0">
-            <Link to={`/jobs/opportunities/${o.id}`} onClick={(e) => e.stopPropagation()}
-              className="block truncate text-[13px] font-semibold text-ink hover:text-accent">{o.account_name}</Link>
-            {sub && <span className="block truncate text-[11px] text-ink-4">{sub}</span>}
+          <span className={cn("truncate text-[12px]", o.owner_email ? "font-medium text-ink-2" : "italic text-ink-4")}>
+            {o.owner_email ? nameOf(o.owner_email) : "Unassigned"}
           </span>
         </span>
+        {/* Account */}
+        <Link to={`/jobs/opportunities/${o.id}`} onClick={(e) => e.stopPropagation()}
+          className="truncate text-[13px] font-semibold text-ink hover:text-accent" title={o.account_name}>
+          {o.account_name}
+        </Link>
+        {/* Opportunity (+ why it's flagged, when it is) */}
+        <span className="min-w-0">
+          <span className={cn("block truncate text-[12px]", o.title ? "text-ink-2" : "text-ink-4")} title={o.title ?? undefined}>
+            {o.title || "—"}
+          </span>
+          {detail && <span className="block truncate text-[11px] text-ink-3">{detail}</span>}
+        </span>
+        {/* Stage */}
         <span onClick={(e) => e.stopPropagation()}>
           <InlineSelect<JobStage>
             value={o.stage}
@@ -523,11 +563,52 @@ function ManagedOppRow({ o, sub, detail, right, nextTask, expandedId, setExpande
             )}
           />
         </span>
-        <span className="truncate text-[11.5px] text-ink-3">
-          {detail ?? (nextTask
-            ? <>Next: <b className="font-semibold text-ink-2">{nextTask.title}</b>{nextTask.deadline ? ` · ${nextTask.deadline.slice(5)}` : ""}</>
-            : <span className="text-ink-4">no open task</span>)}
+        {/* Target close — red once it has passed on an open deal */}
+        <span onClick={(e) => e.stopPropagation()} title={overdue ? "Target close date has passed" : undefined}>
+          <InlineDate value={o.target_close_date} variant="short" placeholder="Set date"
+            className={cn("text-[12px]", overdue && "font-semibold text-[var(--red)]")}
+            onSave={(v) => v
+              ? updateOpp.mutateAsync({ id: o.id, target_close_date: v }).then(() => undefined)
+              : Promise.reject(new Error("Target close date is required"))} />
         </span>
+        {/* Estimated jobs */}
+        <span onClick={(e) => e.stopPropagation()} className="text-right tabular-nums">
+          <InlineText value={o.estimated_jobs != null ? String(o.estimated_jobs) : null} placeholder="—"
+            className="justify-end text-right text-[12px]"
+            onSave={(v) => {
+              const n = parseEstimatedJobs(v);
+              return n === undefined
+                ? Promise.reject(new Error("Whole number, 0–999"))
+                : updateOpp.mutateAsync({ id: o.id, estimated_jobs: n }).then(() => undefined);
+            }} />
+        </span>
+        {/* Open tasks: count + the next one due */}
+        <span className="flex min-w-0 items-center gap-1.5 text-[11.5px]">
+          {(o.open_tasks ?? 0) > 0 ? (
+            <>
+              <span className="shrink-0 rounded-full bg-surface-2 px-1.5 text-[10.5px] font-semibold tabular-nums text-ink-2">{o.open_tasks}</span>
+              {nextTask && (
+                <span className="truncate text-ink-3" title={nextTask.title}>
+                  {nextTask.title}{nextTask.deadline ? ` · ${nextTask.deadline.slice(5)}` : ""}
+                </span>
+              )}
+            </>
+          ) : <span className="text-ink-4">—</span>}
+        </span>
+        {/* Latest comment */}
+        <span className="min-w-0 text-[11.5px]"
+          title={o.last_comment ? `${o.last_comment}\n— ${nameOf(o.last_comment_by ?? null)}` : undefined}>
+          {o.last_comment ? (
+            <>
+              <span className="block truncate text-ink-2">{o.last_comment}</span>
+              <span className="block truncate text-[10.5px] text-ink-4">
+                {nameOf(o.last_comment_by ?? null)} · {relDay(o.last_comment_at ?? null) ?? ""}
+                {(o.comment_count ?? 0) > 1 ? ` · ${o.comment_count} comments` : ""}
+              </span>
+            </>
+          ) : <span className="text-ink-4">—</span>}
+        </span>
+        {/* Last activity (or days in stage, amber, when flagged) */}
         <span className="text-right text-[11.5px] tabular-nums text-ink-4"
           title={o.last_activity_at ? `Last activity ${new Date(o.last_activity_at).toLocaleDateString()}` : "No activity"}>
           {right ?? (relDay(o.last_activity_at) ?? "—")}
@@ -765,13 +846,14 @@ function OwnerWalkthrough({ openOpps, needsById, nextTaskByOpp, nameOf, ...handl
         ].filter((b) => b.rows.length > 0)
       : [{ label: "", cls: "", rows: visible }];
     return (
-      <div className="flex flex-col">
+      <div className={cn("flex flex-col", OPP_SET_MIN_W)}>
         {controls}
+        <OppSetHeader />
         {bands.map((b) => (
           <div key={b.label}>
             {b.label && <div className={cn("px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider", b.cls)}>{b.label} · {b.rows.length}</div>}
             {b.rows.map((o) => (
-              <ManagedOppRow key={o.id} o={o} sub={o.title ?? nameOf(o.owner_email)} {...flagged(o)}
+              <ManagedOppRow key={o.id} o={o} nameOf={nameOf} {...flagged(o)}
                 nextTask={nextTaskByOpp.get(o.id)} {...handlers} />
             ))}
           </div>
@@ -790,8 +872,9 @@ function OwnerWalkthrough({ openOpps, needsById, nextTaskByOpp, nameOf, ...handl
     </div>;
   }
   return (
-    <div className="flex flex-col">
+    <div className={cn("flex flex-col", OPP_SET_MIN_W)}>
       {controls}
+      <OppSetHeader />
       {groups.map(([email, opps]) => {
         const p1 = opps.filter((o) => displayPriority(o.priority) === 1);
         const p2 = opps.filter((o) => displayPriority(o.priority) === 2);
@@ -821,21 +904,21 @@ function OwnerWalkthrough({ openOpps, needsById, nextTaskByOpp, nameOf, ...handl
               <div className="bg-[var(--accent-soft)] px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-[var(--accent-ink)]">P1 · High value</div>
             )}
             {p1.map((o) => (
-              <ManagedOppRow key={o.id} o={o} sub={o.title} {...flaggedRow(o)}
+              <ManagedOppRow key={o.id} o={o} nameOf={nameOf} {...flaggedRow(o)}
                 nextTask={nextTaskByOpp.get(o.id)} {...handlers} />
             ))}
             {p2.length > 0 && (
               <div className="bg-[var(--sky-soft)] px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-[var(--sky)]">P2</div>
             )}
             {p2.map((o) => (
-              <ManagedOppRow key={o.id} o={o} sub={o.title} {...flaggedRow(o)}
+              <ManagedOppRow key={o.id} o={o} nameOf={nameOf} {...flaggedRow(o)}
                 nextTask={nextTaskByOpp.get(o.id)} {...handlers} />
             ))}
             {stalled.length > 0 && (
               <div className="bg-[var(--amber-soft)] px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-[var(--amber)]">Stalled — needs unblock</div>
             )}
             {stalled.map((o) => (
-              <ManagedOppRow key={o.id} o={o} sub={o.title} {...flaggedRow(o)}
+              <ManagedOppRow key={o.id} o={o} nameOf={nameOf} {...flaggedRow(o)}
                 nextTask={nextTaskByOpp.get(o.id)} {...handlers} />
             ))}
             {rest.length > 0 && (
@@ -851,7 +934,7 @@ function OwnerWalkthrough({ openOpps, needsById, nextTaskByOpp, nameOf, ...handl
                   P3+ / no priority · {rest.length}
                 </button>
                 {restOpen && rest.map((o) => (
-                  <ManagedOppRow key={o.id} o={o} sub={o.title} {...flaggedRow(o)}
+                  <ManagedOppRow key={o.id} o={o} nameOf={nameOf} {...flaggedRow(o)}
                     nextTask={nextTaskByOpp.get(o.id)} {...handlers} />
                 ))}
               </>

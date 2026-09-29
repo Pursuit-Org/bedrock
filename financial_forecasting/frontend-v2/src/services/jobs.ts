@@ -98,6 +98,11 @@ export interface JobsOpportunity {
   /** Jobs the deal is expected to yield. Absent until the 2026-09-29
    *  estimated_jobs migration adds the column. */
   estimated_jobs?: number | null;
+  /** Comments on the deal (list endpoint only): count and the latest one. */
+  comment_count?: number | null;
+  last_comment?: string | null;
+  last_comment_by?: string | null;
+  last_comment_at?: string | null;
 }
 
 export interface JobContact {
