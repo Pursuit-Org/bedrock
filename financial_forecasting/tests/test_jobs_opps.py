@@ -38,7 +38,7 @@ def test_create_opportunity_persists_relationship_owner_and_flags_contacts():
     r = c.post("/api/jobs/opportunities", json={
         "account_id": "UNKNOWN", "account_name": "Acme", "stage": "initial_outreach",
         "owner_email": "lead@p.org", "relationship_owner": "rel@p.org",
-        "sf_contact_ids": ["pub:5"],
+        "sf_contact_ids": ["pub:5"], "target_close_date": "2026-12-15",
     })
     assert r.status_code == 200, r.text
     # relationship_owner is the 12th INSERT arg (0-based index 11)
@@ -47,6 +47,66 @@ def test_create_opportunity_persists_relationship_owner_and_flags_contacts():
     # linked contact flagged is_jobs_contact
     flag = conn.executed("WHERE contact_id = ANY")
     assert flag and flag[0][2][0] == [5]
+
+
+def _insert_call(conn):
+    return next(c2 for c2 in conn.calls
+                if c2[0] == "fetchval" and "INSERT INTO bedrock.jobs_opportunity (" in c2[1])
+
+
+def test_create_opportunity_requires_target_close_date():
+    conn = FakeConn(vals={"INSERT INTO bedrock.jobs_opportunity (": UUID1})
+    c = make_jobs_client(conn)
+    r = c.post("/api/jobs/opportunities", json={"account_id": "x", "account_name": "Acme"})
+    assert r.status_code == 400
+    assert "target_close_date" in r.json()["detail"]
+    assert not conn.ran("INSERT INTO bedrock.jobs_opportunity (")
+
+
+def test_create_opportunity_stores_date_and_estimate(monkeypatch):
+    from routes import jobs
+    monkeypatch.setitem(jobs._COLUMN_CACHE, ("bedrock", "jobs_opportunity", "estimated_jobs"), True)
+    conn = FakeConn(
+        rows={"SELECT * FROM bedrock.jobs_opportunity WHERE id=$1": _opp_row()},
+        vals={"INSERT INTO bedrock.jobs_opportunity (": UUID1},
+    )
+    c = make_jobs_client(conn)
+    r = c.post("/api/jobs/opportunities", json={
+        "account_id": "x", "account_name": "Acme", "target_close_date": "2026-12-15", "estimated_jobs": 3})
+    assert r.status_code == 200, r.text
+    q, args = _insert_call(conn)[1:]
+    assert "estimated_jobs" in q
+    assert str(args[15]) == "2026-12-15" and args[16] == 3
+
+
+def test_create_opportunity_drops_estimate_before_migration():
+    # No estimated_jobs column yet: the create still succeeds, without it.
+    conn = FakeConn(
+        rows={"SELECT * FROM bedrock.jobs_opportunity WHERE id=$1": _opp_row()},
+        vals={"INSERT INTO bedrock.jobs_opportunity (": UUID1},
+    )
+    c = make_jobs_client(conn)
+    r = c.post("/api/jobs/opportunities", json={
+        "account_id": "x", "account_name": "Acme", "target_close_date": "2026-12-15", "estimated_jobs": 3})
+    assert r.status_code == 200, r.text
+    q, args = _insert_call(conn)[1:]
+    assert "estimated_jobs" not in q and len(args) == 16
+
+
+def test_create_opportunity_rejects_negative_estimate():
+    c = make_jobs_client(FakeConn())
+    r = c.post("/api/jobs/opportunities", json={
+        "account_id": "x", "target_close_date": "2026-12-15", "estimated_jobs": -1})
+    assert r.status_code == 422
+
+
+def test_update_refuses_to_clear_target_close_date():
+    conn = FakeConn(rows={"SELECT * FROM bedrock.jobs_opportunity WHERE id=$1 AND deleted_at IS NULL":
+                          _opp_row(target_close_date="2026-12-15")})
+    c = make_jobs_client(conn)
+    r = c.patch(f"/api/jobs/opportunities/{UUID1}", json={"target_close_date": None})
+    assert r.status_code == 400
+    assert not conn.ran("UPDATE bedrock.jobs_opportunity")
 
 
 def test_create_opportunity_invalid_stage_400():

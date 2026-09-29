@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { apiErrorMessage, parseEstimatedJobs } from "@/lib/estimatedJobs";
 import { toast } from "sonner";
 import { Plus, X, Check, ChevronDown, ChevronRight, GripVertical } from "lucide-react";
 import { DndContext, closestCenter, PointerSensor, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
@@ -660,6 +661,10 @@ function AddRoleModal({ onClose, prefill }: { onClose: () => void; prefill?: Add
   const [account, setAccount] = useState<{ account_key: string; display: string } | null>(null);
   const [newOppTitle, setNewOppTitle] = useState(prefill?.roleTitle ?? "");
   const [newOppStage, setNewOppStage] = useState<JobStage>("active_in_discussions");
+  const [newOppClose, setNewOppClose] = useState("");
+  const [newOppEst, setNewOppEst] = useState("");
+  const [newOppError, setNewOppError] = useState<string | null>(null);
+  const newOppEstVal = parseEstimatedJobs(newOppEst);
   const createOpportunity = useCreateOpportunity();
 
   const [title, setTitle] = useState(prefill?.roleTitle ?? "");
@@ -674,13 +679,22 @@ function AddRoleModal({ onClose, prefill }: { onClose: () => void; prefill?: Add
   const oppId = selectedOpp?.id ?? null;
 
   async function handleCreateOpportunity() {
-    if (!account) return;
-    const created = await createOpportunity.mutateAsync({
-      account_id: account.account_key,
-      account_name: account.display,
-      stage: newOppStage,
-      title: newOppTitle.trim() || undefined,
-    });
+    if (!account || !newOppClose || newOppEstVal === undefined) return;
+    setNewOppError(null);
+    let created;
+    try {
+      created = await createOpportunity.mutateAsync({
+        account_id: account.account_key,
+        account_name: account.display,
+        stage: newOppStage,
+        title: newOppTitle.trim() || undefined,
+        target_close_date: newOppClose,
+        estimated_jobs: newOppEstVal ?? null,
+      });
+    } catch (err) {
+      setNewOppError(apiErrorMessage(err, "Couldn't create the opportunity."));
+      return;
+    }
     if (created?.id) {
       setSelectedOpp({
         id: created.id,
@@ -854,9 +868,41 @@ function AddRoleModal({ onClose, prefill }: { onClose: () => void; prefill?: Add
                         className="w-full rounded-md border border-border-strong bg-surface px-3 py-2 text-[13px] text-ink placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
                       />
                     </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="flex flex-col gap-1">
+                        <label className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">
+                          Target close date <span className="text-red-500">*</span>
+                        </label>
+                        <input
+                          type="date"
+                          value={newOppClose}
+                          onChange={(e) => setNewOppClose(e.target.value)}
+                          className="w-full rounded-md border border-border-strong bg-surface px-3 py-2 text-[13px] text-ink focus:outline-none focus:ring-1 focus:ring-accent/40"
+                        />
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        <label className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">Estimated jobs</label>
+                        <input
+                          type="number"
+                          min={0}
+                          max={999}
+                          step={1}
+                          value={newOppEst}
+                          onChange={(e) => setNewOppEst(e.target.value)}
+                          placeholder="e.g. 2"
+                          className={cn(
+                            "w-full rounded-md border bg-surface px-3 py-2 text-[13px] text-ink placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40",
+                            newOppEstVal === undefined ? "border-red" : "border-border-strong",
+                          )}
+                        />
+                      </div>
+                    </div>
+                    {newOppError && (
+                      <p role="alert" className="rounded border border-red bg-red-soft px-3 py-2 text-[12px] text-red">{newOppError}</p>
+                    )}
                     <button
                       type="button"
-                      disabled={!account || createOpportunity.isPending}
+                      disabled={!account || !newOppClose || newOppEstVal === undefined || createOpportunity.isPending}
                       onClick={() => void handleCreateOpportunity()}
                       className="flex items-center justify-center gap-1.5 rounded-lg bg-accent px-3 py-2 text-[13px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
                     >

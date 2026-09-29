@@ -95,6 +95,9 @@ export interface JobsOpportunity {
   /** Campaign tags — same vocabulary as contacts. Empty until the
    *  2026-08-05 migration adds the column. */
   tags?: string[];
+  /** Jobs the deal is expected to yield. Absent until the 2026-09-29
+   *  estimated_jobs migration adds the column. */
+  estimated_jobs?: number | null;
 }
 
 export interface JobContact {
@@ -601,6 +604,8 @@ export interface JobsAccountOpp {
   owner_email: string | null;
   priority: number | null;
   num_roles: number | null;
+  estimated_jobs: number | null;
+  target_close_date: string | null;
   likelihood: "low" | "medium" | "high" | null;
   updated_at: string | null;
 }

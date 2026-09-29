@@ -314,6 +314,13 @@ class OpportunityCreate(BaseModel):
     sf_contact_ids: list[str] = []
     builder_ids: list[str] = []
     follow_up_date: Optional[datetime] = None
+    # Required on create (Kwame 2026-09-29): every new deal commits to a date so
+    # the jobs projection can place it. Optional in the model so a missing date
+    # returns a readable 400 rather than a bare 422; existing rows stay nullable.
+    target_close_date: Optional[date] = None
+    # How many jobs the deal is expected to yield. Optional; the projection
+    # reads it until roles are actually created on the deal.
+    estimated_jobs: Optional[int] = Field(None, ge=0, le=999)
     note: Optional[str] = None  # note for initial stage history entry
 
 
@@ -332,6 +339,7 @@ class OpportunityUpdate(BaseModel):
     builder_ids: Optional[list[str]] = None
     follow_up_date: Optional[datetime] = None
     target_close_date: Optional[date] = None
+    estimated_jobs: Optional[int] = Field(None, ge=0, le=999)
     touch_count: Optional[int] = None
     sf_opportunity_id: Optional[str] = None
     note: Optional[str] = None  # optional note when changing stage
@@ -6408,11 +6416,14 @@ async def jobs_accounts(
     ) = await asyncio.gather(
         pool.fetch(
             """
-            SELECT id, account_id, account_name, stage, deal_type, title,
-                   owner_email, priority, num_roles, likelihood, updated_at
-            FROM bedrock.jobs_opportunity
-            WHERE deleted_at IS NULL AND coalesce(trim(account_name), '') <> ''
-            ORDER BY updated_at DESC NULLS LAST
+            SELECT o.id, o.account_id, o.account_name, o.stage, o.deal_type, o.title,
+                   o.owner_email, o.priority, o.num_roles, o.likelihood, o.updated_at,
+                   o.target_close_date,
+                   -- NULL until the 2026-09-29 estimated_jobs migration runs
+                   (to_jsonb(o) ->> 'estimated_jobs')::int AS estimated_jobs
+            FROM bedrock.jobs_opportunity o
+            WHERE o.deleted_at IS NULL AND coalesce(trim(o.account_name), '') <> ''
+            ORDER BY o.updated_at DESC NULLS LAST
             """),
         # Prospects are ~38k rows across ~21k companies — nesting them all into the
         # account list produced a 2.5MB (16MB on scope=all) payload and a 3s+ render.
@@ -6621,6 +6632,8 @@ async def jobs_accounts(
             "owner_email": r["owner_email"],
             "priority":   r["priority"],
             "num_roles":  r["num_roles"],
+            "estimated_jobs": r["estimated_jobs"],
+            "target_close_date": r["target_close_date"].isoformat() if r["target_close_date"] else None,
             "likelihood": r["likelihood"],
             "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None,
         })
@@ -8428,23 +8441,31 @@ async def create_opportunity(
         raise HTTPException(400, f"Invalid deal_type: {body.deal_type}")
     if body.likelihood and body.likelihood not in VALID_LIKELIHOODS:
         raise HTTPException(400, f"Invalid likelihood: {body.likelihood}")
+    if body.target_close_date is None:
+        raise HTTPException(400, "target_close_date is required")
 
     user_email = user.get("email") if isinstance(user, dict) else getattr(user, "email", None)
 
+    # estimated_jobs arrives with the 2026-09-29 migration; until then it is
+    # accepted and dropped rather than failing the create.
+    store_est = await _has_column("bedrock", "jobs_opportunity", "estimated_jobs")
     async with conn.transaction():
         row_id = await conn.fetchval(
-            """
+            f"""
             INSERT INTO bedrock.jobs_opportunity (
                 account_id, account_name, stage, deal_type,
                 title, description, salary_expected, num_roles, likelihood,
-                source, owner_email, relationship_owner, sf_contact_ids, builder_ids, follow_up_date
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+                source, owner_email, relationship_owner, sf_contact_ids, builder_ids, follow_up_date,
+                target_close_date{', estimated_jobs' if store_est else ''}
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16{', $17' if store_est else ''})
             RETURNING id
             """,
             body.account_id, body.account_name, body.stage, body.deal_type,
             body.title, body.description, body.salary_expected, body.num_roles, body.likelihood,
             body.source, body.owner_email, body.relationship_owner,
             body.sf_contact_ids, body.builder_ids, body.follow_up_date,
+            body.target_close_date,
+            *([body.estimated_jobs] if store_est else []),
         )
         await conn.execute(
             """
@@ -8539,6 +8560,9 @@ async def update_opportunity(
         raise HTTPException(400, f"Invalid likelihood: {body.likelihood}")
     if body.priority is not None and not (1 <= body.priority <= 5):
         raise HTTPException(400, "priority must be between 1 and 5")
+    # The date can move but not be removed: the projection places every deal by it.
+    if "target_close_date" in body.model_fields_set and body.target_close_date is None:
+        raise HTTPException(400, "target_close_date is required and can't be cleared")
 
     user_email = user.get("email") if isinstance(user, dict) else getattr(user, "email", None)
     stage_changed = body.stage and body.stage != existing["stage"]
@@ -8557,10 +8581,10 @@ async def update_opportunity(
                   "source", "owner_email", "relationship_owner", "sf_contact_ids", "builder_ids",
                   "follow_up_date", "target_close_date", "touch_count", "sf_opportunity_id",
                   "closed_lost_reason", "closed_lost_note", "priority", "segment", "intro_by",
-                  "tags"):
+                  "tags", "estimated_jobs"):
         if field not in fields_set:
             continue
-        if field == "tags" and not await _has_column("bedrock", "jobs_opportunity", "tags"):
+        if field in ("tags", "estimated_jobs") and not await _has_column("bedrock", "jobs_opportunity", field):
             continue   # pre-migration: silently no-op rather than fail the save
         val = getattr(body, field, None)
         if val is None and field == "stage":
