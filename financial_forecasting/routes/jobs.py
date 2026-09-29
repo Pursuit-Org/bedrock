@@ -3170,7 +3170,36 @@ async def opportunities_overview(
     # it existed by then and either (a) is still open and in a working stage, or
     # (b) was closed only after `ref` (so it was open at the time). When `ref` is
     # the current week this collapses to the live working set.
+    #
+    # `last_touch` is the most recent jobs activity on the deal OR at its account
+    # (a contact whose company is the account, the same join the Accounts page
+    # uses for its last-activity column). Activity is rarely logged against the
+    # opportunity itself, so an opp-only read called deals with live threads
+    # stalled. `last_movement` adds stage changes and creation on top: the
+    # "nothing has happened here" clock that Stalled measures.
     rows = await conn.fetch(f"""
+        WITH acct_last AS (
+            SELECT k, max(at) AS at FROM (
+                SELECT lower(trim(c.current_company)) AS k, a.activity_date AS at
+                FROM bedrock.activity a
+                JOIN public.contacts c ON c.contact_id = a.participant_public_contact_id
+                WHERE a.deleted_at IS NULL AND a.activity_date < $3::timestamptz
+                  AND {_jobs_relevant('a')}
+                UNION ALL
+                -- Calendar rows carry attendees, not a participant link.
+                SELECT lower(trim(c.current_company)), a.activity_date
+                FROM bedrock.activity a,
+                     jsonb_array_elements(coalesce(a.meeting_attendees, '[]'::jsonb)) att
+                JOIN public.contacts c ON lower(c.email) = lower(att->>'email')
+                WHERE a.deleted_at IS NULL AND a.source = 'calendar-sync'
+                  AND a.activity_date < $3::timestamptz
+                  AND {_jobs_relevant('a')}
+            ) x
+            WHERE coalesce(k, '') <> ''
+              AND k IN (SELECT lower(trim(account_name)) FROM bedrock.jobs_opportunity
+                        WHERE deleted_at IS NULL)
+            GROUP BY k
+        ), base AS (
         SELECT o.id, o.account_name, o.stage, o.deal_type, o.segment, o.owner_email,
                o.priority, o.created_at,
                COALESCE((SELECT max(h.changed_at) FROM bedrock.jobs_stage_history h
@@ -3185,14 +3214,23 @@ async def opportunities_overview(
                -- past week doesn't retroactively un-stall that week's view
                (SELECT max(a.activity_date) FROM bedrock.activity a
                 WHERE a.jobs_opportunity_id = o.id AND a.deleted_at IS NULL
-                  AND a.activity_date < $3::timestamptz) AS last_activity
+                  AND a.activity_date < $3::timestamptz) AS opp_activity,
+               (SELECT max(h.changed_at) FROM bedrock.jobs_stage_history h
+                WHERE h.opportunity_id = o.id AND h.changed_at < $3::timestamptz) AS last_stage_change,
+               al.at AS account_activity
         FROM bedrock.jobs_opportunity o
+        LEFT JOIN acct_last al ON al.k = lower(trim(o.account_name))
         WHERE o.deleted_at IS NULL
           AND o.created_at < $3::timestamptz
           AND (o.closed_at IS NULL OR o.closed_at >= $3::timestamptz)
           AND ({_OPP_INSET} OR (o.closed_at IS NOT NULL AND o.closed_at >= $3::timestamptz))
           AND ($1::text IS NULL OR o.owner_email = $1)
           AND ($2::text IS NULL OR o.deal_type = $2)
+        )
+        SELECT base.*,
+               GREATEST(opp_activity, account_activity) AS last_touch,
+               GREATEST(created_at, last_stage_change, opp_activity, account_activity) AS last_movement
+        FROM base
     """, owner_f, dt_f, ref)
 
     # Week-over-week, anchored to `ref` (Sat–Sat): net-new = opportunities created
@@ -3215,33 +3253,34 @@ async def opportunities_overview(
           AND ($1::text IS NULL OR o.owner_email = $1)
           AND ($2::text IS NULL OR o.deal_type = $2)
     """, owner_f, dt_f, win_start, prev_start)
-    won_rows = await conn.fetch(f"""
-        SELECT DISTINCT o.id, o.account_name, o.stage, o.owner_email,
-               max(h.changed_at) AS at
-        FROM bedrock.jobs_stage_history h
-        JOIN bedrock.jobs_opportunity o ON o.id = h.opportunity_id
-        WHERE h.to_stage = 'closed_won'
-          AND h.changed_at >= $4::timestamptz AND h.changed_at < $3::timestamptz
-          AND o.deleted_at IS NULL
-          AND ($1::text IS NULL OR o.owner_email = $1)
-          AND ($2::text IS NULL OR o.deal_type = $2)
-        GROUP BY o.id, o.account_name, o.stage, o.owner_email
-        ORDER BY max(h.changed_at) DESC
-    """, owner_f, dt_f, ref, win_start)
+    # Closed won / lost = opps whose LATEST stage change before `ref` moved them
+    # into that stage, inside the window. Counting every history row that ever
+    # touched closed_won counted a misclick that was reverted seconds later
+    # (RXR's full-time deal, 2026-09-21: Closed Won then back to In Discussion
+    # 13s later) as a win, even though the deal never left the pipeline.
+    # Anchoring to the latest change before `ref` keeps past weeks honest too: a
+    # deal that was won then and reopened later still counts for that week.
+    async def _closed_in_window(to_stage: str):
+        return await conn.fetch(f"""
+            SELECT id, account_name, stage, owner_email, at FROM (
+                SELECT DISTINCT ON (h.opportunity_id)
+                       o.id, o.account_name, o.stage, o.owner_email,
+                       h.to_stage, h.changed_at AS at
+                FROM bedrock.jobs_stage_history h
+                JOIN bedrock.jobs_opportunity o ON o.id = h.opportunity_id
+                WHERE h.changed_at < $3::timestamptz
+                  AND o.deleted_at IS NULL
+                  AND ($1::text IS NULL OR o.owner_email = $1)
+                  AND ($2::text IS NULL OR o.deal_type = $2)
+                ORDER BY h.opportunity_id, h.changed_at DESC
+            ) last_change
+            WHERE to_stage = $5 AND at >= $4::timestamptz
+            ORDER BY at DESC
+        """, owner_f, dt_f, ref, win_start, to_stage)
+
+    won_rows = await _closed_in_window("closed_won")
     moved_committed = len(won_rows)
-    lost_rows = await conn.fetch(f"""
-        SELECT DISTINCT o.id, o.account_name, o.stage, o.owner_email,
-               max(h.changed_at) AS at
-        FROM bedrock.jobs_stage_history h
-        JOIN bedrock.jobs_opportunity o ON o.id = h.opportunity_id
-        WHERE h.to_stage = 'closed_lost'
-          AND h.changed_at >= $4::timestamptz AND h.changed_at < $3::timestamptz
-          AND o.deleted_at IS NULL
-          AND ($1::text IS NULL OR o.owner_email = $1)
-          AND ($2::text IS NULL OR o.deal_type = $2)
-        GROUP BY o.id, o.account_name, o.stage, o.owner_email
-        ORDER BY max(h.changed_at) DESC
-    """, owner_f, dt_f, ref, win_start)
+    lost_rows = await _closed_in_window("closed_lost")
     closed_lost = len(lost_rows)
 
     def _days(dt):
@@ -3258,7 +3297,11 @@ async def opportunities_overview(
         }
 
     in_set = len(rows)
-    stalled_6wk = 0  # active opps that have been an opportunity for >6 weeks (since created)
+    # Stalled = open opps with no movement for 6+ weeks: no stage change, no
+    # activity on the deal or at its account. It used to count opps CREATED 6+
+    # weeks ago, so a deal worked every week still read as stalled.
+    _STALL_DAYS = 42
+    stalled_6wk = 0
     # Every active-set member, flat, carrying the keys each panel groups by
     # (age bucket, status, deal type, segment, stage, owner, priority). The
     # frontend filters THIS array for every drill-down, so a drill can never
@@ -3276,13 +3319,13 @@ async def opportunities_overview(
 
     for r in rows:
         c_days = _days(r["created_at"])
-        if c_days is not None and c_days > 42:
+        if (_days(r["last_movement"]) or 0) > _STALL_DAYS:
             stalled_6wk += 1
         stage_days = _days(r["entered_stage"]) or 0
         bi = _opp_age_bucket(stage_days)
         age_counts[bi] += 1
 
-        recency = min([d for d in (_days(r["entered_stage"]), _days(r["last_activity"])) if d is not None],
+        recency = min([d for d in (_days(r["entered_stage"]), _days(r["last_touch"])) if d is not None],
                       default=None)
         if c_days is not None and c_days < 7:
             status = "new"
@@ -3324,7 +3367,7 @@ async def opportunities_overview(
             prio_unset += 1
 
         if stage_days >= 21 or status == "stalled":
-            act_days = _days(r["last_activity"])
+            act_days = _days(r["last_touch"])
             why_bits = []
             if stage_days >= 21:
                 why_bits.append(
@@ -3367,8 +3410,8 @@ async def opportunities_overview(
 
     needs.sort(key=lambda n: -n["days_in_stage"])
 
-    # Recent activity in the selected Sat–Sat week: opportunities added, stage
-    # moves (incl. won/lost), and opps crossing the 6-week "stalled" threshold.
+    # Recent activity in the selected window: opportunities added and stage
+    # moves (incl. won/lost).
     added_rows = await conn.fetch(f"""
         SELECT o.id, o.account_name, o.deal_type, o.stage, o.created_at AS at,
                COALESCE((SELECT h.changed_by FROM bedrock.jobs_stage_history h
@@ -3390,14 +3433,6 @@ async def opportunities_overview(
           AND ($1::text IS NULL OR o.owner_email = $1)
           AND ($2::text IS NULL OR o.deal_type = $2)
     """, owner_f, dt_f, ref, win_start)
-    stalled_rows = await conn.fetch(f"""
-        SELECT o.id, o.account_name, o.deal_type, o.stage, o.created_at, o.owner_email AS actor
-        FROM bedrock.jobs_opportunity o
-        WHERE o.deleted_at IS NULL AND {_OPP_INSET}
-          AND o.created_at >= $3::timestamptz - interval '49 days' AND o.created_at < $3::timestamptz - interval '42 days'
-          AND ($1::text IS NULL OR o.owner_email = $1)
-          AND ($2::text IS NULL OR o.deal_type = $2)
-    """, owner_f, dt_f, ref)
 
     recent_activity = []
     for r in added_rows:
@@ -3407,11 +3442,17 @@ async def opportunities_overview(
             "detail": "Added to the set", "at": r["at"].isoformat() if r["at"] else None,
             "actor": r["actor"],
         })
+    # A move into a closed stage reads as won/lost only when it is the close the
+    # cards counted; a reverted close stays in the feed as a plain move, so the
+    # feed can't headline a win the Closed won card doesn't have.
+    won_keys = {(str(r["id"]), r["at"]) for r in won_rows}
+    lost_keys = {(str(r["id"]), r["at"]) for r in lost_rows}
     for r in moved_rows:
         to = canon_stage(r["to_stage"])
         frm = canon_stage(r["from_stage"])
+        key = (str(r["id"]), r["at"])
         recent_activity.append({
-            "type": "won" if to == "closed_won" else "lost" if to == "closed_lost" else "moved",
+            "type": "won" if key in won_keys else "lost" if key in lost_keys else "moved",
             "opportunity_id": str(r["id"]), "account": r["account_name"], "deal_type": r["deal_type"],
             "stage_label": STAGE_LABELS.get(to, to),
             "detail": f"{STAGE_LABELS.get(frm, frm)} → {STAGE_LABELS.get(to, to)}",
@@ -3458,8 +3499,8 @@ async def opportunities_overview(
         # closed_at-based client drill found 1: those opps never got closed_at).
         "drills": {
             "in_set":  [_drill_row(r, r["entered_stage"]) for r in rows],
-            "stalled": [_drill_row(r, r["created_at"]) for r in rows
-                        if (_days(r["created_at"]) or 0) > 42],
+            "stalled": [_drill_row(r, r["last_movement"]) for r in rows
+                        if (_days(r["last_movement"]) or 0) > _STALL_DAYS],
             "net_new": [_drill_row(r, r["at"]) for r in net_new_rows],
             "won":     [_drill_row(r, r["at"]) for r in won_rows],
             "lost":    [_drill_row(r, r["at"]) for r in lost_rows],

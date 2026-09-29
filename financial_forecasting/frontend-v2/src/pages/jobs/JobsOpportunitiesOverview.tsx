@@ -86,7 +86,10 @@ const dayDiff = (a: Date, b: Date) => Math.round((dayOnly(b).getTime() - dayOnly
 
 export function JobsOpportunitiesOverview() {
   const [owner, setOwner] = useState<string>("all");
-  const [dealType, setDealType] = useState<string>("all");
+  // Full-time by default (Kwame 2026-09-29): the pipeline review is about
+  // full-time placements, and "all" rolled capstones, part-time and contracts
+  // into Closed won beside them. One state drives every panel on the page.
+  const [dealType, setDealType] = useState<string>("ft");
   const [dim, setDim] = useState<OppBreakdownDim>("status");
   // Y axis of the single concentration heatmap. Stage is the default because
   // it is always populated; priority can legitimately be empty.
@@ -218,8 +221,8 @@ export function JobsOpportunitiesOverview() {
           delta={s ? { n: netDelta, prev: s.net_new_prev, priorLabel: spanDays === 7 ? "last wk" : `prior ${spanDays}d` } : undefined}
           onClick={() => setDrill({ title: "Net new", note: `Created ${rangeLabel}`, rows: data?.drills?.net_new ?? [] })} />
         <SummaryCard tone="ink" label="Stalled" value={s?.stalled_6wk} isLoading={isLoading}
-          sub="Open opportunity 6+ weeks"
-          onClick={() => setDrill({ title: "Stalled 6+ weeks", note: "Open, created more than 6 weeks ago", rows: data?.drills?.stalled ?? [] })} />
+          sub="No movement in 6+ weeks"
+          onClick={() => setDrill({ title: "Stalled 6+ weeks", note: "Open, no stage change or activity on the deal or account in 6+ weeks · date is last movement", rows: data?.drills?.stalled ?? [] })} />
         {/* Stage-gate check: won on the board but the follow-through (e.g. the
             signed contract task) is still open — "signed contract = closed".
             Sits left of the outcome boxes: it's an action, they're a result. */}
