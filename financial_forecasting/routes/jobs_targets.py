@@ -126,10 +126,14 @@ async def put_outreach_targets(body: OutreachBody,
     team = set(store.team_emails())
     keys = set(store.OUTREACH_METRIC_KEYS)
     rows: list[tuple] = []
+    seen: set[str] = set()
     for raw_email, metrics in body.owners.items():
         e = raw_email.strip().lower()
         if e not in team:
             raise HTTPException(400, f"{raw_email} is not on the Jobs team")
+        if e in seen:
+            raise HTTPException(400, f"{raw_email} appears more than once")
+        seen.add(e)
         for m, v in metrics.items():
             if m not in keys:
                 raise HTTPException(400, f"Unknown metric: {m}")
@@ -147,9 +151,14 @@ async def put_outreach_targets(body: OutreachBody,
 
     editor = _editor(user)
     async with conn.transaction():
-        # Replace the section wholesale: the page always sends the full grid,
-        # so a cleared cell must disappear rather than linger.
-        await conn.execute("DELETE FROM bedrock.jobs_target WHERE section = 'outreach'")
+        # Replace what the page shows: the team rows and the current members'
+        # rows (the page always sends that full grid, so a cleared cell must
+        # disappear). People taken off the team keep their rows, so putting
+        # them back restores their targets.
+        await conn.execute(
+            "DELETE FROM bedrock.jobs_target WHERE section = 'outreach' "
+            "AND (owner_email IS NULL OR owner_email = ANY($1::text[]))",
+            sorted(team))
         for m, e, v, mode in rows:
             await conn.execute(
                 """INSERT INTO bedrock.jobs_target (section, metric, owner_email, value, team_mode, updated_by)

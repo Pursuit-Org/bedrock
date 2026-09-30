@@ -203,3 +203,33 @@ def test_put_pipeline_upserts_and_clears():
     assert r.status_code == 200, r.text
     assert conn.executed("INSERT INTO bedrock.jobs_target (section, metric, period_start")
     assert conn.executed("DELETE FROM bedrock.jobs_target WHERE section = 'pipeline'")
+
+
+# ── review fixes (2026-09-30) ─────────────────────────────────────────────────
+
+def test_like_wildcards_rejected_in_team_emails():
+    # % and _ would widen the ILIKE team predicates to all of Pursuit.
+    assert not store.valid_email("%@pursuit.org")
+    assert not store.valid_email("a_ni@pursuit.org")
+    assert store.valid_email("damon.kornhauser@pursuit.org")
+    c = make_jobs_client(_conn())
+    r = c.put("/api/jobs/targets/team", json={"members": ["%@pursuit.org"]})
+    assert r.status_code == 400
+
+
+def test_put_outreach_keeps_removed_members_rows():
+    conn = _conn()
+    c = make_jobs_client(conn)
+    r = c.put("/api/jobs/targets/outreach", json={"owners": {}, "team": {}})
+    assert r.status_code == 200, r.text
+    q, args = conn.executed("DELETE FROM bedrock.jobs_target WHERE section = 'outreach'")[0][1:]
+    # Only the team rows and current members are replaced.
+    assert "owner_email IS NULL OR owner_email = ANY($1::text[])" in q
+    assert args[0] == ["a@pursuit.org"]
+
+
+def test_put_outreach_duplicate_email_is_400():
+    c = make_jobs_client(_conn())
+    r = c.put("/api/jobs/targets/outreach", json={
+        "owners": {"A@pursuit.org": {"total_calls": 1}, "a@pursuit.org": {"total_calls": 2}}, "team": {}})
+    assert r.status_code == 400

@@ -102,3 +102,23 @@ def test_past_close_date_is_measured_against_today():
         assert b["overdue"]["estimated"] == 2 and b["overdue"]["label"] == "Past close date"
     b, _ = _get(rows, granularity="quarter")
     assert b["2026-07-01"]["estimated"] == 1
+
+
+def test_prospects_funnel_accepts_deal_type_list():
+    # Regression: the base prospects query still bound the parsed list to a
+    # single-value text parameter, so any deal-type lens 500'd.
+    conn = FakeConn(lists={"FROM bedrock.jobs_contact_membership m": []},
+                    rows={"AS reached_assigned": {"reached_assigned": 0, "reached_outreach": 0,
+                                                  "reached_converted": 0}})
+    c = make_jobs_client(conn)
+    r = c.get("/api/jobs/funnel/prospects?deal_type=ft,unset")
+    assert r.status_code == 200, r.text
+    q, args = next((x[1], x[2]) for x in conn.calls if "FROM bedrock.jobs_contact_membership m" in x[1])
+    assert args[0] == ["ft", "unset"] and "o.deal_type = ANY($1::text[])" in q
+
+
+def test_won_dated_in_new_york_time():
+    # 02:00 UTC on Oct 1 is still Sep 30 in New York: Q3, not Q4.
+    rows = [_row(1, stage="closed_won", won_at=datetime(2026, 10, 1, 2, 0, tzinfo=timezone.utc), roles=2)]
+    b, _ = _get(rows)
+    assert b["2026-07-01"]["won"] == 2 and b["2026-10-01"]["won"] == 0

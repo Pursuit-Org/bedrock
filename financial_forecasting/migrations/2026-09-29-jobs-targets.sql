@@ -19,7 +19,7 @@ BEGIN;
 -- person out of the team scope, the Owner cut and the target grid.
 CREATE TABLE IF NOT EXISTS bedrock.jobs_team_member (
     email       text PRIMARY KEY
-                CHECK (email = lower(email) AND email ~ '^[a-z0-9._%+-]+@pursuit\.org$'),
+                CHECK (email = lower(email) AND email ~ '^[a-z0-9.+-]+@pursuit\.org$'),
     active      boolean     NOT NULL DEFAULT true,
     sort_order  integer     NOT NULL DEFAULT 0,
     added_by    text,
@@ -27,8 +27,9 @@ CREATE TABLE IF NOT EXISTS bedrock.jobs_team_member (
     updated_at  timestamptz NOT NULL DEFAULT now()
 );
 -- The CHECK is also a safety property: the app builds team predicates by
--- interpolating these addresses into SQL, which is only safe because the
--- column can never hold a quote or a space.
+-- interpolating these addresses into SQL and ILIKE patterns, which is only
+-- safe because the column can never hold a quote, a space, or a LIKE
+-- wildcard (% or _).
 
 -- ── Targets ──────────────────────────────────────────────────────────────────
 -- section = 'outreach': a standing WEEKLY target. period_start is NULL.

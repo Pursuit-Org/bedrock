@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Loader2, Plus, X } from "lucide-react";
 
 import { apiErrorMessage } from "@/lib/estimatedJobs";
@@ -124,7 +124,7 @@ function TeamSection({ data, editable, nameOf, staff }: {
   const add = () => {
     const e = adding.trim().toLowerCase();
     if (!e) return;
-    if (!/^[a-z0-9._%+-]+@pursuit\.org$/.test(e)) { setError("Use a @pursuit.org address."); return; }
+    if (!/^[a-z0-9.+-]+@pursuit\.org$/.test(e)) { setError("Use a @pursuit.org address (letters, numbers, . + -)."); return; }
     if (!members.includes(e)) setMembers([...members, e]);
     setAdding(""); setError(null);
   };
@@ -196,7 +196,22 @@ function OutreachSection({ data, editable, nameOf }: {
   const [error, setError] = useState<string | null>(null);
   const save = useSaveOutreachTargets();
   const initial = useMemo(() => JSON.stringify(initOutreach(data)), [data]);
-  useEffect(() => { setDraft(JSON.parse(initial)); }, [initial]);
+  // Re-sync from the server when it changes, without throwing away unsaved
+  // edits: saving the Team section refetches this data, and that used to
+  // wipe any cells typed here. With edits in progress, keep them and only
+  // add rows for people who joined (and drop rows for people who left).
+  const prevInitial = useRef(initial);
+  useEffect(() => {
+    if (initial === prevInitial.current) return;
+    const fresh = JSON.parse(initial) as ReturnType<typeof initOutreach>;
+    setDraft((d) => {
+      if (JSON.stringify(d) === prevInitial.current) return fresh;
+      const owners: typeof d.owners = {};
+      for (const e of Object.keys(fresh.owners)) owners[e] = d.owners[e] ?? fresh.owners[e];
+      return { owners, team: d.team };
+    });
+    prevInitial.current = initial;
+  }, [initial]);
   const dirty = JSON.stringify(draft) !== initial;
 
   const invalid = (raw: string) => parseTarget(raw) === undefined;

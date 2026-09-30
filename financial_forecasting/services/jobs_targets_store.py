@@ -16,7 +16,8 @@ hardcoded values (DEFAULT_TEAM, and the dicts in services/outreach_targets.py),
 so behaviour is unchanged on deploy.
 
 Addresses are validated on load as well as on write: they end up inside SQL
-literals, which is only safe because EMAIL_RE admits no quote or whitespace.
+literals and ILIKE patterns, which is only safe because EMAIL_RE admits no
+quote, whitespace or LIKE wildcard.
 """
 
 import logging
@@ -31,7 +32,11 @@ logger = logging.getLogger(__name__)
 # missing or empty (an empty team would silently zero every team metric).
 DEFAULT_TEAM = ["avni@pursuit.org", "damon.kornhauser@pursuit.org", "devika@pursuit.org"]
 
-EMAIL_RE = re.compile(r"^[a-z0-9._%+-]+@pursuit\.org$")
+# No quotes or whitespace (the addresses end up inside SQL literals), and no
+# % or _ either: they're LIKE wildcards, and the team predicates match with
+# ILIKE '%<email>%', so "%@pursuit.org" would quietly widen the team to all
+# of Pursuit.
+EMAIL_RE = re.compile(r"^[a-z0-9.+-]+@pursuit\.org$")
 
 # Outreach metrics that carry a weekly target, in display order.
 OUTREACH_METRICS = [

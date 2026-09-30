@@ -659,7 +659,9 @@ function ManagedOppRow({ o, nameOf, detail, right, nextTask, expandedId, setExpa
   // rather than failing the save.
   const oppStageOptions = useOppStageOptions(o.stage);
   const overdue = !!o.target_close_date && !o.stage.startsWith("closed")
-    && o.target_close_date.slice(0, 10) < new Date().toISOString().slice(0, 10);
+    // Local calendar date: toISOString() is UTC, which flagged a deal due
+    // today as late from 8pm in New York.
+    && o.target_close_date.slice(0, 10) < format(new Date(), "yyyy-MM-dd");
   // Keep in sync with DealRow.saveStage (JobsTeam.tsx) — same modal gating.
   function saveStage(stage: JobStage) {
     if (stage === o.stage) return Promise.resolve();
@@ -952,7 +954,11 @@ function OwnerWalkthrough({ openOpps, needsById, nextTaskByOpp, nameOf, ...handl
   const owners = useMemo(() => [...new Set(openOpps.map((o) => (o.owner_email ?? "").toLowerCase()))]
     .filter(Boolean).sort(), [openOpps]);
   const filterEntries = useMemo(
-    () => Object.entries(filters).filter(([k]) => FILTER_BY_KEY.has(k)), [filters]);
+    () => Object.entries(filters).filter(([k]) => FILTER_BY_KEY.has(k))
+      // The untagged deal-type bucket was renamed "Not set" -> "Untagged"
+      // (2026-09-29); a filter saved in this tab before that still applies.
+      .map(([k, v]): [string, string] => (k === "deal_type" && v === "Not set" ? [k, "Untagged"] : [k, v])),
+    [filters]);
   const visible = useMemo(() => openOpps.filter((o) =>
     (!ownerFilter || (o.owner_email ?? "").toLowerCase() === ownerFilter) &&
     (!flaggedOnly || needsById.has(o.id)) &&

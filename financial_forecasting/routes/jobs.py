@@ -15,6 +15,7 @@ import json
 import logging
 import re
 from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from typing import Optional
 from uuid import UUID
 
@@ -2763,14 +2764,15 @@ async def get_funnel(
             {"key": "name", "label": "Contact"},
             {"key": "company", "label": "Company"},
         ]
-        rows = await conn.fetch("""
+        rows = await conn.fetch(f"""
             SELECT m.stage, c.full_name AS name, c.current_company AS company
             FROM bedrock.jobs_contact_membership m
             JOIN public.contacts c ON c.contact_id = m.contact_id
             WHERE m.stage <> 'not_a_fit'
-              AND ($1::text IS NULL OR lower(c.current_company) IN (
-                    SELECT lower(account_name) FROM bedrock.jobs_opportunity
-                    WHERE deleted_at IS NULL AND deal_type = $1 AND account_name IS NOT NULL))
+              AND ($1::text[] IS NULL OR lower(c.current_company) IN (
+                    SELECT lower(o.account_name) FROM bedrock.jobs_opportunity o
+                    WHERE o.deleted_at IS NULL AND {_deal_type_sql('o.deal_type', 1)}
+                      AND o.account_name IS NOT NULL))
             ORDER BY c.full_name
         """, dt)
         by_stage = {}
@@ -3171,6 +3173,9 @@ def _opp_age_bucket(days: int) -> int:
 
 # ── Jobs projection (estimated vs confirmed vs won, against target) ───────────
 
+_PROJECTION_TZ = ZoneInfo("America/New_York")
+
+
 def _period_start(d: date, granularity: str) -> date:
     if granularity == "month":
         return date(d.year, d.month, 1)
@@ -3220,7 +3225,9 @@ async def opportunities_projection(
     """
     owner_f = owner if owner and owner != "all" else None
     dt_f = _parse_deal_types(deal_type)
-    anchor = today or datetime.now(timezone.utc).date()
+    # Periods and "past close date" run on New York dates, where the team works:
+    # on UTC, a deal due today read as late from 8pm ET.
+    anchor = today or datetime.now(_PROJECTION_TZ).date()
     g = granularity
     cur = _period_start(anchor, g)
     # Starts at the current quarter (Kwame 2026-09-29): this quarter and the
@@ -3253,10 +3260,12 @@ async def opportunities_projection(
         WHERE o.deleted_at IS NULL
           AND ({_OPP_INSET} OR (o.stage = 'closed_won'
                                 AND (w.won_at IS NULL
-                                     OR (w.won_at >= $3::date AND w.won_at < $4::date))))
+                                     OR (w.won_at >= $3::timestamptz AND w.won_at < $4::timestamptz))))
           AND ($1::text IS NULL OR o.owner_email = $1)
           AND {_deal_type_sql('o.deal_type', 2)}
-    """, owner_f, dt_f, first, end)
+    """, owner_f, dt_f,
+        datetime(first.year, first.month, first.day, tzinfo=_PROJECTION_TZ),
+        datetime(end.year, end.month, end.day, tzinfo=_PROJECTION_TZ))
 
     def _bucket(key, label, kind, start=None):
         q = _period_start(start, "quarter") if start else None
@@ -3290,7 +3299,7 @@ async def opportunities_projection(
             if r["won_at"] is None:
                 won_undated += 1
                 continue
-            b = buckets.get(_period_start(r["won_at"].date(), g))
+            b = buckets.get(_period_start(r["won_at"].astimezone(_PROJECTION_TZ).date(), g))
             if b is None:
                 continue
             won = roles if roles > 0 else (est or 0)
