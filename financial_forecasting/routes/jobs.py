@@ -10783,10 +10783,53 @@ def _is_placed(payment_amount, engagement_stage) -> bool:
     return (payment_amount or 0) > 0
 
 
+# ── Builders tab roster ───────────────────────────────────────────────────────
+# Who the Builders tab lists, shared by the board and the detail drawer so a row
+# you can see is a row you can open. Membership is by actual L3 / L3+ enrollment,
+# not the users.cohort label: that label is free text, and 65 staff/test accounts
+# (mostly the 2025-03-15 L1 test batch) carry cohort = 'L3+' with no L3-level
+# enrollment at all, which inflated L3+ to 123 against the dashboard's 59.
+#
+# The L3+ pool is the same one the dashboard counts, so everyone in it is listed
+# even when l3_builders() skips them — it only takes role builder/enterprise_builder,
+# which dropped builders later hired as Pursuit staff (Kalila Green). Their
+# identity comes from builder_by_id() instead: public.users / user_profiles have
+# RLS with no policy for bedrock_user, so both SECURITY DEFINER functions are the
+# only way in, and builder_by_id() has no role filter. It carries no profile
+# links, so linkedin/github are null for those rows. `l3plus_segment` is the
+# pool's L3 class, so this tab's cohort filter lines up with the dashboard's;
+# null for builders who haven't reached L3+.
+_BUILDER_ROSTER = f"""
+  {_L3PLUS_POOL.strip()},
+  l3_enrolled AS (
+    SELECT DISTINCT ue.user_id
+    FROM public.user_enrollment ue
+    JOIN public.cohort ch ON ch.cohort_id = ue.cohort_id
+    JOIN public.course co ON co.course_id = ch.course_id
+    WHERE co.level IN ('L3', 'L3+')
+  ),
+  roster AS (
+    SELECT b.*, pool.segment AS l3plus_segment
+    FROM bedrock.l3_builders() b
+    LEFT JOIN pool ON pool.user_id = b.user_id
+    WHERE b.user_id IN (SELECT user_id FROM l3_enrolled)
+    UNION ALL
+    SELECT bb.user_id, NULLIF(trim(bb.full_name), ''), bb.email, bb.cohort, c.end_date,
+           (c.end_date IS NOT NULL AND c.end_date < CURRENT_DATE),
+           NULL, NULL, pool.segment
+    FROM pool
+    CROSS JOIN LATERAL bedrock.builder_by_id(pool.user_id) bb
+    LEFT JOIN public.cohort c ON c.name = bb.cohort
+    WHERE pool.user_id NOT IN (SELECT user_id FROM bedrock.l3_builders())
+  )
+"""
+
+
 @router.get("/builders/board")
 async def builders_board(user=Depends(require_auth), conn=Depends(get_db)):
-    """One row per L3 builder: derived status, counts, readiness, coach."""
-    builders = await conn.fetch("SELECT * FROM bedrock.l3_builders() ORDER BY full_name")
+    """One row per L3 builder (see _BUILDER_ROSTER): derived status, counts,
+    readiness, coach."""
+    builders = await conn.fetch(f"WITH {_BUILDER_ROSTER} SELECT * FROM roster ORDER BY full_name")
 
     apps = await conn.fetch("""
         SELECT builder_id,
@@ -10827,6 +10870,7 @@ async def builders_board(user=Depends(require_auth), conn=Depends(get_db)):
         out.append({
             "user_id": uid, "name": b["full_name"], "email": b["email"],
             "cohort": b["cohort"], "cohort_completed": b["cohort_completed"],
+            "l3plus_segment": b["l3plus_segment"],
             "status": status, "status_overridden": overridden,
             "coach": prof["pursuit_coach"] if prof else None,
             "counts": {
@@ -10855,7 +10899,7 @@ def _jsonb(v):
 async def builder_detail(user_id: int, user=Depends(require_auth), conn=Depends(get_db)):
     """Full per-builder detail: identity + apps/interviews/placements/deals +
     platform intake + learning model + editable job profile + derived status."""
-    ident = await conn.fetchrow("SELECT * FROM bedrock.l3_builders() WHERE user_id = $1", user_id)
+    ident = await conn.fetchrow(f"WITH {_BUILDER_ROSTER} SELECT * FROM roster WHERE user_id = $1", user_id)
     if not ident:
         raise HTTPException(404, "Builder not found in the L3 population")
 

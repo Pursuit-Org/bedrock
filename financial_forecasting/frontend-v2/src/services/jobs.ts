@@ -2831,6 +2831,9 @@ export interface BuilderBoardRow {
   email: string | null;
   cohort: string | null;
   cohort_completed: boolean;
+  /** L3 class a job-ready (L3+) builder came from — the dashboard's segment.
+   *  Null until the builder reaches L3+. */
+  l3plus_segment: string | null;
   status: BuilderStatus;
   status_overridden: boolean;
   coach: string | null;

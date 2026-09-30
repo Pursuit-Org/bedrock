@@ -21,6 +21,7 @@ export function JobsBuilders() {
   const [mode, setMode] = useState<ViewMode>("table");
   const [search, setSearch] = useState("");
   const [coach, setCoach] = useState<string>("all");
+  const [cohort, setCohort] = useState<string>("all");
   const [sortKey, setSortKey] = useState<SortKey>("status");
   const [sortDir, setSortDir] = useState<SortDir>("asc");
   const [selected, setSelected] = useState<number | null>(null);
@@ -32,10 +33,31 @@ export function JobsBuilders() {
     [builders],
   );
 
+  // Cohort filter values: "l3plus" (the whole job-ready pool), "l3plus:<L3
+  // class>" (one slice of it — the same segments as the dashboard filter), or a
+  // plain cohort name for builders still in L3. Largest first within each
+  // group; names don't sort chronologically ("L3 - March 2026" < "L3 - August 2026").
+  const cohortOptions = useMemo(() => {
+    const tally = (keys: string[]) => {
+      const m = new Map<string, number>();
+      for (const k of keys) m.set(k, (m.get(k) ?? 0) + 1);
+      return Array.from(m, ([name, n]) => ({ name, n })).sort((a, b) => b.n - a.n || a.name.localeCompare(b.name));
+    };
+    const pool = builders.filter((b) => b.l3plus_segment);
+    return {
+      l3plusTotal: pool.length,
+      segments: tally(pool.map((b) => b.l3plus_segment!)),
+      others: tally(builders.filter((b) => !b.l3plus_segment && b.cohort).map((b) => b.cohort!)),
+    };
+  }, [builders]);
+
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return builders.filter((b) => {
       if (coach !== "all" && b.coach !== coach) return false;
+      if (cohort === "l3plus") { if (!b.l3plus_segment) return false; }
+      else if (cohort.startsWith("l3plus:")) { if (b.l3plus_segment !== cohort.slice(7)) return false; }
+      else if (cohort !== "all" && (b.l3plus_segment || b.cohort !== cohort)) return false;
       if (!q) return true;
       return (
         (b.name ?? "").toLowerCase().includes(q) ||
@@ -43,7 +65,15 @@ export function JobsBuilders() {
         (b.email ?? "").toLowerCase().includes(q)
       );
     });
-  }, [builders, search, coach]);
+  }, [builders, search, coach, cohort]);
+
+  // Chips follow the active filters, so picking a cohort shows that cohort's
+  // status breakdown rather than the all-builders totals from the server.
+  const statusCounts = useMemo(() => {
+    const counts: Partial<Record<BuilderStatus, number>> = {};
+    for (const b of filtered) counts[b.status] = (counts[b.status] ?? 0) + 1;
+    return counts;
+  }, [filtered]);
 
   const sorted = useMemo(() => {
     const val = (b: BuilderBoardRow): string | number => {
@@ -91,6 +121,26 @@ export function JobsBuilders() {
         </div>
         <div className="flex items-center gap-2">
           <select
+            value={cohort}
+            onChange={(e) => setCohort(e.target.value)}
+            className="rounded-md border border-border-strong bg-surface px-2.5 py-1.5 text-[12.5px] text-ink focus:border-accent focus:outline-none"
+          >
+            <option value="all">All cohorts ({builders.length})</option>
+            {cohortOptions.l3plusTotal > 0 ? (
+              <optgroup label="L3+ · by L3 class">
+                <option value="l3plus">All L3+ ({cohortOptions.l3plusTotal})</option>
+                {cohortOptions.segments.map((c) => (
+                  <option key={c.name} value={`l3plus:${c.name}`}>{c.name} ({c.n})</option>
+                ))}
+              </optgroup>
+            ) : null}
+            {cohortOptions.others.length > 0 ? (
+              <optgroup label="In L3">
+                {cohortOptions.others.map((c) => <option key={c.name} value={c.name}>{c.name} ({c.n})</option>)}
+              </optgroup>
+            ) : null}
+          </select>
+          <select
             value={coach}
             onChange={(e) => setCoach(e.target.value)}
             className="rounded-md border border-border-strong bg-surface px-2.5 py-1.5 text-[12.5px] text-ink focus:border-accent focus:outline-none"
@@ -116,7 +166,7 @@ export function JobsBuilders() {
           {BUILDER_STATUS_ORDER.map((s) => (
             <span key={s} className={cn("inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11.5px] font-medium", BUILDER_STATUS_STYLES[s])}>
               {BUILDER_STATUS_LABELS[s]}
-              <span className="font-mono font-semibold tabular-nums">{data.status_counts[s] ?? 0}</span>
+              <span className="font-mono font-semibold tabular-nums">{statusCounts[s] ?? 0}</span>
             </span>
           ))}
         </div>
