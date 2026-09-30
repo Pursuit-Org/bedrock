@@ -14,27 +14,28 @@ import {
   BUILDER_MODE_OPTIONS,
   BUILDER_DEGREE_OPTIONS,
   type BuilderBoardRow,
-  type BuilderProfileFields,
   type BuilderStatus,
 } from "@/services/jobs";
 import { cn } from "@/lib/utils";
 import { useColumnVisibility } from "@/lib/columnVisibility";
 import { ColumnChooser } from "@/components/ui/ColumnChooser";
-import { InlineMultiSelect, InlineSelect, InlineText } from "@/components/ui/InlineEdit";
+import { InlineSelect } from "@/components/ui/InlineEdit";
 import {
   AddFilterButton, FilterChip, describeRule, ruleApplies,
   type FieldMeta, type FilterRule,
 } from "@/pages/cleanup/Filters";
 import { BuilderDetailDrawer } from "@/components/jobs/BuilderDetailDrawer";
+import {
+  BuilderFieldEditor, isBuilderRating as isRating, triValue, YES_NO,
+  type BuilderEditableField, type BuilderListKey as ArrayKey,
+  type BuilderRatingKey as RatingKey, type BuilderTriKey as TriKey,
+} from "@/components/jobs/BuilderFieldEditor";
 
 type ViewMode = "table" | "board";
 type SortDir = "asc" | "desc";
 
 // ── Columns ───────────────────────────────────────────────────────────────────
-type RatingKey = (typeof BUILDER_RATING_FIELDS)[number][0];
 type ReadyKey = "lookbook" | "linkedin" | "github" | "cv" | "mock";
-type ArrayKey = "target_functions" | "target_industries" | "preferred_modes" | "languages" | "certifications";
-type TriKey = "applying_regularly" | "networking_regularly";
 type ColKey =
   | "name" | "status" | "coach" | "applications" | "interviews" | "placements" | "readiness"
   | ArrayKey | RatingKey | `ready_${ReadyKey}` | TriKey
@@ -71,15 +72,7 @@ const COL_LABELS: Record<ColKey, string> = {
 };
 
 const RIGHT_ALIGNED = new Set<ColKey>(["applications", "interviews", "placements", "readiness"]);
-const ARRAY_OPTIONS: Partial<Record<ArrayKey, string[]>> = {
-  target_functions: BUILDER_FUNCTION_OPTIONS,
-  target_industries: BUILDER_INDUSTRY_OPTIONS,
-  preferred_modes: BUILDER_MODE_OPTIONS,
-};
-const isRating = (k: ColKey): k is RatingKey => BUILDER_RATING_FIELDS.some(([r]) => r === k);
 const isReady = (k: ColKey): k is `ready_${ReadyKey}` => k.startsWith("ready_");
-
-const triValue = (v: boolean | null | undefined) => (v == null ? "" : v ? "yes" : "no");
 
 // ── Filters ───────────────────────────────────────────────────────────────────
 // ruleApplies splits "tags" values on commas, and "IT, Cloud & Security" has
@@ -112,7 +105,6 @@ const FILTERABLE: Record<Field, FieldMeta<BuilderBoardRow>> = {
 
 const opts = (vs: readonly string[]) => vs.map((v) => ({ value: v, label: v }));
 const tagOpts = (vs: string[]) => vs.map((v) => ({ value: tagKey(v), label: v }));
-const YES_NO = [{ value: "yes", label: "Yes" }, { value: "no", label: "No" }];
 
 const SELECT_OPTIONS: Partial<Record<Field, { value: string; label: string }[]>> = {
   status: BUILDER_STATUS_ORDER.map((s) => ({ value: s, label: BUILDER_STATUS_LABELS[s] })),
@@ -366,92 +358,20 @@ function Readiness({ complete, total }: { complete: number; total: number }) {
 }
 
 // ── Table ───────────────────────────────────────────────────────────────────
-// "clear" is a sentinel option so a nullable dropdown can be emptied again —
-// InlineSelect's own empty option is a disabled placeholder.
-const CLEAR = "__clear";
-const withClear = (o: { value: string; label: string }[]) => [...o, { value: CLEAR, label: "— clear" }];
-const RATING_SELECT = withClear(opts(BUILDER_RATING_OPTIONS));
-const DEGREE_SELECT = withClear(opts(BUILDER_DEGREE_OPTIONS));
-const TRI_SELECT = withClear(YES_NO);
-
-const splitList = (s: string) => s.split(",").map((x) => x.trim()).filter(Boolean);
-
 function EditableCell({ b, col, onSave }: {
   b: BuilderBoardRow; col: ColKey;
   onSave: (userId: number, body: Record<string, unknown>) => Promise<void>;
 }) {
-  const p: BuilderProfileFields = b.profile;
-  const put = (k: string, v: unknown) => onSave(b.user_id, { [k]: v });
-
-  if (isRating(col) || col === "degree") {
-    return (
-      <InlineSelect
-        value={p[col]}
-        options={col === "degree" ? DEGREE_SELECT : RATING_SELECT}
-        onSave={(v) => put(col, v === CLEAR ? null : v)}
-      />
-    );
-  }
-  if (col === "applying_regularly" || col === "networking_regularly") {
-    return (
-      <InlineSelect
-        value={triValue(p[col]) || null}
-        options={TRI_SELECT}
-        onSave={(v) => put(col, v === CLEAR ? null : v === "yes")}
-      />
-    );
-  }
   if (isReady(col)) {
     return (
       <InlineSelect
         value={b.readiness[col.slice(6) as ReadyKey] ? "yes" : "no"}
         options={YES_NO}
-        onSave={(v) => put(col, v === "yes")}
+        onSave={(v) => onSave(b.user_id, { [col]: v === "yes" })}
       />
     );
   }
-  if (col === "target_functions" || col === "target_industries" || col === "preferred_modes") {
-    return (
-      <InlineMultiSelect
-        value={p[col]}
-        options={ARRAY_OPTIONS[col]!}
-        onSave={(v) => put(col, v)}
-        className="min-w-[170px]"
-      />
-    );
-  }
-  if (col === "languages" || col === "certifications") {
-    return (
-      <InlineText
-        value={(p[col] ?? []).join(", ")}
-        placeholder="comma-separated"
-        onSave={(v) => put(col, splitList(v))}
-      />
-    );
-  }
-  if (col === "geo_preference") {
-    return (
-      <div className="max-w-[240px]" title={p.geo_preference ?? undefined}>
-        <InlineText value={p.geo_preference} placeholder="e.g. NYC, remote" onSave={(v) => put("intake", { geo_preference: v.trim() || null })} />
-      </div>
-    );
-  }
-  if (col === "university") {
-    return <InlineText value={p.university} onSave={(v) => put(col, v.trim() || null)} />;
-  }
-  if (col === "graduation_year") {
-    return (
-      <InlineText
-        value={p.graduation_year != null ? String(p.graduation_year) : ""}
-        onSave={(v) => {
-          const t = v.trim();
-          if (t && !/^\d{4}$/.test(t)) throw new Error("Enter a 4-digit year");
-          return put(col, t ? Number(t) : null);
-        }}
-      />
-    );
-  }
-  return null;
+  return <BuilderFieldEditor field={col as BuilderEditableField} values={b.profile} onSave={(body) => onSave(b.user_id, body)} />;
 }
 
 function BuilderTable({

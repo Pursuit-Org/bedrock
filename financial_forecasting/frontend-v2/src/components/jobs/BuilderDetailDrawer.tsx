@@ -4,6 +4,7 @@ import { Linkedin, Github, FileText, BookOpen, ExternalLink, Check } from "lucid
 import { Drawer } from "@/components/ui/Drawer";
 import { InlineText } from "@/components/ui/InlineEdit";
 import { JobStageChip } from "@/components/jobs/JobStageChip";
+import { BuilderFieldEditor, type BuilderEditableField } from "@/components/jobs/BuilderFieldEditor";
 import {
   useBuilderDetail,
   useUpdateBuilderProfile,
@@ -12,6 +13,7 @@ import {
   BUILDER_STATUS_ORDER,
   type JobStage,
   type BuilderJobProfile,
+  type BuilderProfileFields,
 } from "@/services/jobs";
 import { cn } from "@/lib/utils";
 
@@ -23,7 +25,7 @@ const READY_FIELDS: { key: keyof BuilderJobProfile; label: string }[] = [
   { key: "ready_mock", label: "Mock Interview" },
 ];
 
-const RATINGS: { key: string; label: string }[] = [
+const RATINGS: { key: BuilderEditableField; label: string }[] = [
   { key: "technical_capability", label: "Technical Capability" },
   { key: "ai_reasoning", label: "AI Reasoning & Troubleshooting" },
   { key: "problem_solving", label: "Problem Solving" },
@@ -31,10 +33,27 @@ const RATINGS: { key: string; label: string }[] = [
   { key: "professional_behaviors", label: "Professional Behaviors" },
 ];
 
+// Editable preference fields, same editors as the Builders table columns.
+const PREFERENCE_FIELDS: { key: BuilderEditableField; label: string }[] = [
+  { key: "target_functions", label: "Target function" },
+  { key: "target_industries", label: "Target industry" },
+  { key: "preferred_modes", label: "Work mode" },
+  { key: "geo_preference", label: "Preferred location" },
+  { key: "applying_regularly", label: "Applying regularly" },
+  { key: "networking_regularly", label: "Networking regularly" },
+];
+
+const EDUCATION_FIELDS: { key: BuilderEditableField; label: string }[] = [
+  { key: "degree", label: "Degree" },
+  { key: "university", label: "University" },
+  { key: "graduation_year", label: "Grad year" },
+  { key: "languages", label: "Languages" },
+  { key: "certifications", label: "Certifications" },
+];
+
 const INTAKE_FIELDS: { key: string; label: string }[] = [
   { key: "salary_expectation", label: "Salary expectation" },
   { key: "work_preference", label: "Work preference" },
-  { key: "geo_preference", label: "Geographic preference" },
   { key: "roles_interested", label: "Roles interested in" },
   { key: "what_matters_most", label: "What matters most" },
   { key: "open_to_freelance", label: "Open to freelance/contract" },
@@ -52,6 +71,18 @@ export function BuilderDetailDrawer({ userId, onClose }: { userId: number | null
 
   const p = data?.profile;
   const id = data?.identity;
+  // No profile row yet → every field empty; the first edit creates the row.
+  const values: BuilderProfileFields = {
+    technical_capability: p?.technical_capability ?? null, ai_reasoning: p?.ai_reasoning ?? null,
+    problem_solving: p?.problem_solving ?? null, presentation: p?.presentation ?? null,
+    professional_behaviors: p?.professional_behaviors ?? null,
+    target_functions: p?.target_functions ?? null, target_industries: p?.target_industries ?? null,
+    preferred_modes: p?.preferred_modes ?? null,
+    applying_regularly: p?.applying_regularly ?? null, networking_regularly: p?.networking_regularly ?? null,
+    degree: p?.degree ?? null, university: p?.university ?? null, graduation_year: p?.graduation_year ?? null,
+    languages: p?.languages ?? null, certifications: p?.certifications ?? null,
+    geo_preference: (p?.intake?.geo_preference as string | undefined) ?? null,
+  };
 
   return (
     <Drawer
@@ -124,7 +155,7 @@ export function BuilderDetailDrawer({ userId, onClose }: { userId: number | null
             <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 pt-2 sm:grid-cols-3">
               {RATINGS.map((r) => (
                 <Field key={r.key} label={r.label}>
-                  <InlineText value={(p?.[r.key as keyof typeof p] as string) ?? ""} onSave={(v) => patch({ [r.key]: v || null })} placeholder="—" />
+                  <BuilderFieldEditor field={r.key} values={values} onSave={patch} />
                 </Field>
               ))}
               <Field label="Prof. Strength"><InlineText value={p?.prof_strength ?? ""} onSave={(v) => patch({ prof_strength: v || null })} placeholder="—" /></Field>
@@ -181,12 +212,20 @@ export function BuilderDetailDrawer({ userId, onClose }: { userId: number | null
             {data.enrollment?.current_profile ? (
               <Field label="Pathfinder profile"><span className="text-ink-2">{data.enrollment.current_profile}</span></Field>
             ) : null}
-            <ChipRow label="Target industries" items={p?.target_industries} />
-            <ChipRow label="Preferred modes" items={p?.preferred_modes} />
-            <ChipRow label="Certifications" items={p?.certifications} />
-            {(p?.university || p?.degree || p?.graduation_year) ? (
-              <Field label="Education"><span className="text-ink-2">{[p?.degree, p?.university, p?.graduation_year].filter(Boolean).join(" · ") || "—"}</span></Field>
-            ) : null}
+            <div className="grid grid-cols-1 gap-x-6 gap-y-1.5 sm:grid-cols-2">
+              {PREFERENCE_FIELDS.map((f) => (
+                <Field key={f.key} label={f.label}>
+                  <BuilderFieldEditor field={f.key} values={values} onSave={patch} className="w-full" />
+                </Field>
+              ))}
+            </div>
+            <div className="grid grid-cols-1 gap-x-6 gap-y-1.5 pt-1 sm:grid-cols-3">
+              {EDUCATION_FIELDS.map((f) => (
+                <Field key={f.key} label={f.label}>
+                  <BuilderFieldEditor field={f.key} values={values} onSave={patch} className="w-full" />
+                </Field>
+              ))}
+            </div>
             <div className="grid grid-cols-1 gap-x-6 gap-y-1.5 pt-1 sm:grid-cols-2">
               {INTAKE_FIELDS.map((f) => {
                 const v = p?.intake?.[f.key];

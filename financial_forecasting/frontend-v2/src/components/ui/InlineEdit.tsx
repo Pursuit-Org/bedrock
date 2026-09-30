@@ -495,7 +495,8 @@ export function InlineMultiSelect({
         <div
           ref={popoverRef}
           style={{ position: "fixed", top: pos.top, left: pos.left, width: MULTI_POPOVER_WIDTH }}
-          className="z-50 overflow-hidden rounded-lg border border-border-strong bg-surface shadow-xl"
+          // z-[60]: above the z-50 Drawer panel, which hosts these editors too.
+          className="z-[60] overflow-hidden rounded-lg border border-border-strong bg-surface shadow-xl"
           onClick={(e) => e.stopPropagation()}
         >
           <div className="max-h-[290px] overflow-y-auto p-1">
