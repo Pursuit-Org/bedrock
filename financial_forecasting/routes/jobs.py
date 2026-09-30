@@ -10764,6 +10764,13 @@ async def log_activity(
 
 BUILDER_STATUSES = {"not_started", "actively_applying", "interviewing", "placed", "paused"}
 _READY_KEYS = ("ready_lookbook", "ready_linkedin", "ready_github", "ready_cv", "ready_mock")
+# Profile fields the Builders table shows as editable columns.
+_BOARD_PROFILE_KEYS = (
+    "technical_capability", "ai_reasoning", "problem_solving", "presentation",
+    "professional_behaviors", "target_functions", "target_industries", "preferred_modes",
+    "applying_regularly", "networking_regularly", "degree", "university",
+    "graduation_year", "languages", "certifications",
+)
 
 
 def _derive_builder_status(placed: bool, interviewing: bool, applying: bool) -> str:
@@ -10884,6 +10891,14 @@ async def builders_board(user=Depends(require_auth), conn=Depends(get_db)):
             "prof_strength": prof["prof_strength"] if prof else None,
             "technical_strength": prof["technical_strength"] if prof else None,
             "has_profile": prof is not None,
+            # Editable table columns. .get() for target_functions: the column
+            # arrives with 2026-09-30-builder-target-functions.sql.
+            "profile": {
+                **{k: (prof.get(k) if prof else None) for k in _BOARD_PROFILE_KEYS},
+                # Write-in "Preferred location": the intake form's geo answer,
+                # edited in place via PATCH {intake: {geo_preference}} (merged).
+                "geo_preference": ((_jsonb(prof["intake"]) or {}).get("geo_preference") if prof else None),
+            },
         })
     return {"success": True, "data": {"builders": out, "status_counts": status_counts}}
 
@@ -10992,6 +11007,7 @@ class BuilderProfileUpdate(BaseModel):
     professional_behaviors: Optional[str] = None
     prof_strength:          Optional[str] = None
     technical_strength:     Optional[str] = None
+    target_functions:       Optional[list[str]] = None
     target_industries:      Optional[list[str]] = None
     preferred_modes:        Optional[list[str]] = None
     certifications:         Optional[list[str]] = None
@@ -11034,7 +11050,10 @@ async def update_builder_profile(user_id: int, body: BuilderProfileUpdate,
     sql = (f"INSERT INTO bedrock.builder_job_profile ({', '.join(cols)}) "
            f"VALUES ({', '.join(ph)}) "
            f"ON CONFLICT (user_id) DO UPDATE SET {', '.join(sets)} RETURNING *")
-    row = await conn.fetchrow(sql, *vals)
+    try:
+        row = await conn.fetchrow(sql, *vals)
+    except asyncpg.exceptions.UndefinedColumnError:
+        raise HTTPException(409, "Target function needs migration 2026-09-30-builder-target-functions.sql")
     d = dict(row)
     d["intake"] = _jsonb(d.get("intake"))
     return {"success": True, "data": d}
