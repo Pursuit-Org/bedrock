@@ -43,6 +43,7 @@ import {
   SF_STAGE_OPTIONS,
   stageStatus,
 } from "@/lib/stages";
+import { rankByQuery, searchMatcher } from "@/lib/search";
 import { cn } from "@/lib/utils";
 import { useSessionState } from "@/lib/useSessionState";
 import { useAccounts, useAccountsEnrichment } from "@/services/accounts";
@@ -75,6 +76,9 @@ const RECORD_TYPES = [
   { value: "PBC", label: "PBC" },
 ] as const;
 type RecordType = (typeof RECORD_TYPES)[number]["value"];
+
+/** Fields the toolbar search matches (see lib/search for the rules). */
+const oppSearchFields = (o: SfOpportunity) => [o.Name, o.Account?.Name, o.Owner?.Name];
 
 function inScope(o: SfOpportunity, scope: Scope): boolean {
   if (scope === "all") return true;
@@ -312,19 +316,11 @@ export function PipelinePage() {
   // would shrink the picker to "current selection only" once you add an
   // owner filter, defeating the purpose of switching owners.
   const oppsInView = useMemo(() => {
+    const searchHit = searchMatcher(opps, q, oppSearchFields);
     return opps.filter((o) => {
       if (!inScope(o, scope)) return false;
       if (stageFilter && o.StageName !== stageFilter) return false;
-      if (q) {
-        const needle = q.toLowerCase();
-        const hay =
-          (o.Name ?? "").toLowerCase() +
-          " " +
-          (o.Account?.Name ?? "").toLowerCase() +
-          " " +
-          (o.Owner?.Name ?? "").toLowerCase();
-        if (!hay.includes(needle)) return false;
-      }
+      if (!searchHit(o)) return false;
       return true;
     });
   }, [opps, scope, stageFilter, q]);
@@ -410,19 +406,11 @@ export function PipelinePage() {
   );
 
   const filtered = useMemo(() => {
+    const searchHit = searchMatcher(opps, q, oppSearchFields);
     const filt = opps.filter((o) => {
       if (!inScope(o, scope)) return false;
       if (stageFilter && o.StageName !== stageFilter) return false;
-      if (q) {
-        const needle = q.toLowerCase();
-        const hay =
-          (o.Name ?? "").toLowerCase() +
-          " " +
-          (o.Account?.Name ?? "").toLowerCase() +
-          " " +
-          (o.Owner?.Name ?? "").toLowerCase();
-        if (!hay.includes(needle)) return false;
-      }
+      if (!searchHit(o)) return false;
       // Chip rules — every active rule must pass (AND).
       for (const r of rules) {
         if (!ruleApplies(o, r, PIPELINE_FILTERABLE)) return false;
@@ -904,9 +892,7 @@ function CreateOpportunityModal({
     setForm((f) => ({ ...f, [key]: e.target.value }));
 
   const filteredAccounts = useMemo(() => {
-    if (!accountQ.trim()) return accountOptions.slice(0, 50);
-    const q = accountQ.toLowerCase();
-    return accountOptions.filter((a) => a.label.toLowerCase().includes(q)).slice(0, 50);
+    return rankByQuery(accountOptions, accountQ, (a) => [a.label]).slice(0, 50);
   }, [accountOptions, accountQ]);
 
   const submit = (e: React.FormEvent) => {

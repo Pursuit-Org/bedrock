@@ -14,6 +14,7 @@ import {
 import { ActivitySourceIcon } from "@/components/ActivitySourceIcon";
 import { useCollapsible } from "@/lib/collapsible";
 import { fmtDate } from "@/lib/format";
+import { matchesQuery } from "@/lib/search";
 import { cn } from "@/lib/utils";
 import { useCurrentUser } from "@/services/auth";
 import { useLogCall, type LogCallBody } from "@/services/activities";
@@ -202,18 +203,14 @@ export function ActivityTimeline({
           if (!hay.includes(myEmail)) return false;
         }
       }
-      if (!needle) return true;
-      const hay = [
+      // Strict rules only — typo tolerance over long email bodies is noise.
+      return matchesQuery(needle, [
         a.subject,
         a.description,
         a.email_snippet,
         a.owner_email,
         a._context_name,
-      ]
-        .filter(Boolean)
-        .join("\n")
-        .toLowerCase();
-      return hay.includes(needle);
+      ]);
     });
   }, [visibleActivities, typeFilter, sourceFilter, quick, needle, myEmail]);
 

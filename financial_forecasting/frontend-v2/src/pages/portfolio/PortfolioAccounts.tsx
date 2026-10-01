@@ -21,6 +21,7 @@ import { accountStatusVariant } from "@/lib/accountStatus";
 import { fmtMoney } from "@/lib/format";
 import { sortBy, useSort } from "@/lib/sort";
 import { isOpen, isWon } from "@/lib/stages";
+import { searchMatcher } from "@/lib/search";
 import { useAccountsEnrichment, useUpdateAccount } from "@/services/accounts";
 import { useOpportunities } from "@/services/opportunities";
 import type { SfAccount, SfOpportunity } from "@/types/salesforce";
@@ -58,13 +59,7 @@ export function PortfolioAccounts({ accounts, loading, sfReady, canEdit }: Portf
   );
 
   const visible = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    const filtered = accounts.filter((a) => {
-      if (!q) return true;
-      if (a.Name.toLowerCase().includes(q)) return true;
-      if ((a.Type ?? "").toLowerCase().includes(q)) return true;
-      return false;
-    });
+    const filtered = accounts.filter(searchMatcher(accounts, query, (a) => [a.Name, a.Type]));
     return sortBy(filtered, sort, (a, key) => {
       switch (key) {
         case "name": return a.Name;

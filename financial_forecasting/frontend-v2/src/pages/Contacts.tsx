@@ -22,6 +22,7 @@ import { Toolbar } from "@/components/ui/Toolbar";
 import { totalWidth, useColumnWidths } from "@/lib/columnWidths";
 import { useColumnVisibility } from "@/lib/columnVisibility";
 import { fmtDate, initials, toExternalHref } from "@/lib/format";
+import { searchMatcher } from "@/lib/search";
 import { sortBy, useSort } from "@/lib/sort";
 import { cn } from "@/lib/utils";
 import {
@@ -184,29 +185,34 @@ export function ContactsPage() {
 
   const contacts = contactsQ.data ?? [];
 
+  // Shared search rules (spacing/punctuation/word-order insensitive,
+  // typo fallback when nothing matches).
+  const searchHit = useMemo(
+    () =>
+      searchMatcher(contacts, q, (c) => [
+        c.Name,
+        c.FirstName,
+        c.LastName,
+        c.Email,
+        c.Account?.Name,
+        c.Title,
+      ]),
+    [contacts, q],
+  );
+
   // Contacts that match the toolbar filters (Philanthropy-only toggle +
   // search). Used to populate the chip-filter owner facet so it
   // reflects what's visible in the table. Chip `rules` are excluded to
   // avoid the picker collapsing once an owner filter is applied.
   const contactsInView = useMemo(() => {
-    const needle = q.toLowerCase();
     return contacts.filter((c) => {
       if (philOnly && !c.Philanthropic_Contact__c && !c.Philanthropy__c) {
         return false;
       }
-      if (q) {
-        const hit =
-          (c.Name ?? "").toLowerCase().includes(needle) ||
-          (c.FirstName ?? "").toLowerCase().includes(needle) ||
-          (c.LastName ?? "").toLowerCase().includes(needle) ||
-          (c.Email ?? "").toLowerCase().includes(needle) ||
-          (c.Account?.Name ?? "").toLowerCase().includes(needle) ||
-          (c.Title ?? "").toLowerCase().includes(needle);
-        if (!hit) return false;
-      }
+      if (!searchHit(c)) return false;
       return true;
     });
-  }, [contacts, philOnly, q]);
+  }, [contacts, philOnly, searchHit]);
 
   // Chip-filter facets — owner options are the union of:
   //   (a) every active SF user, and
@@ -269,21 +275,11 @@ export function ContactsPage() {
   }, [usersQ.data, contacts]);
 
   const filtered = useMemo(() => {
-    const needle = q.toLowerCase();
     const f = contacts.filter((c) => {
       if (philOnly && !c.Philanthropic_Contact__c && !c.Philanthropy__c) {
         return false;
       }
-      if (q) {
-        const hit =
-          (c.Name ?? "").toLowerCase().includes(needle) ||
-          (c.FirstName ?? "").toLowerCase().includes(needle) ||
-          (c.LastName ?? "").toLowerCase().includes(needle) ||
-          (c.Email ?? "").toLowerCase().includes(needle) ||
-          (c.Account?.Name ?? "").toLowerCase().includes(needle) ||
-          (c.Title ?? "").toLowerCase().includes(needle);
-        if (!hit) return false;
-      }
+      if (!searchHit(c)) return false;
       for (const r of rules) {
         if (!ruleApplies(c, r, CONTACTS_FILTERABLE)) return false;
       }
