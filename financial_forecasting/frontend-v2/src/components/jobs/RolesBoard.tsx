@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { Plus, X, Check, ChevronDown, ChevronRight, GripVertical } from "lucide-react";
 import { DndContext, closestCenter, PointerSensor, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
@@ -11,7 +11,8 @@ import { NewAccountDialog } from "@/components/jobs/NewAccountDialog";
 import {
   useRolesBoard,
   useSearchOpportunities,
-  useCreateRole,
+  useCreateRoleSeats,
+  MAX_SEATS_PER_ADD,
   useCreateRoleApplication,
   useBuilderSourcedApplications,
   useStaffSourcedApplications,
@@ -668,8 +669,11 @@ function AddRoleModal({ onClose, prefill }: { onClose: () => void; prefill?: Add
   const [startDate, setStartDate] = useState("");
   const [notes, setNotes] = useState("");
   const [commitment, setCommitment] = useState<Commitment>("committed");
-  const createRole = useCreateRole();
+  const [seats, setSeats] = useState("1");
+  const createSeats = useCreateRoleSeats();
   const confirmMatch = useConfirmMatch();
+
+  const seatCount = Math.min(Math.max(parseInt(seats, 10) || 1, 1), MAX_SEATS_PER_ADD);
 
   const oppId = selectedOpp?.id ?? null;
 
@@ -693,9 +697,10 @@ function AddRoleModal({ onClose, prefill }: { onClose: () => void; prefill?: Add
     e.preventDefault();
     if (!oppId || !title.trim()) return;
     const salaryNum = salary.trim() ? Number(salary.replace(/[^0-9.]/g, "")) : undefined;
-    createRole.mutate(
+    createSeats.mutate(
       {
         oppId,
+        seats: seatCount,
         title: title.trim(),
         approx_salary: salaryNum != null && !isNaN(salaryNum) ? salaryNum : undefined,
         employment_type: empType.trim() || undefined,
@@ -704,13 +709,16 @@ function AddRoleModal({ onClose, prefill }: { onClose: () => void; prefill?: Add
         commitment,
       },
       {
-        onSuccess: (createdRole) => {
-          if (prefill?.linkApplicationIds?.length && createdRole?.id) {
+        onSuccess: ({ created }) => {
+          // The applications that seeded this modal match one opening, so they
+          // link to the first seat; the rest of the req stays unmatched.
+          const firstSeat = created[0];
+          if (prefill?.linkApplicationIds?.length && firstSeat?.id) {
             for (const appId of prefill.linkApplicationIds) {
-              confirmMatch.mutate({ appId, jobsRoleId: createdRole.id });
+              confirmMatch.mutate({ appId, jobsRoleId: firstSeat.id });
             }
           }
-          onClose();
+          if (created.length > 0) onClose();
         },
       },
     );
@@ -912,7 +920,19 @@ function AddRoleModal({ onClose, prefill }: { onClose: () => void; prefill?: Add
                     </button>
                   </div>
                 </div>
-                <div className="grid grid-cols-3 gap-2">
+                <div className="grid grid-cols-4 gap-2">
+                  <label className="flex flex-col gap-0.5">
+                    <span className="text-[10px] font-medium text-ink-4">Seats</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={MAX_SEATS_PER_ADD}
+                      value={seats}
+                      onChange={(e) => setSeats(e.target.value)}
+                      title="How many identical openings for this role"
+                      className="w-full rounded border border-border-strong bg-surface px-2 py-1 text-[12px] text-ink-2 placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
+                    />
+                  </label>
                   <label className="flex flex-col gap-0.5">
                     <span className="text-[10px] font-medium text-ink-4">Salary</span>
                     <input
@@ -957,11 +977,11 @@ function AddRoleModal({ onClose, prefill }: { onClose: () => void; prefill?: Add
                 <div className="flex items-center gap-3">
                   <button
                     type="submit"
-                    disabled={!title.trim() || createRole.isPending}
+                    disabled={!title.trim() || createSeats.isPending}
                     className="flex items-center gap-1.5 rounded bg-accent px-3 py-1.5 text-[12.5px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
                   >
-                    {createRole.isPending ? <Spinner /> : <Plus size={13} />}
-                    Add role
+                    {createSeats.isPending ? <Spinner /> : <Plus size={13} />}
+                    {seatCount > 1 ? `Add ${seatCount} seats` : "Add role"}
                   </button>
                   <button type="button" onClick={onClose} className="text-[12.5px] text-ink-3 hover:text-ink-2">
                     Cancel
@@ -986,7 +1006,56 @@ function AddRoleModal({ onClose, prefill }: { onClose: () => void; prefill?: Add
 
 // ── Single role row (expandable to show matched applications) ─────────────────
 
-function RoleBoardRow({ role }: { role: RolesBoardRole }) {
+// ── Identical seats on one req ────────────────────────────────────────────────
+// Three openings for the same job are three jobs_role rows (the row is the seat
+// — hiring stamps the builder onto it). On this board that meant three identical
+// lines, each holding whichever applications happened to link to it, so no line
+// ever showed the real candidate pool. Collapse them into one row and pool the
+// applications. The key covers everything the row displays plus everything the
+// row's actions assume, so a group is only ever seats that are truly alike:
+// differing status, placement, or terms keep their own rows.
+function seatGroupKey(r: RolesBoardRole): string {
+  return JSON.stringify([
+    r.opportunity_id,
+    (r.title ?? "").trim().toLowerCase(),
+    r.employment_type ?? "",
+    r.approx_salary,
+    r.commitment,
+    r.is_trial,
+    r.status,
+    r.placement_status,
+    r.filled_by_user_id !== null,
+  ]);
+}
+
+// The board's order, with identical seats gathered at the position their first
+// seat held. Order is user-dragged and server-persisted, so it has to survive.
+function groupSeats(roles: RolesBoardRole[]): RolesBoardRole[][] {
+  const groups: RolesBoardRole[][] = [];
+  const byKey = new Map<string, RolesBoardRole[]>();
+  for (const r of roles) {
+    const key = seatGroupKey(r);
+    const seats = byKey.get(key);
+    if (seats) {
+      seats.push(r);
+      continue;
+    }
+    const fresh = [r];
+    byKey.set(key, fresh);
+    groups.push(fresh);
+  }
+  return groups;
+}
+
+// One row per req. `seats` is normally a single role; when a req has several
+// identical openings they share this row, and every action applies to all of
+// them — closing "Software Engineer" closes the whole req, not one seat of it.
+function RoleBoardRow({ seats }: { seats: RolesBoardRole[] }) {
+  const role = seats[0];
+  const seatCount = seats.length;
+  // Applications link to whichever seat they were matched against; pooled, they
+  // are the req's actual candidate list.
+  const applications = seatCount === 1 ? role.applications : seats.flatMap((s) => s.applications);
   const [expanded, setExpanded] = useState(false);
   const [addingApp, setAddingApp] = useState(false);
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: role.id });
@@ -1027,9 +1096,9 @@ function RoleBoardRow({ role }: { role: RolesBoardRole }) {
                 <ChevronRight size={13} className="shrink-0 text-ink-4" />
               )}
               <span className="truncate text-[13px] font-medium text-ink">{role.title || "Untitled role"}</span>
-              {role.applications.length > 0 && (
-                <span className="shrink-0 rounded-full bg-surface-2 px-1.5 py-0.5 text-[10px] font-medium text-ink-3">
-                  {role.applications.length}
+              {seatCount > 1 && (
+                <span className="shrink-0 rounded-full bg-accent/10 px-1.5 py-0.5 text-[9.5px] font-semibold uppercase tracking-wide leading-none text-accent">
+                  {seatCount} seats
                 </span>
               )}
             </div>
@@ -1052,7 +1121,7 @@ function RoleBoardRow({ role }: { role: RolesBoardRole }) {
 
       {expanded && (
         <div className="mt-2 flex flex-col gap-2 pl-[19px]">
-          {role.applications.length === 0 ? (
+          {applications.length === 0 ? (
             <span className="text-[11.5px] text-ink-4">No builder applications matched to this role yet.</span>
           ) : (
             /* One line per applicant: name left, stage + date + remove right.
@@ -1062,7 +1131,7 @@ function RoleBoardRow({ role }: { role: RolesBoardRole }) {
                squeeze the name away entirely in a narrow column — that's what
                the two-line stack was working around. */
             <ul className="flex flex-col divide-y divide-border-strong rounded-md border border-border-strong">
-              {role.applications.map((a) => (
+              {applications.map((a) => (
                 <li key={a.job_application_id} className="flex items-center gap-2 px-3 py-1.5">
                   <span className="min-w-0 flex-1 truncate text-[12px] text-ink" title={a.builder}>{a.builder}</span>
                   <div className="flex shrink-0 items-center gap-2">
@@ -1101,8 +1170,9 @@ function RoleBoardRow({ role }: { role: RolesBoardRole }) {
                 type="button"
                 title="This role only exists to track a self-found builder's progress — Pursuit has no real relationship with the company"
                 onClick={() => {
-                  if (window.confirm(`Mark "${role.title || "this role"}" as builder-sourced? It'll move to the Builder-Sourced column.`)) {
-                    markBuilderSourced.mutate(role.id);
+                  const what = seatCount > 1 ? `all ${seatCount} seats of "${role.title || "this role"}"` : `"${role.title || "this role"}"`;
+                  if (window.confirm(`Mark ${what} as builder-sourced? It'll move to the Builder-Sourced column.`)) {
+                    for (const seat of seats) markBuilderSourced.mutate(seat.id);
                   }
                 }}
                 disabled={markBuilderSourced.isPending}
@@ -1113,16 +1183,19 @@ function RoleBoardRow({ role }: { role: RolesBoardRole }) {
               {/* Someone's already placed here (incl. an active trial) — "everyone
                   fell through" doesn't apply, and closing would clobber the
                   filled/trial signal that placement_status derives from. */}
-              {(isClosed || !role.filled_by_user_id) && (
+              {(isClosed || seats.every((seat) => seat.filled_by_user_id === null)) && (
                 <button
                   type="button"
                   title={isClosed
                     ? "Reopen — moves it back up with the active roles"
-                    : "Every candidate fell through — keep the history but stop it competing with active roles"}
+                    : seatCount > 1
+                      ? `Every candidate fell through — closes all ${seatCount} seats and keeps the history`
+                      : "Every candidate fell through — keep the history but stop it competing with active roles"}
                   onClick={() => {
                     const next = isClosed ? "open" : "cancelled";
-                    if (isClosed || window.confirm(`Close "${role.title || "this role"}"? It'll sink to the bottom of the list — nothing is deleted.`)) {
-                      updateRole.mutate({ roleId: role.id, status: next });
+                    const what = seatCount > 1 ? `all ${seatCount} seats of "${role.title || "this role"}"` : `"${role.title || "this role"}"`;
+                    if (isClosed || window.confirm(`Close ${what}? It'll sink to the bottom of the list — nothing is deleted.`)) {
+                      for (const seat of seats) updateRole.mutate({ roleId: seat.id, status: next });
                     }
                   }}
                   disabled={updateRole.isPending}
@@ -1148,6 +1221,8 @@ export function RolesBoard() {
   const [items, setItems] = useState<RolesBoardRole[]>([]);
   const reorder = useReorderRolesBoard();
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }));
+  // Seats of one req occupy a single row and drag as a unit.
+  const groups = useMemo(() => groupSeats(items), [items]);
 
   function openAddRole(prefill?: AddRolePrefill) {
     setAddRolePrefill(prefill);
@@ -1189,10 +1264,12 @@ export function RolesBoard() {
   function onDragEnd(e: DragEndEvent) {
     const { active, over } = e;
     if (!over || active.id === over.id) return;
-    const from = items.findIndex((r) => r.id === active.id);
-    const to = items.findIndex((r) => r.id === over.id);
+    const from = groups.findIndex((g) => g[0].id === active.id);
+    const to = groups.findIndex((g) => g[0].id === over.id);
     if (from < 0 || to < 0) return;
-    const next = arrayMove(items, from, to);
+    // The server stores a position per role, so the moved groups are expanded
+    // back into their individual seats before the order is saved.
+    const next = arrayMove(groups, from, to).flat();
     setItems(next);
     reorder.mutate(next.map((r) => r.id));
   }
@@ -1221,10 +1298,10 @@ export function RolesBoard() {
             <span className="text-[12px] text-ink-4">No roles yet.</span>
           ) : (
             <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
-              <SortableContext items={items.map((r) => r.id)} strategy={verticalListSortingStrategy}>
+              <SortableContext items={groups.map((g) => g[0].id)} strategy={verticalListSortingStrategy}>
                 <ul className="flex flex-col divide-y divide-border-strong rounded-md border border-border-strong">
-                  {items.map((r) => (
-                    <RoleBoardRow key={r.id} role={r} />
+                  {groups.map((g) => (
+                    <RoleBoardRow key={g[0].id} seats={g} />
                   ))}
                 </ul>
               </SortableContext>

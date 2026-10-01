@@ -1311,7 +1311,11 @@ async def list_opp_roles(
 ):
     """All roles (any status) for an opportunity, oldest first."""
     rows = await conn.fetch(
-        "SELECT * FROM bedrock.jobs_role WHERE opportunity_id=$1 ORDER BY created_at",
+        """SELECT r.*, b.full_name AS filled_by_name
+           FROM bedrock.jobs_role r
+           LEFT JOIN LATERAL bedrock.builder_by_id(r.filled_by_user_id) b ON true
+           WHERE r.opportunity_id = $1
+           ORDER BY r.created_at""",
         opp_id,
     )
     return {"success": True, "data": [_role_dict(r) for r in rows]}
@@ -1350,7 +1354,8 @@ async def create_opp_role(
             raise HTTPException(409, {
                 "error": "duplicate_role",
                 "message": f"An open '{body.title}' role was just added to this opportunity. "
-                           "For multiple seats, set the role's number of seats instead of adding it again.",
+                           "For multiple openings, use the Seats field when adding the role "
+                           "instead of adding it again.",
             })
 
     converts_to = UUID(body.converts_to_role_id) if body.converts_to_role_id else None
@@ -1648,12 +1653,44 @@ async def roles_board(
             "updated_at": a["updated_at"].isoformat() if a["updated_at"] else None,
         })
 
+    # Applications belong to the req, not to the one opening they were matched
+    # against. A filled seat drops off this board (below) and used to take its
+    # candidates with it, so the req's remaining openings showed a partial pool —
+    # hire the seat holding 3 of 8 applicants and 3 vanished. Re-pool those onto
+    # the first still-open seat of the same req. Only the first, so the UI's
+    # per-req grouping pools each application exactly once.
+    # Deliberately looser than the UI's grouping key: same job, same employer,
+    # same shape of engagement. Salary and commitment are left out because they
+    # drift on a seat after it's filled (update_placement writes the agreed
+    # salary back onto the role), and a drifted field must not quietly strand
+    # that seat's candidates. A trial is its own kind of opening, so it splits.
+    def _req_key(d: dict) -> tuple:
+        return (
+            d["opportunity_id"],
+            (d["title"] or "").strip().lower(),
+            d["employment_type"],
+            bool(d["is_trial"]),
+        )
+
+    dicts = [_role_dict(r) for r in roles]
+    orphaned: dict[tuple, list] = {}
+    for d in dicts:
+        if d["placement_status"] == "ft_placed":
+            orphaned.setdefault(_req_key(d), []).extend(apps_by_role.get(d["id"], []))
+
     out = []
-    for r in roles:
-        d = _role_dict(r)
+    repooled: set = set()
+    for d in dicts:
         if d["placement_status"] == "ft_placed":
             continue  # already filled full-time — nothing left to track here
-        d["applications"] = apps_by_role.get(d["id"], [])
+        apps = list(apps_by_role.get(d["id"], []))
+        key = _req_key(d)
+        if key in orphaned and key not in repooled:
+            apps.extend(orphaned[key])
+            # Keep the whole pool in one date order, as a single seat's list is.
+            apps.sort(key=lambda a: a["date_applied"] or "", reverse=True)
+            repooled.add(key)
+        d["applications"] = apps
         out.append(d)
     return {"success": True, "data": out}
 
@@ -10764,6 +10801,13 @@ async def log_activity(
 
 BUILDER_STATUSES = {"not_started", "actively_applying", "interviewing", "placed", "paused"}
 _READY_KEYS = ("ready_lookbook", "ready_linkedin", "ready_github", "ready_cv", "ready_mock")
+# Profile fields the Builders table shows as editable columns.
+_BOARD_PROFILE_KEYS = (
+    "technical_capability", "ai_reasoning", "problem_solving", "presentation",
+    "professional_behaviors", "target_functions", "target_industries", "preferred_modes",
+    "applying_regularly", "networking_regularly", "degree", "university",
+    "graduation_year", "languages", "certifications",
+)
 
 
 def _derive_builder_status(placed: bool, interviewing: bool, applying: bool) -> str:
@@ -10783,10 +10827,53 @@ def _is_placed(payment_amount, engagement_stage) -> bool:
     return (payment_amount or 0) > 0
 
 
+# ── Builders tab roster ───────────────────────────────────────────────────────
+# Who the Builders tab lists, shared by the board and the detail drawer so a row
+# you can see is a row you can open. Membership is by actual L3 / L3+ enrollment,
+# not the users.cohort label: that label is free text, and 65 staff/test accounts
+# (mostly the 2025-03-15 L1 test batch) carry cohort = 'L3+' with no L3-level
+# enrollment at all, which inflated L3+ to 123 against the dashboard's 59.
+#
+# The L3+ pool is the same one the dashboard counts, so everyone in it is listed
+# even when l3_builders() skips them — it only takes role builder/enterprise_builder,
+# which dropped builders later hired as Pursuit staff (Kalila Green). Their
+# identity comes from builder_by_id() instead: public.users / user_profiles have
+# RLS with no policy for bedrock_user, so both SECURITY DEFINER functions are the
+# only way in, and builder_by_id() has no role filter. It carries no profile
+# links, so linkedin/github are null for those rows. `l3plus_segment` is the
+# pool's L3 class, so this tab's cohort filter lines up with the dashboard's;
+# null for builders who haven't reached L3+.
+_BUILDER_ROSTER = f"""
+  {_L3PLUS_POOL.strip()},
+  l3_enrolled AS (
+    SELECT DISTINCT ue.user_id
+    FROM public.user_enrollment ue
+    JOIN public.cohort ch ON ch.cohort_id = ue.cohort_id
+    JOIN public.course co ON co.course_id = ch.course_id
+    WHERE co.level IN ('L3', 'L3+')
+  ),
+  roster AS (
+    SELECT b.*, pool.segment AS l3plus_segment
+    FROM bedrock.l3_builders() b
+    LEFT JOIN pool ON pool.user_id = b.user_id
+    WHERE b.user_id IN (SELECT user_id FROM l3_enrolled)
+    UNION ALL
+    SELECT bb.user_id, NULLIF(trim(bb.full_name), ''), bb.email, bb.cohort, c.end_date,
+           (c.end_date IS NOT NULL AND c.end_date < CURRENT_DATE),
+           NULL, NULL, pool.segment
+    FROM pool
+    CROSS JOIN LATERAL bedrock.builder_by_id(pool.user_id) bb
+    LEFT JOIN public.cohort c ON c.name = bb.cohort
+    WHERE pool.user_id NOT IN (SELECT user_id FROM bedrock.l3_builders())
+  )
+"""
+
+
 @router.get("/builders/board")
 async def builders_board(user=Depends(require_auth), conn=Depends(get_db)):
-    """One row per L3 builder: derived status, counts, readiness, coach."""
-    builders = await conn.fetch("SELECT * FROM bedrock.l3_builders() ORDER BY full_name")
+    """One row per L3 builder (see _BUILDER_ROSTER): derived status, counts,
+    readiness, coach."""
+    builders = await conn.fetch(f"WITH {_BUILDER_ROSTER} SELECT * FROM roster ORDER BY full_name")
 
     apps = await conn.fetch("""
         SELECT builder_id,
@@ -10827,6 +10914,7 @@ async def builders_board(user=Depends(require_auth), conn=Depends(get_db)):
         out.append({
             "user_id": uid, "name": b["full_name"], "email": b["email"],
             "cohort": b["cohort"], "cohort_completed": b["cohort_completed"],
+            "l3plus_segment": b["l3plus_segment"],
             "status": status, "status_overridden": overridden,
             "coach": prof["pursuit_coach"] if prof else None,
             "counts": {
@@ -10840,6 +10928,14 @@ async def builders_board(user=Depends(require_auth), conn=Depends(get_db)):
             "prof_strength": prof["prof_strength"] if prof else None,
             "technical_strength": prof["technical_strength"] if prof else None,
             "has_profile": prof is not None,
+            # Editable table columns. .get() for target_functions: the column
+            # arrives with 2026-09-30-builder-target-functions.sql.
+            "profile": {
+                **{k: (prof.get(k) if prof else None) for k in _BOARD_PROFILE_KEYS},
+                # Write-in "Preferred location": the intake form's geo answer,
+                # edited in place via PATCH {intake: {geo_preference}} (merged).
+                "geo_preference": ((_jsonb(prof["intake"]) or {}).get("geo_preference") if prof else None),
+            },
         })
     return {"success": True, "data": {"builders": out, "status_counts": status_counts}}
 
@@ -10855,7 +10951,7 @@ def _jsonb(v):
 async def builder_detail(user_id: int, user=Depends(require_auth), conn=Depends(get_db)):
     """Full per-builder detail: identity + apps/interviews/placements/deals +
     platform intake + learning model + editable job profile + derived status."""
-    ident = await conn.fetchrow("SELECT * FROM bedrock.l3_builders() WHERE user_id = $1", user_id)
+    ident = await conn.fetchrow(f"WITH {_BUILDER_ROSTER} SELECT * FROM roster WHERE user_id = $1", user_id)
     if not ident:
         raise HTTPException(404, "Builder not found in the L3 population")
 
@@ -10948,6 +11044,7 @@ class BuilderProfileUpdate(BaseModel):
     professional_behaviors: Optional[str] = None
     prof_strength:          Optional[str] = None
     technical_strength:     Optional[str] = None
+    target_functions:       Optional[list[str]] = None
     target_industries:      Optional[list[str]] = None
     preferred_modes:        Optional[list[str]] = None
     certifications:         Optional[list[str]] = None
@@ -10990,7 +11087,10 @@ async def update_builder_profile(user_id: int, body: BuilderProfileUpdate,
     sql = (f"INSERT INTO bedrock.builder_job_profile ({', '.join(cols)}) "
            f"VALUES ({', '.join(ph)}) "
            f"ON CONFLICT (user_id) DO UPDATE SET {', '.join(sets)} RETURNING *")
-    row = await conn.fetchrow(sql, *vals)
+    try:
+        row = await conn.fetchrow(sql, *vals)
+    except asyncpg.exceptions.UndefinedColumnError:
+        raise HTTPException(409, "Target function needs migration 2026-09-30-builder-target-functions.sql")
     d = dict(row)
     d["intake"] = _jsonb(d.get("intake"))
     return {"success": True, "data": d}
