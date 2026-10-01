@@ -837,7 +837,9 @@ async def get_accounts(
             return []
         use_light = fields == "light"
         cache_key = (
-            f"accounts:{limit or 'all'}:"
+            # `v2` — bumped when SecondaryAccountOwner__c joined the
+            # projection so pre-deploy cached rows aren't served.
+            f"accounts:v2:{limit or 'all'}:"
             f"{'light' if use_light else 'full'}:"
             f"{'active' if active_only else 'any'}"
         )
@@ -851,6 +853,7 @@ async def get_accounts(
             query = """
             SELECT Id, Name, Type, Industry, Website, Description,
                    BillingCity, BillingState, OwnerId, Owner.Name,
+                   SecondaryAccountOwner__c, SecondaryAccountOwner__r.Name,
                    Account_Tier__c, Active__c, Qualification_Status__c,
                    npo02__TotalOppAmount__c, npo02__NumberOfClosedOpps__c,
                    Total_Revenue_Generated__c,
@@ -865,6 +868,7 @@ async def get_accounts(
             SELECT Id, Name, Type, Industry, Phone, Fax, Website, Description,
                    BillingStreet, BillingCity, BillingState, BillingPostalCode, BillingCountry,
                    AnnualRevenue, NumberOfEmployees, AccountSource, OwnerId, Owner.Name,
+                   SecondaryAccountOwner__c, SecondaryAccountOwner__r.Name,
                    ParentId, RecordTypeId, RecordType.Name,
                    CreatedDate, LastModifiedDate, LastActivityDate,
                    Account_Tier__c, Active__c, Company_Size__c,
