@@ -133,6 +133,14 @@ export function useOppRoles(oppId: string | null) {
 // The actionable text behind a failed role create: the rapid-duplicate guard's
 // 409 says exactly what to do instead, and losing it leaves staff staring at a
 // bare "failed" on the one error they can actually act on.
+/** The rapid-duplicate guard specifically, as opposed to any other 409. */
+function isDuplicateRoleError(e: unknown): boolean {
+  const resp = (e as { response?: { status?: number; data?: { detail?: { error?: string } | string } } })?.response;
+  if (resp?.status !== 409) return false;
+  const detail = resp.data?.detail;
+  return typeof detail === "object" && detail?.error === "duplicate_role";
+}
+
 function roleCreateErrorMessage(e: unknown): string {
   const resp = (e as { response?: { status?: number; data?: { detail?: { message?: string } | string } } })?.response;
   if (resp?.status !== 409) return "Failed to add role";
@@ -184,20 +192,38 @@ export function useCreateRoleSeats() {
         try {
           const { data } = await api.post<ApiResponse<Role>>(
             `/api/jobs/opportunities/${oppId}/roles`,
-            seats > 1 ? { ...body, allow_duplicate: true } : body,
+            // Waive the duplicate guard for seats 2..N only. The first post
+            // still has to pass it: sending allow_duplicate on i === 0 too
+            // meant typing "2" defeated the guard outright, which is the
+            // Citizens Bank x5 case it was written for — and the guard's own
+            // 409 message points staff at this very field.
+            i > 0 ? { ...body, allow_duplicate: true } : body,
           );
           created.push(data.data);
         } catch (e) {
           failed += 1;
           lastError = e;
+          // The guard tripping on seat 1 means this req was just added. Stop
+          // rather than posting 2..N behind it: continuing would both defeat
+          // the guard and leave a confusing "added 2 of 3". The caller gets
+          // the server's own 409 text so staff can wait it out or retitle.
+          if (i === 0 && isDuplicateRoleError(e)) {
+            return { created, failed: seats, lastError, abortedOnDuplicate: true };
+          }
         }
       }
-      return { created, failed, lastError };
+      return { created, failed, lastError, abortedOnDuplicate: false };
     },
-    onSuccess: ({ created, failed, lastError }, vars) => {
+    onSuccess: ({ created, failed, lastError, abortedOnDuplicate }, vars) => {
       qc.invalidateQueries({ queryKey: ["jobs", "opp-roles", vars.oppId] });
       invalidateOppDependents(qc);
-      if (created.length === 0) {
+      // The board renders these rows too, and "Add role" now lives on it —
+      // without this the toast says "3 seats added" and the board shows
+      // nothing until the 15s staleTime lapses.
+      qc.invalidateQueries({ queryKey: ["jobs", "roles-board"] });
+      if (abortedOnDuplicate) {
+        toast.error(roleCreateErrorMessage(lastError));
+      } else if (created.length === 0) {
         // One seat carries the server's own explanation (e.g. the duplicate
         // guard); a whole batch failing is reported as the batch it was.
         toast.error(vars.seats === 1 ? roleCreateErrorMessage(lastError) : "Failed to add any seats");

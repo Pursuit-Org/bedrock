@@ -767,7 +767,14 @@ function AddRoleForm({ oppId, roles }: { oppId: string; roles: Role[] }) {
         notes: notes.trim() || undefined,
         ...extrasToBody(extras),
       },
-      { onSuccess: () => reset() },
+      {
+        // Only clear the form if something actually landed. mutationFn swallows
+        // every per-seat error and always resolves, so a plain onSuccess also
+        // fires when all N failed — wiping a title, salary, start date, notes
+        // and extras the user would have to retype. AddRoleModal already
+        // guarded this; this form did not.
+        onSuccess: ({ created }) => { if (created.length > 0) reset(); },
+      },
     );
   }
 

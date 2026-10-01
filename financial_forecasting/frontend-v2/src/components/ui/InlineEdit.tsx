@@ -408,6 +408,18 @@ export function InlineMultiSelect({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value]);
 
+  // Same safety net as InlineSelect above: the effect clears the overlay only
+  // when `value` catches UP to it, so if the server persists something other
+  // than what we sent — a value normalised or dropped — the cell shows an
+  // un-persisted value indefinitely. If the cache hasn't agreed in 10s, the
+  // cache wins.
+  useEffect(() => {
+    if (optimistic == null || saving || same(optimistic, current)) return;
+    const t = setTimeout(() => setOptimistic(null), 10_000);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [optimistic, value, saving]);
+
   const display = optimistic ?? current;
   const legacy = display.filter((v) => !options.includes(v));
   const listed = [...options, ...legacy];
@@ -437,10 +449,25 @@ export function InlineMultiSelect({
 
   useLayoutEffect(() => {
     if (!open || !triggerRef.current) return;
-    const r = triggerRef.current.getBoundingClientRect();
-    const left = Math.min(r.left, window.innerWidth - MULTI_POPOVER_WIDTH - 8);
-    const below = window.innerHeight - r.bottom;
-    setPos({ top: below < 300 ? Math.max(8, r.top - 300) : r.bottom + 4, left: Math.max(8, left) });
+    const place = () => {
+      const el = triggerRef.current;
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      const left = Math.min(r.left, window.innerWidth - MULTI_POPOVER_WIDTH - 8);
+      const below = window.innerHeight - r.bottom;
+      setPos({ top: below < 300 ? Math.max(8, r.top - 300) : r.bottom + 4, left: Math.max(8, left) });
+    };
+    place();
+    // The popover is portaled to <body> and position:fixed, so it does not
+    // travel with the row. Without this it stays put while a scrolling table
+    // moves its trigger out from under it. Capture catches scrolls on any
+    // ancestor, not just the window.
+    window.addEventListener("scroll", place, true);
+    window.addEventListener("resize", place);
+    return () => {
+      window.removeEventListener("scroll", place, true);
+      window.removeEventListener("resize", place);
+    };
   }, [open]);
 
   useEffect(() => {
