@@ -250,6 +250,11 @@ interface InlineSelectProps<T extends string> {
   emptyLabel?: string;
   renderValue?: (v: T | null | undefined) => React.ReactNode;
   className?: string;
+  /** When true, the displayed value doesn't jump to the new selection until
+   *  onSave resolves. Use for gated saves (e.g. stage changes) where a
+   *  confirmation dialog intercepts the save — the cell should stay at the
+   *  old value while the dialog is open and only flip if the user confirms. */
+  noOptimistic?: boolean;
 }
 
 export function InlineSelect<T extends string>({
@@ -259,6 +264,7 @@ export function InlineSelect<T extends string>({
   emptyLabel = "—",
   renderValue,
   className,
+  noOptimistic = false,
 }: InlineSelectProps<T>) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -270,18 +276,38 @@ export function InlineSelect<T extends string>({
     setOptimistic((prev) => (prev != null && prev === value ? null : prev));
   }, [value]);
 
+  // Safety net: stop showing an optimistic value the server never accepted.
+  //
+  // The effect above clears the overlay only when `value` catches *up* to it.
+  // On a rollback `value` goes back to what it was, so that condition never
+  // holds and the chip keeps displaying the rejected choice indefinitely —
+  // the toast expires and the row is left asserting something Salesforce
+  // refused. Reachable through the stage gate, which resolves onSave on
+  // "optimistic close", before the background SF writes run, so a failure
+  // there never reaches this component's catch.
+  //
+  // If the cache hasn't agreed within the window, the cache wins.
+  useEffect(() => {
+    if (optimistic == null || saving || optimistic === value) return;
+    const t = setTimeout(() => setOptimistic(null), 10_000);
+    return () => clearTimeout(t);
+  }, [optimistic, value, saving]);
+
   const commit = async (next: T) => {
     if (saving || next === value) return;
-    setOptimistic(next);
+    if (!noOptimistic) setOptimistic(next);
     setSaving(true);
     setError(null);
     startedAtRef.current = Date.now();
     try {
       await onSave(next);
+      if (noOptimistic) setOptimistic(next);
       flash();
     } catch (e) {
       setOptimistic(null);
-      setError(e instanceof Error ? e.message : "Failed");
+      const msg = e instanceof Error ? e.message : "Failed";
+      // A user-initiated cancel isn't an error — swallow it silently.
+      if (msg !== "Stage change cancelled") setError(msg);
     } finally {
       setSaving(false);
     }

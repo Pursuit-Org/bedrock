@@ -8,7 +8,7 @@ import {
 } from "react";
 import { Fragment } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { ChevronDown, ChevronRight, Mail, Search } from "lucide-react";
+import { ChevronDown, ChevronRight, ExternalLink, Mail, Search } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 
 import { ContactExpandPanel, CONTACT_PANEL_HEIGHT } from "@/components/ContactExpandPanel";
@@ -21,7 +21,8 @@ import { SortableHeader } from "@/components/ui/SortableHeader";
 import { Toolbar } from "@/components/ui/Toolbar";
 import { totalWidth, useColumnWidths } from "@/lib/columnWidths";
 import { useColumnVisibility } from "@/lib/columnVisibility";
-import { fmtDate, initials } from "@/lib/format";
+import { fmtDate, initials, toExternalHref } from "@/lib/format";
+import { searchMatcher } from "@/lib/search";
 import { sortBy, useSort } from "@/lib/sort";
 import { cn } from "@/lib/utils";
 import {
@@ -89,9 +90,20 @@ type ColKey =
   | "email"
   | "phone"
   | "owner"
-  | "lastActivity";
+  | "lastActivity"
+  | "linkedin";
 
 const COLUMN_ORDER: ColKey[] = [
+  "name",
+  "account",
+  "email",
+  "phone",
+  "owner",
+  "lastActivity",
+  "linkedin",
+];
+
+const DEFAULT_VISIBLE: ColKey[] = [
   "name",
   "account",
   "email",
@@ -107,6 +119,7 @@ const DEFAULT_WIDTHS: Record<ColKey, number> = {
   phone: 150,
   owner: 160,
   lastActivity: 130,
+  linkedin: 72,
 };
 
 const COL_LABELS: Record<ColKey, string> = {
@@ -116,6 +129,7 @@ const COL_LABELS: Record<ColKey, string> = {
   phone: "Phone",
   owner: "Owner",
   lastActivity: "Last activity",
+  linkedin: "LinkedIn",
 };
 
 const ROW_HEIGHT = 44; // px — must match the row's actual rendered height
@@ -161,7 +175,7 @@ export function ContactsPage() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const { philOnly } = filter;
   const { visible: visibleCols, toggle: toggleCol, replaceAll: replaceVisibleCols } =
-    useColumnVisibility("bedrock-v2:vis:contacts", COLUMN_ORDER);
+    useColumnVisibility("bedrock-v2:vis:contacts", COLUMN_ORDER, DEFAULT_VISIBLE);
 
   const { sort, toggle } = useSort<ColKey>({ key: "name", direction: "asc" });
   const { widths, startResize, replaceAll: replaceWidths } = useColumnWidths<ColKey>(
@@ -171,29 +185,34 @@ export function ContactsPage() {
 
   const contacts = contactsQ.data ?? [];
 
+  // Shared search rules (spacing/punctuation/word-order insensitive,
+  // typo fallback when nothing matches).
+  const searchHit = useMemo(
+    () =>
+      searchMatcher(contacts, q, (c) => [
+        c.Name,
+        c.FirstName,
+        c.LastName,
+        c.Email,
+        c.Account?.Name,
+        c.Title,
+      ]),
+    [contacts, q],
+  );
+
   // Contacts that match the toolbar filters (Philanthropy-only toggle +
   // search). Used to populate the chip-filter owner facet so it
   // reflects what's visible in the table. Chip `rules` are excluded to
   // avoid the picker collapsing once an owner filter is applied.
   const contactsInView = useMemo(() => {
-    const needle = q.toLowerCase();
     return contacts.filter((c) => {
       if (philOnly && !c.Philanthropic_Contact__c && !c.Philanthropy__c) {
         return false;
       }
-      if (q) {
-        const hit =
-          (c.Name ?? "").toLowerCase().includes(needle) ||
-          (c.FirstName ?? "").toLowerCase().includes(needle) ||
-          (c.LastName ?? "").toLowerCase().includes(needle) ||
-          (c.Email ?? "").toLowerCase().includes(needle) ||
-          (c.Account?.Name ?? "").toLowerCase().includes(needle) ||
-          (c.Title ?? "").toLowerCase().includes(needle);
-        if (!hit) return false;
-      }
+      if (!searchHit(c)) return false;
       return true;
     });
-  }, [contacts, philOnly, q]);
+  }, [contacts, philOnly, searchHit]);
 
   // Chip-filter facets — owner options are the union of:
   //   (a) every active SF user, and
@@ -256,21 +275,11 @@ export function ContactsPage() {
   }, [usersQ.data, contacts]);
 
   const filtered = useMemo(() => {
-    const needle = q.toLowerCase();
     const f = contacts.filter((c) => {
       if (philOnly && !c.Philanthropic_Contact__c && !c.Philanthropy__c) {
         return false;
       }
-      if (q) {
-        const hit =
-          (c.Name ?? "").toLowerCase().includes(needle) ||
-          (c.FirstName ?? "").toLowerCase().includes(needle) ||
-          (c.LastName ?? "").toLowerCase().includes(needle) ||
-          (c.Email ?? "").toLowerCase().includes(needle) ||
-          (c.Account?.Name ?? "").toLowerCase().includes(needle) ||
-          (c.Title ?? "").toLowerCase().includes(needle);
-        if (!hit) return false;
-      }
+      if (!searchHit(c)) return false;
       for (const r of rules) {
         if (!ruleApplies(c, r, CONTACTS_FILTERABLE)) return false;
       }
@@ -677,6 +686,20 @@ const ContactRow = memo(function ContactRow({
         {fmtDate(c.Last_Activity_Date__c ?? c.LastActivityDate)}
       </span>
     ),
+    linkedin: toExternalHref(c.LinkedIn_URL__c) ? (
+      <a
+        href={toExternalHref(c.LinkedIn_URL__c)!}
+        target="_blank"
+        rel="noopener noreferrer"
+        onClick={(e) => e.stopPropagation()}
+        className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-semibold text-[#0A66C2] hover:underline"
+        title={c.LinkedIn_URL__c ?? undefined}
+      >
+        in <ExternalLink size={11} />
+      </a>
+    ) : (
+      <span className="text-ink-4">—</span>
+    ),
   };
 
   const cellCls: Record<ColKey, string> = {
@@ -686,6 +709,7 @@ const ContactRow = memo(function ContactRow({
     phone: "overflow-hidden px-3 py-1 text-[12.5px] text-ink-3",
     owner: "overflow-hidden px-3 py-1 text-[12.5px] text-ink-2",
     lastActivity: "overflow-hidden px-3 py-1 text-[12.5px]",
+    linkedin: "overflow-hidden px-3 py-1 text-[12.5px]",
   };
 
   return (

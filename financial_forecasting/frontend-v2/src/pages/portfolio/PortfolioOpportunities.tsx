@@ -28,6 +28,7 @@ import { sortBy, useSort } from "@/lib/sort";
 import { isLost, isOpen, isWon, SF_STAGE_OPTIONS, stageStatus } from "@/lib/stages";
 import { useProbabilityScheduleGate } from "@/lib/useProbabilityScheduleGate";
 import { useStageChangeGate } from "@/lib/useStageChangeGate";
+import { searchMatcher } from "@/lib/search";
 import { useUpdateOpportunity } from "@/services/opportunities";
 import type { SfOpportunity } from "@/types/salesforce";
 
@@ -83,17 +84,13 @@ export function PortfolioOpportunities({
   );
 
   const visible = useMemo(() => {
-    const q = query.trim().toLowerCase();
+    const searchHit = searchMatcher(opps, query, (o) => [o.Name, o.Account?.Name, o.StageName]);
     const filtered = opps.filter((o) => {
       if (statusFilter === "open" && !isOpen(o)) return false;
       if (statusFilter === "won" && !isWon(o)) return false;
       if (statusFilter === "lost" && !isLost(o)) return false;
       if (highPriorityOnly && (o.Priority__c ?? "") !== "High") return false;
-      if (!q) return true;
-      if (o.Name?.toLowerCase().includes(q)) return true;
-      if (o.Account?.Name?.toLowerCase().includes(q)) return true;
-      if (o.StageName?.toLowerCase().includes(q)) return true;
-      return false;
+      return searchHit(o);
     });
     if (sort.key == null) return sortOpps(filtered);
     return sortBy(filtered, sort, (o, key) => {

@@ -1,3 +1,4 @@
+import { PageErrorBoundary } from "./PageErrorBoundary";
 import { NavLink, Outlet, useLocation, useNavigationType } from "react-router-dom";
 import { useEffect, useRef, useState } from "react";
 import {
@@ -183,7 +184,12 @@ export function AppShell() {
           <SalesforceGate />
         ) : (
           <div ref={scrollRef} className="flex-1 overflow-y-auto">
-            <Outlet />
+            {/* Keyed on the path so navigating away clears a caught error.
+                Inside the shell on purpose: the nav has to survive a page that
+                throws, or a broken page looks like a broken app. */}
+            <PageErrorBoundary key={pathname}>
+              <Outlet />
+            </PageErrorBoundary>
           </div>
         )}
       </main>

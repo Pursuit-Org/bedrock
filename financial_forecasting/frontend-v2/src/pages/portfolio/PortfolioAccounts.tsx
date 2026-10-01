@@ -29,6 +29,7 @@ import { useColumnVisibility } from "@/lib/columnVisibility";
 import { fmtMoney } from "@/lib/format";
 import { sortBy, useSort } from "@/lib/sort";
 import { useSessionState } from "@/lib/useSessionState";
+import { searchMatcher } from "@/lib/search";
 import { useAccountsEnrichment, useUpdateAccount } from "@/services/accounts";
 import { useOpportunities } from "@/services/opportunities";
 import type { SfAccount } from "@/types/salesforce";
@@ -209,11 +210,11 @@ export function PortfolioAccounts({ accounts, loading, sfReady, canEdit }: Portf
   );
 
   const visible = useMemo(() => {
-    const needle = q.toLowerCase();
+    const matchesSearch = searchMatcher(accounts, q, (a) => [a.Name, a.Type]);
     const filtered = accounts.filter((a) => {
       if (pinned.has(a.Id)) return false;
       if (!matchesType(a, typeFilter)) return false;
-      if (q && !(a.Name ?? "").toLowerCase().includes(needle)) return false;
+      if (q && !matchesSearch(a)) return false;
       for (const r of rules) {
         if (!ruleApplies(a, r, filterable)) return false;
       }

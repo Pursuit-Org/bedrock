@@ -6,6 +6,7 @@ import {
   useMetricDrill,
   useUpdateOpportunity,
   useUpdatePlacementSalary,
+  useUpdatePlacementStage,
   useUpdatePlacementTitle,
   STAGES_ORDERED,
   STAGE_LABELS,
@@ -16,6 +17,7 @@ import {
 } from "@/services/jobs";
 import { useUpdateRole } from "@/services/jobsOpps2";
 import { OppRolesSection } from "@/components/jobs/OppRolesSection";
+import { PlacementEndDialog } from "@/components/jobs/PlacementEndDialog";
 import { useQueryClient } from "@tanstack/react-query";
 
 // Pretty-print known coded values; pass everything else through.
@@ -56,14 +58,18 @@ type EditableSelect = {
 
 export function MetricDrawer({
   metricKey,
+  segment,
   onClose,
 }: {
   metricKey: string | null;
+  /** L3 cohort the card was scoped to, so the drill matches the number. */
+  segment?: string;
   onClose: () => void;
 }) {
-  const { data, isLoading } = useMetricDrill(metricKey);
+  const { data, isLoading } = useMetricDrill(metricKey, segment);
   const updateOpportunity = useUpdateOpportunity();
   const updatePlacementSalary = useUpdatePlacementSalary();
+  const updatePlacementStage = useUpdatePlacementStage();
   const updatePlacementTitle = useUpdatePlacementTitle();
   const updateRole = useUpdateRole();
   const queryClient = useQueryClient();
@@ -93,6 +99,11 @@ export function MetricDrawer({
   }
   const open = metricKey !== null;
   const [expandedRow, setExpandedRow] = useState<number | null>(null);
+  // Set when a placement's Status is moved to a terminal stage — the end-date
+  // dialog owns the write from there.
+  const [endingPlacement, setEndingPlacement] = useState<{
+    id: string; stage: string; builder: string; role: string;
+  } | null>(null);
   useEffect(() => setExpandedRow(null), [metricKey]);
 
   // Decide whether a given (entity, column) is an editable dropdown.
@@ -130,6 +141,37 @@ export function MetricDrawer({
       };
     }
 
+
+    // Marking a placed builder as having left. Only real placement records are
+    // editable — trial and committed-req rows have no employment record behind
+    // them. 'pipeline' is left out: it means "not placed yet", which isn't a
+    // thing you'd say about a row in this list.
+    if (entity === "placement" && colKey === "status" && row.kind === "placed") {
+      return {
+        value: row.engagement_stage ?? "active",
+        options: [
+          { value: "active", label: "In role" },
+          { value: "completed", label: "Completed" },
+          { value: "ended", label: "No longer in role" },
+        ],
+        onChange: async (newValue) => {
+          // Ending needs a date (the API rejects a terminal stage without one),
+          // so collect it first rather than firing a write that would 422.
+          // Reopening is unambiguous and writes straight through.
+          if (newValue === "completed" || newValue === "ended") {
+            setEndingPlacement({
+              id,
+              stage: newValue,
+              builder: row.builder ?? "—",
+              role: row.role ?? "—",
+            });
+            return;
+          }
+          await updatePlacementStage.mutateAsync({ id, engagement_stage: newValue });
+          queryClient.invalidateQueries({ queryKey: ["jobs"] });
+        },
+      };
+    }
 
     return null;
   }
@@ -366,6 +408,16 @@ export function MetricDrawer({
           </table>
         )}
       </div>
+      {endingPlacement && (
+        <PlacementEndDialog
+          placementId={endingPlacement.id}
+          stage={endingPlacement.stage}
+          builder={endingPlacement.builder}
+          role={endingPlacement.role}
+          onClose={() => setEndingPlacement(null)}
+          onSaved={() => queryClient.invalidateQueries({ queryKey: ["jobs"] })}
+        />
+      )}
     </Drawer>
   );
 }

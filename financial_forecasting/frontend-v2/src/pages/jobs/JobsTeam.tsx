@@ -5,7 +5,6 @@ import {
   useJobsOpportunity,
   useUpdateOpportunity,
   useContactTagCatalog,
-  useStageVocabulary,
   useDeleteOpportunity,
   useCreateOpportunity,
   useLogActivity,
@@ -23,6 +22,7 @@ import {
   STAGE_LABELS,
   DEAL_TYPE_LABELS,
   STAGES_ORDERED,
+  type CallKind,
   type JobStage,
   type DealType,
   type JobsOpportunity,
@@ -40,6 +40,7 @@ import { OppBuilderActivity } from "@/components/jobs/OppBuilderActivity";
 import { JobsTasks } from "@/components/jobs/JobsTasks";
 import { JobsComments } from "@/components/jobs/JobsComments";
 import { CommittedRolesModal } from "@/components/jobs/CommittedRolesModal";
+import { CallKindPicker } from "@/components/jobs/CallKindPicker";
 import { RowExpandPanel, type ExpandTab } from "@/components/RowExpandPanel";
 import { InlineText, InlineSelect, InlineDate } from "@/components/ui/InlineEdit";
 import { useSort, sortBy, type SortState } from "@/lib/sort";
@@ -877,6 +878,7 @@ function LogActivityForm({ dealId }: { dealId: string }) {
   const [type, setType]   = useState<ActivityType>("call");
   const [date, setDate]   = useState(todayIso);
   const [desc, setDesc]   = useState("");
+  const [callKind, setCallKind] = useState<CallKind | null>(null);
 
   const logActivity = useLogActivity();
 
@@ -884,6 +886,7 @@ function LogActivityForm({ dealId }: { dealId: string }) {
     setType("call");
     setDate(todayIso());
     setDesc("");
+    setCallKind(null);
     setOpen(false);
   }
 
@@ -896,6 +899,9 @@ function LogActivityForm({ dealId }: { dealId: string }) {
       type: type as ActivityCreateBody["type"],
       description: desc.trim(),
       activity_date: date || todayIso(),
+      // Only a call carries a kind; the API drops it on anything else, but not
+      // sending it keeps the request honest about what was asked.
+      call_kind: type === "call" ? callKind : null,
     });
     reset();
   }
@@ -937,6 +943,9 @@ function LogActivityForm({ dealId }: { dealId: string }) {
           </button>
         ))}
       </div>
+
+      {/* Call type — only a call has one. */}
+      {type === "call" && <CallKindPicker value={callKind} onChange={setCallKind} />}
 
       {/* Date */}
       <input
@@ -1306,43 +1315,11 @@ function ContactsTab({
 
 // ── Deal row ──────────────────────────────────────────────────────────────────
 
-const STAGE_OPTIONS: { value: JobStage; label: string }[] = STAGES_ORDERED.map((s) => ({
-  value: s,
-  label: STAGE_LABELS[s],
-}));
-
-// Lead Submitted + Initial Outreach happen at the prospect/contact level — a deal
-// becomes an Opportunity once it's active. So the opp stage picker drops them, but
-// still shows a legacy value if a deal somehow already sits there.
-const HIDDEN_OPP_STAGES = new Set<JobStage>(["lead_submitted"]);
-const OPP_STAGE_OPTIONS = STAGE_OPTIONS.filter((o) => !HIDDEN_OPP_STAGES.has(o.value));
-export function stageOptionsFor(stage: JobStage): { value: JobStage; label: string }[] {
-  return HIDDEN_OPP_STAGES.has(stage)
-    ? [{ value: stage, label: STAGE_LABELS[stage] }, ...OPP_STAGE_OPTIONS]
-    : OPP_STAGE_OPTIONS;
-}
-
-/** Opportunity stage options gated on what the database currently accepts.
- *
- *  Without this the picker offered Reviewing Builders — the one new value the
- *  pre-migration CHECK constraint rejects — so choosing it failed the save. The
- *  contact picker already worked this way; the opportunity one didn't, which is
- *  exactly the kind of asymmetry that only shows up when someone clicks it. */
-export function useOppStageOptions(stage: JobStage) {
-  const { data: vocab } = useStageVocabulary();
-  return useMemo(() => {
-    const base = stageOptionsFor(stage);
-    if (!vocab) return base;
-    const byValue = new Map(vocab.opportunity_stages.map((o) => [o.value, o]));
-    return base.map((o) => {
-      const v = byValue.get(o.value);
-      // Unknown to the vocabulary (a legacy value pinned in for the current
-      // row) stays selectable — it's already stored, so it can be written back.
-      if (!v || v.available) return o;
-      return { ...o, disabled: true, title: v.unavailable_reason ?? undefined };
-    });
-  }, [vocab, stage]);
-}
+// Moved to lib/oppStageOptions so components/jobs/* can use it without
+// closing an import cycle back through this file. Re-exported because
+// JobsHome and JobsOpportunitiesOverview already import it from here.
+export { stageOptionsFor, useOppStageOptions } from "@/lib/oppStageOptions";
+import { useOppStageOptions, useGatedStageOptions } from "@/lib/oppStageOptions";
 
 // Structured closed-lost reasons (drives the "why deals die" analysis).
 // The combined vocabulary (Kwame 2026-08-05): the seven already in use plus the
@@ -1669,7 +1646,7 @@ interface NewDealForm {
 
 const DEFAULT_NEW_DEAL_FORM: NewDealForm = {
   companyName: "",
-  stage: "lead_submitted",
+  stage: "active_in_discussions",
   dealType: "",
   name: "",
   owner: "",
@@ -2343,9 +2320,12 @@ export function JobsTeam() {
     [],
   );
 
+  // Gated on the live CHECK constraint — an ungated list offers the four
+  // 2026-09-21 stages before the migration accepts them, so the save fails.
+  const gatedStageOptions = useGatedStageOptions();
   const selectOptions: Partial<Record<OppField, { value: string; label: string }[]>> = useMemo(
     () => ({
-      stage: OPP_STAGE_OPTIONS.map((o) => ({ value: o.value, label: o.label })),
+      stage: gatedStageOptions,
       status: STATUS_OPTIONS,
       deal_type: DEAL_TYPE_OPTIONS.map((o) => ({ value: o.value, label: o.label })),
       segment: SEGMENT_OPTIONS,
@@ -2353,7 +2333,7 @@ export function JobsTeam() {
       likelihood: LIKELIHOOD_OPTIONS.map((o) => ({ value: o.value, label: o.label })),
       owner: ownerOptions,
     }),
-    [ownerOptions],
+    [ownerOptions, gatedStageOptions],
   );
 
   const q = query.trim().toLowerCase();

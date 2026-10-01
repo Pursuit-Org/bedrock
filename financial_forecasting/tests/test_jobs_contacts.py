@@ -57,6 +57,44 @@ def test_create_contact_no_notes_column():
     assert "notes" not in insert_q     # notes field was removed
 
 
+def test_create_contact_activates_it_into_the_pipeline():
+    """A contact created from a jobs screen must land IN the jobs pipeline.
+
+    Regression for 2026-09-22: create wrote a public.contacts row and stopped,
+    so the contact was invisible to /account-prospects (which filters on
+    is_jobs_contact) and to /contacts (which filters on an EXISTS against
+    jobs_contact_membership) — while the email UNIQUE index made a second
+    attempt fail with "already exists". Added, undeletable, unfindable.
+    """
+    conn = FakeConn(rows={"SELECT * FROM public.contacts WHERE contact_id=$1": _list_row()},
+                    vals={"INSERT INTO public.contacts": 99})
+    c = make_jobs_client(conn)
+    r = c.post("/api/jobs/contacts", json={"full_name": "Jo Lee", "email": "j@x.com"})
+    assert r.status_code == 200, r.text
+    # The membership is what /contacts reads...
+    mem = next((q for q in conn.queries() if "INSERT INTO bedrock.jobs_contact_membership" in q), None)
+    assert mem is not None, "creating a contact left no jobs_contact_membership row"
+    # ...and the flag is what /account-prospects reads. Both, or the contact is
+    # invisible in one of the two places it was created to appear.
+    assert conn.ran("is_jobs_contact"), "creating a contact left is_jobs_contact unset"
+    # The new contact_id, not something else, is what got activated.
+    assert any(99 in (call[2] or ()) or (call[2] and [99] in call[2])
+               for call in conn.calls if "jobs_contact_membership" in call[1])
+
+
+def test_create_contact_can_opt_out_of_activation():
+    """`activate: false` still writes the bare contact row, for a caller that
+    genuinely wants one — the default is on, because every UI that creates a
+    contact does so in order to work it."""
+    conn = FakeConn(rows={"SELECT * FROM public.contacts WHERE contact_id=$1": _list_row()},
+                    vals={"INSERT INTO public.contacts": 99})
+    c = make_jobs_client(conn)
+    r = c.post("/api/jobs/contacts",
+               json={"full_name": "Jo Lee", "email": "j@x.com", "activate": False})
+    assert r.status_code == 200, r.text
+    assert not any("INSERT INTO bedrock.jobs_contact_membership" in q for q in conn.queries())
+
+
 def test_add_contact_to_jobs_sets_flag_true():
     conn = FakeConn()
     c = make_jobs_client(conn)

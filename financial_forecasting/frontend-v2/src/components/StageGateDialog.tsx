@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { ArrowLeft, Loader2, Plus, Trash2, X } from "lucide-react";
+import { ArrowLeft, Loader2, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { OpportunityFilesPicker } from "@/components/OpportunityFilesPicker";
@@ -68,7 +68,13 @@ export function StageGateDialog({
     if (opp.Probability != null) return String(opp.Probability);
     return "";
   });
-  const [closeReason, setCloseReason] = useState<string>("");
+  // Seeded from the record, not blank. The reason is optional, so a blank
+  // box is a legitimate submit — and with an unseeded box that submit wrote
+  // "" over an existing reason (some of these hold full rejection letters).
+  const [closeReason, setCloseReason] = useState<string>(() => {
+    const field = spec.closeReasonField ?? "npsp__Closed_Lost_Reason__c";
+    return String((opp as unknown as Record<string, unknown>)[field] ?? "");
+  });
   // Per-hint satisfied state — multi-stage jumps can require several
   // attachments at once (proposal + signed contract, etc.). Keyed by
   // the hint string so each picker tracks independently.
@@ -121,7 +127,7 @@ export function StageGateDialog({
   for (const f of spec.fileAttachments ?? []) {
     if (!fileSatisfied[f.hint]) errors.push(`A ${f.label.toLowerCase()} must be attached`);
   }
-  if (spec.closeReason && !closeReason.trim()) errors.push("Close reason is required");
+  // Close reason is optional — nudge note in the dialog body encourages it.
 
   const canSubmit = errors.length === 0 && !submitting;
 
@@ -142,7 +148,14 @@ export function StageGateDialog({
       patch.Probability = p;
     }
     if (spec.closeReason) {
-      patch.npsp__Closed_Lost_Reason__c = closeReason.trim();
+      const closeReasonField = spec.closeReasonField ?? "npsp__Closed_Lost_Reason__c";
+      const existing = String((opp as unknown as Record<string, unknown>)[closeReasonField] ?? "");
+      const next = closeReason.trim();
+      // Change-guarded like CloseDate and Amount above. Unconditional, this
+      // wiped an existing reason whenever the gate was re-confirmed with the
+      // box left empty — which became reachable the moment the field was made
+      // optional.
+      if (next !== existing.trim()) patch[closeReasonField] = next;
     }
 
     // Optimistic close: dismiss the dialog immediately and run the
@@ -234,15 +247,6 @@ export function StageGateDialog({
               </h2>
             </div>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            disabled={submitting}
-            className="flex-shrink-0 text-ink-3 hover:text-ink-2 disabled:opacity-50"
-            aria-label="Close"
-          >
-            <X size={16} />
-          </button>
         </header>
 
         {scheduleBuilderOpen ? (
@@ -268,7 +272,9 @@ export function StageGateDialog({
         ) : (
           <>
         <div className="flex-1 overflow-y-auto px-5 py-4">
-          <p className="mb-4 text-[12.5px] leading-relaxed text-ink-2">{spec.description}</p>
+          {spec.description && !spec.closeReason ? (
+            <p className="mb-4 text-[12.5px] leading-relaxed text-ink-2">{spec.description}</p>
+          ) : null}
 
           <div className="flex flex-col gap-4">
             {spec.confirmCloseDate || spec.confirmAmount || spec.confirmProbability ? (
@@ -352,14 +358,25 @@ export function StageGateDialog({
 
             {spec.closeReason ? (
               <label className="flex flex-col gap-1">
-                <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">Close reason</span>
+                <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
+                  {toStage === "Withdrawn" ? "Withdrawn reason" : "Closed lost reason"}
+                </span>
                 <textarea
                   value={closeReason}
                   onChange={(e) => setCloseReason(e.target.value)}
-                  placeholder="Brief explanation of why this opportunity is being closed…"
+                  placeholder={
+                    toStage === "Withdrawn"
+                      ? "Brief explanation of why this opportunity is being withdrawn…"
+                      : "Brief explanation of why this opportunity is being closed as lost…"
+                  }
                   rows={4}
                   className="resize-y rounded border border-border-strong bg-surface px-2 py-1.5 text-[12.5px] outline-none focus:border-accent"
                 />
+                <p className="text-[11px] text-ink-3">
+                  Although not required to save your changes, a{" "}
+                  {toStage === "Withdrawn" ? "withdrawn" : "closed lost"} reason provides
+                  good context for future interactions with this account.
+                </p>
               </label>
             ) : null}
           </div>
@@ -389,7 +406,7 @@ export function StageGateDialog({
             className="inline-flex h-8 items-center gap-1.5 rounded bg-ink px-3 text-[12.5px] font-medium text-surface hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
           >
             {submitting ? <Loader2 size={12} className="animate-spin" /> : null}
-            Move to {toStage}
+            {spec.closeReason ? "Update" : `Move to ${toStage}`}
           </button>
         </footer>
           </>

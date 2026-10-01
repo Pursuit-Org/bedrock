@@ -24,6 +24,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { Check, ChevronDown, RotateCcw, Search } from "lucide-react";
 
 import { PageHeader } from "@/components/PageHeader";
+import { rankByQuery } from "@/lib/search";
 import { cn } from "@/lib/utils";
 import { useAccounts } from "@/services/accounts";
 import { useAwards } from "@/services/awards";
@@ -319,15 +320,7 @@ function ViewAsPicker({
   );
 
   const filtered = useMemo(() => {
-    if (!q.trim()) return active.slice(0, 50);
-    const lower = q.trim().toLowerCase();
-    return active
-      .filter((u) => {
-        if (u.Name.toLowerCase().includes(lower)) return true;
-        if ((u.Email ?? "").toLowerCase().includes(lower)) return true;
-        return false;
-      })
-      .slice(0, 50);
+    return rankByQuery(active, q, (u) => [u.Name, u.Email]).slice(0, 50);
   }, [active, q]);
 
   function pick(sfId: string | null) {

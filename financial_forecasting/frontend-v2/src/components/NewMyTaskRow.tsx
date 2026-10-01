@@ -8,6 +8,7 @@ import { useContacts } from "@/services/contacts";
 import { useCreateGenericTask, useOpportunities } from "@/services/opportunities";
 import { useActiveUsers } from "@/services/users";
 import { cn } from "@/lib/utils";
+import { rankByQuery, SEARCH_MIN_CHARS } from "@/lib/search";
 
 /** Selected parent record. Drives WhoId (Contact) or WhatId (Opp/Account)
  *  on the eventual create call. `null` = orphan task (My Tasks only). */
@@ -166,20 +167,13 @@ function LinkPicker({ onPick }: { onPick: (target: LinkTarget) => void }) {
   const contactsQ = useContacts();
 
   const matches = useMemo(() => {
-    const needle = q.trim().toLowerCase();
-    if (!needle || needle.length < 2) return { opps: [], accounts: [], contacts: [] };
-    const opps = (oppsQ.data ?? [])
-      .filter((o) => (o.Name ?? "").toLowerCase().includes(needle))
-      .slice(0, 8);
-    const accounts = (accountsQ.data ?? [])
-      .filter((a) => (a.Name ?? "").toLowerCase().includes(needle))
-      .slice(0, 8);
-    const contacts = (contactsQ.data ?? [])
-      .filter((c) => {
-        const full = `${c.FirstName ?? ""} ${c.LastName ?? ""}`.toLowerCase();
-        return full.includes(needle) || (c.Email ?? "").toLowerCase().includes(needle);
-      })
-      .slice(0, 8);
+    if (q.trim().length < SEARCH_MIN_CHARS) return { opps: [], accounts: [], contacts: [] };
+    const opps = rankByQuery(oppsQ.data ?? [], q, (o) => [o.Name]).slice(0, 8);
+    const accounts = rankByQuery(accountsQ.data ?? [], q, (a) => [a.Name]).slice(0, 8);
+    const contacts = rankByQuery(contactsQ.data ?? [], q, (c) => [
+      `${c.FirstName ?? ""} ${c.LastName ?? ""}`,
+      c.Email,
+    ]).slice(0, 8);
     return { opps, accounts, contacts };
   }, [q, oppsQ.data, accountsQ.data, contactsQ.data]);
 

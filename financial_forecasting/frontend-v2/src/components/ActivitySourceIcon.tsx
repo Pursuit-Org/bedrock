@@ -1,4 +1,4 @@
-import { CheckSquare, Phone, Sparkles, StickyNote } from "lucide-react";
+import { CheckSquare, Handshake, Phone, Sparkles, StickyNote } from "lucide-react";
 
 import { Tag } from "@/components/ui/Tag";
 
@@ -49,6 +49,12 @@ export function ActivitySourceIcon({
   }
   if (t === "task") {
     return <CheckSquare size={size} className="text-ink-3" aria-label="Task" />;
+  }
+  // A facilitated intro is not a bedrock.activity row at all — it comes from
+  // bedrock.intro_request, folded into the contact timeline so the touch the
+  // Outreach scorecard counts is visible where the touches are.
+  if (t === "intro") {
+    return <Handshake size={size} className="text-accent" aria-label="Facilitated intro" />;
   }
   if (t === "note") {
     return <StickyNote size={size} className="text-ink-3" aria-label="Note" />;

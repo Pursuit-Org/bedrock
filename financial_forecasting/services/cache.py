@@ -54,3 +54,6 @@ CACHE_TTL_STAGE_HISTORY = 300   # 5 minutes
 CACHE_TTL_ACCOUNTS = 600        # 10 minutes
 CACHE_TTL_USERS = 900           # 15 minutes
 CACHE_TTL_CASHFLOW = 600        # 10 minutes
+CACHE_TTL_REVENUE_SNAPSHOT = 60  # 1 minute — this panel is pitched as SF-live;
+                                 # 10 min (CACHE_TTL_CASHFLOW) made edits in SF
+                                 # look like they weren't taking effect.

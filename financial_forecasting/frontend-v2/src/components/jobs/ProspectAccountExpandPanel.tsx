@@ -39,13 +39,18 @@ import {
   useContactDetail,
   useDeleteActivity,
   useUpdateContact,
+  type CallKind,
   type JobStage,
 } from "@/services/jobs";
 import {
   useLogProspectActivity,
+  useIntroConnectors,
+  useLogFacilitatedIntro,
+  INTRO_ASKS,
   type AccountGroup,
   type AccountGroupContact,
 } from "@/services/jobsAccounts";
+import { CallKindPicker } from "@/components/jobs/CallKindPicker";
 
 // ── Stage styling ──────────────────────────────────────────────────────────
 
@@ -108,11 +113,19 @@ function accountKey(account: string) {
 // Email is here to catch sends the Gmail sync missed — it lands in the same
 // emailed-contacts numbers as synced mail, and can't double-count a contact
 // who also has a synced copy (the metric counts distinct people).
+//
+// Facilitated Intro sits alongside them but does NOT write an activity row:
+// bedrock.activity.type has no 'intro' in its CHECK constraint, and the Outreach
+// scorecard counts intros from bedrock.intro_request. So the chip swaps the form
+// over to the intro fields and posts somewhere else (Kwame 2026-09-21). It is
+// here rather than in a dialog of its own because logging one is the same act as
+// logging a call: you did a thing to a contact and it should count.
 const ACTIVITY_TYPE_OPTIONS = [
   { value: "call",     label: "Call" },
   { value: "email",    label: "Email" },
   { value: "text",     label: "Text" },
   { value: "linkedin", label: "LinkedIn" },
+  { value: "intro",    label: "Facilitated Intro" },
 ] as const;
 
 type ActivityType = (typeof ACTIVITY_TYPE_OPTIONS)[number]["value"];
@@ -128,19 +141,45 @@ export function LogActivityForm({
   const [description, setDescription] = useState("");
   const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [submitting, setSubmitting] = useState(false);
+  const [callKind, setCallKind] = useState<CallKind | null>(null);
+  // Intro-only fields. Kept local rather than in a separate component so the
+  // date and the note stay shared — they mean the same thing either way.
+  const [connectorId, setConnectorId] = useState("");
+  const [ask, setAsk] = useState("hiring_intro");
   const { mutateAsync: logActivity } = useLogProspectActivity();
+  const { mutateAsync: logIntro } = useLogFacilitatedIntro();
+  const { data: connectors = [] } = useIntroConnectors();
+
+  const isIntro = type === "intro";
+  // An intro is defined by who made it, so that is what gates the button. The
+  // note is optional there: "Joanna introduced me to Jane on the 14th" is a
+  // complete record, and demanding prose to log it loses intros.
+  const canSubmit = isIntro ? !!connectorId : !!description.trim();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!description.trim()) return;
+    if (!canSubmit) return;
     setSubmitting(true);
     try {
-      await logActivity({
-        contact_id: contactId,
-        type,
-        description: description.trim(),
-        activity_date: date || undefined,
-      });
+      if (isIntro) {
+        await logIntro({
+          contact_id: contactId,
+          connector_staff_id: Number(connectorId),
+          specific_ask: ask || null,
+          context: description.trim() || null,
+          occurred_on: date || undefined,
+        });
+      } else {
+        await logActivity({
+          contact_id: contactId,
+          type,
+          description: description.trim(),
+          activity_date: date || undefined,
+          // Only a call carries a kind; the API drops it on anything else, but
+          // not sending it keeps the request honest about what was asked.
+          call_kind: type === "call" ? callKind : null,
+        });
+      }
       onClose();
     } finally {
       setSubmitting(false);
@@ -167,8 +206,51 @@ export function LogActivityForm({
         ))}
       </div>
 
+      {/* Call type — only a call has one. */}
+      {type === "call" && <CallKindPicker value={callKind} onChange={setCallKind} />}
+
+      {/* Who made the intro, and what it was for. Credit for the intro goes to
+          you, the person logging it, the same way the scorecard reads it. */}
+      {isIntro && (
+        <div className="flex flex-wrap gap-3">
+          <div className="min-w-[190px] flex-1">
+            <label className="mb-0.5 block text-[10px] font-semibold uppercase tracking-wide text-ink-4">
+              Introduced by
+            </label>
+            <select
+              value={connectorId}
+              onChange={(e) => setConnectorId(e.target.value)}
+              className="w-full rounded border border-border-strong bg-surface px-2 py-1.5 text-[12px] text-ink focus:outline-none focus:ring-1 focus:ring-accent"
+            >
+              <option value="">Select a colleague…</option>
+              {connectors.map((c) => (
+                <option key={c.staff_user_id} value={c.staff_user_id}>
+                  {c.display_name || c.email}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="min-w-[160px] flex-1">
+            <label className="mb-0.5 block text-[10px] font-semibold uppercase tracking-wide text-ink-4">
+              Ask
+            </label>
+            <select
+              value={ask}
+              onChange={(e) => setAsk(e.target.value)}
+              className="w-full rounded border border-border-strong bg-surface px-2 py-1.5 text-[12px] text-ink focus:outline-none focus:ring-1 focus:ring-accent"
+            >
+              {INTRO_ASKS.map((a) => (
+                <option key={a.value} value={a.value}>{a.label}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+      )}
+
       <div>
-        <label className="mb-0.5 block text-[10px] font-semibold uppercase tracking-wide text-ink-4">Date</label>
+        <label className="mb-0.5 block text-[10px] font-semibold uppercase tracking-wide text-ink-4">
+          {isIntro ? "Date of the intro" : "Date"}
+        </label>
         <input
           type="date"
           value={date}
@@ -179,13 +261,15 @@ export function LogActivityForm({
       </div>
 
       <div>
-        <label className="mb-0.5 block text-[10px] font-semibold uppercase tracking-wide text-ink-4">Description</label>
+        <label className="mb-0.5 block text-[10px] font-semibold uppercase tracking-wide text-ink-4">
+          {isIntro ? "Context (optional)" : "Description"}
+        </label>
         <textarea
           rows={3}
-          required
+          required={!isIntro}
           value={description}
           onChange={(e) => setDescription(e.target.value)}
-          placeholder="What happened?"
+          placeholder={isIntro ? "What was the intro for, and what came of it?" : "What happened?"}
           className="w-full resize-none rounded border border-border-strong bg-surface px-2 py-1.5 text-[12px] text-ink placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent"
         />
       </div>
@@ -193,7 +277,7 @@ export function LogActivityForm({
       <div className="flex items-center gap-3">
         <button
           type="submit"
-          disabled={submitting || !description.trim()}
+          disabled={submitting || !canSubmit}
           className="rounded-md bg-accent px-3 py-1.5 text-[12px] font-medium text-white transition-colors hover:bg-accent/90 disabled:opacity-50"
         >
           {submitting ? "Logging…" : "Log"}

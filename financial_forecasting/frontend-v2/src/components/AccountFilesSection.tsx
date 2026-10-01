@@ -48,7 +48,6 @@ export function AccountFilesSection({ accountId }: { accountId: string }) {
   const upload = useUploadAccountFile(accountId);
   const deleteFile = useDeleteAccountFile(accountId);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [pendingName, setPendingName] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const files = filesQ.data ?? [];
@@ -58,11 +57,9 @@ export function AccountFilesSection({ accountId }: { accountId: string }) {
   const handleFiles = async (fileList: FileList | null) => {
     if (!fileList || fileList.length === 0) return;
     const files = Array.from(fileList);
-    setPendingName(files.length === 1 ? files[0].name : `${files.length} files`);
     try {
       await Promise.all(files.map((file) => upload.mutateAsync({ file })));
     } finally {
-      setPendingName(null);
       if (fileInputRef.current) fileInputRef.current.value = "";
     }
   };
@@ -77,50 +74,71 @@ export function AccountFilesSection({ accountId }: { accountId: string }) {
     }
   };
 
+  const uploadButton = (
+    <button
+      type="button"
+      onClick={handlePick}
+      disabled={upload.isPending}
+      className="inline-flex h-6 items-center gap-1 rounded border border-border-strong bg-surface px-2 text-[11px] font-medium text-ink-2 hover:bg-surface-2 disabled:opacity-50"
+    >
+      {upload.isPending ? (
+        <>
+          <Loader2 size={11} className="animate-spin" />
+          Uploading…
+        </>
+      ) : (
+        <>
+          <Upload size={11} /> Upload
+        </>
+      )}
+    </button>
+  );
+
   return (
     <div className="flex flex-col">
-      {/* Upload toolbar */}
-      <div className="flex items-center justify-end border-b border-border-strong px-4 py-2">
-        <input
-          ref={fileInputRef}
-          type="file"
-          multiple
-          className="hidden"
-          onChange={(e) => void handleFiles(e.target.files)}
-        />
-        <button
-          type="button"
-          onClick={handlePick}
-          disabled={upload.isPending}
-          className="inline-flex h-7 items-center gap-1.5 rounded border border-border-strong bg-surface px-2.5 text-[12px] font-medium text-ink-2 hover:bg-surface-2 disabled:opacity-50"
-        >
-          {upload.isPending ? (
-            <>
-              <Loader2 size={12} className="animate-spin" />
-              Uploading {pendingName ?? "…"}
-            </>
-          ) : (
-            <>
-              <Upload size={12} /> Upload file
-            </>
-          )}
-        </button>
-        {upload.isError ? (
-          <span className="ml-3 text-[11px] text-red-600" title={uploadErrorMessage(upload.error)}>
-            Upload failed — {uploadErrorMessage(upload.error)}
-          </span>
-        ) : null}
-      </div>
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        className="hidden"
+        onChange={(e) => void handleFiles(e.target.files)}
+      />
 
       {/* File table */}
       {filesQ.isLoading ? (
-        <div className="px-4 py-6 text-center text-[12px] text-ink-3">
-          <Loader2 size={13} className="mr-1 inline animate-spin" /> Loading files…
-        </div>
+        <>
+          <div className="flex items-center justify-end border-b border-border-strong px-4 py-1">
+            {uploadButton}
+          </div>
+          <div className="px-4 py-6 text-center text-[12px] text-ink-3">
+            <Loader2 size={13} className="mr-1 inline animate-spin" /> Loading files…
+          </div>
+        </>
+      ) : filesQ.isError ? (
+        <>
+          <div className="flex items-center justify-end border-b border-border-strong px-4 py-1">
+            {uploadButton}
+          </div>
+          <div className="px-4 py-6 text-center text-[12px] text-ink-3">
+            Could not load files —{" "}
+            <button
+              type="button"
+              className="underline hover:text-ink"
+              onClick={() => void filesQ.refetch()}
+            >
+              try again
+            </button>
+          </div>
+        </>
       ) : files.length === 0 ? (
-        <div className="px-4 py-6 text-center text-[12px] italic text-ink-3">
-          No files attached to this account.
-        </div>
+        <>
+          <div className="flex items-center justify-end border-b border-border-strong px-4 py-1">
+            {uploadButton}
+          </div>
+          <div className="px-4 py-6 text-center text-[12px] italic text-ink-3">
+            No files attached to this account.
+          </div>
+        </>
       ) : (
         <table className="w-full border-collapse text-[12.5px]">
           <thead className="bg-surface-2 text-[10.5px] uppercase tracking-wider text-ink-3">
@@ -129,7 +147,14 @@ export function AccountFilesSection({ accountId }: { accountId: string }) {
               <th className="px-4 py-1.5 text-left font-semibold">Name</th>
               <th className="px-4 py-1.5 text-left font-semibold">Added by</th>
               <th className="px-4 py-1.5 text-left font-semibold">Date added</th>
-              <th className="px-4 py-1.5" />
+              <th className="px-4 py-1.5 text-right">
+                {uploadButton}
+                {upload.isError ? (
+                  <span className="ml-2 text-[10px] text-red-600" title={uploadErrorMessage(upload.error)}>
+                    Failed
+                  </span>
+                ) : null}
+              </th>
             </tr>
           </thead>
           <tbody>

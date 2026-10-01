@@ -81,6 +81,11 @@ interface UnifiedTask {
      *  resolvable. */
     label: string;
   };
+  /** True when the task points at a Contact (SF WhoId), independent of
+   *  `parent.kind`. A task logged against an opportunity *with* a contact
+   *  groups under the opportunity — correct — but is still contact work,
+   *  and the Contact filter has to be able to find it. */
+  hasContact: boolean;
   /** Carrier-specific tail used by the inline editor — kept here so the
    *  mutation hook can hand the right argument shape back. */
   meta: { projectId?: string };
@@ -111,7 +116,19 @@ interface PortfolioTasksProps {
  */
 type Scope = "focus" | "this-month" | "next-90" | "all";
 
+/** View level: filter tasks by which CRM entity level they're linked to. */
+type ViewLevel = "all" | "account" | "opportunity" | "contact" | "other";
+
 const SCOPE_STORAGE_KEY = "bedrock-v2:portfolio:tasks:scope";
+const VIEW_LEVEL_STORAGE_KEY = "bedrock-v2:portfolio:tasks:view-level";
+
+function readStoredViewLevel(): ViewLevel {
+  try {
+    const v = localStorage.getItem(VIEW_LEVEL_STORAGE_KEY);
+    if (v === "all" || v === "account" || v === "opportunity" || v === "contact" || v === "other") return v;
+  } catch {}
+  return "all";
+}
 
 function readStoredScope(): Scope {
   try {
@@ -193,6 +210,7 @@ export function PortfolioTasks({
   }
 
   const [scope, setScope] = useState<Scope>(readStoredScope);
+  const [viewLevel, setViewLevel] = useState<ViewLevel>(readStoredViewLevel);
 
   // Persist scope so the user's preference rides through refreshes —
   // mirrors how SectionCard's collapsed state survives. Wrapped in
@@ -201,6 +219,13 @@ export function PortfolioTasks({
     setScope(next);
     try {
       localStorage.setItem(SCOPE_STORAGE_KEY, next);
+    } catch {}
+  }
+
+  function changeViewLevel(next: ViewLevel) {
+    setViewLevel(next);
+    try {
+      localStorage.setItem(VIEW_LEVEL_STORAGE_KEY, next);
     } catch {}
   }
 
@@ -225,11 +250,15 @@ export function PortfolioTasks({
   // Done filter applies first, then scope. "Show done" only makes sense
   // in the "All" view (no point in seeing a completed task during focus).
   const openTasks = showDone ? unifiedTasks : unifiedTasks.filter((t) => !t.done);
-  const filtered =
+  const scopeFiltered =
     scope === "focus"      ? openTasks.filter((t) => isInFocusWindow(t.deadline, t.done))
     : scope === "this-month" ? openTasks.filter((t) => isInThisMonth(t.deadline, t.done))
     : scope === "next-90"    ? openTasks.filter((t) => isInNext90(t.deadline, t.done))
     : openTasks;
+
+  // View level filter: applied after scope so counts reflect current scope window.
+  const filtered =
+    viewLevel === "all" ? scopeFiltered : scopeFiltered.filter((t) => matchesViewLevel(t, viewLevel));
 
   const groups = useMemo(() => groupByParent(filtered), [filtered]);
 
@@ -240,6 +269,12 @@ export function PortfolioTasks({
   const next90Count     = openTasks.filter((t) => isInNext90(t.deadline, t.done)).length;
   const allCount        = openTasks.length;
 
+  // View level counts derived from scopeFiltered so they reflect the active time scope.
+  const accountCount     = scopeFiltered.filter((t) => matchesViewLevel(t, "account")).length;
+  const opportunityCount = scopeFiltered.filter((t) => matchesViewLevel(t, "opportunity")).length;
+  const contactCount     = scopeFiltered.filter((t) => matchesViewLevel(t, "contact")).length;
+  const otherCount       = scopeFiltered.filter((t) => matchesViewLevel(t, "other")).length;
+
   const isLoading = sfTasksQ.isLoading || projectsLoading;
 
   return (
@@ -247,6 +282,17 @@ export function PortfolioTasks({
       title={`My tasks (${filtered.length})`}
       storageScope="portfolio"
       defaultOpen
+      leftAction={
+        <ViewLevelToggle
+          value={viewLevel}
+          onChange={changeViewLevel}
+          allCount={scopeFiltered.length}
+          accountCount={accountCount}
+          opportunityCount={opportunityCount}
+          contactCount={contactCount}
+          otherCount={otherCount}
+        />
+      }
       action={
         <div className="flex items-center gap-3 text-[11.5px]">
           {overdueCount > 0 ? (
@@ -351,6 +397,7 @@ function normalizeSfTask(t: SfTask): UnifiedTask {
     deadline: t.ActivityDate ?? null,
     done: isSfDone(t),
     parent: resolveSfParent(t),
+    hasContact: Boolean(t.WhoId),
     meta: {},
   };
 }
@@ -364,6 +411,7 @@ function normalizeProjectTask(t: ProjectTaskRaw, projectId: string, projectName:
     deadline: t.deadline,
     done: t.status === "Done",
     parent: { kind: "project", id: projectId, label: projectName },
+    hasContact: false,
     meta: { projectId },
   };
 }
@@ -384,6 +432,23 @@ function resolveSfParent(t: SfTask): UnifiedTask["parent"] {
   if (prefix === "001") return { kind: "account", id, label: name };
   if (prefix === "003") return { kind: "contact", id, label: name };
   return { kind: "other", id, label: name };
+}
+
+/** Does this task belong in the given view level?
+ *
+ *  Account / Opportunity / Other partition the list by the parent the task is
+ *  grouped under, so those three counts sum to All Types. Contact is
+ *  deliberately NOT part of that partition: SF tasks routinely carry a WhatId
+ *  (the opportunity) *and* a WhoId (the person), and matching on the grouped
+ *  kind alone found only tasks with a Who and no What — 4 of the 43
+ *  contact-linked open tasks in production. So Contact overlaps the other
+ *  pills by design, and its count is "tasks involving a contact", not a slice
+ *  of a partition.
+ */
+function matchesViewLevel(t: UnifiedTask, level: Exclude<ViewLevel, "all">): boolean {
+  if (level === "contact") return t.hasContact;
+  if (level === "other") return t.parent.kind === "project" || t.parent.kind === "other";
+  return t.parent.kind === level;
 }
 
 // ── Grouping & sorting ───────────────────────────────────────────────────
@@ -718,6 +783,67 @@ function EmptyState({ children }: { children: React.ReactNode }) {
   );
 }
 
+/** Segmented control for the view level (Account / Opportunity / Contact).
+ *  Sits on the left side of the SectionCard header. */
+function ViewLevelToggle({
+  value,
+  onChange,
+  allCount,
+  accountCount,
+  opportunityCount,
+  contactCount,
+  otherCount,
+}: {
+  value: ViewLevel;
+  onChange: (next: ViewLevel) => void;
+  allCount: number;
+  accountCount: number;
+  opportunityCount: number;
+  contactCount: number;
+  otherCount: number;
+}) {
+  return (
+    <div
+      role="tablist"
+      aria-label="Task view level"
+      className="inline-flex overflow-hidden rounded-md border border-border-strong bg-surface"
+    >
+      <ScopeButton
+        active={value === "all"}
+        onClick={() => onChange("all")}
+        label="All Types"
+        count={allCount}
+      />
+      <ScopeButton
+        active={value === "account"}
+        onClick={() => onChange("account")}
+        label="Account"
+        count={accountCount}
+      />
+      <ScopeButton
+        active={value === "opportunity"}
+        onClick={() => onChange("opportunity")}
+        label="Opportunity"
+        count={opportunityCount}
+      />
+      <ScopeButton
+        active={value === "contact"}
+        onClick={() => onChange("contact")}
+        label="Contact"
+        count={contactCount}
+      />
+      {/* Project tasks and SF tasks with no parent were previously reachable
+          only via All Types, with no pill and nothing saying so. */}
+      <ScopeButton
+        active={value === "other"}
+        onClick={() => onChange("other")}
+        label="Other"
+        count={otherCount}
+      />
+    </div>
+  );
+}
+
 /** Segmented control for the tasks scope. Four pills, persistent state
  *  lifted to the parent so we can re-derive counts off the same array.
  *  Pinned counts on each pill let the user know what's behind the click
@@ -764,7 +890,7 @@ function ScopeToggle({
       <ScopeButton
         active={value === "all"}
         onClick={() => onChange("all")}
-        label="All"
+        label="All Periods"
         count={allCount}
       />
     </div>

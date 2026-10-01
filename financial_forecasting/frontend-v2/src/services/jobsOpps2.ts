@@ -374,6 +374,7 @@ export interface RolesBoardApplication {
   builder: string;
   stage: string | null;
   date_applied: string | null;
+  updated_at: string | null;
 }
 
 export interface RolesBoardRole extends Role {
@@ -457,6 +458,7 @@ export interface UnmatchedApplication {
   company_name: string | null;
   role_title: string | null;
   date_applied: string | null;
+  updated_at: string | null;
   stage: string | null;
   /** Set only for Builder-Sourced rows backed by a role explicitly flagged
    *  via useMarkRoleBuilderSourced — lets the row offer "Unmark" instead of
@@ -519,6 +521,7 @@ export interface StaffSourcedApplicant {
   builder: string | null;
   stage: string | null;
   date_applied: string | null;
+  updated_at: string | null;
   /** True if this builder already has a different application linked to the
    *  group's suggested_match role — confirming them again would create a
    *  second linked row for the same builder+role, so exclude from bulk-confirm. */
@@ -571,6 +574,28 @@ export function useMarkApplicationSelfSourced() {
       qc.invalidateQueries({ queryKey: ["jobs", "staff-sourced"] });
       qc.invalidateQueries({ queryKey: ["jobs", "builder-sourced"] });
       toast.success("Moved to Builder-Sourced");
+    },
+    onError: () => toast.error("Failed to reclassify"),
+  });
+}
+
+/** Reclassify a Builder-Sourced application as staff-sourced — the mirror of
+ *  useMarkApplicationSelfSourced. For manually-logged applications that never
+ *  got a source_type set at creation (so they defaulted to Builder-Sourced)
+ *  even though staff actually sourced them. One-way; no unmark. */
+export function useMarkApplicationStaffSourced() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (appId: number) => {
+      const { data } = await api.post<ApiResponse<{ job_application_id: number }>>(
+        `/api/jobs/job-applications/${appId}/mark-staff-sourced`,
+      );
+      return data.data;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["jobs", "staff-sourced"] });
+      qc.invalidateQueries({ queryKey: ["jobs", "builder-sourced"] });
+      toast.success("Moved to Staff-Sourced");
     },
     onError: () => toast.error("Failed to reclassify"),
   });

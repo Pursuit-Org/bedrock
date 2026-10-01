@@ -108,7 +108,7 @@ function buildItems(results: SearchResults, bedrockContacts: BedrockContact[] = 
   for (const r of results.Contact ?? []) {
     if (r.Email) sfEmails.add(r.Email.toLowerCase());
     out.push({
-      group: "Contacts",
+      group: "PBD Contacts",
       label: r.Name ?? r.Id,
       sub: r.Email ?? null,
       href: `/contacts/${r.Id}`,
@@ -116,11 +116,17 @@ function buildItems(results: SearchResults, bedrockContacts: BedrockContact[] = 
   }
   // Bedrock/jobs contacts (32k+ in public.contacts, incl. people not in SF).
   // Searches name + email + company, so e.g. "adonis" surfaces its contacts.
+  // Kept in a separate "Jobs Contacts" group (rather than merged into PBD
+  // Contacts above) so the dropdown's group header always makes clear which
+  // Bedrock section a same-named contact belongs to — a person can be a PBD
+  // (Salesforce) contact and a Jobs (public.contacts) contact with different
+  // emails, and previously both rendered under one unlabeled "Contacts"
+  // header with no way to tell which link went where.
   for (const c of bedrockContacts) {
     if (c.email && sfEmails.has(c.email.toLowerCase())) continue;
     const name = c.full_name ?? c.email ?? `#${c.contact_id}`;
     out.push({
-      group: "Contacts",
+      group: "Jobs Contacts",
       label: name,
       sub: [c.current_title, c.current_company].filter(Boolean).join(" · ") || c.email || null,
       // Deep-link straight to the contact's detail drawer (opens on arrival).
@@ -153,6 +159,13 @@ export function TopBarSearch() {
   const wrapperRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Guards against out-of-order responses: a fast keystroke can fire a new
+  // search before a prior one's request has resolved, and network timing
+  // doesn't guarantee responses arrive in request order. Without this, a
+  // slow response for an earlier, now-stale query can land after a faster
+  // one and clobber the on-screen results with the wrong query's matches.
+  const requestIdRef = useRef(0);
+  const abortRef = useRef<AbortController | null>(null);
   const navigate = useNavigate();
 
   const [coords, setCoords] = useState<{ top: number; left: number; width: number } | null>(null);
@@ -210,6 +223,11 @@ export function TopBarSearch() {
   // Debounced API search.
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
+    // Cancel whatever's still in flight the moment a new query supersedes
+    // it — keeps us from burning a full SOSL round trip on keystrokes the
+    // user has already typed past.
+    abortRef.current?.abort();
+    const reqId = ++requestIdRef.current;
     if (query.trim().length < 2) {
       setItems([]);
       setLoading(false);
@@ -217,24 +235,29 @@ export function TopBarSearch() {
     }
     setLoading(true);
     debounceRef.current = setTimeout(async () => {
+      const controller = new AbortController();
+      abortRef.current = controller;
       const qs = encodeURIComponent(query.trim());
       try {
         // SF + bedrock/jobs contacts in parallel; each fails independently so a
         // Salesforce hiccup (e.g. not connected) still shows bedrock contacts.
         const [sf, bedrock] = await Promise.all([
-          api.get<SearchResults>(`/api/salesforce/search?q=${qs}&limit=8`)
+          api.get<SearchResults>(`/api/salesforce/search?q=${qs}&limit=8`, { signal: controller.signal })
             .then((r) => r.data)
             .catch(() => ({ Account: [], Contact: [], Opportunity: [] } as SearchResults)),
-          api.get<{ success: boolean; data: BedrockContact[] }>(`/api/jobs/contacts/search?q=${qs}&limit=8`)
+          api.get<{ success: boolean; data: BedrockContact[] }>(`/api/jobs/contacts/search?q=${qs}&limit=8`, { signal: controller.signal })
             .then((r) => r.data.data)
             .catch(() => [] as BedrockContact[]),
         ]);
+        // A newer query may have started (and been aborted above) while
+        // this one was resolving — only the latest request gets to write.
+        if (reqId !== requestIdRef.current) return;
         setItems(buildItems(sf, bedrock));
         setActiveIdx(0);
       } catch {
-        setItems([]);
+        if (reqId === requestIdRef.current) setItems([]);
       } finally {
-        setLoading(false);
+        if (reqId === requestIdRef.current) setLoading(false);
       }
     }, 220);
     return () => {

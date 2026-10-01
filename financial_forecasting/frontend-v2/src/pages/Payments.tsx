@@ -43,6 +43,7 @@ import { totalWidth, useColumnWidths } from "@/lib/columnWidths";
 import { fmtDate, fmtMoney, fmtMoneyFull } from "@/lib/format";
 import { sortBy, useSort } from "@/lib/sort";
 import { SF_STAGE_OPTIONS, stageStatus } from "@/lib/stages";
+import { searchMatcher } from "@/lib/search";
 import { cn } from "@/lib/utils";
 import {
   usePipelineReviewFlags,
@@ -491,19 +492,16 @@ export function PaymentsPage() {
   }, [payments]);
 
   const filtered = useMemo(() => {
-    const needle = q.trim().toLowerCase();
+    const searchHit = searchMatcher(payments, q, (p) => [
+      p.Name,
+      p.npe01__Opportunity__r?.Name,
+      p.npe01__Opportunity__r?.Account?.Name,
+      p.Batch_Name__c,
+      p.npe01__Check_Reference_Number__c,
+    ]);
     const filt = payments.filter((p) => {
       if (!inScope(p, scope)) return false;
-      if (needle) {
-        const o = p.npe01__Opportunity__r;
-        const hay =
-          (p.Name ?? "") + " " +
-          (o?.Name ?? "") + " " +
-          (o?.Account?.Name ?? "") + " " +
-          (p.Batch_Name__c ?? "") + " " +
-          (p.npe01__Check_Reference_Number__c ?? "");
-        if (!hay.toLowerCase().includes(needle)) return false;
-      }
+      if (!searchHit(p)) return false;
       for (const r of rules) {
         if (!ruleApplies(p, r, PAYMENT_FILTERABLE)) return false;
       }

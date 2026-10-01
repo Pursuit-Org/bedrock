@@ -10,6 +10,7 @@ export interface CreateContactBody {
   Email?: string;
   Phone?: string;
   Title?: string;
+  LinkedIn_URL__c?: string;
   // Optional — set the new contact as the account's philanthropic
   // primary in the same round-trip.
   Philanthropic_Contact__c?: boolean;
@@ -71,6 +72,7 @@ export function useContacts(accountId?: string) {
       error: scopedQ.error,
       isStale: scopedQ.isStale,
       isPartial: false,
+      refetch: scopedQ.refetch,
     };
   }
   return {

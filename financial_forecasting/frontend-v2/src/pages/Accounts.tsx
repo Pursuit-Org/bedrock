@@ -1,5 +1,5 @@
 import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { ChevronDown, ChevronRight, Plus, Search, X } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 
@@ -20,6 +20,7 @@ import {
 import { useColumnVisibility } from "@/lib/columnVisibility";
 import { totalWidth, useColumnWidths } from "@/lib/columnWidths";
 import { fmtMoney } from "@/lib/format";
+import { searchMatcher } from "@/lib/search";
 import { sortBy, type SortState } from "@/lib/sort";
 import { cn } from "@/lib/utils";
 import { useSessionState } from "@/lib/useSessionState";
@@ -353,24 +354,21 @@ export function AccountsPage() {
     [metricsByAccount],
   );
 
+  // Shared search rules (spacing/punctuation/word-order insensitive,
+  // typo fallback when nothing matches) over name + owner.
+  const searchHit = useMemo(
+    () => searchMatcher(accounts, q, (a) => [a.Name, a.Owner?.Name]),
+    [accounts, q],
+  );
+
   // Accounts that match the toolbar filters (type pill + search). Used
   // to populate the chip-filter owner facet so it reflects what's
   // visible in the table, not the entire server load. Chip `rules` are
   // intentionally excluded — if applied, the owner picker would
   // collapse to whichever owner you'd already filtered to.
   const accountsInView = useMemo(() => {
-    const needle = q.toLowerCase();
-    return accounts.filter((a) => {
-      if (!matchesType(a, filter)) return false;
-      if (q) {
-        const hit =
-          (a.Name ?? "").toLowerCase().includes(needle) ||
-          (a.Owner?.Name ?? "").toLowerCase().includes(needle);
-        if (!hit) return false;
-      }
-      return true;
-    });
-  }, [accounts, filter, q]);
+    return accounts.filter((a) => matchesType(a, filter) && searchHit(a));
+  }, [accounts, filter, searchHit]);
 
   // Chip-filter facets — owner options are the union of:
   //   (a) every active SF user, and
@@ -452,15 +450,9 @@ export function AccountsPage() {
   }, [usersQ.data, accounts]);
 
   const filtered = useMemo(() => {
-    const needle = q.toLowerCase();
     const f = accounts.filter((a) => {
       if (!matchesType(a, filter)) return false;
-      if (q) {
-        const hit =
-          (a.Name ?? "").toLowerCase().includes(needle) ||
-          (a.Owner?.Name ?? "").toLowerCase().includes(needle);
-        if (!hit) return false;
-      }
+      if (!searchHit(a)) return false;
       for (const r of rules) {
         if (!ruleApplies(a, r, filterable)) return false;
       }
@@ -1084,7 +1076,12 @@ const AccountRow = memo(function AccountRow({
           {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
         </button>
         <AccountAvatar name={a.Name} logoUrl={logoUrl} website={a.Website} size={22} />
-        <div className="min-w-0 flex-1 cursor-pointer" onClick={onOpen}>
+        <Link
+          to={`/accounts/${a.Id}`}
+          state={ACCOUNTS_REFERRER}
+          className="min-w-0 flex-1 block"
+          onClick={(e) => e.stopPropagation()}
+        >
           <span className="block truncate font-medium hover:underline" title={a.Name}>
             {a.Name}
           </span>
@@ -1093,7 +1090,7 @@ const AccountRow = memo(function AccountRow({
               {[a.BillingCity, a.BillingState].filter(Boolean).join(", ")}
             </span>
           ) : null}
-        </div>
+        </Link>
       </div>
     ),
     owner: canEdit ? (
