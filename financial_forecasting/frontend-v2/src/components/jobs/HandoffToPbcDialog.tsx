@@ -19,12 +19,15 @@ export function HandoffToPbcDialog({
   accountId,
   accountName,
   defaultName,
+  defaultCloseDate,
   onClose,
 }: {
   oppId: string;
   accountId: string | null;
   accountName: string;
   defaultName: string;
+  /** Prefills Salesforce CloseDate from the jobs deal's target close date. */
+  defaultCloseDate?: string | null;
   onClose: () => void;
 }) {
   const handoff = useHandoffOpportunity();
@@ -34,7 +37,7 @@ export function HandoffToPbcDialog({
   const [name, setName] = useState(defaultName);
   const [stage, setStage] = useState("New Lead");
   const [amount, setAmount] = useState("");
-  const [closeDate, setCloseDate] = useState("");
+  const [closeDate, setCloseDate] = useState(defaultCloseDate ?? "");
 
   // account resolution (only when the opp's account isn't already in SF)
   const [acctQuery, setAcctQuery] = useState(accountName);

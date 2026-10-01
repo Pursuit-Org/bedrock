@@ -25,7 +25,8 @@ import {
   jobsAccountPath,
 } from "@/components/jobs/jobsEntity";
 import { withReferrer } from "@/components/detail";
-import { InlineSelect, InlineText } from "@/components/ui/InlineEdit";
+import { InlineDate, InlineSelect, InlineText } from "@/components/ui/InlineEdit";
+import { parseEstimatedJobs } from "@/lib/estimatedJobs";
 import {
   useJobsOpportunity,
   useUpdateOpportunity,
@@ -118,6 +119,7 @@ export function JobsOpportunityDetailPage() {
           accountId={o.account_id}
           accountName={o.account_name ?? ""}
           defaultName={`${o.account_name ?? "Untitled"}${o.title ? ` — ${o.title}` : ""}`}
+          defaultCloseDate={o.target_close_date}
           onClose={() => setHandoffOpen(false)}
         />
       )}
@@ -152,6 +154,14 @@ export function JobsOpportunityDetailPage() {
           <EditField label="Expected salary"><InlineText value={o.salary_expected != null ? String(o.salary_expected) : null} onSave={(v) => patch("salary_expected", v ? Number(v.replace(/[^0-9.]/g, "")) : null)} placeholder="—" /></EditField>
           <EditField label="# Roles"><InlineText value={o.num_roles != null ? String(o.num_roles) : null} onSave={(v) => patch("num_roles", v ? Number(v) : null)} placeholder="—" /></EditField>
           <EditField label="Warm intro by"><InlineText value={o.intro_by ?? null} onSave={(v) => patch("intro_by", v)} placeholder="—" /></EditField>
+          <EditField label="Target close">
+            <InlineDate value={o.target_close_date}
+              onSave={(v) => v ? patch("target_close_date", v) : Promise.reject(new Error("Target close date is required"))} />
+          </EditField>
+          <EditField label="Estimated jobs">
+            <InlineText value={o.estimated_jobs != null ? String(o.estimated_jobs) : null} placeholder="—"
+              onSave={(v) => { const n = parseEstimatedJobs(v); return n === undefined ? Promise.reject(new Error("Whole number, 0–999")) : patch("estimated_jobs", n); }} />
+          </EditField>
         </div>
         {o.closed_lost_reason ? (
           <div className="border-t border-border-strong px-5 py-3 text-[12px] text-ink-3">

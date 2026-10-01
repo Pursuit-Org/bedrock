@@ -239,6 +239,7 @@ export const PERMISSION_GROUPS: PermissionGroup[] = [
       { key: "manage_users_roles", label: "Manage users & roles (admin)" },
       { key: "edit_permission_profiles", label: "Edit permission profiles (system)" },
       { key: "manage_owner_goals", label: "Manage owner targets" },
+      { key: "manage_jobs_targets", label: "Manage Jobs targets & team" },
     ],
   },
 ];

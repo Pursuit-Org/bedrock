@@ -5,6 +5,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { ConnectionsTab } from "@/pages/settings/ConnectionsTab";
 import { ProfilesTab } from "@/pages/settings/ProfilesTab";
 import { TargetsTab } from "@/pages/settings/TargetsTab";
+import { JobsTargetsTab } from "@/pages/settings/JobsTargetsTab";
 import { UsersTab } from "@/pages/settings/UsersTab";
 import { cn } from "@/lib/utils";
 import { usePerm } from "@/services/permissions";
@@ -50,6 +51,14 @@ export function SettingsPage() {
   const isAdmin = usePerm("manage_users_roles");
   const canEditProfiles = usePerm("edit_permission_profiles") || isAdmin;
   const canManageGoals = usePerm("manage_owner_goals") || isAdmin;
+  const canManageJobsTargets = usePerm("manage_jobs_targets") || isAdmin;
+  // Targets has two pages: Revenue (FY owner goals) and Jobs (team + targets).
+  const targetsView = searchParams.get("targets") === "jobs" ? "jobs" : "revenue";
+  const setTargetsView = (v: "revenue" | "jobs") => {
+    const next = new URLSearchParams(searchParams);
+    if (v === "jobs") next.set("targets", "jobs"); else next.delete("targets");
+    setSearchParams(next, { replace: true });
+  };
 
   const tabFromUrl = searchParams.get("tab");
   const activeTab: TabKey =
@@ -112,7 +121,22 @@ export function SettingsPage() {
       </div>
 
       {activeTab === "connections" ? <ConnectionsTab banner={banner} /> : null}
-      {activeTab === "targets" ? <TargetsTab canEdit={canManageGoals} /> : null}
+      {activeTab === "targets" ? (
+        <>
+          <div className="mb-4 inline-flex overflow-hidden rounded-md border border-border-strong bg-surface" role="tablist" aria-label="Targets">
+            {(["revenue", "jobs"] as const).map((v, i) => (
+              <button key={v} type="button" role="tab" aria-selected={targetsView === v} onClick={() => setTargetsView(v)}
+                className={cn("h-8 px-4 text-[12.5px] font-medium text-ink-2", i > 0 && "border-l border-border-strong",
+                  targetsView === v && "bg-surface-2 text-ink")}>
+                {v === "revenue" ? "Revenue" : "Jobs"}
+              </button>
+            ))}
+          </div>
+          {targetsView === "revenue"
+            ? <TargetsTab canEdit={canManageGoals} />
+            : <JobsTargetsTab canEdit={canManageJobsTargets} />}
+        </>
+      ) : null}
       {activeTab === "users" && isAdmin ? <UsersTab /> : null}
       {activeTab === "profiles" && isAdmin ? (
         <ProfilesTab isAdmin={isAdmin} canEdit={canEditProfiles} />

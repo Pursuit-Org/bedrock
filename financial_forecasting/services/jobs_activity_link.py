@@ -16,9 +16,11 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
-# Mirror of routes.jobs.JOBS_TEAM_EMAILS — redefined locally so this service
-# stays free of any route import. Keep in sync with routes/jobs.py.
-JOBS_TEAM_EMAILS = ["avni@pursuit.org", "damon.kornhauser@pursuit.org", "devika@pursuit.org"]
+# The Jobs team comes from services.jobs_targets_store (editable in Settings >
+# Targets > Jobs), the same source routes/jobs.py reads. Kept as a name for
+# callers that imported it; the live list is jobs_targets_store.team_emails().
+from services import jobs_targets_store
+JOBS_TEAM_EMAILS = jobs_targets_store.DEFAULT_TEAM
 
 # Sticky-once-true feature detect for bedrock.jobs_membership_stage_history —
 # the migration is applied out-of-band on the shared DB, so code must run both
@@ -114,10 +116,14 @@ async def auto_flag_jobs_prospects(conn) -> dict[str, Any]:
     are currently not flagged (is_jobs_contact false/null) and have a non-empty
     email are updated — this never INSERTs a contact. Returns {"flagged": n}.
     """
-    # Build the team-address predicates inline. JOBS_TEAM_EMAILS is a fixed
-    # internal constant (not user input), matching routes/jobs.py's own pattern.
-    sender = " OR ".join(f"a.email_from ILIKE '%{e}%'" for e in JOBS_TEAM_EMAILS)
-    owner = " OR ".join(f"a.logged_by ILIKE '%{e}%'" for e in JOBS_TEAM_EMAILS)
+    # Build the team-address predicates inline. The team list is validated
+    # against a strict @pursuit.org pattern on write and on load (see
+    # jobs_targets_store.EMAIL_RE), matching routes/jobs.py's own pattern.
+    # This runs from background sync as well as requests, so refresh here.
+    await jobs_targets_store.refresh(conn)
+    team = jobs_targets_store.team_emails()
+    sender = " OR ".join(f"a.email_from ILIKE '%{e}%'" for e in team)
+    owner = " OR ".join(f"a.logged_by ILIKE '%{e}%'" for e in team)
 
     sql = f"""
     WITH team_act AS (

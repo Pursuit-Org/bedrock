@@ -1,4 +1,12 @@
-"""Hand-edited targets for the Outreach Dashboard scorecard.
+"""Targets for the Outreach Dashboard scorecard.
+
+Since 2026-09-29 these are edited in Settings > Targets > Jobs and read from
+bedrock.jobs_target through services.jobs_targets_store. The dicts below are
+the FALLBACK used until that migration runs; the call sites read through
+activity_pipeline_target() / scorecard_owners() and don't know which source
+answered. (The original v1 note follows.)
+
+Hand-edited targets for the Outreach Dashboard scorecard.
 
 The scorecard's "Δ Target" column compares actual volume against a goal per
 stage / activity type, per period length. These change rarely enough that a
@@ -18,6 +26,8 @@ table it fed. Both went when nothing rendered that table any more.
 """
 
 from typing import Optional
+
+from services import jobs_targets_store as store
 
 # Working days in a week, and weeks in a month, for spreading a weekly goal.
 #
@@ -126,6 +136,17 @@ def activity_pipeline_target(metric: str, granularity: str,
 
     With `owner`, the personal goal — never the team's. See OWNER_ACTIVITY_TARGETS.
     """
+    if store.available():
+        weekly = store.owner_weekly(owner, metric) if owner else store.team_weekly(metric)
+        return None if weekly is None else _weekly(weekly).get(granularity)
     if owner:
         return OWNER_ACTIVITY_TARGETS.get(owner.strip().lower(), {}).get(metric, {}).get(granularity)
     return ACTIVITY_PIPELINE_TARGETS.get(metric, {}).get(granularity)
+
+
+def scorecard_owners() -> list[str]:
+    """Who gets a row on the Owner cut: the Jobs team once targets are editable,
+    else the people in the hardcoded dict (today: the team plus Kwame)."""
+    if store.available():
+        return store.team_emails()
+    return list(OWNER_ACTIVITY_TARGETS)
