@@ -2831,6 +2831,9 @@ export interface BuilderBoardRow {
   email: string | null;
   cohort: string | null;
   cohort_completed: boolean;
+  /** L3 class a job-ready (L3+) builder came from — the dashboard's segment.
+   *  Null until the builder reaches L3+. */
+  l3plus_segment: string | null;
   status: BuilderStatus;
   status_overridden: boolean;
   coach: string | null;
@@ -2839,7 +2842,64 @@ export interface BuilderBoardRow {
   prof_strength: string | null;
   technical_strength: string | null;
   has_profile: boolean;
+  /** Editable table columns; null for every key until the builder has a
+   *  profile row (the first PATCH creates it). */
+  profile: BuilderProfileFields;
 }
+
+export interface BuilderProfileFields {
+  technical_capability: string | null; ai_reasoning: string | null; problem_solving: string | null;
+  presentation: string | null; professional_behaviors: string | null;
+  target_functions: string[] | null; target_industries: string[] | null; preferred_modes: string[] | null;
+  applying_regularly: boolean | null; networking_regularly: boolean | null;
+  degree: string | null; university: string | null; graduation_year: number | null;
+  languages: string[] | null; certifications: string[] | null;
+  /** Where they want to work — intake.geo_preference, free text. */
+  geo_preference: string | null;
+}
+
+/** Coach competency scale — the values the Airtable import brought in. */
+export const BUILDER_RATING_OPTIONS = ["Developing", "Capable", "Excelling"] as const;
+
+export const BUILDER_RATING_FIELDS = [
+  ["technical_capability", "Technical capability"],
+  ["ai_reasoning", "AI reasoning"],
+  ["problem_solving", "Problem solving"],
+  ["presentation", "Presentation"],
+  ["professional_behaviors", "Professional behaviors"],
+] as const;
+
+export const BUILDER_FUNCTION_OPTIONS = [
+  "Software Engineering",
+  "Data & Analytics",
+  "Product & Project Management",
+  "Design / UX",
+  "IT, Cloud & Security",
+  "Sales & Customer Success",
+  "Marketing & Communications",
+  "Operations & Finance",
+  "HR / People",
+  "AI Enablement & Training",
+];
+
+export const BUILDER_INDUSTRY_OPTIONS = [
+  "Technology",
+  "Finance & Investing",
+  "Real Estate",
+  "Healthcare & Life Sciences",
+  "Education",
+  "Government",
+  "Media & Entertainment",
+  "Retail & Consumer",
+  "Energy & Climate",
+  "Manufacturing & Industrial",
+  "Professional Services",
+  "Other",
+];
+
+export const BUILDER_MODE_OPTIONS = ["Remote", "Hybrid", "On-site"];
+
+export const BUILDER_DEGREE_OPTIONS = ["None", "Associate", "Bachelor's", "Master's", "Other"];
 
 export interface BuilderBoard {
   builders: BuilderBoardRow[];
@@ -2866,7 +2926,7 @@ export interface BuilderJobProfile {
   technical_capability: string | null; ai_reasoning: string | null; problem_solving: string | null;
   presentation: string | null; professional_behaviors: string | null;
   prof_strength: string | null; technical_strength: string | null;
-  target_industries: string[]; preferred_modes: string[]; certifications: string[];
+  target_functions?: string[]; target_industries: string[]; preferred_modes: string[]; certifications: string[];
   resume_url: string | null; lookbook_url: string | null;
   university: string | null; degree: string | null; graduation_year: number | null; languages: string[];
   applying_regularly: boolean | null; networking_regularly: boolean | null;
@@ -2921,7 +2981,10 @@ export function useUpdateBuilderProfile() {
       qc.invalidateQueries({ queryKey: ["jobs", "builders"] });
       qc.invalidateQueries({ queryKey: ["jobs", "builder", vars.userId] });
     },
-    onError: () => toast.error("Update failed"),
+    onError: (e) => {
+      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      toast.error(detail ?? "Update failed");
+    },
   });
 }
 

@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { AlertCircle, Check, Loader2 } from "lucide-react";
 
 import { fmtDate, fmtDateShort } from "@/lib/format";
@@ -360,6 +361,173 @@ export function InlineSelect<T extends string>({
           </option>
         ))}
       </select>
+    </div>
+  );
+}
+
+/* ────────────────────────────────────────────────────────────────────
+ * InlineMultiSelect — click opens a check-list popover; saves once on
+ * close (outside click / Esc), not per toggle. Stored values that aren't
+ * in `options` (legacy free-typed data) stay listed so they can be
+ * unchecked, but aren't offered to anyone who doesn't already have them.
+ * The popover is portaled so a scrolling table can't clip it.
+ * ──────────────────────────────────────────────────────────────────── */
+
+interface InlineMultiSelectProps {
+  value: string[] | null | undefined;
+  options: string[];
+  onSave: (next: string[]) => Promise<void> | void;
+  emptyLabel?: string;
+  className?: string;
+}
+
+const MULTI_POPOVER_WIDTH = 230;
+
+export function InlineMultiSelect({
+  value,
+  options,
+  onSave,
+  emptyLabel = "—",
+  className,
+}: InlineMultiSelectProps) {
+  const current = value ?? [];
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState<string[]>(current);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [optimistic, setOptimistic] = useState<string[] | null>(null);
+  const [pos, setPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
+  const triggerRef = useRef<HTMLDivElement>(null);
+  const popoverRef = useRef<HTMLDivElement>(null);
+  const { flashing: saved, flash } = useSavedFlash();
+
+  const same = (a: string[], b: string[]) => a.length === b.length && a.every((x) => b.includes(x));
+
+  useEffect(() => {
+    setOptimistic((prev) => (prev != null && same(prev, current) ? null : prev));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value]);
+
+  const display = optimistic ?? current;
+  const legacy = display.filter((v) => !options.includes(v));
+  const listed = [...options, ...legacy];
+
+  const commit = async (next: string[]) => {
+    if (same(next, current)) return;
+    // Keep canonical option order, legacy values last.
+    const ordered = listed.filter((v) => next.includes(v));
+    setOptimistic(ordered);
+    setSaving(true);
+    setError(null);
+    try {
+      await onSave(ordered);
+      flash();
+    } catch (e) {
+      setOptimistic(null);
+      setError(e instanceof Error ? e.message : "Failed");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const close = () => {
+    setOpen(false);
+    void commit(draft);
+  };
+
+  useLayoutEffect(() => {
+    if (!open || !triggerRef.current) return;
+    const r = triggerRef.current.getBoundingClientRect();
+    const left = Math.min(r.left, window.innerWidth - MULTI_POPOVER_WIDTH - 8);
+    const below = window.innerHeight - r.bottom;
+    setPos({ top: below < 300 ? Math.max(8, r.top - 300) : r.bottom + 4, left: Math.max(8, left) });
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (popoverRef.current?.contains(t) || triggerRef.current?.contains(t)) return;
+      close();
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") close(); };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, draft]);
+
+  return (
+    <div
+      ref={triggerRef}
+      className={cn(
+        "group/edit relative flex min-h-[22px] cursor-pointer items-center rounded px-1 py-0.5 hover:bg-surface hover:ring-1 hover:ring-border-strong",
+        error && "ring-1 ring-red",
+        className,
+      )}
+      onClick={(e) => {
+        e.stopPropagation();
+        if (open) close();
+        else { setDraft(display); setOpen(true); }
+      }}
+    >
+      <div className="flex min-w-0 flex-1 flex-wrap gap-1">
+        {display.length === 0 ? (
+          <span className="text-[13px] italic text-ink-4">{emptyLabel}</span>
+        ) : display.map((v) => (
+          <span
+            key={v}
+            className={cn(
+              "rounded bg-surface-2 px-1.5 py-px text-[11px]",
+              options.includes(v) ? "text-ink-2" : "text-ink-4 line-through decoration-ink-4/50",
+            )}
+            title={options.includes(v) ? undefined : "Old value — not in the current list"}
+          >
+            {v}
+          </span>
+        ))}
+      </div>
+      <StatusIndicator saving={saving} saved={saved} error={!!error} />
+      {open ? createPortal(
+        <div
+          ref={popoverRef}
+          style={{ position: "fixed", top: pos.top, left: pos.left, width: MULTI_POPOVER_WIDTH }}
+          // z-[60]: above the z-50 Drawer panel, which hosts these editors too.
+          className="z-[60] overflow-hidden rounded-lg border border-border-strong bg-surface shadow-xl"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="max-h-[290px] overflow-y-auto p-1">
+            {listed.map((opt) => {
+              const on = draft.includes(opt);
+              const isLegacy = !options.includes(opt);
+              return (
+                <button
+                  key={opt}
+                  type="button"
+                  onClick={() => setDraft((d) => (on ? d.filter((x) => x !== opt) : [...d, opt]))}
+                  className={cn(
+                    "flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left text-[12.5px] hover:bg-surface-2",
+                    on ? "text-ink" : "text-ink-3",
+                  )}
+                >
+                  <span className={cn(
+                    "flex h-[15px] w-[15px] shrink-0 items-center justify-center rounded-[4px] border",
+                    on ? "border-accent bg-accent text-white" : "border-border-strong bg-surface",
+                  )}>
+                    {on && <Check size={10.5} strokeWidth={3} />}
+                  </span>
+                  <span className={cn("min-w-0 flex-1 truncate", isLegacy && "italic text-ink-4")}>{opt}</span>
+                  {isLegacy && <span className="text-[9.5px] uppercase tracking-wide text-ink-4">old</span>}
+                </button>
+              );
+            })}
+          </div>
+        </div>,
+        document.body,
+      ) : null}
     </div>
   );
 }
