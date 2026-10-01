@@ -52,6 +52,10 @@ export interface SfAccount {
   AccountSource?: string | null;
   OwnerId?: string | null;
   Owner?: SfReference | null;
+  /** Secondary Account Owner (User lookup). PBD Home lists accounts
+   *  where the viewed user is primary OR secondary owner. */
+  SecondaryAccountOwner__c?: string | null;
+  SecondaryAccountOwner__r?: SfReference | null;
   RecordTypeId?: string | null;
   RecordType?: SfReference | null;
   CreatedDate?: string | null;

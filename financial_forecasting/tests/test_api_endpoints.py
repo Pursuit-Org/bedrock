@@ -476,6 +476,17 @@ class TestSalesforceAccounts:
         soql = mock_client.salesforce.query_all.call_args[0][0]
         assert "LIMIT" not in soql
 
+    def test_get_accounts_selects_secondary_owner(self, client, mock_client):
+        """PBD Home lists accounts where the user is Secondary Account
+        Owner, so both projections must carry the lookup + its name."""
+        mock_client.salesforce.query_all.return_value = {"records": []}
+        for qs in ("?fields=light", ""):
+            client.get(f"/api/salesforce/accounts{qs}")
+            soql = mock_client.salesforce.query_all.call_args_list[0][0][0]
+            assert "SecondaryAccountOwner__c" in soql
+            assert "SecondaryAccountOwner__r.Name" in soql
+            mock_client.salesforce.query_all.reset_mock()
+
     def test_create_account_success(self, client, mock_client):
         mock_client.salesforce.create_record.return_value = {"id": "001NEW001"}
         response = client.post(

@@ -112,12 +112,15 @@ function loadPins(): Set<string> {
 
 interface PortfolioAccountsProps {
   accounts: SfAccount[];
+  /** SF user id of the portfolio being viewed — rows they hold only as
+   *  Secondary Account Owner get a "Secondary" tag. */
+  viewedSfUserId: string | null;
   loading: boolean;
   sfReady: boolean;
   canEdit: boolean;
 }
 
-export function PortfolioAccounts({ accounts, loading, sfReady, canEdit }: PortfolioAccountsProps) {
+export function PortfolioAccounts({ accounts, viewedSfUserId, loading, sfReady, canEdit }: PortfolioAccountsProps) {
   const oppsQ = useOpportunities();
   const updateAccount = useUpdateAccount();
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -366,7 +369,7 @@ export function PortfolioAccounts({ accounts, loading, sfReady, canEdit }: Portf
       ) : loading ? (
         <EmptyState>Loading…</EmptyState>
       ) : accounts.length === 0 ? (
-        <EmptyState>No accounts owned by this user.</EmptyState>
+        <EmptyState>No accounts owned or co-owned by this user.</EmptyState>
       ) : totalVisible === 0 ? (
         <EmptyState>No accounts match your filters.</EmptyState>
       ) : (
@@ -434,6 +437,11 @@ export function PortfolioAccounts({ accounts, loading, sfReady, canEdit }: Portf
                 isExpanded={a.Id === expandedId}
                 logoUrl={enrichmentQ.data?.[a.Id]?.logo_url ?? null}
                 isPinned
+                isSecondary={
+                  !!viewedSfUserId &&
+                  a.OwnerId !== viewedSfUserId &&
+                  a.SecondaryAccountOwner__c === viewedSfUserId
+                }
                 canEdit={canEdit}
                 visibleCols={visibleCols}
                 colSpan={colSpan}
@@ -473,6 +481,11 @@ export function PortfolioAccounts({ accounts, loading, sfReady, canEdit }: Portf
                       isExpanded={row.account.Id === expandedId}
                       logoUrl={enrichmentQ.data?.[row.account.Id]?.logo_url ?? null}
                       isPinned={false}
+                      isSecondary={
+                        !!viewedSfUserId &&
+                        row.account.OwnerId !== viewedSfUserId &&
+                        row.account.SecondaryAccountOwner__c === viewedSfUserId
+                      }
                       canEdit={canEdit}
                       visibleCols={visibleCols}
                       colSpan={colSpan}
@@ -492,6 +505,11 @@ export function PortfolioAccounts({ accounts, loading, sfReady, canEdit }: Portf
                     isExpanded={a.Id === expandedId}
                     logoUrl={enrichmentQ.data?.[a.Id]?.logo_url ?? null}
                     isPinned={false}
+                    isSecondary={
+                      !!viewedSfUserId &&
+                      a.OwnerId !== viewedSfUserId &&
+                      a.SecondaryAccountOwner__c === viewedSfUserId
+                    }
                     canEdit={canEdit}
                     visibleCols={visibleCols}
                     colSpan={colSpan}
@@ -517,6 +535,7 @@ interface AccountRowProps {
   isExpanded: boolean;
   logoUrl: string | null;
   isPinned: boolean;
+  isSecondary: boolean;
   canEdit: boolean;
   visibleCols: ColKey[];
   colSpan: number;
@@ -531,6 +550,7 @@ function AccountRow({
   isExpanded,
   logoUrl,
   isPinned,
+  isSecondary,
   canEdit,
   visibleCols,
   colSpan,
@@ -568,6 +588,14 @@ function AccountRow({
                   <span className="block truncate text-[13px] font-medium">{a.Name}</span>
                 )}
               </div>
+              {isSecondary && (
+                <span
+                  className="flex-shrink-0"
+                  title={`Primary owner: ${a.Owner?.Name ?? "Unknown"}`}
+                >
+                  <Tag variant="sky">Secondary</Tag>
+                </span>
+              )}
               <Link
                 to={`/accounts/${a.Id}`}
                 state={withReferrer({ pathname: "/portfolio", label: "Portfolio" })}
