@@ -21,6 +21,7 @@ import { accountStatusVariant } from "@/lib/accountStatus";
 import { fmtDate, fmtMoney, fmtMoneyFull, initials, toExternalHref } from "@/lib/format";
 import { useCollapsible } from "@/lib/collapsible";
 import { isLost, isOpen, isWon, SF_STAGE_OPTIONS, stageStatus } from "@/lib/stages";
+import { rankByQuery, searchMatcher } from "@/lib/search";
 import { cn } from "@/lib/utils";
 import { useAccountEnrichment, useAccounts, useUpdateAccount } from "@/services/accounts";
 import { useAccountFullActivities } from "@/services/activities";
@@ -1150,20 +1151,17 @@ function PrimaryContactPickerModal({
   });
 
   const onAccount = useMemo(() => {
-    const needle = debouncedQ;
-    if (!needle) return accountContacts;
-    return accountContacts.filter((c) =>
-      contactMatches(c, needle),
-    );
+    return accountContacts.filter(searchMatcher(accountContacts, debouncedQ, contactSearchFields));
   }, [accountContacts, debouncedQ]);
 
   const offAccount = useMemo(() => {
     if (!wantOrgWide || !orgWideQ.data) return [];
     const onIds = new Set(accountContacts.map((c) => c.Id));
-    return orgWideQ.data
-      .filter((c) => !onIds.has(c.Id))
-      .filter((c) => contactMatches(c, debouncedQ))
-      .slice(0, 50);
+    return rankByQuery(
+      orgWideQ.data.filter((c) => !onIds.has(c.Id)),
+      debouncedQ,
+      contactSearchFields,
+    ).slice(0, 50);
   }, [orgWideQ.data, accountContacts, debouncedQ, wantOrgWide]);
 
   const promote = async (c: SfContact, opts: { reparent?: boolean } = {}) => {
@@ -1343,19 +1341,9 @@ function PrimaryContactPickerModal({
   );
 }
 
-function contactMatches(c: SfContact, needle: string): boolean {
-  const hay = [
-    c.Name,
-    c.FirstName,
-    c.LastName,
-    c.Email,
-    c.Title,
-    c.Account?.Name,
-  ]
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase();
-  return hay.includes(needle);
+/** Fields the contact picker search matches (see lib/search for the rules). */
+function contactSearchFields(c: SfContact) {
+  return [c.Name, c.FirstName, c.LastName, c.Email, c.Title, c.Account?.Name];
 }
 
 function PickerSection({

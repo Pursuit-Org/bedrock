@@ -850,7 +850,9 @@ async def get_accounts(
             return []
         use_light = fields == "light"
         cache_key = (
-            f"accounts:{limit or 'all'}:"
+            # `v2` — bumped when SecondaryAccountOwner__c joined the
+            # projection so pre-deploy cached rows aren't served.
+            f"accounts:v2:{limit or 'all'}:"
             f"{'light' if use_light else 'full'}:"
             f"{'active' if active_only else 'any'}"
         )
@@ -864,6 +866,7 @@ async def get_accounts(
             query = """
             SELECT Id, Name, Type, Industry, Website, Description,
                    BillingCity, BillingState, OwnerId, Owner.Name,
+                   SecondaryAccountOwner__c, SecondaryAccountOwner__r.Name,
                    Account_Tier__c, Active__c, Qualification_Status__c,
                    npo02__TotalOppAmount__c, npo02__NumberOfClosedOpps__c,
                    Total_Revenue_Generated__c,
@@ -878,6 +881,7 @@ async def get_accounts(
             SELECT Id, Name, Type, Industry, Phone, Fax, Website, Description,
                    BillingStreet, BillingCity, BillingState, BillingPostalCode, BillingCountry,
                    AnnualRevenue, NumberOfEmployees, AccountSource, OwnerId, Owner.Name,
+                   SecondaryAccountOwner__c, SecondaryAccountOwner__r.Name,
                    ParentId, RecordTypeId, RecordType.Name,
                    CreatedDate, LastModifiedDate, LastActivityDate,
                    Account_Tier__c, Active__c, Company_Size__c,
@@ -981,21 +985,36 @@ async def _attach_account_status(accounts: list, salesforce) -> None:
     # Scope activity to the 3-month window we actually care about
     # (anything older means Dormant either way), with a small buffer
     # for cron lag.
+    #
+    # The bedrock DB may be unreachable (e.g. VPN not connected, pool
+    # failed to initialize). Wrap only the DB queries in their own
+    # try/except so SF-derived statuses (Pursuing, Prospect) still
+    # compute. Stewarding / Re-activating will fall through to Dormant
+    # as a best-effort approximation when the DB is down.
     cutoff = datetime.now(_tz.utc) - timedelta(days=120)
-    pool = get_pool()
-    async with pool.acquire() as conn:
-        award_rows = await conn.fetch(
-            "SELECT opportunity_id, award_status FROM bedrock.award"
+    awards: list = []
+    activities: list = []
+    try:
+        pool = get_pool()
+        if pool is None:
+            raise RuntimeError("DB pool unavailable")
+        async with pool.acquire() as conn:
+            award_rows = await conn.fetch(
+                "SELECT opportunity_id, award_status FROM bedrock.award"
+            )
+            act_rows = await conn.fetch(
+                "SELECT account_id, MAX(activity_date) AS activity_date "
+                "FROM bedrock.activity "
+                "WHERE account_id IS NOT NULL AND activity_date >= $1 "
+                "GROUP BY account_id",
+                cutoff,
+            )
+        awards = [dict(r) for r in award_rows]
+        activities = [dict(r) for r in act_rows]
+    except Exception as db_ex:
+        logger.warning(
+            f"DB unavailable for account_status — using SF-only data: {db_ex}"
         )
-        act_rows = await conn.fetch(
-            "SELECT account_id, MAX(activity_date) AS activity_date "
-            "FROM bedrock.activity "
-            "WHERE account_id IS NOT NULL AND activity_date >= $1 "
-            "GROUP BY account_id",
-            cutoff,
-        )
-    awards = [dict(r) for r in award_rows]
-    activities = [dict(r) for r in act_rows]
 
     opps_by_account, awards_by_opp, latest_activity_by_account = build_lookups(
         opps, awards, activities,

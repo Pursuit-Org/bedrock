@@ -15,8 +15,9 @@
  *   - `/portfolio`             → authenticated user (from /auth/me)
  *   - `/portfolio/:identifier` → email or 15/18-char Salesforce User Id
  *   - Email is the canonical key (matches project.owner_email);
- *     sfUserId is required to filter SF-owned entities (Account.OwnerId,
- *     Opportunity.OwnerId). When SF isn't connected, those sections
+ *     sfUserId is required to filter SF-owned entities (Account.OwnerId
+ *     or Account.SecondaryAccountOwner__c, Opportunity.OwnerId). When SF
+ *     isn't connected, those sections
  *     degrade gracefully with an empty-state.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -24,6 +25,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { Check, ChevronDown, RotateCcw, Search } from "lucide-react";
 
 import { PageHeader } from "@/components/PageHeader";
+import { rankByQuery } from "@/lib/search";
 import { cn } from "@/lib/utils";
 import { useAccounts } from "@/services/accounts";
 import { useAwards } from "@/services/awards";
@@ -34,7 +36,7 @@ import { usePerm } from "@/services/permissions";
 import { useProjects } from "@/services/projects";
 import { useUsers } from "@/services/users";
 import { UpcomingDeliverablesPanel } from "@/components/UpcomingDeliverablesPanel";
-import type { SfUser } from "@/types/salesforce";
+import type { SfAccount, SfUser } from "@/types/salesforce";
 
 import { PortfolioTasks } from "./portfolio/PortfolioTasks";
 import { PortfolioAccounts } from "./portfolio/PortfolioAccounts";
@@ -158,7 +160,7 @@ function PortfolioBody({ user, isSelf }: { user: ResolvedUser; isSelf: boolean }
 
   // Slices owned by this user.
   const myAccounts = useMemo(
-    () => filterByOwnerSfId(accountsQ.data ?? [], user.sfUserId),
+    () => filterAccountsByOwnerOrSecondary(accountsQ.data ?? [], user.sfUserId),
     [accountsQ.data, user.sfUserId],
   );
   const myOpps = useMemo(
@@ -225,6 +227,7 @@ function PortfolioBody({ user, isSelf }: { user: ResolvedUser; isSelf: boolean }
 
       <PortfolioAccounts
         accounts={myAccounts}
+        viewedSfUserId={user.sfUserId}
         loading={accountsQ.isLoading}
         sfReady={Boolean(user.sfUserId)}
         canEdit={canEditAccounts}
@@ -241,6 +244,19 @@ function filterByOwnerSfId<T extends { OwnerId?: string | null }>(
 ): T[] {
   if (!sfUserId) return [];
   return rows.filter((r) => r.OwnerId === sfUserId);
+}
+
+/** Accounts the user owns outright or is listed on as Secondary
+ *  Account Owner. Opportunities have no secondary owner field, so they
+ *  keep using {@link filterByOwnerSfId}. */
+function filterAccountsByOwnerOrSecondary(
+  rows: SfAccount[],
+  sfUserId: string | null,
+): SfAccount[] {
+  if (!sfUserId) return [];
+  return rows.filter(
+    (r) => r.OwnerId === sfUserId || r.SecondaryAccountOwner__c === sfUserId,
+  );
 }
 
 
@@ -319,15 +335,7 @@ function ViewAsPicker({
   );
 
   const filtered = useMemo(() => {
-    if (!q.trim()) return active.slice(0, 50);
-    const lower = q.trim().toLowerCase();
-    return active
-      .filter((u) => {
-        if (u.Name.toLowerCase().includes(lower)) return true;
-        if ((u.Email ?? "").toLowerCase().includes(lower)) return true;
-        return false;
-      })
-      .slice(0, 50);
+    return rankByQuery(active, q, (u) => [u.Name, u.Email]).slice(0, 50);
   }, [active, q]);
 
   function pick(sfId: string | null) {
