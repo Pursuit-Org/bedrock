@@ -38,12 +38,78 @@ function uploadErrorMessage(err: unknown): string {
 }
 
 /**
+ * Upload button for a SectionCard `action` slot, so Files gets its action
+ * in the header like Contacts and Opportunities do (#285). A parent that
+ * renders this passes `uploadInHeader` to AccountFilesSection below so the
+ * table does not show a second button.
+ */
+export function AccountFileUploadButton({ accountId }: { accountId: string }) {
+  const upload = useUploadAccountFile(accountId);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [pendingName, setPendingName] = useState<string | null>(null);
+
+  const handleFiles = async (fileList: FileList | null) => {
+    if (!fileList || fileList.length === 0) return;
+    const files = Array.from(fileList);
+    setPendingName(files.length === 1 ? files[0].name : `${files.length} files`);
+    try {
+      await Promise.all(files.map((file) => upload.mutateAsync({ file })));
+    } finally {
+      setPendingName(null);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  };
+
+  return (
+    <span className="flex items-center gap-2">
+      {upload.isError ? (
+        <span className="text-[11px] text-red-600" title={uploadErrorMessage(upload.error)}>
+          Upload failed
+        </span>
+      ) : null}
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        className="hidden"
+        onChange={(e) => void handleFiles(e.target.files)}
+      />
+      <button
+        type="button"
+        onClick={() => fileInputRef.current?.click()}
+        disabled={upload.isPending}
+        className="inline-flex h-6 items-center gap-1 rounded border border-border-strong bg-surface px-2 text-[11px] font-medium text-ink-2 hover:bg-surface-2 disabled:opacity-50"
+      >
+        {upload.isPending ? (
+          <>
+            <Loader2 size={11} className="animate-spin" />
+            Uploading {pendingName ?? "…"}
+          </>
+        ) : (
+          <>
+            <Upload size={11} /> Upload file
+          </>
+        )}
+      </button>
+    </span>
+  );
+}
+
+/**
  * Self-contained files table for an Account record. Shows all SF Files
  * linked to the account via ContentDocumentLink, with upload + delete.
  * Designed to render inside a SectionCard (AccountDetail) or a tab panel
  * (AccountExpandPanel) — no card wrapper of its own.
+ *
+ * `uploadInHeader`: the parent already renders AccountFileUploadButton in
+ * its card header, so skip the inline one. The expand panel has no header
+ * slot and keeps the inline button — #285 as first written removed it
+ * there along with the one here.
  */
-export function AccountFilesSection({ accountId }: { accountId: string }) {
+export function AccountFilesSection({ accountId, uploadInHeader = false }: {
+  accountId: string;
+  uploadInHeader?: boolean;
+}) {
   const filesQ = useAccountFiles(accountId);
   const upload = useUploadAccountFile(accountId);
   const deleteFile = useDeleteAccountFile(accountId);
@@ -74,7 +140,7 @@ export function AccountFilesSection({ accountId }: { accountId: string }) {
     }
   };
 
-  const uploadButton = (
+  const uploadButton = uploadInHeader ? null : (
     <button
       type="button"
       onClick={handlePick}
@@ -107,18 +173,22 @@ export function AccountFilesSection({ accountId }: { accountId: string }) {
       {/* File table */}
       {filesQ.isLoading ? (
         <>
-          <div className="flex items-center justify-end border-b border-border-strong px-4 py-1">
-            {uploadButton}
-          </div>
+          {uploadButton && (
+            <div className="flex items-center justify-end border-b border-border-strong px-4 py-1">
+              {uploadButton}
+            </div>
+          )}
           <div className="px-4 py-6 text-center text-[12px] text-ink-3">
             <Loader2 size={13} className="mr-1 inline animate-spin" /> Loading files…
           </div>
         </>
       ) : filesQ.isError ? (
         <>
-          <div className="flex items-center justify-end border-b border-border-strong px-4 py-1">
-            {uploadButton}
-          </div>
+          {uploadButton && (
+            <div className="flex items-center justify-end border-b border-border-strong px-4 py-1">
+              {uploadButton}
+            </div>
+          )}
           <div className="px-4 py-6 text-center text-[12px] text-ink-3">
             Could not load files —{" "}
             <button
@@ -132,9 +202,11 @@ export function AccountFilesSection({ accountId }: { accountId: string }) {
         </>
       ) : files.length === 0 ? (
         <>
-          <div className="flex items-center justify-end border-b border-border-strong px-4 py-1">
-            {uploadButton}
-          </div>
+          {uploadButton && (
+            <div className="flex items-center justify-end border-b border-border-strong px-4 py-1">
+              {uploadButton}
+            </div>
+          )}
           <div className="px-4 py-6 text-center text-[12px] italic text-ink-3">
             No files attached to this account.
           </div>

@@ -9,7 +9,7 @@ import { ChevronDown, ChevronRight, ExternalLink, Info, Loader2, Mail, Pencil, P
 
 import { AccountAvatar } from "@/components/AccountAvatar";
 import { AccountHistoryOverlay } from "@/components/AccountHistoryOverlay";
-import { AccountFilesSection } from "@/components/AccountFilesSection";
+import { AccountFileUploadButton, AccountFilesSection } from "@/components/AccountFilesSection";
 import { BackLink as SharedBackLink, LinkedProjectsCard } from "@/components/detail";
 import { EntityComments } from "@/components/EntityComments";
 import { AccountTasksSection } from "@/components/AccountTasksSection";
@@ -676,8 +676,8 @@ export function AccountDetailPage() {
       </SectionCard>
 
       {/* Files */}
-      <SectionCard title={`Files`}>
-        <AccountFilesSection accountId={id} />
+      <SectionCard title="Files" action={<AccountFileUploadButton accountId={id} />}>
+        <AccountFilesSection accountId={id} uploadInHeader />
       </SectionCard>
 
       <div className="h-3" />
