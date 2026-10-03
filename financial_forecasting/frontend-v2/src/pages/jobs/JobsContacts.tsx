@@ -16,6 +16,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { ContactDetail, initials } from "@/components/jobs/ProspectAccountExpandPanel";
 import { ContactExpandTabs, jobsAccountPath, jobsContactPath } from "@/components/jobs/jobsEntity";
 import { CompanyPicker } from "@/components/jobs/CompanyPicker";
+import { ContactTagsEditor } from "@/components/jobs/ContactJobsFields";
 import { JobsComments } from "@/components/jobs/JobsComments";
 import { JobsTasks } from "@/components/jobs/JobsTasks";
 import { ExportButton } from "@/components/jobs/ExportButton";
@@ -47,12 +48,6 @@ import {
   type JobStage, type JobContactWithDeal, type ContactSearchResult, type ContactCreateBody, type MembershipStage,
   exportJobsRows,
 } from "@/services/jobs";
-
-// Humanize a tag slug so chips never flash the raw slug (e.g. "prior_commit_partner")
-// while the catalog query is still loading — reads as the friendly label instantly.
-function humanizeTag(slug: string): string {
-  return slug.replace(/_/g, " ").replace(/\b\w/g, (m) => m.toUpperCase());
-}
 
 // ── last touch: most recent jobs-relevant activity date ───────────────────────
 function relativeDays(iso: string | null | undefined): string {
@@ -399,57 +394,6 @@ function NewContactModal({ onClose, initialCompany }: { onClose: () => void; ini
   );
 }
 
-// ── tags cell (chips + fixed-position popover editor) ────────────────────────
-function TagsCell({ contact }: { contact: JobContactWithDeal }) {
-  const { data: catalog = [] } = useContactTagCatalog();
-  const update = useUpdateContact();
-  const [open, setOpen] = useState(false);
-  const [pos, setPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
-  const [draft, setDraft] = useState<string[]>([]);
-  const labels = useMemo(() => Object.fromEntries(catalog.map((t) => [t.slug, t.label])), [catalog]);
-  const tags = contact.crm_tags ?? [];
-  return (
-    <div onClick={(e) => e.stopPropagation()}>
-      <button
-        type="button"
-        title="Edit tags"
-        onClick={(e) => {
-          const r = e.currentTarget.getBoundingClientRect();
-          setPos({ top: r.bottom + 4, left: r.left });
-          setDraft(tags);
-          setOpen((v) => !v);
-        }}
-        className="flex min-h-[20px] w-full flex-wrap items-center gap-1 text-left"
-      >
-        {tags.length > 0
-          ? tags.map((t) => <span key={t} className="truncate rounded-full bg-violet-50 px-1.5 py-0.5 text-[10px] font-medium text-violet-700">{labels[t] ?? humanizeTag(t)}</span>)
-          : <span className="text-[12px] text-ink-4">—</span>}
-      </button>
-      {open && (
-        <>
-          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div style={{ position: "fixed", top: pos.top, left: pos.left }} className="z-50 max-h-72 w-60 overflow-auto rounded-md border border-border-strong bg-surface p-2 shadow-xl">
-            {catalog.map((t) => (
-              <label key={t.slug} className="flex cursor-pointer items-center gap-2 rounded px-1 py-1 text-[12px] text-ink-2 hover:bg-surface-2">
-                <input type="checkbox" checked={draft.includes(t.slug)} onChange={() => setDraft((d) => d.includes(t.slug) ? d.filter((x) => x !== t.slug) : [...d, t.slug])} className="h-3.5 w-3.5 accent-[color:var(--accent,#4242EA)]" />
-                {t.label}
-              </label>
-            ))}
-            <div className="mt-1 flex items-center justify-end gap-2 border-t border-border-strong pt-1.5">
-              <button type="button" onClick={() => setOpen(false)} className="text-[12px] text-ink-3 hover:text-ink">Cancel</button>
-              <button type="button" disabled={update.isPending}
-                onClick={() => update.mutate({ id: contact.contact_id, tags: draft }, { onSuccess: () => setOpen(false) })}
-                className="rounded bg-accent px-2.5 py-1 text-[12px] font-medium text-white hover:opacity-90 disabled:opacity-50">
-                {update.isPending ? "Saving…" : "Save"}
-              </button>
-            </div>
-          </div>
-        </>
-      )}
-    </div>
-  );
-}
-
 // ── row ──────────────────────────────────────────────────────────────────────
 function ContactRow({ contact, expanded, onOpen, visibleCols, selected, onToggleSelect }: { contact: JobContactWithDeal; expanded: boolean; onOpen: () => void; visibleCols: ColKey[]; selected: boolean; onToggleSelect: () => void }) {
   const updateMembership = useUpdateJobsMembership();
@@ -495,7 +439,7 @@ function ContactRow({ contact, expanded, onOpen, visibleCols, selected, onToggle
         onSave={(v) => new Promise<void>((res, rej) => updateContact.mutate({ id: contact.contact_id, owner_email: v || null }, { onSuccess: () => res(), onError: rej }))}
       />
     ),
-    tags: <TagsCell contact={contact} />,
+    tags: <ContactTagsEditor contactId={contact.contact_id} tags={contact.crm_tags ?? []} />,
     title: <span className="truncate text-[12.5px] text-ink-2">{contact.current_title || "—"}</span>,
     company: <span className="truncate text-[12.5px] text-ink-2">{contact.current_company || "—"}</span>,
     // Jobs stage = a real funnel stage. A jobs prospect with no stage yet shows

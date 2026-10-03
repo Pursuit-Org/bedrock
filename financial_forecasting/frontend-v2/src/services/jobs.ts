@@ -502,6 +502,9 @@ export function useFlagContactsForJobs() {
     },
     onSuccess: (d) => {
       qc.invalidateQueries({ queryKey: ["jobs", "contacts"] });
+      // The contact detail page and drawer edit the stage too, and read it
+      // from the per-contact query, not the list.
+      qc.invalidateQueries({ queryKey: ["jobs", "contact"] });
       qc.invalidateQueries({ queryKey: ["jobs", "accounts"] });
       toast.success(`Flagged ${d?.flagged ?? 0} for jobs`);
     },
@@ -518,6 +521,7 @@ export function useUpdateJobsMembership() {
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["jobs", "contacts"] });
+      qc.invalidateQueries({ queryKey: ["jobs", "contact"] });
       qc.invalidateQueries({ queryKey: ["jobs", "accounts"] });
       // A revisit files a jobs_task, so the Jobs Home task widget is stale.
       // Keys are "jobs-tasks" / "jobs-tasks-all" (see services/jobsTasks.ts).
@@ -1657,7 +1661,10 @@ export interface OutreachDrillTouch {
   actor: string | null;
 }
 export interface OutreachDrillContact {
-  contact_id: number;
+  /** Null for a touch the count includes but no contact is linked to — an
+   *  email to someone outside the CRM, or a deal-level log. `name` then holds
+   *  the recipient address. */
+  contact_id: number | null;
   name: string | null;
   company: string | null;
   entered_at: string | null;
@@ -1861,6 +1868,7 @@ export interface ContactCreateBody {
  *  Prefix keys, so every scope and account variant is covered. */
 function invalidateContactMembership(qc: ReturnType<typeof useQueryClient>) {
   qc.invalidateQueries({ queryKey: ["jobs", "contacts"] });
+  qc.invalidateQueries({ queryKey: ["jobs", "contact"] });
   qc.invalidateQueries({ queryKey: ["jobs", "account-rollup"] });
   qc.invalidateQueries({ queryKey: ["jobs", "accounts"] });
   qc.invalidateQueries({ queryKey: ["jobs", "funnels"] });
@@ -2774,9 +2782,12 @@ export function useBulkRestoreCandidates() {
 }
 
 export interface ActivityCreateBody {
-  jobs_opportunity_id: string;
-  type: "call" | "text" | "linkedin";
-  description: string;
+  /** One of the two: a deal-scoped log, or a contact-scoped one. */
+  jobs_opportunity_id?: string;
+  contact_id?: number;
+  type: "call" | "email" | "text" | "linkedin";
+  /** Optional on every type — the server stores NULL when it is blank. */
+  description?: string;
   activity_date?: string;
   subject?: string;
   /** Only meaningful on a call; the API drops it on any other type. */

@@ -51,6 +51,7 @@ import {
   type AccountGroupContact,
 } from "@/services/jobsAccounts";
 import { CallKindPicker } from "@/components/jobs/CallKindPicker";
+import { ContactJobsFields } from "@/components/jobs/ContactJobsFields";
 
 // ── Stage styling ──────────────────────────────────────────────────────────
 
@@ -152,9 +153,9 @@ export function LogActivityForm({
 
   const isIntro = type === "intro";
   // An intro is defined by who made it, so that is what gates the button. The
-  // note is optional there: "Joanna introduced me to Jane on the 14th" is a
-  // complete record, and demanding prose to log it loses intros.
-  const canSubmit = isIntro ? !!connectorId : !!description.trim();
+  // note is optional on every type (Kwame 2026-09-24): "I texted her on the
+  // 14th" is a complete record, and demanding prose to log it loses touches.
+  const canSubmit = isIntro ? !!connectorId : true;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -173,7 +174,7 @@ export function LogActivityForm({
         await logActivity({
           contact_id: contactId,
           type,
-          description: description.trim(),
+          description: description.trim() || undefined,
           activity_date: date || undefined,
           // Only a call carries a kind; the API drops it on anything else, but
           // not sending it keeps the request honest about what was asked.
@@ -262,11 +263,10 @@ export function LogActivityForm({
 
       <div>
         <label className="mb-0.5 block text-[10px] font-semibold uppercase tracking-wide text-ink-4">
-          {isIntro ? "Context (optional)" : "Description"}
+          {isIntro ? "Context (optional)" : "Description (optional)"}
         </label>
         <textarea
           rows={3}
-          required={!isIntro}
           value={description}
           onChange={(e) => setDescription(e.target.value)}
           placeholder={isIntro ? "What was the intro for, and what came of it?" : "What happened?"}
@@ -384,6 +384,9 @@ export function ContactDetail({ contactId }: { contactId: number }) {
           </div>
 
           <div className="flex flex-col gap-2.5 text-[12px]">
+            {/* The fields the Contacts list edits inline — owner, stage, tags,
+                prospect — so the drawer is not a read-only dead end for them. */}
+            <ContactJobsFields contact={data} />
             <div>
               <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-wide text-ink-4">Title</div>
               <InlineText value={data.current_title} onSave={save("current_title")} placeholder="Current title" />
