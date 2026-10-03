@@ -168,13 +168,12 @@ async def get_preferences(
     """Current user's notification delivery + activity preferences.
     In-app (bell) delivery isn't represented here — it's always on."""
     recipient = _recipient_from_user(user)
-    row = await conn.fetchrow(
-        "SELECT slack_enabled, account_activity_enabled, contact_activity_enabled, "
-        "opportunity_activity_enabled FROM bedrock.notification_preference "
-        "WHERE user_email = $1",
-        recipient,
-    )
-    data = {**_PREFERENCE_DEFAULTS, **dict(row)} if row else dict(_PREFERENCE_DEFAULTS)
+    # Same read enqueue_notification uses: defaults when there is no row, and
+    # defaults when the table itself has not been created yet. Querying the
+    # table directly 500ed until the migration ran and left the Settings tab
+    # on "Loading…" through react-query's retries.
+    from services.notifications import _get_preference
+    data = {**_PREFERENCE_DEFAULTS, **await _get_preference(conn, recipient)}
     return {"success": True, "data": data}
 
 
@@ -185,6 +184,13 @@ async def update_preferences(
     user=Depends(require_auth),
 ) -> Dict[str, Any]:
     recipient = _recipient_from_user(user)
+    from services.notifications import _PREFS_MIGRATION, _prefs_table_ready
+    if not await _prefs_table_ready(conn):
+        # Nothing to write to yet. Say which migration, as the jobs routes do.
+        raise HTTPException(
+            status_code=409,
+            detail=f"Notification preferences need migration {_PREFS_MIGRATION}",
+        )
     row = await conn.fetchrow(
         """
         INSERT INTO bedrock.notification_preference

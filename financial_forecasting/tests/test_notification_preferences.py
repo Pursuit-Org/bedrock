@@ -574,3 +574,25 @@ async def test_find_org_user_excludes_inactive_users():
     await entity_owner_module.find_org_user(conn, "gone@pursuit.org")
     q = conn.queries("fetchrow")[0]
     assert "COALESCE(is_active, true)" in q
+
+
+# ── Preference routes before the migration ──────────────────────────────────
+
+def test_get_preferences_defaults_when_the_table_does_not_exist_yet():
+    _schema_not_ready()
+    conn = FakeConn(rows={"notification_preference": _pref_row(slack_enabled=False)})
+    c = make_jobs_client(conn)
+    r = c.get("/api/notifications/preferences")
+    assert r.status_code == 200, r.text
+    assert r.json()["data"] == _pref_row()          # fail-open, row never read
+    assert not conn.ran("FROM bedrock.notification_preference")
+
+
+def test_put_preferences_is_409_naming_the_migration_before_it_runs():
+    _schema_not_ready()
+    conn = FakeConn()
+    c = make_jobs_client(conn)
+    r = c.put("/api/notifications/preferences", json=_pref_row(slack_enabled=False))
+    assert r.status_code == 409, r.text
+    assert "2026-09-23-notification-types-and-prefs.sql" in r.json()["detail"]
+    assert not conn.ran("INSERT INTO bedrock.notification_preference")
