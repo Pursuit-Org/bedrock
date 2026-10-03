@@ -1,0 +1,31 @@
+# Upload filter for `gcloud run deploy --source .` (backend service).
+# Once this file exists gcloud stops falling back to .gitignore, so it has
+# to carry the full list itself. Keep it in step with .dockerignore.
+.git/
+.gcloudignore
+
+# Secrets — never upload
+.env
+**/.env
+**/.env.local
+**/.env.*.local
+
+# Python build/test artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+venv/
+.venv/
+env/
+
+# Frontends deploy from their own directory; their dependency trees
+# (frontend-v2/node_modules is ~270MB) must not ride along with the API.
+node_modules/
+frontend/build/
+frontend-v2/dist/
+
+# Logs
+*.log
+logs/
