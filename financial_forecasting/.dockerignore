@@ -24,7 +24,10 @@ wheels/
 *.egg
 
 # Frontend
+node_modules/
 frontend/node_modules/
+frontend-v2/node_modules/
+frontend-v2/dist/
 frontend/build/
 frontend/.env.local
 frontend/.env.development.local
