@@ -5753,10 +5753,18 @@ async def outreach_summary(
 
     # Conversions come off the membership stamp rather than the activity table —
     # converting is a pipeline decision someone records, not a touch.
-    conv = await conn.fetchrow("""
+    # Follows the sender filter like the three cards beside it, and like the
+    # Opportunities row and its drill further down the page (Kwame 2026-09-24).
+    # This card used to count the whole team whatever was selected, so
+    # "Viewing: Damon" read 12 here and 0 in the row beneath. Same predicate as
+    # _converted_counts; with one person selected it is a floor, not a count —
+    # see _CONVERSION_OWNER.
+    conv_owner = (f"AND {_CONVERSION_OWNER} = lower('{owner}')"
+                  if owner and _SAFE_EMAIL.match(owner) else "")
+    conv = await conn.fetchrow(f"""
         SELECT count(*) AS n
-        FROM bedrock.jobs_contact_membership
-        WHERE converted_at >= $1 AND converted_at < $2
+        {_CONVERSION_FROM}
+        WHERE m.converted_at >= $1 AND m.converted_at < $2 {conv_owner}
     """, this_start, this_end)
 
     # ── Drill rows, one list per card ───────────────────────────────────────
@@ -5877,7 +5885,7 @@ async def outreach_summary(
         JOIN public.contacts c ON c.contact_id = m.contact_id
         LEFT JOIN bedrock.jobs_account ja
           ON ja.account_key = nullif(lower(btrim(coalesce(c.current_company, ''))), '')
-        WHERE m.converted_at >= $1 AND m.converted_at < $2
+        WHERE m.converted_at >= $1 AND m.converted_at < $2 {conv_owner}
         ORDER BY m.converted_at DESC
         LIMIT {DRILL_CAP}
     """, this_start, this_end)

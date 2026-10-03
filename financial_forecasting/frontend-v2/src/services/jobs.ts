@@ -5,6 +5,25 @@ import { api } from "@/lib/api";
 import { serializeRulesForServer, type FilterRule } from "@/pages/cleanup/Filters";
 
 /**
+ * Invalidate every Outreach-tab report: the four summary cards, the scorecard
+ * and its drills, touch depth, the Activity Pipeline trend, and the per-owner
+ * scorecard. These keys are ["jobs", "outreach-<view>", ...], so a prefix
+ * match on ["jobs", "outreach"] matches NONE of them — that key had been
+ * invalidated for weeks while the scorecard stayed stale for a minute after
+ * every logged touch. Matched on the key's second segment instead.
+ */
+export function invalidateOutreachReports(qc: QueryClient) {
+  qc.invalidateQueries({
+    predicate: (q) => {
+      const [root, view] = q.queryKey;
+      return root === "jobs" && typeof view === "string"
+        && (view.startsWith("outreach") || view === "owner-scorecard"
+            || view === "activity-trends" || view === "activity-trend-detail");
+    },
+  });
+}
+
+/**
  * Invalidate the query families that depend on opportunities/activity — opp
  * list + detail, account rollups, and pipeline metrics. Replaces blanket
  * invalidation of the whole ["jobs"] tree (which also refetched staff and
@@ -2803,6 +2822,10 @@ export function useLogActivity() {
     },
     onSuccess: () => {
       invalidateOppDependents(qc, [["jobs", "contact"], ["jobs", "metric"]]);
+      // A logged touch is outreach: the scorecard row for its type, the summary
+      // card and the trend all just moved. The intro form on the same screen
+      // already refreshed these; this form left them stale for 60s.
+      invalidateOutreachReports(qc);
       toast.success("Activity logged");
     },
     onError: () => toast.error("Failed to log activity"),

@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
-import type { ActivityEntry, CallKind } from "@/services/jobs";
+import { invalidateOutreachReports, type ActivityEntry, type CallKind } from "@/services/jobs";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -158,8 +158,7 @@ export function useLogFacilitatedIntro() {
       qc.invalidateQueries({ queryKey: ["jobs", "opportunity"] });
       qc.invalidateQueries({ queryKey: ["jobs", "account-rollup"] });
       // The intro is outreach, so the scorecard and its drills are now stale.
-      qc.invalidateQueries({ queryKey: ["jobs", "outreach"] });
-      qc.invalidateQueries({ queryKey: ["jobs", "owner-scorecard"] });
+      invalidateOutreachReports(qc);
       toast.success("Facilitated intro logged");
     },
     onError: (e: unknown) => {

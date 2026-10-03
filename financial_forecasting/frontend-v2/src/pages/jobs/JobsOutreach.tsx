@@ -124,9 +124,13 @@ function groupByAccount(contacts: OutreachDrillContact[]): DrillAccount[] {
   for (const c of contacts) {
     // Everything without a company shares one bucket rather than each becoming
     // its own single-contact "account", which read as noise at the top of the list.
-    const key = c.company?.trim() || "No account on file";
+    const display = c.company?.trim() || "No account on file";
+    // Keyed case-insensitively because that is how the number above was
+    // counted — DISTINCT lower(trim(company)). "Google" and "google " are one
+    // account in the headline, so they must open as one group here, not two.
+    const key = display.toLowerCase();
     let g = byAccount.get(key);
-    if (!g) { g = { account: key, contacts: [], touches: 0, actors: [] }; byAccount.set(key, g); }
+    if (!g) { g = { account: display, contacts: [], touches: 0, actors: [] }; byAccount.set(key, g); }
     g.contacts.push(c);
     g.touches += c.touches.length;
   }
