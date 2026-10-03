@@ -7,7 +7,7 @@
  * Accounts page uses, so a change here propagates everywhere through
  * React Query cache.
  */
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { ChevronDown, ChevronRight, ExternalLink, Pin, Search, X } from "lucide-react";
 
@@ -108,6 +108,15 @@ function loadPins(): Set<string> {
   }
 }
 
+// Guarded like every other storage write in this app: setItem throws in
+// Safari Private Browsing and at quota, and an unguarded write in a mount
+// effect white-screened /portfolio before anyone had pinned anything.
+function savePins(pins: Set<string>) {
+  try {
+    localStorage.setItem(PIN_KEY, JSON.stringify([...pins]));
+  } catch {}
+}
+
 // ── Component ────────────────────────────────────────────────────────────
 
 interface PortfolioAccountsProps {
@@ -140,14 +149,11 @@ export function PortfolioAccounts({ accounts, viewedSfUserId, loading, sfReady, 
       DEFAULT_VISIBLE,
     );
 
-  useEffect(() => {
-    localStorage.setItem(PIN_KEY, JSON.stringify([...pinned]));
-  }, [pinned]);
-
   const togglePin = (id: string) =>
     setPinned((prev) => {
       const next = new Set(prev);
       next.has(id) ? next.delete(id) : next.add(id);
+      savePins(next);
       return next;
     });
 
@@ -207,22 +213,28 @@ export function PortfolioAccounts({ accounts, viewedSfUserId, loading, sfReady, 
     };
   }, [accounts]);
 
-  const pinnedAccounts = useMemo(
-    () => accounts.filter((a) => pinned.has(a.Id)),
-    [accounts, pinned],
-  );
-
-  const visible = useMemo(() => {
+  // Pinning changes where a row sits, not whether it is shown: a pinned
+  // Foundation account disappears under the Corporate pill like any other,
+  // so the header count and the "no matches" state stay honest.
+  const passesFilters = useMemo(() => {
     const matchesSearch = searchMatcher(accounts, q, (a) => [a.Name, a.Type]);
-    const filtered = accounts.filter((a) => {
-      if (pinned.has(a.Id)) return false;
+    return (a: SfAccount) => {
       if (!matchesType(a, typeFilter)) return false;
       if (q && !matchesSearch(a)) return false;
       for (const r of rules) {
         if (!ruleApplies(a, r, filterable)) return false;
       }
       return true;
-    });
+    };
+  }, [accounts, q, typeFilter, rules, filterable]);
+
+  const pinnedAccounts = useMemo(
+    () => accounts.filter((a) => pinned.has(a.Id) && passesFilters(a)),
+    [accounts, pinned, passesFilters],
+  );
+
+  const visible = useMemo(() => {
+    const filtered = accounts.filter((a) => !pinned.has(a.Id) && passesFilters(a));
     return sortBy(filtered, sort, (a, key) => {
       const m = metricsByAccount.get(a.Id) ?? ZERO_METRICS;
       switch (key) {
@@ -233,7 +245,7 @@ export function PortfolioAccounts({ accounts, viewedSfUserId, loading, sfReady, 
         case "amountWon": return m.amountWon;
       }
     });
-  }, [accounts, q, typeFilter, rules, filterable, pinned, sort, metricsByAccount]);
+  }, [accounts, passesFilters, pinned, sort, metricsByAccount]);
 
   // Grouping for non-pinned rows
   type DisplayRow =

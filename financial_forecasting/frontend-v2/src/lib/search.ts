@@ -57,6 +57,9 @@ export interface ParsedQuery {
   squashed: string;
   /** Words that must all appear (filler dropped when others remain). */
   words: string[];
+  /** The query as typed, trimmed and lowercased. Non-empty while `norm`
+   *  is empty means the user typed only punctuation ("&", "???"). */
+  raw: string;
 }
 
 export function parseQuery(q: string): ParsedQuery {
@@ -67,7 +70,16 @@ export function parseQuery(q: string): ParsedQuery {
     norm,
     squashed: norm.replace(/ /g, ""),
     words: meaningful.length ? meaningful : all,
+    raw: String(q ?? "").trim().toLowerCase(),
   };
+}
+
+/** Normalization strips punctuation, so a punctuation-only query has no
+ *  normalized form to match on. It used to fall into the empty-query path
+ *  and match EVERYTHING — typing "&" listed the whole book. Match it
+ *  literally instead: "&" finds "Johnson & Johnson", "???" finds nothing. */
+function rawMatches(pq: ParsedQuery, fields: readonly unknown[]): boolean {
+  return fields.some((f) => f != null && String(f).toLowerCase().includes(pq.raw));
 }
 
 export const MatchRank = {
@@ -94,7 +106,8 @@ function startsAtWord(n: string, squashedQuery: string): boolean {
  */
 export function matchScore(query: string | ParsedQuery, fields: readonly unknown[]): number {
   const pq = typeof query === "string" ? parseQuery(query) : query;
-  if (!pq.norm) return MatchRank.Words;
+  if (!pq.raw) return MatchRank.Words;
+  if (!pq.norm) return rawMatches(pq, fields) ? MatchRank.Substring : MatchRank.None;
 
   let best: number = MatchRank.None;
   const squashes: string[] = [];
@@ -148,7 +161,8 @@ function withinDistance(a: string, b: string, max: number): boolean {
  *  of some field word (or of a whole squashed field). */
 export function fuzzyMatches(query: string | ParsedQuery, fields: readonly unknown[]): boolean {
   const pq = typeof query === "string" ? parseQuery(query) : query;
-  if (!pq.norm) return true;
+  if (!pq.raw) return true;
+  if (!pq.norm) return rawMatches(pq, fields);
   const candidates: string[] = [];
   for (const f of fields) {
     const { norm, squashed } = keysOf(f);
@@ -179,7 +193,7 @@ export function searchMatcher<T>(
   opts: SearchOptions = {},
 ): (item: T) => boolean {
   const pq = parseQuery(query);
-  if (!pq.norm) return () => true;
+  if (!pq.raw) return () => true;
   const hits = new Set<T>();
   for (const it of items) if (matchScore(pq, fields(it)) > MatchRank.None) hits.add(it);
   if (hits.size === 0 && opts.fuzzy !== false) {
@@ -199,7 +213,7 @@ export function rankByQuery<T>(
   opts: SearchOptions = {},
 ): T[] {
   const pq = parseQuery(query);
-  if (!pq.norm) return items.slice();
+  if (!pq.raw) return items.slice();
   const scored: { item: T; score: number; i: number }[] = [];
   items.forEach((item, i) => {
     const score = matchScore(pq, fields(item));

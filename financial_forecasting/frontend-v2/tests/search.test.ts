@@ -96,3 +96,14 @@ test("searchMatcher predicate honours strict-then-fuzzy", () => {
   const f = searchMatcher(items, "anthropik", (i) => [i.n]);
   assert.deepEqual(items.filter(f).map((i) => i.n), ["Anthropic"]);
 });
+
+test("punctuation-only query matches literally, not everything", () => {
+  const items = ["Johnson & Johnson", "OpenAI", "Acme Co."];
+  const amp = searchMatcher(items, "&", (s) => [s]);
+  assert.deepEqual(items.filter(amp), ["Johnson & Johnson"]);
+  const qs = searchMatcher(items, "???", (s) => [s]);
+  assert.deepEqual(items.filter(qs), []);
+  assert.deepEqual(rankByQuery(items, "&", (s) => [s]), ["Johnson & Johnson"]);
+  // Whitespace-only is still "no query".
+  assert.deepEqual(items.filter(searchMatcher(items, "   ", (s) => [s])), items);
+});

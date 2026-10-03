@@ -850,9 +850,10 @@ async def get_accounts(
             return []
         use_light = fields == "light"
         cache_key = (
-            # `v2` — bumped when SecondaryAccountOwner__c joined the
-            # projection so pre-deploy cached rows aren't served.
-            f"accounts:v2:{limit or 'all'}:"
+            # `v3` — bumped whenever a field joins a projection (v2:
+            # SecondaryAccountOwner__c, v3: Philanthropy__c on light) so
+            # pre-deploy cached rows aren't served.
+            f"accounts:v3:{limit or 'all'}:"
             f"{'light' if use_light else 'full'}:"
             f"{'active' if active_only else 'any'}"
         )
@@ -868,6 +869,7 @@ async def get_accounts(
                    BillingCity, BillingState, OwnerId, Owner.Name,
                    SecondaryAccountOwner__c, SecondaryAccountOwner__r.Name,
                    Account_Tier__c, Active__c, Qualification_Status__c,
+                   Philanthropy__c,
                    npo02__TotalOppAmount__c, npo02__NumberOfClosedOpps__c,
                    Total_Revenue_Generated__c,
                    Last_Activity_Date__c, LastActivityDate,
@@ -931,13 +933,19 @@ async def get_accounts(
         # FULL opportunity history of each account to classify
         # Re-activating vs Dormant correctly; the follow-up full-set
         # request attaches status to the same accounts.
+        status_complete = True
         if not active_only:
             try:
-                await _attach_account_status(records, salesforce)
+                status_complete = await _attach_account_status(records, salesforce)
             except Exception as ex:  # noqa: BLE001
+                status_complete = False
                 logger.warning(f"Failed to derive account_status; serving without it: {ex}")
 
-        cache.set(cache_key, records, CACHE_TTL_ACCOUNTS)
+        # A response with partial statuses is served, not cached: caching
+        # it would pin the degraded answer for CACHE_TTL_ACCOUNTS for every
+        # user, long after the database is back.
+        if status_complete:
+            cache.set(cache_key, records, CACHE_TTL_ACCOUNTS)
         return records
 
     except HTTPException:
@@ -947,8 +955,11 @@ async def get_accounts(
         raise sf_http_error(e, "records")
 
 
-async def _attach_account_status(accounts: list, salesforce) -> None:
-    """Compute and attach `account_status` to every account row.
+async def _attach_account_status(accounts: list, salesforce) -> bool:
+    """Compute and attach `account_status` to every account row. Returns
+    False when the bedrock DB was unavailable and only the SF-derivable
+    statuses could be attached (see below) — callers should not cache
+    such a response.
 
     Pulls the minimum data needed for the derivation:
       - SF opportunities (Id, AccountId, StageName, IsClosed,
@@ -964,13 +975,16 @@ async def _attach_account_status(accounts: list, salesforce) -> None:
 
     from db import get_pool
     from services.account_status import (
+        STATUS_INACTIVE,
+        STATUS_ON_HOLD,
+        STATUS_PURSUING,
         build_lookups,
         compute_account_status,
     )
 
     account_ids = [a.get("Id") for a in accounts if a.get("Id")]
     if not account_ids:
-        return
+        return True
 
     # 1. SF opportunities — slim projection, no record-type filter so the
     # status sees the full picture.
@@ -988,12 +1002,16 @@ async def _attach_account_status(accounts: list, salesforce) -> None:
     #
     # The bedrock DB may be unreachable (e.g. VPN not connected, pool
     # failed to initialize). Wrap only the DB queries in their own
-    # try/except so SF-derived statuses (Pursuing, Prospect) still
-    # compute. Stewarding / Re-activating will fall through to Dormant
-    # as a best-effort approximation when the DB is down.
+    # try/except so the statuses Salesforce alone can settle —
+    # Deprioritized, On Hold, Pursuing — still attach. Everything past
+    # that branch depends on awards and activity: without them an
+    # account with an active award would read "Prospect" and one with
+    # recent activity "Dormant". Those are left absent (None), not
+    # approximated — the UI shows "—" exactly as before this fallback.
     cutoff = datetime.now(_tz.utc) - timedelta(days=120)
     awards: list = []
     activities: list = []
+    db_ok = True
     try:
         pool = get_pool()
         if pool is None:
@@ -1012,19 +1030,21 @@ async def _attach_account_status(accounts: list, salesforce) -> None:
         awards = [dict(r) for r in award_rows]
         activities = [dict(r) for r in act_rows]
     except Exception as db_ex:
+        db_ok = False
         logger.warning(
-            f"DB unavailable for account_status — using SF-only data: {db_ex}"
+            f"DB unavailable for account_status — attaching SF-only statuses: {db_ex}"
         )
 
     opps_by_account, awards_by_opp, latest_activity_by_account = build_lookups(
         opps, awards, activities,
     )
 
+    sf_only = {STATUS_INACTIVE, STATUS_ON_HOLD, STATUS_PURSUING}
     for a in accounts:
         aid = a.get("Id")
         if not aid:
             continue
-        a["account_status"] = compute_account_status(
+        status = compute_account_status(
             aid,
             opps_by_account,
             awards_by_opp,
@@ -1032,6 +1052,8 @@ async def _attach_account_status(accounts: list, salesforce) -> None:
             is_active=bool(a.get("Active__c", True)),
             qualification_status=a.get("Qualification_Status__c"),
         )
+        a["account_status"] = status if (db_ok or status in sf_only) else None
+    return db_ok
 
 
 @app.post("/api/salesforce/accounts")
