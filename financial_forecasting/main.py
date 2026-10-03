@@ -2316,7 +2316,13 @@ async def update_account(
         success = await salesforce.update_record("Account", account_id, update_request.updates)
         if not success:
             raise HTTPException(400, "Salesforce rejected the update")
-        if _owner_before is not None:
+        # Gated on the request, not on whether the OLD owner resolved: 11,601
+        # of 20,420 active accounts are owned by a deactivated SF user, and
+        # resolving one of those can come back None. Reassigning such an
+        # account to a live RM is exactly the hand-off this notification is
+        # for, and notify_owner_changed handles old_owner=None (new owner
+        # only).
+        if "OwnerId" in update_request.updates:
             try:
                 _owner_after = await resolve_entity_owner(salesforce, "account", account_id)
                 await notify_owner_changed(
@@ -2527,7 +2533,7 @@ async def update_contact(
         success = await salesforce.update_record("Contact", contact_id, update_request.updates)
         if not success:
             raise HTTPException(400, "Salesforce rejected the update")
-        if _owner_before is not None:
+        if "OwnerId" in update_request.updates:   # see update_account
             try:
                 _owner_after = await resolve_entity_owner(salesforce, "contact", contact_id)
                 await notify_owner_changed(

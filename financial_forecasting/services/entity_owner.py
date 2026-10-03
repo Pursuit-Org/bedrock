@@ -58,13 +58,17 @@ async def resolve_entity_owner(sf, entity_type: str, entity_id: str) -> Optional
 
 
 async def find_org_user(conn, email: Optional[str]):
-    """Same lookup sf_notification_poller.py uses — only notify users who
-    have an org_users row (excludes integration/system SF accounts)."""
+    """The one org_users lookup every notification trigger goes through —
+    only notify people who have an org_users row (excludes integration and
+    system SF accounts) and are still active. A departed staffer can own
+    thousands of SF records for months; nothing under them should DM them,
+    and COALESCE keeps the pre-flag rows (is_active NULL) eligible, as
+    routes/permissions.py reads it."""
     if not email:
         return None
     return await conn.fetchrow(
         "SELECT email, display_name FROM public.org_users "
-        "WHERE LOWER(email) = LOWER($1) LIMIT 1",
+        "WHERE LOWER(email) = LOWER($1) AND COALESCE(is_active, true) LIMIT 1",
         email,
     )
 

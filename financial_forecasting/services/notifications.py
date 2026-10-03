@@ -107,6 +107,79 @@ _ACTIVITY_BUCKET_BY_TYPE = {
 }
 
 
+# ── Schema readiness ─────────────────────────────────────────────────────────
+# db/migrations/2026-09-23-notification-types-and-prefs.sql widens the type
+# CHECK on bedrock.notification and creates bedrock.notification_preference.
+# Nothing in this repo auto-applies migrations, so this code has to assume it
+# can run ahead of the schema — and the poller calls enqueue_notification
+# inside one transaction per batch, where a single failed statement poisons
+# everything after it and rolls the batch back. Both probes below are plain
+# SELECTs that never raise, and each caches once it has seen the migration.
+_PREFS_MIGRATION = "db/migrations/2026-09-23-notification-types-and-prefs.sql"
+
+# The six types the CHECK constraint allowed before that migration. Anything
+# else is refused by the database until the constraint is widened.
+_LEGACY_TYPES = frozenset({
+    TYPE_PROJECT_TASK_ASSIGNED,
+    TYPE_COMMENT_MENTION,
+    TYPE_SF_TASK_ASSIGNED,
+    TYPE_SF_OPP_OWNER_CHANGED,
+    TYPE_INTRO_REQUEST,
+    TYPE_INTRO_RESPONSE,
+})
+
+_schema_ready: Dict[str, bool] = {}      # "prefs" / "types" → True once seen
+_schema_warned: set = set()
+
+
+def _warn_once(key: str, msg: str, *args) -> None:
+    if key not in _schema_warned:
+        _schema_warned.add(key)
+        logger.warning(msg, *args)
+
+
+async def _prefs_table_ready(conn) -> bool:
+    """Does bedrock.notification_preference exist yet? to_regclass() returns
+    NULL for a missing relation instead of raising, so this is safe mid-
+    transaction. Cached once true."""
+    if _schema_ready.get("prefs"):
+        return True
+    ok = bool(await conn.fetchval(
+        "SELECT to_regclass('bedrock.notification_preference') IS NOT NULL"))
+    if ok:
+        _schema_ready["prefs"] = True
+    else:
+        _warn_once("prefs", "bedrock.notification_preference does not exist; every "
+                   "notification preference defaults to enabled until %s is applied",
+                   _PREFS_MIGRATION)
+    return ok
+
+
+async def _type_allowed(conn, type: str) -> bool:
+    """Will the type CHECK on bedrock.notification accept this type? Legacy
+    types need no probe. For the newer ones, read the live constraint rather
+    than attempt the insert: a CheckViolation inside the poller's transaction
+    would roll back the whole batch and leave its watermark where it was, so
+    the same records come back next cycle — with their Slack DMs."""
+    if type in _LEGACY_TYPES or _schema_ready.get("types"):
+        return True
+    definition = await conn.fetchval(
+        "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+        "WHERE conname = 'notification_type_check' "
+        "  AND conrelid = 'bedrock.notification'::regclass")
+    if definition is None:
+        return True   # no constraint at all — nothing to violate
+    if all(f"'{t}'" in definition for t in ALL_TYPES):
+        _schema_ready["types"] = True
+        return True
+    ok = f"'{type}'" in definition
+    if not ok:
+        _warn_once(f"type:{type}", "notification type %s is not allowed by "
+                   "bedrock.notification's CHECK constraint yet; skipping until %s "
+                   "is applied", type, _PREFS_MIGRATION)
+    return ok
+
+
 def _slack_service():
     """Pull the SlackMCPService instance (or None if Slack isn't connected)."""
     client = _services.get("mcp_client")
@@ -124,6 +197,8 @@ async def _get_preference(conn, user_email: str) -> Dict[str, bool]:
         "contact_activity_enabled": True,
         "opportunity_activity_enabled": True,
     }
+    if not await _prefs_table_ready(conn):
+        return defaults
     row = await conn.fetchrow(
         "SELECT slack_enabled, account_activity_enabled, contact_activity_enabled, "
         "opportunity_activity_enabled FROM bedrock.notification_preference "
@@ -158,6 +233,9 @@ async def enqueue_notification(
 
     recipient_norm = recipient_email.strip().lower()
 
+    if not await _type_allowed(conn, type):
+        return None
+
     bucket = _ACTIVITY_BUCKET_BY_TYPE.get(type)
     if bucket:
         pref = await _get_preference(conn, recipient_norm)
@@ -181,12 +259,44 @@ async def enqueue_notification(
     )
     notif_id: str = str(row["id"])
 
-    # Fire Slack dispatch without blocking the request.
+    # Fire Slack dispatch without blocking the request. The task sends nothing
+    # until the row above is visible from its own connection — see
+    # _await_committed — so a caller whose transaction later rolls back never
+    # produces a DM for a notification that does not exist.
     asyncio.create_task(
         _dispatch_slack(notif_id, recipient_norm, type, payload, actor_email)
     )
 
     return notif_id
+
+
+# How long the Slack task will wait for the inserting transaction to commit.
+# Request handlers commit immediately; the poller commits once per batch after
+# a handful of DB round-trips. Anything slower than this is a rollback or a
+# hang, and either way the DM must not go out.
+_COMMIT_WAIT_SEC = 15.0
+_COMMIT_POLL_SEC = 0.25
+
+
+async def _await_committed(pool, notif_id: str) -> bool:
+    """True once the notification row is visible from a fresh connection —
+    i.e. the transaction that inserted it has committed. False if it never
+    appears within _COMMIT_WAIT_SEC (rolled back, or still open).
+
+    One short acquire per probe rather than holding a connection while
+    waiting, so a batch of fifty pending notifications cannot pin fifty pool
+    connections against the transaction they are all waiting on.
+    """
+    deadline = asyncio.get_running_loop().time() + _COMMIT_WAIT_SEC
+    while True:
+        async with pool.acquire() as conn:
+            seen = await conn.fetchval(
+                "SELECT 1 FROM bedrock.notification WHERE id = $1::uuid", notif_id)
+        if seen:
+            return True
+        if asyncio.get_running_loop().time() >= deadline:
+            return False
+        await asyncio.sleep(_COMMIT_POLL_SEC)
 
 
 async def _dispatch_slack(
@@ -203,6 +313,12 @@ async def _dispatch_slack(
         return
 
     try:
+        if not await _await_committed(pool, notif_id):
+            logger.warning(
+                "Slack dispatch: notif %s never became visible within %.0fs — the "
+                "inserting transaction rolled back or is still open; not sending",
+                notif_id, _COMMIT_WAIT_SEC)
+            return
         async with pool.acquire() as conn:
             pref = await _get_preference(conn, recipient_email)
             if not pref["slack_enabled"]:

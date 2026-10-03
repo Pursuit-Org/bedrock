@@ -27,8 +27,18 @@ from services.notifications import (
 @pytest.fixture(autouse=True)
 def _clear():
     from main import app
+    # Default every test to "migration applied": FakeConn answers an
+    # unconfigured fetchval with None, which the schema probes read as
+    # "missing". Tests for the pre-migration paths clear this themselves.
+    notif_module._schema_ready.update(prefs=True, types=True)
     yield
+    notif_module._schema_ready.clear()
+    notif_module._schema_warned.clear()
     app.dependency_overrides.clear()
+
+
+def _schema_not_ready():
+    notif_module._schema_ready.clear()
 
 
 def _pref_row(**ov):
@@ -429,3 +439,138 @@ def test_create_entity_comment_survives_missing_salesforce_client():
 
     r = c.post("/api/entity-comments", json={"entity_type": "account", "entity_id": "001A", "content": "hello"})
     assert r.status_code == 200, r.text
+
+
+# ── Running ahead of the migration ──────────────────────────────────────────
+# db/migrations/2026-09-23-notification-types-and-prefs.sql is applied by hand.
+# Until it is, the preference table is missing and the type CHECK still lists
+# only the six legacy types. The poller calls enqueue_notification inside one
+# transaction per batch, so neither condition may raise.
+
+_LEGACY_CHECK = ("CHECK ((type = ANY (ARRAY['project_task_assigned'::text, "
+                 "'comment_mention'::text, 'sf_task_assigned'::text, "
+                 "'sf_opp_owner_changed'::text, 'intro_request'::text, "
+                 "'intro_response'::text])))")
+
+
+@pytest.mark.asyncio
+async def test_enqueue_skips_a_new_type_the_check_constraint_would_reject():
+    _schema_not_ready()
+    conn = FakeConn(vals={"pg_get_constraintdef": _LEGACY_CHECK},
+                    rows={"recipient_email, type, payload": {"id": "3"}})
+    out = await enqueue_notification(
+        conn, recipient_email="x@pursuit.org", type=TYPE_ACCOUNT_OWNER_CHANGED,
+        payload={"title": "t"}, actor_email="y@pursuit.org")
+    assert out is None
+    assert not conn.ran("INSERT INTO bedrock.notification")
+
+
+@pytest.mark.asyncio
+async def test_enqueue_legacy_type_needs_no_constraint_probe():
+    _schema_not_ready()
+    conn = FakeConn(rows={"recipient_email, type, payload": {"id": "4"}})
+    out = await enqueue_notification(
+        conn, recipient_email="x@pursuit.org", type=TYPE_PROJECT_TASK_ASSIGNED,
+        payload={"title": "t"})
+    assert out == "4"
+    assert not conn.ran("pg_get_constraintdef")
+
+
+@pytest.mark.asyncio
+async def test_enqueue_new_type_inserts_once_the_constraint_is_widened():
+    _schema_not_ready()
+    widened = _LEGACY_CHECK.replace("'intro_response'::text", "'intro_response'::text, 'account_owner_changed'::text")
+    conn = FakeConn(vals={"pg_get_constraintdef": widened,
+                          "to_regclass": True},
+                    rows={"recipient_email, type, payload": {"id": "5"}})
+    out = await enqueue_notification(
+        conn, recipient_email="x@pursuit.org", type=TYPE_ACCOUNT_OWNER_CHANGED,
+        payload={"title": "t"})
+    assert out == "5"
+
+
+@pytest.mark.asyncio
+async def test_get_preference_defaults_when_the_table_does_not_exist_yet():
+    _schema_not_ready()
+    conn = FakeConn(rows={"notification_preference": _pref_row(account_activity_enabled=False)})
+    pref = await notif_module._get_preference(conn, "x@pursuit.org")
+    # Fail-open: everything enabled, and the table was never queried — a
+    # failed SELECT would have poisoned the caller's transaction.
+    assert pref["account_activity_enabled"] is True
+    assert not conn.ran("FROM bedrock.notification_preference")
+
+
+# ── Slack waits for the commit ──────────────────────────────────────────────
+
+class _FakePool:
+    def __init__(self, conn):
+        self._conn = conn
+
+    def acquire(self):
+        conn = self._conn
+
+        class _Ctx:
+            async def __aenter__(self):
+                return conn
+
+            async def __aexit__(self, *a):
+                return False
+        return _Ctx()
+
+
+class _FakeSlackClient:
+    def __init__(self):
+        self.posts = []
+
+    async def chat_postMessage(self, **kw):
+        self.posts.append(kw)
+        return {"ok": True}
+
+
+def _wire_slack(monkeypatch, conn):
+    from dependencies import _services
+    client = _FakeSlackClient()
+
+    class _Svc:
+        slack_client = client
+
+    class _Mcp:
+        services = {"slack": _Svc()}
+    monkeypatch.setitem(_services, "db_pool", _FakePool(conn))
+    monkeypatch.setitem(_services, "mcp_client", _Mcp())
+    monkeypatch.setattr(notif_module, "_COMMIT_WAIT_SEC", 0.3)
+    monkeypatch.setattr(notif_module, "_COMMIT_POLL_SEC", 0.05)
+    return client
+
+
+@pytest.mark.asyncio
+async def test_dispatch_slack_sends_nothing_for_a_row_that_never_commits(monkeypatch):
+    # fetchval for the visibility probe is unconfigured -> None -> never seen
+    conn = FakeConn(vals={"slack_user_id": "U123"})
+    client = _wire_slack(monkeypatch, conn)
+    await notif_module._dispatch_slack("00000000-0000-0000-0000-000000000001",
+                                       "x@pursuit.org", TYPE_PROJECT_TASK_ASSIGNED,
+                                       {"title": "t"}, None)
+    assert client.posts == []
+    assert not conn.ran("UPDATE bedrock.notification")
+
+
+@pytest.mark.asyncio
+async def test_dispatch_slack_sends_once_the_row_is_visible(monkeypatch):
+    conn = FakeConn(vals={"FROM bedrock.notification WHERE id": 1,
+                          "slack_user_cache": "U123"})
+    client = _wire_slack(monkeypatch, conn)
+    await notif_module._dispatch_slack("00000000-0000-0000-0000-000000000002",
+                                       "x@pursuit.org", TYPE_PROJECT_TASK_ASSIGNED,
+                                       {"title": "t"}, None)
+    assert len(client.posts) == 1 and client.posts[0]["channel"] == "U123"
+
+
+# ── Inactive staff are never recipients ─────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_find_org_user_excludes_inactive_users():
+    conn = FakeConn()
+    await entity_owner_module.find_org_user(conn, "gone@pursuit.org")
+    q = conn.queries("fetchrow")[0]
+    assert "COALESCE(is_active, true)" in q

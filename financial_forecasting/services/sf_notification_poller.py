@@ -161,11 +161,7 @@ async def _poll_sf_tasks(pool, sf) -> int:
 
                 # Only notify if the owner is in our org_users registry —
                 # this skips integration accounts and other system users.
-                org_row = await conn.fetchrow(
-                    "SELECT email, display_name FROM public.org_users "
-                    "WHERE LOWER(email) = LOWER($1) LIMIT 1",
-                    owner_email,
-                )
+                org_row = await find_org_user(conn, owner_email)
                 if not org_row:
                     continue
 
@@ -446,11 +442,7 @@ async def _write_watermark(conn, source: str, ts: datetime) -> None:
 async def _find_org_user(conn, email: Optional[str]):
     if not email:
         return None
-    return await conn.fetchrow(
-        "SELECT email, display_name FROM public.org_users "
-        "WHERE LOWER(email) = LOWER($1) LIMIT 1",
-        email,
-    )
+    return await find_org_user(conn, email)
 
 
 def _parse_sf_datetime(s) -> Optional[datetime]:
