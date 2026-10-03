@@ -21,10 +21,10 @@
  * bar, heatmap cell) drills into the SAME `active_set` array from the
  * endpoint, so a drill list can never disagree with the count above it.
  */
-import { useMemo, useState } from "react";
+import { Fragment, createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { format } from "date-fns";
-import { AlertTriangle, ArrowRight, ChevronRight, Clock, Minus, Plus, TrendingDown, TrendingUp, Trophy, X, XCircle } from "lucide-react";
+import { AlertTriangle, ArrowRight, ChevronDown, ChevronRight, ChevronUp, Columns3, Clock, Minus, Plus, TrendingDown, TrendingUp, Trophy, X, XCircle } from "lucide-react";
 
 import {
   useOpportunitiesOverview,
@@ -46,9 +46,11 @@ import {
 } from "@/services/jobs";
 import { useAllJobsTasks } from "@/services/jobsTasks";
 import { useSessionState } from "@/lib/useSessionState";
-import { InlineSelect } from "@/components/ui/InlineEdit";
+import { InlineDate, InlineSelect, InlineText } from "@/components/ui/InlineEdit";
+import { parseEstimatedJobs } from "@/lib/estimatedJobs";
 import { Drawer } from "@/components/ui/Drawer";
 import { JobsFunnels } from "@/components/jobs/JobsFunnels";
+import { JobsProjectionChart } from "@/components/jobs/JobsProjectionChart";
 import { PeriodBar, defaultPeriod } from "@/components/jobs/PeriodBar";
 import { CommittedRolesModal } from "@/components/jobs/CommittedRolesModal";
 import { DealExpandPanel, PlacementsModal, ClosedLostModal, useOppStageOptions, displayPriority } from "./JobsTeam";
@@ -63,10 +65,82 @@ const DIMS: { key: OppBreakdownDim; label: string }[] = [
   { key: "owner", label: "Owner" },
 ];
 
-const DEAL_TYPE_FILTERS: { value: string; label: string }[] = [
-  { value: "all", label: "All deal types" },
+// Deal-type filter options. "unset" is the API token for opportunities with no
+// deal type, shown as Untagged so they can be pulled into (or kept out of) a view.
+const DEAL_TYPE_UNSET = "unset";
+const DEAL_TYPE_OPTIONS: { value: string; label: string }[] = [
   ...(Object.entries(DEAL_TYPE_LABELS) as [DealType, string][]).map(([value, label]) => ({ value, label })),
+  { value: DEAL_TYPE_UNSET, label: "Untagged" },
 ];
+const ALL_DEAL_TYPES = DEAL_TYPE_OPTIONS.map((o) => o.value);
+
+/** Selection → the `deal_type` query value: "all" when every box is ticked,
+ *  otherwise a comma-separated list the API reads as OR. */
+function dealTypeParam(selected: string[]): string {
+  return selected.length === ALL_DEAL_TYPES.length
+    ? "all"
+    : ALL_DEAL_TYPES.filter((v) => selected.includes(v)).join(",");
+}
+
+function dealTypeSummary(selected: string[]): string {
+  if (selected.length === ALL_DEAL_TYPES.length) return "All deal types";
+  const labels = DEAL_TYPE_OPTIONS.filter((o) => selected.includes(o.value)).map((o) => o.label);
+  return labels.length <= 2 ? labels.join(" + ") : `${labels[0]} + ${labels.length - 1} more`;
+}
+
+/** Checkbox popover for deal type. At least one box stays ticked: an empty
+ *  selection would either show nothing or quietly mean "all", and both read
+ *  as a bug. "All" ticks every box, Untagged included. */
+function DealTypeFilter({ selected, onChange }: { selected: string[]; onChange: (next: string[]) => void }) {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [open]);
+  const allOn = selected.length === ALL_DEAL_TYPES.length;
+  const toggle = (v: string) => {
+    const next = selected.includes(v) ? selected.filter((x) => x !== v) : [...selected, v];
+    if (next.length > 0) onChange(next);
+  };
+  return (
+    <div ref={wrapRef} className="relative">
+      <button type="button" onClick={() => setOpen((o) => !o)} aria-haspopup="listbox" aria-expanded={open}
+        className="flex h-7 min-w-[140px] items-center justify-between gap-2 rounded-md border border-border-strong bg-surface px-2 text-[12.5px] text-ink outline-none hover:border-ink-3 focus:border-accent">
+        <span className="truncate">{dealTypeSummary(selected)}</span>
+        <ChevronDown size={12} className="shrink-0 text-ink-4" />
+      </button>
+      {open && (
+        <div className="absolute right-0 top-full z-50 mt-1 w-[200px] rounded-md border border-border-strong bg-surface py-1 shadow-lg">
+          <label className="flex cursor-pointer items-center gap-2 border-b border-border px-3 py-1.5 text-[12px] font-semibold text-ink hover:bg-surface-2">
+            <input type="checkbox" className="accent-[var(--accent)]" checked={allOn}
+              onChange={() => onChange(allOn ? ["ft"] : [...ALL_DEAL_TYPES])} />
+            All deal types
+          </label>
+          {DEAL_TYPE_OPTIONS.map((o) => {
+            const on = selected.includes(o.value);
+            const last = on && selected.length === 1;
+            return (
+              <label key={o.value}
+                className={cn("flex items-center gap-2 px-3 py-1.5 text-[12px] text-ink hover:bg-surface-2",
+                  last ? "cursor-not-allowed" : "cursor-pointer",
+                  o.value === DEAL_TYPE_UNSET && "border-t border-border text-ink-2")}
+                title={last ? "At least one deal type stays selected" : undefined}>
+                <input type="checkbox" className="accent-[var(--accent)]" checked={on} disabled={last}
+                  onChange={() => toggle(o.value)} />
+                {o.label}
+              </label>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
 
 const ownerShort = (e: string | null) => (e ? e.split("@")[0] : "—");
 // Fallback full-ish name when staff lookup misses: "avni.nahar@…" → "Avni Nahar".
@@ -86,7 +160,14 @@ const dayDiff = (a: Date, b: Date) => Math.round((dayOnly(b).getTime() - dayOnly
 
 export function JobsOpportunitiesOverview() {
   const [owner, setOwner] = useState<string>("all");
-  const [dealType, setDealType] = useState<string>("all");
+  // Full-time by default (Kwame 2026-09-29): the pipeline review is about
+  // full-time placements, and "all" rolled capstones, part-time and contracts
+  // into Closed won beside them. Multi-select; `dealType` is the one query value
+  // every panel on the page reads.
+  const [dealTypes, setDealTypes] = useState<string[]>(["ft"]);
+  const [projGranularity, setProjGranularity] = useSessionState<"quarter" | "month">("jobsPipeline.projection.granularity", "quarter");
+  const [projPast, setProjPast] = useSessionState<boolean>("jobsPipeline.projection.past", false);
+  const dealType = dealTypeParam(dealTypes);
   const [dim, setDim] = useState<OppBreakdownDim>("status");
   // Y axis of the single concentration heatmap. Stage is the default because
   // it is always populated; priority can legitimately be empty.
@@ -133,7 +214,7 @@ export function JobsOpportunitiesOverview() {
   // attention): stage edits inline, rows expand to the full DealExpandPanel.
   const { data: oppsData } = useJobsOpportunities({
     owner_email: owner !== "all" ? owner : undefined,
-    deal_type: dealType !== "all" ? (dealType as DealType) : undefined,
+    deal_type: dealType !== "all" ? dealType : undefined,
     limit: 500,
   });
   const { data: allTasks = [] } = useAllJobsTasks();
@@ -194,12 +275,7 @@ export function JobsOpportunitiesOverview() {
         </div>
         <div className="flex items-center gap-2">
           <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">Deal type</span>
-          <select value={dealType} onChange={(e) => setDealType(e.target.value)}
-            className="h-7 rounded-md border border-border-strong bg-surface px-2 text-[12.5px] text-ink outline-none focus:border-accent">
-            {DEAL_TYPE_FILTERS.map((d) => (
-              <option key={d.value} value={d.value}>{d.label}</option>
-            ))}
-          </select>
+          <DealTypeFilter selected={dealTypes} onChange={setDealTypes} />
         </div>
       </PeriodBar>
 
@@ -218,8 +294,8 @@ export function JobsOpportunitiesOverview() {
           delta={s ? { n: netDelta, prev: s.net_new_prev, priorLabel: spanDays === 7 ? "last wk" : `prior ${spanDays}d` } : undefined}
           onClick={() => setDrill({ title: "Net new", note: `Created ${rangeLabel}`, rows: data?.drills?.net_new ?? [] })} />
         <SummaryCard tone="ink" label="Stalled" value={s?.stalled_6wk} isLoading={isLoading}
-          sub="Open opportunity 6+ weeks"
-          onClick={() => setDrill({ title: "Stalled 6+ weeks", note: "Open, created more than 6 weeks ago", rows: data?.drills?.stalled ?? [] })} />
+          sub="No movement in 6+ weeks"
+          onClick={() => setDrill({ title: "Stalled 6+ weeks", note: "Open, no stage change or activity on the deal or account in 6+ weeks · date is last movement", rows: data?.drills?.stalled ?? [] })} />
         {/* Stage-gate check: won on the board but the follow-through (e.g. the
             signed contract task) is still open — "signed contract = closed".
             Sits left of the outcome boxes: it's an action, they're a result. */}
@@ -301,13 +377,44 @@ export function JobsOpportunitiesOverview() {
         )}
       </Panel>
 
+      {/* ── Jobs projection: closed vs target, and whether the pipeline closes
+          the gap. Sits right above the Opportunities Set (Kwame 2026-09-29):
+          the projection says how short the quarter is, the set below is
+          where you work the deals that close it. */}
+      <Panel
+        title="Jobs Projection"
+        desc="Closed against target, and whether the roles in flight close the gap. Click a row for its deals."
+        action={
+          <div className="flex items-center gap-2">
+          <button type="button" onClick={() => setProjPast(!projPast)} aria-pressed={projPast}
+            className={cn("h-7 rounded-md border px-2 text-[11.5px] font-medium",
+              projPast ? "border-accent/40 bg-accent-soft text-accent-ink" : "border-border-strong text-ink-3 hover:text-ink-2")}>
+            {projPast ? "Hide past quarters" : "Show past quarters"}
+          </button>
+          <div className="flex rounded-md border border-border-strong p-0.5 text-[11.5px]">
+            {(["quarter", "month"] as const).map((g) => (
+              <button key={g} type="button" onClick={() => setProjGranularity(g)}
+                className={cn("rounded px-2 py-0.5 font-medium capitalize",
+                  projGranularity === g ? "bg-accent-soft text-accent-ink" : "text-ink-3 hover:text-ink-2")}>
+                {g === "quarter" ? "Quarterly" : "Monthly"}
+              </button>
+            ))}
+          </div>
+          </div>
+        }
+      >
+        <JobsProjectionChart granularity={projGranularity} showPast={projPast} owner={owner} dealType={dealType} nameOf={nameOf} />
+      </Panel>
+
       {/* ── Opportunities Set (grouped by priority; owner view = the walkthrough) ──
           Sits directly under the heatmap and above Recent Activity (Kwame
           2026-09-21): the heatmap says where deals are piling up, and this is
           the list you work them from. The activity feed is the narrative you
           read afterwards, not the thing you act on. */}
       <Panel title="Opportunities Set">
-        <div className="max-h-[520px] overflow-y-auto">
+        {/* Scrolls both ways: the header is sticky within this box, and the
+            nine columns keep their width on narrow screens instead of squashing. */}
+        <div className="max-h-[520px] overflow-auto">
           <OwnerWalkthrough openOpps={openOpps} needsById={needsById} nextTaskByOpp={nextTaskByOpp}
             nameOf={nameOf} {...rowHandlers} />
         </div>
@@ -395,9 +502,152 @@ interface RowHandlers {
   onCommittedRoles: (d: { id: string; account_name: string }) => void;
 }
 
-function ManagedOppRow({ o, sub, detail, right, nextTask, expandedId, setExpandedId, onRecordPlacements, onClosedLost, onCommittedRoles }: {
+// Opportunities Set columns (Kwame 2026-09-29): who owns it, which account,
+// which deal, where it stands, when it should close and how many jobs it
+// should yield, then the follow-through (tasks) and the latest word (comment).
+// The order is the viewer's to change (Columns menu), remembered per browser:
+// e.g. Est. jobs beside Open tasks reads as two counts of the same thing.
+// Header and rows build their grid from the same ordered list, so the
+// columns always line up.
+type OppSetCol = "owner" | "account" | "opportunity" | "stage" | "target_close"
+  | "est_jobs" | "tasks" | "comment" | "activity";
+
+const OPP_SET_COLS: { key: OppSetCol; label: string; track: string; right?: boolean; title?: string }[] = [
+  { key: "owner",        label: "Owner",          track: "112px" },
+  { key: "account",      label: "Account",        track: "minmax(120px,1fr)" },
+  { key: "opportunity",  label: "Opportunity",    track: "minmax(120px,1fr)" },
+  { key: "stage",        label: "Stage",          track: "138px" },
+  { key: "target_close", label: "Target close",   track: "92px" },
+  { key: "est_jobs",     label: "Est. jobs",      track: "56px", right: true, title: "Estimated jobs" },
+  { key: "tasks",        label: "Open tasks",     track: "minmax(110px,0.9fr)" },
+  { key: "comment",      label: "Recent comment", track: "minmax(150px,1.3fr)" },
+  { key: "activity",     label: "Activity",       track: "52px", right: true, title: "Last activity" },
+];
+const OPP_SET_COL_BY_KEY = new Map(OPP_SET_COLS.map((c) => [c.key, c]));
+const OPP_SET_DEFAULT_ORDER = OPP_SET_COLS.map((c) => c.key);
+const OPP_SET_ORDER_KEY = "bedrock-v2:order:jobs-opp-set";
+const OPP_SET_MIN_W = "min-w-[1080px]";
+
+/** Column order, persisted per browser. A stored order missing a column (or
+ *  naming one that no longer exists) is repaired, never trusted blindly. */
+function useOppSetOrder() {
+  const [order, setOrderState] = useState<OppSetCol[]>(() => {
+    try {
+      const raw = JSON.parse(localStorage.getItem(OPP_SET_ORDER_KEY) ?? "null") as string[] | null;
+      if (Array.isArray(raw)) {
+        const known = raw.filter((k): k is OppSetCol => OPP_SET_COL_BY_KEY.has(k as OppSetCol));
+        return [...new Set([...known, ...OPP_SET_DEFAULT_ORDER])];
+      }
+    } catch { /* storage blocked or bad JSON: use the default */ }
+    return OPP_SET_DEFAULT_ORDER;
+  });
+  const setOrder = (next: OppSetCol[]) => {
+    setOrderState(next);
+    try { localStorage.setItem(OPP_SET_ORDER_KEY, JSON.stringify(next)); } catch { /* per-viewer convenience only */ }
+  };
+  return [order, setOrder] as const;
+}
+
+const OppSetOrderContext = createContext<OppSetCol[]>(OPP_SET_DEFAULT_ORDER);
+
+/** 18px for the expand chevron, then the columns in the viewer's order. */
+function oppSetGridStyle(order: OppSetCol[]): React.CSSProperties {
+  return { gridTemplateColumns: ["18px", ...order.map((k) => OPP_SET_COL_BY_KEY.get(k)!.track)].join(" ") };
+}
+const OPP_SET_GRID = "grid items-center gap-2";
+
+function OppSetHeader() {
+  const order = useContext(OppSetOrderContext);
+  return (
+    <div style={oppSetGridStyle(order)}
+      className={cn(OPP_SET_GRID, "sticky top-0 z-10 border-y border-border-strong bg-surface px-2.5 py-1.5",
+        "whitespace-nowrap text-[10.5px] font-semibold uppercase tracking-wider text-ink-3")}>
+      <span />
+      {order.map((k) => {
+        const c = OPP_SET_COL_BY_KEY.get(k)!;
+        return <span key={k} className={cn(c.right && "text-right")} title={c.title}>{c.label}</span>;
+      })}
+    </div>
+  );
+}
+
+/** Columns menu: move a column up or down the order, or reset it. */
+function OppSetColumnsMenu({ order, setOrder }: { order: OppSetCol[]; setOrder: (o: OppSetCol[]) => void }) {
+  const [open, setOpen] = useState(false);
+  // Fixed to the viewport: the Opportunities Set scrolls inside its panel,
+  // which would otherwise clip the menu when the set has only a few rows.
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
+  const ref = useRef<HTMLDivElement>(null);
+  const btnRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    // Follow the button while the page or the panel scrolls.
+    const place = () => {
+      const r = btnRef.current?.getBoundingClientRect();
+      if (r) setPos({ top: r.bottom + 4, left: r.left });
+    };
+    document.addEventListener("mousedown", onDoc);
+    window.addEventListener("scroll", place, true);
+    window.addEventListener("resize", place);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      window.removeEventListener("scroll", place, true);
+      window.removeEventListener("resize", place);
+    };
+  }, [open]);
+  const toggle = () => {
+    const r = btnRef.current?.getBoundingClientRect();
+    if (r) setPos({ top: r.bottom + 4, left: r.left });
+    setOpen((v) => !v);
+  };
+  const move = (i: number, d: -1 | 1) => {
+    const j = i + d;
+    if (j < 0 || j >= order.length) return;
+    const next = [...order];
+    [next[i], next[j]] = [next[j], next[i]];
+    setOrder(next);
+  };
+  const isDefault = order.join() === OPP_SET_DEFAULT_ORDER.join();
+  return (
+    <div ref={ref} className="relative">
+      <button ref={btnRef} type="button" onClick={toggle} aria-expanded={open}
+        className="inline-flex h-7 items-center gap-1 rounded-md border border-border-strong bg-surface px-2 text-[12px] text-ink-2 hover:text-ink">
+        <Columns3 size={12} />Columns
+      </button>
+      {open && (
+        <div style={pos ?? undefined} className="fixed z-50 w-[220px] rounded-md border border-border-strong bg-surface py-1 shadow-lg">
+          <div className="px-3 pb-1 pt-0.5 text-[10.5px] font-semibold uppercase tracking-wider text-ink-4">Column order</div>
+          {order.map((k, i) => (
+            <div key={k} className="flex items-center justify-between gap-2 px-3 py-1 text-[12px] text-ink hover:bg-surface-2">
+              <span>{OPP_SET_COL_BY_KEY.get(k)!.label}</span>
+              <span className="flex gap-0.5">
+                <button type="button" aria-label={`Move ${OPP_SET_COL_BY_KEY.get(k)!.label} left`} disabled={i === 0}
+                  onClick={() => move(i, -1)}
+                  className="grid h-5 w-5 place-items-center rounded text-ink-3 hover:bg-surface hover:text-ink disabled:opacity-25">
+                  <ChevronUp size={12} />
+                </button>
+                <button type="button" aria-label={`Move ${OPP_SET_COL_BY_KEY.get(k)!.label} right`} disabled={i === order.length - 1}
+                  onClick={() => move(i, 1)}
+                  className="grid h-5 w-5 place-items-center rounded text-ink-3 hover:bg-surface hover:text-ink disabled:opacity-25">
+                  <ChevronDown size={12} />
+                </button>
+              </span>
+            </div>
+          ))}
+          <div className="mt-1 border-t border-border px-3 pt-1">
+            <button type="button" disabled={isDefault} onClick={() => setOrder(OPP_SET_DEFAULT_ORDER)}
+              className="text-[11.5px] text-ink-3 hover:text-ink disabled:opacity-40">Reset to default</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ManagedOppRow({ o, nameOf, detail, right, nextTask, expandedId, setExpandedId, onRecordPlacements, onClosedLost, onCommittedRoles }: {
   o: JobsOpportunity;
-  sub?: string | null;
+  nameOf: (e: string | null) => string;
   detail?: React.ReactNode;
   right?: React.ReactNode;
   nextTask?: { title: string; deadline: string | null };
@@ -408,6 +658,10 @@ function ManagedOppRow({ o, sub, detail, right, nextTask, expandedId, setExpande
   // until the 2026-08-05 migration lands, so it shows disabled here
   // rather than failing the save.
   const oppStageOptions = useOppStageOptions(o.stage);
+  const overdue = !!o.target_close_date && !o.stage.startsWith("closed")
+    // Local calendar date: toISOString() is UTC, which flagged a deal due
+    // today as late from 8pm in New York.
+    && o.target_close_date.slice(0, 10) < format(new Date(), "yyyy-MM-dd");
   // Keep in sync with DealRow.saveStage (JobsTeam.tsx) — same modal gating.
   function saveStage(stage: JobStage) {
     if (stage === o.stage) return Promise.resolve();
@@ -424,24 +678,32 @@ function ManagedOppRow({ o, sub, detail, right, nextTask, expandedId, setExpande
       });
     });
   }
-  return (
-    <>
-      <div
-        onClick={() => setExpandedId((p) => (p === o.id ? null : o.id))}
-        className={cn(
-          "grid cursor-pointer grid-cols-[1fr_150px_minmax(0,220px)_70px] items-center gap-2 border-t border-border-strong px-2.5 py-2 hover:bg-surface-2/40",
-          expanded && "bg-surface-2/40",
-        )}
-      >
-        <span className="flex min-w-0 items-center gap-1.5">
-          <ChevronRight size={12} className={cn("shrink-0 text-ink-4 transition-transform", expanded && "rotate-90")} />
-          <span className="min-w-0">
-            <Link to={`/jobs/opportunities/${o.id}`} onClick={(e) => e.stopPropagation()}
-              className="block truncate text-[13px] font-semibold text-ink hover:text-accent">{o.account_name}</Link>
-            {sub && <span className="block truncate text-[11px] text-ink-4">{sub}</span>}
+  const order = useContext(OppSetOrderContext);
+  const cells: Record<OppSetCol, React.ReactNode> = {
+    owner: (
+      <span className="flex min-w-0 items-center">
+          
+          <span className={cn("truncate text-[12px]", o.owner_email ? "font-medium text-ink-2" : "italic text-ink-4")}>
+            {o.owner_email ? nameOf(o.owner_email) : "Unassigned"}
           </span>
         </span>
-        <span onClick={(e) => e.stopPropagation()}>
+    ),
+    account: (
+      <Link to={`/jobs/opportunities/${o.id}`} onClick={(e) => e.stopPropagation()}
+          className="truncate text-[13px] font-semibold text-ink hover:text-accent" title={o.account_name}>
+          {o.account_name}
+        </Link>
+    ),
+    opportunity: (
+      <span className="min-w-0">
+          <span className={cn("block truncate text-[12px]", o.title ? "text-ink-2" : "text-ink-4")} title={o.title ?? undefined}>
+            {o.title || "—"}
+          </span>
+          {detail && <span className="block truncate text-[11px] text-ink-3">{detail}</span>}
+        </span>
+    ),
+    stage: (
+      <span onClick={(e) => e.stopPropagation()}>
           <InlineSelect<JobStage>
             value={o.stage}
             options={oppStageOptions}
@@ -451,15 +713,73 @@ function ManagedOppRow({ o, sub, detail, right, nextTask, expandedId, setExpande
             )}
           />
         </span>
-        <span className="truncate text-[11.5px] text-ink-3">
-          {detail ?? (nextTask
-            ? <>Next: <b className="font-semibold text-ink-2">{nextTask.title}</b>{nextTask.deadline ? ` · ${nextTask.deadline.slice(5)}` : ""}</>
-            : <span className="text-ink-4">no open task</span>)}
+    ),
+    target_close: (
+      <span onClick={(e) => e.stopPropagation()} title={overdue ? "Target close date has passed" : undefined}>
+          <InlineDate value={o.target_close_date} variant="short" placeholder="Set date"
+            className={cn("text-[12px]", overdue && "font-semibold text-[var(--red)]")}
+            onSave={(v) => v
+              ? updateOpp.mutateAsync({ id: o.id, target_close_date: v }).then(() => undefined)
+              : Promise.reject(new Error("Target close date is required"))} />
         </span>
-        <span className="text-right text-[11.5px] tabular-nums text-ink-4"
+    ),
+    est_jobs: (
+      <span onClick={(e) => e.stopPropagation()} className="text-right tabular-nums">
+          <InlineText value={o.estimated_jobs != null ? String(o.estimated_jobs) : null} placeholder="—"
+            className="justify-end text-right text-[12px]"
+            onSave={(v) => {
+              const n = parseEstimatedJobs(v);
+              return n === undefined
+                ? Promise.reject(new Error("Whole number, 0–999"))
+                : updateOpp.mutateAsync({ id: o.id, estimated_jobs: n }).then(() => undefined);
+            }} />
+        </span>
+    ),
+    tasks: (
+      <span className="flex min-w-0 items-center gap-1.5 text-[11.5px]">
+          {(o.open_tasks ?? 0) > 0 ? (
+            <>
+              <span className="shrink-0 rounded-full bg-surface-2 px-1.5 text-[10.5px] font-semibold tabular-nums text-ink-2">{o.open_tasks}</span>
+              {nextTask && (
+                <span className="truncate text-ink-3" title={nextTask.title}>
+                  {nextTask.title}{nextTask.deadline ? ` · ${nextTask.deadline.slice(5)}` : ""}
+                </span>
+              )}
+            </>
+          ) : <span className="text-ink-4">—</span>}
+        </span>
+    ),
+    comment: (
+      <span className="min-w-0 text-[11.5px]"
+          title={o.last_comment ? `${o.last_comment}\n— ${nameOf(o.last_comment_by ?? null)}` : undefined}>
+          {o.last_comment ? (
+            <>
+              <span className="block truncate text-ink-2">{o.last_comment}</span>
+              <span className="block truncate text-[10.5px] text-ink-4">
+                {nameOf(o.last_comment_by ?? null)} · {relDay(o.last_comment_at ?? null) ?? ""}
+                {(o.comment_count ?? 0) > 1 ? ` · ${o.comment_count} comments` : ""}
+              </span>
+            </>
+          ) : <span className="text-ink-4">—</span>}
+        </span>
+    ),
+    activity: (
+      <span className="text-right text-[11.5px] tabular-nums text-ink-4"
           title={o.last_activity_at ? `Last activity ${new Date(o.last_activity_at).toLocaleDateString()}` : "No activity"}>
           {right ?? (relDay(o.last_activity_at) ?? "—")}
         </span>
+    ),
+  };
+  return (
+    <>
+      <div
+        onClick={() => setExpandedId((p) => (p === o.id ? null : o.id))}
+        style={oppSetGridStyle(order)}
+        className={cn(OPP_SET_GRID, "cursor-pointer border-t border-border-strong px-2.5 py-2 hover:bg-surface-2/40",
+          expanded && "bg-surface-2/40")}
+      >
+        <ChevronRight size={12} className={cn("shrink-0 text-ink-4 transition-transform", expanded && "rotate-90")} />
+        {order.map((k) => <Fragment key={k}>{cells[k]}</Fragment>)}
       </div>
       {expanded && (
         <div className="border-t border-border-strong bg-surface-2/20">
@@ -495,7 +815,7 @@ const SALARY_ORDER_LABELS = ["Under $80k", "$80k–100k", "$100k–120k", "$120k
 
 const OPP_FILTER_FIELDS: OppFilterField[] = [
   { key: "deal_type", label: "Deal type",
-    bucket: (o) => (o.deal_type ? DEAL_TYPE_LABELS[o.deal_type] ?? o.deal_type : "Not set") },
+    bucket: (o) => (o.deal_type ? DEAL_TYPE_LABELS[o.deal_type] ?? o.deal_type : "Untagged") },
   { key: "stage", label: "Stage",
     bucket: (o) => STAGE_LABELS[o.stage] ?? o.stage },
   { key: "segment", label: "Segment",
@@ -629,11 +949,16 @@ function OwnerWalkthrough({ openOpps, needsById, nextTaskByOpp, nameOf, ...handl
   // Field → selected bucket. Every field in OPP_FILTER_FIELDS is filterable
   // without being a column: the ask was to slice the set, not widen the table.
   const [filters, setFilters] = useSessionState<Record<string, string>>("jobsPipeline.details.filters", {});
+  const [colOrder, setColOrder] = useOppSetOrder();
 
   const owners = useMemo(() => [...new Set(openOpps.map((o) => (o.owner_email ?? "").toLowerCase()))]
     .filter(Boolean).sort(), [openOpps]);
   const filterEntries = useMemo(
-    () => Object.entries(filters).filter(([k]) => FILTER_BY_KEY.has(k)), [filters]);
+    () => Object.entries(filters).filter(([k]) => FILTER_BY_KEY.has(k))
+      // The untagged deal-type bucket was renamed "Not set" -> "Untagged"
+      // (2026-09-29); a filter saved in this tab before that still applies.
+      .map(([k, v]): [string, string] => (k === "deal_type" && v === "Not set" ? [k, "Untagged"] : [k, v])),
+    [filters]);
   const visible = useMemo(() => openOpps.filter((o) =>
     (!ownerFilter || (o.owner_email ?? "").toLowerCase() === ownerFilter) &&
     (!flaggedOnly || needsById.has(o.id)) &&
@@ -654,6 +979,7 @@ function OwnerWalkthrough({ openOpps, needsById, nextTaskByOpp, nameOf, ...handl
         <option value="">No grouping</option>
       </select>
       <OppSetFilters filters={filters} setFilters={setFilters} opps={openOpps} nameOf={nameOf} />
+      <OppSetColumnsMenu order={colOrder} setOrder={setColOrder} />
       <button type="button" onClick={() => setFlaggedOnly(!flaggedOnly)}
         className={cn("h-7 rounded-md border px-2 text-[11.5px] font-medium",
           flaggedOnly ? "border-[var(--amber)]/40 bg-[var(--amber-soft)] text-[var(--amber)]"
@@ -693,13 +1019,15 @@ function OwnerWalkthrough({ openOpps, needsById, nextTaskByOpp, nameOf, ...handl
         ].filter((b) => b.rows.length > 0)
       : [{ label: "", cls: "", rows: visible }];
     return (
-      <div className="flex flex-col">
+      <OppSetOrderContext.Provider value={colOrder}>
+      <div className={cn("flex flex-col", OPP_SET_MIN_W)}>
         {controls}
+        <OppSetHeader />
         {bands.map((b) => (
           <div key={b.label}>
             {b.label && <div className={cn("px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider", b.cls)}>{b.label} · {b.rows.length}</div>}
             {b.rows.map((o) => (
-              <ManagedOppRow key={o.id} o={o} sub={o.title ?? nameOf(o.owner_email)} {...flagged(o)}
+              <ManagedOppRow key={o.id} o={o} nameOf={nameOf} {...flagged(o)}
                 nextTask={nextTaskByOpp.get(o.id)} {...handlers} />
             ))}
           </div>
@@ -708,6 +1036,7 @@ function OwnerWalkthrough({ openOpps, needsById, nextTaskByOpp, nameOf, ...handl
           <div className="border-t border-border-strong px-2.5 py-3 text-[12px] text-ink-4">Nothing matches the filters.</div>
         )}
       </div>
+      </OppSetOrderContext.Provider>
     );
   }
 
@@ -718,8 +1047,10 @@ function OwnerWalkthrough({ openOpps, needsById, nextTaskByOpp, nameOf, ...handl
     </div>;
   }
   return (
-    <div className="flex flex-col">
+    <OppSetOrderContext.Provider value={colOrder}>
+    <div className={cn("flex flex-col", OPP_SET_MIN_W)}>
       {controls}
+      <OppSetHeader />
       {groups.map(([email, opps]) => {
         const p1 = opps.filter((o) => displayPriority(o.priority) === 1);
         const p2 = opps.filter((o) => displayPriority(o.priority) === 2);
@@ -749,21 +1080,21 @@ function OwnerWalkthrough({ openOpps, needsById, nextTaskByOpp, nameOf, ...handl
               <div className="bg-[var(--accent-soft)] px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-[var(--accent-ink)]">P1 · High value</div>
             )}
             {p1.map((o) => (
-              <ManagedOppRow key={o.id} o={o} sub={o.title} {...flaggedRow(o)}
+              <ManagedOppRow key={o.id} o={o} nameOf={nameOf} {...flaggedRow(o)}
                 nextTask={nextTaskByOpp.get(o.id)} {...handlers} />
             ))}
             {p2.length > 0 && (
               <div className="bg-[var(--sky-soft)] px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-[var(--sky)]">P2</div>
             )}
             {p2.map((o) => (
-              <ManagedOppRow key={o.id} o={o} sub={o.title} {...flaggedRow(o)}
+              <ManagedOppRow key={o.id} o={o} nameOf={nameOf} {...flaggedRow(o)}
                 nextTask={nextTaskByOpp.get(o.id)} {...handlers} />
             ))}
             {stalled.length > 0 && (
               <div className="bg-[var(--amber-soft)] px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-[var(--amber)]">Stalled — needs unblock</div>
             )}
             {stalled.map((o) => (
-              <ManagedOppRow key={o.id} o={o} sub={o.title} {...flaggedRow(o)}
+              <ManagedOppRow key={o.id} o={o} nameOf={nameOf} {...flaggedRow(o)}
                 nextTask={nextTaskByOpp.get(o.id)} {...handlers} />
             ))}
             {rest.length > 0 && (
@@ -779,7 +1110,7 @@ function OwnerWalkthrough({ openOpps, needsById, nextTaskByOpp, nameOf, ...handl
                   P3+ / no priority · {rest.length}
                 </button>
                 {restOpen && rest.map((o) => (
-                  <ManagedOppRow key={o.id} o={o} sub={o.title} {...flaggedRow(o)}
+                  <ManagedOppRow key={o.id} o={o} nameOf={nameOf} {...flaggedRow(o)}
                     nextTask={nextTaskByOpp.get(o.id)} {...handlers} />
                 ))}
               </>
@@ -788,6 +1119,7 @@ function OwnerWalkthrough({ openOpps, needsById, nextTaskByOpp, nameOf, ...handl
         );
       })}
     </div>
+    </OppSetOrderContext.Provider>
   );
 }
 
@@ -1053,7 +1385,7 @@ function ownerLabel(key: string, nameOf?: (e: string | null) => string): string 
 
 function breakdownLabel(dim: OppBreakdownDim, key: string, label: string,
                         nameOf?: (e: string | null) => string): string {
-  if (dim === "deal_type") return DEAL_TYPE_LABELS[key as DealType] ?? label;
+  if (dim === "deal_type") return key === "(unset)" ? "Untagged" : DEAL_TYPE_LABELS[key as DealType] ?? label;
   if (dim === "owner") return ownerLabel(key, nameOf);
   return label;
 }

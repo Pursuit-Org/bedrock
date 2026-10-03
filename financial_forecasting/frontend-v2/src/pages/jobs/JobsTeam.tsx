@@ -62,6 +62,7 @@ import {
 } from "@/pages/cleanup/Filters";
 import { ChevronDown, ChevronRight, Mail, Linkedin, Trash2, X, Plus, Check, CheckSquare, Search } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { apiErrorMessage, parseEstimatedJobs } from "@/lib/estimatedJobs";
 import { format, formatDistanceToNow } from "date-fns";
 
 // ── Owner config ─────────────────────────────────────────────────────────────
@@ -706,7 +707,16 @@ function DealContextStrip({ deal }: { deal: JobsOpportunity }) {
         </div>
       </Field>
       <Field label="Target close">
-        <InlineDate value={deal.target_close_date} onSave={(v) => patch({ target_close_date: v || null })} />
+        <InlineDate value={deal.target_close_date}
+          onSave={(v) => v ? patch({ target_close_date: v }) : Promise.reject(new Error("Target close date is required"))} />
+      </Field>
+      {/* Beside Target close: the projection plots the estimate on that date. */}
+      <Field label="Est. jobs">
+        <InlineText value={deal.estimated_jobs != null ? String(deal.estimated_jobs) : null} placeholder="—"
+          onSave={(v) => {
+            const n = parseEstimatedJobs(v);
+            return n === undefined ? Promise.reject(new Error("Whole number, 0–999")) : patch({ estimated_jobs: n });
+          }} />
       </Field>
       <Field label="Warm intro by">
         <InlineText value={deal.intro_by} placeholder="—" onSave={(v) => patch({ intro_by: v || null })} />
@@ -1350,26 +1360,26 @@ const DEAL_TYPE_OPTIONS: { value: DealType; label: string }[] = (
 
 type OppColKey =
   | "company" | "role" | "salary" | "stage" | "status" | "deal_type"
-  | "priority" | "segment" | "likelihood" | "num_roles" | "owner" | "target_close" | "tasks" | "recent" | "updated";
+  | "priority" | "segment" | "likelihood" | "num_roles" | "owner" | "target_close" | "est_jobs" | "tasks" | "recent" | "updated";
 
 const OPP_COLUMN_ORDER: OppColKey[] = [
   "company", "role", "salary", "stage", "status", "deal_type",
-  "priority", "segment", "likelihood", "num_roles", "owner", "target_close", "tasks", "recent", "updated",
+  "priority", "segment", "likelihood", "num_roles", "owner", "target_close", "est_jobs", "tasks", "recent", "updated",
 ];
 
 const OPP_DEFAULT_VISIBLE: OppColKey[] = [
-  "company", "role", "salary", "stage", "status", "deal_type", "priority", "segment", "owner", "target_close", "tasks",
+  "company", "role", "salary", "stage", "status", "deal_type", "priority", "segment", "owner", "target_close", "est_jobs", "tasks",
 ];
 
 const OPP_COL_LABELS: Record<OppColKey, string> = {
   company: "Company", role: "Role", salary: "Salary", stage: "Stage", status: "Status",
   deal_type: "Deal Type", priority: "Priority", segment: "Segment", likelihood: "Likelihood",
-  num_roles: "# Roles", owner: "Owner", target_close: "Target close", tasks: "Open tasks", recent: "Recent activity", updated: "Updated",
+  num_roles: "# Roles", owner: "Owner", target_close: "Target close", est_jobs: "Est. jobs", tasks: "Open tasks", recent: "Recent activity", updated: "Updated",
 };
 
 const OPP_DEFAULT_WIDTHS: Record<OppColKey, number> = {
   company: 280, role: 210, salary: 120, stage: 210, status: 104, deal_type: 140,
-  priority: 96, segment: 150, likelihood: 116, num_roles: 84, owner: 190, target_close: 118, tasks: 96, recent: 120, updated: 120,
+  priority: 96, segment: 150, likelihood: 116, num_roles: 84, owner: 190, target_close: 118, est_jobs: 92, tasks: 96, recent: 120, updated: 120,
 };
 
 const LIKELIHOOD_RANK: Record<Likelihood, number> = { low: 1, medium: 2, high: 3 };
@@ -1389,6 +1399,7 @@ function extractOpp(d: JobsOpportunity, key: OppColKey): string | number {
     case "num_roles":  return d.num_roles ?? 0;
     case "owner":      return d.owner_email ?? "";
     case "target_close": return d.target_close_date ?? "";
+    case "est_jobs":   return d.estimated_jobs ?? -1;
     case "tasks":      return d.open_tasks ?? 0;
     case "recent":     return d.recent_activity_count ?? 0;
     case "updated":    return d.updated_at ?? "";
@@ -1399,7 +1410,7 @@ function extractOpp(d: JobsOpportunity, key: OppColKey): string | number {
 
 type OppField =
   | "company" | "role" | "stage" | "status" | "deal_type" | "segment"
-  | "priority" | "likelihood" | "owner" | "salary" | "num_roles" | "target_close" | "recent" | "updated";
+  | "priority" | "likelihood" | "owner" | "salary" | "num_roles" | "target_close" | "est_jobs" | "recent" | "updated";
 
 const OPP_FILTERABLE: Record<OppField, FieldMeta<JobsOpportunity>> = {
   company:    { label: "Company",    type: "text",   getValue: (d) => d.account_name ?? "" },
@@ -1414,6 +1425,7 @@ const OPP_FILTERABLE: Record<OppField, FieldMeta<JobsOpportunity>> = {
   target_close: { label: "Target close date", type: "date", getValue: (d) => d.target_close_date ?? "" },
   salary:     { label: "Salary",     type: "number", getValue: (d) => d.salary_expected ?? null },
   num_roles:  { label: "# Roles",    type: "number", getValue: (d) => d.num_roles ?? null },
+  est_jobs:   { label: "Estimated jobs", type: "number", getValue: (d) => d.estimated_jobs ?? null },
   recent:     { label: "Recent activity (7d)", type: "number", getValue: (d) => d.recent_activity_count ?? 0 },
   updated:    { label: "Updated",    type: "date",   getValue: (d) => d.updated_at ?? null },
 };
@@ -1430,7 +1442,7 @@ const OPP_GROUP_OPTIONS: { value: string; label: string }[] = [
 // Columns whose <td> should swallow clicks (inline editors) so editing
 // doesn't toggle the row's expand.
 const OPP_EDITABLE_COLS = new Set<OppColKey>([
-  "role", "salary", "stage", "deal_type", "likelihood", "priority", "segment", "num_roles", "owner", "target_close",
+  "role", "salary", "stage", "deal_type", "likelihood", "priority", "segment", "num_roles", "owner", "target_close", "est_jobs",
 ]);
 
 function DealRow({
@@ -1581,7 +1593,19 @@ function DealRow({
       />
     ),
     owner: <StaffPicker value={deal.owner_email} onChange={(email) => patch({ owner_email: email })} />,
-    target_close: <InlineDate value={deal.target_close_date} onSave={(v) => patch({ target_close_date: v || null })} />,
+    target_close: <InlineDate value={deal.target_close_date}
+      onSave={(v) => v ? patch({ target_close_date: v }) : Promise.reject(new Error("Target close date is required"))} />,
+    est_jobs: (
+      <InlineText
+        value={deal.estimated_jobs != null ? String(deal.estimated_jobs) : ""}
+        placeholder="—"
+        className="justify-end text-right"
+        onSave={(v) => {
+          const n = parseEstimatedJobs(v);
+          return n === undefined ? Promise.reject(new Error("Whole number, 0–999")) : patch({ estimated_jobs: n });
+        }}
+      />
+    ),
     tasks: (deal.open_tasks ?? 0) > 0
       ? <span className="inline-flex items-center gap-1 text-[12px] text-ink-2"><CheckSquare size={11} className="text-ink-4" />{deal.open_tasks}</span>
       : <span className="text-ink-4">—</span>,
@@ -1609,7 +1633,7 @@ function DealRow({
             key={key}
             className={cn(
               "overflow-hidden px-3 py-1.5 align-middle",
-              key === "num_roles" && "text-right tabular-nums",
+              (key === "num_roles" || key === "est_jobs") && "text-right tabular-nums",
               // Pinned identity column — keeps the company visible while the
               // grid scrolls horizontally. Opaque bg so rows slide under it.
               i === 0 && "sticky left-0 z-10 bg-surface",
@@ -1641,6 +1665,8 @@ interface NewDealForm {
   name: string;          // freeform opportunity name (opp = the ongoing conversation, not one role)
   owner: string;
   expectedSalary: string;
+  targetClose: string;   // YYYY-MM-DD, required
+  estimatedJobs: string; // optional whole number
   notes: string;
 }
 
@@ -1651,13 +1677,18 @@ const DEFAULT_NEW_DEAL_FORM: NewDealForm = {
   name: "",
   owner: "",
   expectedSalary: "",
+  targetClose: "",
+  estimatedJobs: "",
   notes: "",
 };
 
 function NewDealModal({ onClose }: { onClose: () => void }) {
   const nav = useNavigate();
   const [form, setForm] = useState<NewDealForm>(DEFAULT_NEW_DEAL_FORM);
+  const [submitError, setSubmitError] = useState<string | null>(null);
   const createOpportunity = useCreateOpportunity();
+  const estJobs = parseEstimatedJobs(form.estimatedJobs);
+  const canSubmit = !!form.companyName.trim() && !!form.targetClose && estJobs !== undefined;
 
   function set<K extends keyof NewDealForm>(key: K, value: NewDealForm[K]) {
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -1665,13 +1696,16 @@ function NewDealModal({ onClose }: { onClose: () => void }) {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!form.companyName.trim()) return;
+    if (!canSubmit) return;
+    setSubmitError(null);
 
     const salary = form.expectedSalary.trim()
       ? Number(form.expectedSalary.replace(/[^0-9.]/g, ""))
       : undefined;
 
-    const created = await createOpportunity.mutateAsync({
+    let created: JobsOpportunity | undefined;
+    try {
+      created = await createOpportunity.mutateAsync({
       account_id: "UNKNOWN",
       account_name: form.companyName.trim(),
       stage: form.stage,
@@ -1680,7 +1714,13 @@ function NewDealModal({ onClose }: { onClose: () => void }) {
       owner_email: form.owner.trim() || undefined,
       salary_expected: salary != null && !isNaN(salary) ? salary : undefined,
       description: form.notes.trim() || undefined,
+      target_close_date: form.targetClose,
+      estimated_jobs: estJobs ?? null,
     } as Partial<JobsOpportunity>);
+    } catch (err) {
+      setSubmitError(apiErrorMessage(err, "Couldn't create the opportunity."));
+      return;
+    }
 
     onClose();
     if (created?.id) nav(jobsOpportunityPath(created.id));
@@ -1793,6 +1833,40 @@ function NewDealModal({ onClose }: { onClose: () => void }) {
             </div>
           </div>
 
+          {/* Target close + Estimated jobs (two columns) */}
+          <div className="grid grid-cols-2 gap-3">
+            <div className="flex flex-col gap-1">
+              <label className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">
+                Target Close Date <span className="text-red-500">*</span>
+              </label>
+              <input
+                type="date"
+                required
+                value={form.targetClose}
+                onChange={(e) => set("targetClose", e.target.value)}
+                className="w-full rounded-md border border-border-strong bg-surface px-3 py-2 text-[13px] text-ink focus:outline-none focus:ring-1 focus:ring-accent/40"
+              />
+            </div>
+
+            <div className="flex flex-col gap-1">
+              <label className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">Estimated Jobs</label>
+              <input
+                type="number"
+                value={form.estimatedJobs}
+                onChange={(e) => set("estimatedJobs", e.target.value)}
+                placeholder="e.g. 2"
+                min={0}
+                max={999}
+                step={1}
+                title="How many jobs this deal is expected to yield. Optional."
+                className={cn(
+                  "w-full rounded-md border bg-surface px-3 py-2 text-[13px] text-ink placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40",
+                  estJobs === undefined ? "border-red" : "border-border-strong",
+                )}
+              />
+            </div>
+          </div>
+
           {/* Notes */}
           <div className="flex flex-col gap-1">
             <label className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">Notes</label>
@@ -1805,6 +1879,10 @@ function NewDealModal({ onClose }: { onClose: () => void }) {
             />
           </div>
 
+          {submitError && (
+            <p role="alert" className="rounded border border-red bg-red-soft px-3 py-2 text-[12.5px] text-red">{submitError}</p>
+          )}
+
           {/* Actions */}
           <div className="flex items-center justify-end gap-3 pt-1">
             <button
@@ -1816,7 +1894,7 @@ function NewDealModal({ onClose }: { onClose: () => void }) {
             </button>
             <button
               type="submit"
-              disabled={createOpportunity.isPending || !form.companyName.trim()}
+              disabled={createOpportunity.isPending || !canSubmit}
               className="flex items-center gap-1.5 rounded-lg bg-accent px-4 py-2 text-[13px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
             >
               {createOpportunity.isPending ? (
@@ -2527,7 +2605,7 @@ export function JobsTeam() {
                   key={key}
                   width={widths[key]}
                   onStartResize={(e) => startResize(key, e)}
-                  align={key === "num_roles" || key === "salary" ? "right" : "left"}
+                  align={key === "num_roles" || key === "est_jobs" || key === "salary" ? "right" : "left"}
                   isLast={idx === visibleCols.length - 1}
                   className={idx === 0 ? "sticky left-0 z-30" : undefined}
                 >

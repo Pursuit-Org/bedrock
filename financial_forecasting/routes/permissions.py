@@ -31,7 +31,7 @@ PERMISSION_KEYS = [
     "match_invoices", "manage_payment_schedules", "generate_financial_reports",
     "use_pebble_chat", "use_pebble_research", "pebble_crm_write",
     "trigger_data_sync", "manage_users_roles", "edit_permission_profiles",
-    "manage_owner_goals",
+    "manage_owner_goals", "manage_jobs_targets",
 ]
 
 

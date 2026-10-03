@@ -31,7 +31,8 @@ def _clear():
 def _opp(account_name, stage, **ov):
     row = {"id": "o1", "account_id": None, "account_name": account_name, "stage": stage,
            "deal_type": "ft", "title": "Eng", "owner_email": "a@p.org", "priority": None,
-           "num_roles": 1, "likelihood": None, "updated_at": RECENT}
+           "num_roles": 1, "likelihood": None, "updated_at": RECENT,
+           "target_close_date": None, "estimated_jobs": None}
     row.update(ov)
     return row
 

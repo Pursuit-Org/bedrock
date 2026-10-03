@@ -143,6 +143,9 @@ export function InlineText({
       flash();
     } catch (e) {
       setOptimistic(null);
+      // Back to the saved value, so reopening the editor doesn't show the
+      // rejected draft (e.g. a cleared required field).
+      setDraft(value ?? "");
       setError(e instanceof Error ? e.message : "Failed");
     } finally {
       setSaving(false);
@@ -179,7 +182,8 @@ export function InlineText({
           error && "ring-1 ring-red",
           className,
         )}
-        title={shownHasValue ? shown : (emptyLabel ?? placeholder)}
+        // A failed save says why on hover; the red ring alone didn't.
+        title={error ?? (shownHasValue ? shown : (emptyLabel ?? placeholder))}
       >
         <span className="min-w-0 flex-1 truncate">
           {shownHasValue ? shown : (emptyLabel ?? placeholder)}
@@ -640,6 +644,7 @@ export function InlineDate({
       flash();
     } catch (e) {
       setOptimistic(null);
+      setDraft(toIsoDate(value));
       setError(e instanceof Error ? e.message : "Failed");
     } finally {
       setSaving(false);
@@ -671,7 +676,7 @@ export function InlineDate({
           error && "ring-1 ring-red",
           className,
         )}
-        title={hasValue ? formatter(display) : placeholder}
+        title={error ?? (hasValue ? formatter(display) : placeholder)}
       >
         <span className="min-w-0 flex-1 truncate tabular-nums">
           {hasValue ? formatter(display) : placeholder}

@@ -95,6 +95,14 @@ export interface JobsOpportunity {
   /** Campaign tags — same vocabulary as contacts. Empty until the
    *  2026-08-05 migration adds the column. */
   tags?: string[];
+  /** Jobs the deal is expected to yield. Absent until the 2026-09-29
+   *  estimated_jobs migration adds the column. */
+  estimated_jobs?: number | null;
+  /** Comments on the deal (list endpoint only): count and the latest one. */
+  comment_count?: number | null;
+  last_comment?: string | null;
+  last_comment_by?: string | null;
+  last_comment_at?: string | null;
 }
 
 export interface JobContact {
@@ -178,7 +186,8 @@ export interface OpportunityFilters {
   stage_group?: "lead" | "initial" | "active" | "closed" | "on_hold";
   owner_email?: string;
   account_id?: string;
-  deal_type?: DealType;
+  /** One deal type, or a comma-separated list ("ft,unset"). "unset" = untagged. */
+  deal_type?: string;
   limit?: number;
   offset?: number;
 }
@@ -600,6 +609,8 @@ export interface JobsAccountOpp {
   owner_email: string | null;
   priority: number | null;
   num_roles: number | null;
+  estimated_jobs: number | null;
+  target_close_date: string | null;
   likelihood: "low" | "medium" | "high" | null;
   updated_at: string | null;
 }
@@ -3171,4 +3182,68 @@ export async function exportJobsRows(
   // Revoke on the next tick — revoking synchronously can cancel the download in
   // Safari before it starts.
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+// ── Jobs projection (estimated vs confirmed vs won, against target) ──────────
+
+export type ProjectionGranularity = "quarter" | "month";
+
+export interface ProjectionDeal {
+  opportunity_id: string;
+  account: string | null;
+  title: string | null;
+  stage: JobStage;
+  stage_label: string;
+  owner: string | null;
+  deal_type: DealType | null;
+  target_close_date: string | null;
+  estimated_jobs: number | null;
+  roles: number;
+  category: "won" | "open";
+  won: number;
+  confirmed: number;
+  estimated: number;
+}
+
+export interface ProjectionBucket {
+  key: string;
+  label: string;
+  kind: "past" | "current" | "future" | "overdue" | "undated";
+  start: string | null;
+  /** Quarter the period sits in (null for the catch-alls). */
+  quarter: string | null;
+  quarter_label: string | null;
+  won: number;
+  confirmed: number;
+  estimated: number;
+  total: number;
+  /** Jobs target for the period (a month reads its quarter's ÷ 3); null = none set. */
+  target: number | null;
+  deals: ProjectionDeal[];
+}
+
+export interface JobsProjection {
+  granularity: ProjectionGranularity;
+  current: string;
+  buckets: ProjectionBucket[];
+  estimated_available: boolean;
+  targets_available: boolean;
+  won_undated: number;
+}
+
+export function useJobsProjection(granularity: ProjectionGranularity, owner?: string, dealType?: string, past = 0) {
+  const o = owner && owner !== "all" ? owner : undefined;
+  const dt = dealType && dealType !== "all" ? dealType : undefined;
+  return useQuery<JobsProjection>({
+    queryKey: ["jobs", "opportunities", "projection", granularity, o ?? "all", dt ?? "all", past],
+    queryFn: async () => {
+      const p = new URLSearchParams({ granularity });
+      if (past > 0) p.set("past", String(past));
+      if (o) p.set("owner", o);
+      if (dt) p.set("deal_type", dt);
+      const { data } = await api.get<ApiResponse<JobsProjection>>(`/api/jobs/opportunities/projection?${p}`);
+      return data.data;
+    },
+    staleTime: 30_000,
+  });
 }
