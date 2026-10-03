@@ -34,7 +34,10 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from dependencies import _services
+from services.entity_owner import find_org_user
 from services.notifications import (
+    TYPE_ACCOUNT_TASK_ASSIGNED,
+    TYPE_CONTACT_TASK_ASSIGNED,
     TYPE_SF_OPP_OWNER_CHANGED,
     TYPE_SF_TASK_ASSIGNED,
     enqueue_notification,
@@ -134,6 +137,14 @@ async def _poll_sf_tasks(pool, sf) -> int:
     if not records:
         return 0
 
+    # Batch-resolve the Account/Contact owner for every distinct WhatId
+    # we see, so a Task created under a record owned by someone else can
+    # also ping that owner (in addition to the existing assignee
+    # notification below) — one extra SOQL per sobject per poll cycle,
+    # not per row.
+    what_ids = {r.get("WhatId") for r in records if r.get("WhatId")}
+    entity_owner_lookup = await _batch_resolve_entity_owners(sf, what_ids)
+
     inserted = 0
     new_watermark = watermark
     async with pool.acquire() as conn:
@@ -196,8 +207,77 @@ async def _poll_sf_tasks(pool, sf) -> int:
                 )
                 inserted += 1
 
+                # Also notify the Account/Contact owner that a task was
+                # assigned under a record they own — skip when that owner
+                # IS the assignee (already notified above) or the actor.
+                entity = entity_owner_lookup.get(what_id)
+                if entity:
+                    entity_owner_email = entity["owner_email"].strip().lower()
+                    if (
+                        entity_owner_email != owner_email.lower()
+                        and (not creator_email or entity_owner_email != creator_email.lower())
+                    ):
+                        entity_org_row = await find_org_user(conn, entity["owner_email"])
+                        if entity_org_row:
+                            await enqueue_notification(
+                                conn,
+                                recipient_email=entity_org_row["email"],
+                                type=entity["notif_type"],
+                                payload={
+                                    "title": f"New task on an {entity['entity_type']} you own",
+                                    "subtitle": subject,
+                                    entity["name_field"]: entity["record_name"],
+                                    "entity_id": what_id,
+                                    "task_title": subject,
+                                    "assignee_name": owner.get("Name") or owner_email,
+                                    "actor_display_name": creator_name,
+                                    "target_url": target_url,
+                                },
+                                actor_email=creator_email,
+                            )
+                            inserted += 1
+
             await _write_watermark(conn, SOURCE_TASK, new_watermark)
     return inserted
+
+
+async def _batch_resolve_entity_owners(sf, what_ids: set) -> Dict[str, Dict[str, Any]]:
+    """Resolve Account/Contact WhatIds to their current owner, in at most
+    two SOQL calls (split by the 001/003 id-prefix convention). Returns
+    a lookup keyed by WhatId; entries with no resolvable Owner.Email are
+    omitted."""
+    account_ids = [w for w in what_ids if isinstance(w, str) and w.startswith("001")]
+    contact_ids = [w for w in what_ids if isinstance(w, str) and w.startswith("003")]
+    lookup: Dict[str, Dict[str, Any]] = {}
+
+    async def _fetch(ids: List[str], sobject: str, entity_type: str, notif_type: str, name_field: str):
+        if not ids:
+            return
+        ids_str = ", ".join(f"'{i}'" for i in ids)
+        try:
+            res = await sf.query(
+                f"SELECT Id, Name, OwnerId, Owner.Email, Owner.Name FROM {sobject} "
+                f"WHERE Id IN ({ids_str}) LIMIT {len(ids)}"
+            )
+        except Exception as e:
+            logger.warning("_batch_resolve_entity_owners: %s query failed: %s", sobject, e)
+            return
+        for rec in res.get("records") or []:
+            owner = rec.get("Owner") or {}
+            owner_email = (owner.get("Email") or "").strip()
+            if not owner_email:
+                continue
+            lookup[rec["Id"]] = {
+                "entity_type": entity_type,
+                "notif_type": notif_type,
+                "name_field": name_field,
+                "record_name": rec.get("Name") or rec.get("Id"),
+                "owner_email": owner_email,
+            }
+
+    await _fetch(account_ids, "Account", "account", TYPE_ACCOUNT_TASK_ASSIGNED, "account_name")
+    await _fetch(contact_ids, "Contact", "contact", TYPE_CONTACT_TASK_ASSIGNED, "contact_name")
+    return lookup
 
 
 # ── SF Opportunity owner changes ────────────────────────────────────────────
