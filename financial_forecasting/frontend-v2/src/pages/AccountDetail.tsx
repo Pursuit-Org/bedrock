@@ -8,7 +8,8 @@ import { api } from "@/lib/api";
 import { ChevronDown, ChevronRight, ExternalLink, Info, Loader2, Mail, Pencil, Phone, Plus, Search, UserPlus, X } from "lucide-react";
 
 import { AccountAvatar } from "@/components/AccountAvatar";
-import { AccountFilesSection } from "@/components/AccountFilesSection";
+import { AccountHistoryOverlay } from "@/components/AccountHistoryOverlay";
+import { AccountFileUploadButton, AccountFilesSection } from "@/components/AccountFilesSection";
 import { BackLink as SharedBackLink, LinkedProjectsCard } from "@/components/detail";
 import { EntityComments } from "@/components/EntityComments";
 import { AccountTasksSection } from "@/components/AccountTasksSection";
@@ -21,6 +22,7 @@ import { accountStatusVariant } from "@/lib/accountStatus";
 import { fmtDate, fmtMoney, fmtMoneyFull, initials, toExternalHref } from "@/lib/format";
 import { useCollapsible } from "@/lib/collapsible";
 import { isLost, isOpen, isWon, SF_STAGE_OPTIONS, stageStatus } from "@/lib/stages";
+import { rankByQuery, searchMatcher } from "@/lib/search";
 import { cn } from "@/lib/utils";
 import { useAccountEnrichment, useAccounts, useUpdateAccount } from "@/services/accounts";
 import { useAccountFullActivities } from "@/services/activities";
@@ -60,6 +62,7 @@ export function AccountDetailPage() {
   const [showAddContact, setShowAddContact] = useState(false);
   const [showAddOpp, setShowAddOpp] = useState(false);
   const [folderEditing, setFolderEditing] = useState(false);
+  const [showIntelligence, setShowIntelligence] = useState(false);
   const [folderDraft, setFolderDraft] = useState("");
   const [deprioritizeDialogOpen, setDeprioritizeDialogOpen] = useState(false);
   const [deprioritizeError, setDeprioritizeError] = useState<string | null>(null);
@@ -212,6 +215,14 @@ export function AccountDetailPage() {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setShowIntelligence(true)}
+            className="inline-flex h-[30px] items-center gap-1.5 rounded border border-transparent bg-[#1a1a1a] px-3 text-[13px] font-medium text-white transition-opacity hover:opacity-90"
+          >
+            <ClaudeLogoIcon className="h-3.5 w-3.5 text-[#D97757]" />
+            Account History
+          </button>
           {account.Website ? (
             <a
               href={
@@ -409,6 +420,7 @@ export function AccountDetailPage() {
               <InlineText
                 value={account.Qualification_Explanation__c ?? null}
                 placeholder="—"
+                multiline
                 onSave={(next) => patch("Qualification_Explanation__c", next || null)}
               />
             </DetailRow>
@@ -665,8 +677,8 @@ export function AccountDetailPage() {
       </SectionCard>
 
       {/* Files */}
-      <SectionCard title={`Files`}>
-        <AccountFilesSection accountId={id} />
+      <SectionCard title="Files" action={<AccountFileUploadButton accountId={id} />}>
+        <AccountFilesSection accountId={id} uploadInHeader />
       </SectionCard>
 
       <div className="h-3" />
@@ -680,7 +692,41 @@ export function AccountDetailPage() {
           onClose={() => setShowAddContact(false)}
         />
       ) : null}
+
+      {showIntelligence ? (
+        <AccountHistoryOverlay
+          account={account}
+          contacts={contacts}
+          opps={opps}
+          activities={activities.map((a) => ({
+            date: a.activity_date ?? undefined,
+            type: a.type,
+            subject: a.subject ?? undefined,
+            snippet: a.email_snippet ?? undefined,
+            owner: a.owner_name ?? undefined,
+          }))}
+          onClose={() => setShowIntelligence(false)}
+        />
+      ) : null}
     </div>
+  );
+}
+
+function ClaudeLogoIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" className={className} aria-hidden="true">
+      {Array.from({ length: 12 }, (_, i) => (
+        <rect
+          key={i}
+          x="11.1"
+          y="2.5"
+          width="1.8"
+          height="8.5"
+          rx="0.9"
+          transform={`rotate(${i * 30} 12 12)`}
+        />
+      ))}
+    </svg>
   );
 }
 
@@ -1150,20 +1196,17 @@ function PrimaryContactPickerModal({
   });
 
   const onAccount = useMemo(() => {
-    const needle = debouncedQ;
-    if (!needle) return accountContacts;
-    return accountContacts.filter((c) =>
-      contactMatches(c, needle),
-    );
+    return accountContacts.filter(searchMatcher(accountContacts, debouncedQ, contactSearchFields));
   }, [accountContacts, debouncedQ]);
 
   const offAccount = useMemo(() => {
     if (!wantOrgWide || !orgWideQ.data) return [];
     const onIds = new Set(accountContacts.map((c) => c.Id));
-    return orgWideQ.data
-      .filter((c) => !onIds.has(c.Id))
-      .filter((c) => contactMatches(c, debouncedQ))
-      .slice(0, 50);
+    return rankByQuery(
+      orgWideQ.data.filter((c) => !onIds.has(c.Id)),
+      debouncedQ,
+      contactSearchFields,
+    ).slice(0, 50);
   }, [orgWideQ.data, accountContacts, debouncedQ, wantOrgWide]);
 
   const promote = async (c: SfContact, opts: { reparent?: boolean } = {}) => {
@@ -1343,19 +1386,9 @@ function PrimaryContactPickerModal({
   );
 }
 
-function contactMatches(c: SfContact, needle: string): boolean {
-  const hay = [
-    c.Name,
-    c.FirstName,
-    c.LastName,
-    c.Email,
-    c.Title,
-    c.Account?.Name,
-  ]
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase();
-  return hay.includes(needle);
+/** Fields the contact picker search matches (see lib/search for the rules). */
+function contactSearchFields(c: SfContact) {
+  return [c.Name, c.FirstName, c.LastName, c.Email, c.Title, c.Account?.Name];
 }
 
 function PickerSection({
@@ -1591,8 +1624,15 @@ function QualificationStatusPicker({
         { account_status: "On Hold" },
       );
       setDialogOpen(false);
-    } catch (e) {
-      setDialogError(e instanceof Error ? e.message : "Failed to save. Please try again.");
+    } catch (e: unknown) {
+      // sf_http_error returns `detail` as a string for 500s but as an object
+      // ({ error, message }) for validation / duplicate / permission errors —
+      // the very cases this dialog exists to surface. Rendering the object as
+      // a React child blanked the page and lost the draft.
+      const raw = (e as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail;
+      const axiosDetail = typeof raw === "string" ? raw
+        : raw && typeof raw === "object" ? (raw as { message?: string }).message : undefined;
+      setDialogError(axiosDetail ?? (e instanceof Error ? e.message : "Failed to save. Please try again."));
     } finally {
       setSaving(false);
     }
@@ -1632,7 +1672,7 @@ function QualificationStatusPicker({
             </button>
             <h2 className="mb-1 text-[15px] font-semibold text-ink">Mark as Not Qualified</h2>
             <p className="mb-4 text-[12.5px] text-ink-3">
-              Salesforce requires an explanation when setting status to Not Qualified.
+              Salesforce requires an explanation when setting status to Not Qualified. Marking this account as not qualified will update account status to &apos;On Hold&apos; and a task will be set for the account owner to review the account&apos;s status in 6 months.
             </p>
             <label className="block text-[11px] font-semibold uppercase tracking-wider text-ink-3 mb-1.5">
               Qualification Explanation <span className="text-red">*</span>

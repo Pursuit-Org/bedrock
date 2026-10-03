@@ -328,9 +328,10 @@ export function useUpdateAccount() {
     },
     onSettled: (_data, error, variables) => {
       if (error) return;
-      // Delayed refetch: give Salesforce a moment to propagate. After the
-      // refetch lands, re-apply any patches SF hasn't confirmed yet so the UI
-      // doesn't silently revert while SF is still catching up.
+      // Delayed refetch: give Salesforce a moment to propagate (3.5 s — 2 s
+      // was observed to be too tight, #298). After the refetch lands, re-apply
+      // any patches SF hasn't confirmed yet so the UI doesn't silently revert
+      // while SF is still catching up.
       setTimeout(() => {
         // Wrapped: an async setTimeout callback returns a floating promise, so
         // anything throwing in here surfaces as an unhandled rejection rather
@@ -353,7 +354,7 @@ export function useUpdateAccount() {
             pendingAccountPatches.clear();
           }
         })();
-      }, 2000);
+      }, 3500);
     },
   });
 }

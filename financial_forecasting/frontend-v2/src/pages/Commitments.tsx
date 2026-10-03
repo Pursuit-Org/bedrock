@@ -7,6 +7,7 @@ import { AwardPicker, type AwardOption } from "@/components/ui/AwardPicker";
 import { Tag } from "@/components/ui/Tag";
 import { ButtonGroup, Toolbar } from "@/components/ui/Toolbar";
 import { fmtDate } from "@/lib/format";
+import { searchMatcher } from "@/lib/search";
 import { useAwards } from "@/services/awards";
 import {
   useCommitments,
@@ -87,17 +88,13 @@ export function CommitmentsPage() {
   );
 
   const filtered = useMemo(() => {
-    const needle = q.toLowerCase();
-    if (!needle) return commitments;
-    return commitments.filter((c) => {
-      const award = awardById.get(c.award_id);
-      const opp = award ? oppById.get(award.opportunity_id) : undefined;
-      return (
-        c.title.toLowerCase().includes(needle) ||
-        (opp?.Name ?? "").toLowerCase().includes(needle) ||
-        (opp?.Account?.Name ?? "").toLowerCase().includes(needle)
-      );
-    });
+    return commitments.filter(
+      searchMatcher(commitments, q, (c) => {
+        const award = awardById.get(c.award_id);
+        const opp = award ? oppById.get(award.opportunity_id) : undefined;
+        return [c.title, opp?.Name, opp?.Account?.Name];
+      }),
+    );
   }, [commitments, q, awardById, oppById]);
 
   const groups = useMemo(() => {

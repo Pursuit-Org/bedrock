@@ -67,6 +67,13 @@ TYPE_SF_TASK_ASSIGNED = "sf_task_assigned"
 TYPE_SF_OPP_OWNER_CHANGED = "sf_opp_owner_changed"
 TYPE_INTRO_REQUEST = "intro_request"
 TYPE_INTRO_RESPONSE = "intro_response"
+TYPE_ACCOUNT_OWNER_CHANGED = "account_owner_changed"
+TYPE_CONTACT_OWNER_CHANGED = "contact_owner_changed"
+TYPE_ACCOUNT_COMMENT_ADDED = "account_comment_added"
+TYPE_CONTACT_COMMENT_ADDED = "contact_comment_added"
+TYPE_ACCOUNT_FILE_UPLOADED = "account_file_uploaded"
+TYPE_ACCOUNT_TASK_ASSIGNED = "account_task_assigned"
+TYPE_CONTACT_TASK_ASSIGNED = "contact_task_assigned"
 
 ALL_TYPES = {
     TYPE_PROJECT_TASK_ASSIGNED,
@@ -75,7 +82,102 @@ ALL_TYPES = {
     TYPE_SF_OPP_OWNER_CHANGED,
     TYPE_INTRO_REQUEST,
     TYPE_INTRO_RESPONSE,
+    TYPE_ACCOUNT_OWNER_CHANGED,
+    TYPE_CONTACT_OWNER_CHANGED,
+    TYPE_ACCOUNT_COMMENT_ADDED,
+    TYPE_CONTACT_COMMENT_ADDED,
+    TYPE_ACCOUNT_FILE_UPLOADED,
+    TYPE_ACCOUNT_TASK_ASSIGNED,
+    TYPE_CONTACT_TASK_ASSIGNED,
 }
+
+# Types gated by bedrock.notification_preference's per-entity buckets — a
+# user can mute these entirely (no bell row, no Slack) independent of the
+# other, ungated notification types (task-assigned-to-me, @-mentions,
+# intro requests), which always fire.
+_ACTIVITY_BUCKET_BY_TYPE = {
+    TYPE_ACCOUNT_OWNER_CHANGED: "account_activity_enabled",
+    TYPE_ACCOUNT_COMMENT_ADDED: "account_activity_enabled",
+    TYPE_ACCOUNT_FILE_UPLOADED: "account_activity_enabled",
+    TYPE_ACCOUNT_TASK_ASSIGNED: "account_activity_enabled",
+    TYPE_CONTACT_OWNER_CHANGED: "contact_activity_enabled",
+    TYPE_CONTACT_COMMENT_ADDED: "contact_activity_enabled",
+    TYPE_CONTACT_TASK_ASSIGNED: "contact_activity_enabled",
+    TYPE_SF_OPP_OWNER_CHANGED: "opportunity_activity_enabled",
+}
+
+
+# ── Schema readiness ─────────────────────────────────────────────────────────
+# db/migrations/2026-09-23-notification-types-and-prefs.sql widens the type
+# CHECK on bedrock.notification and creates bedrock.notification_preference.
+# Nothing in this repo auto-applies migrations, so this code has to assume it
+# can run ahead of the schema — and the poller calls enqueue_notification
+# inside one transaction per batch, where a single failed statement poisons
+# everything after it and rolls the batch back. Both probes below are plain
+# SELECTs that never raise, and each caches once it has seen the migration.
+_PREFS_MIGRATION = "db/migrations/2026-09-23-notification-types-and-prefs.sql"
+
+# The six types the CHECK constraint allowed before that migration. Anything
+# else is refused by the database until the constraint is widened.
+_LEGACY_TYPES = frozenset({
+    TYPE_PROJECT_TASK_ASSIGNED,
+    TYPE_COMMENT_MENTION,
+    TYPE_SF_TASK_ASSIGNED,
+    TYPE_SF_OPP_OWNER_CHANGED,
+    TYPE_INTRO_REQUEST,
+    TYPE_INTRO_RESPONSE,
+})
+
+_schema_ready: Dict[str, bool] = {}      # "prefs" / "types" → True once seen
+_schema_warned: set = set()
+
+
+def _warn_once(key: str, msg: str, *args) -> None:
+    if key not in _schema_warned:
+        _schema_warned.add(key)
+        logger.warning(msg, *args)
+
+
+async def _prefs_table_ready(conn) -> bool:
+    """Does bedrock.notification_preference exist yet? to_regclass() returns
+    NULL for a missing relation instead of raising, so this is safe mid-
+    transaction. Cached once true."""
+    if _schema_ready.get("prefs"):
+        return True
+    ok = bool(await conn.fetchval(
+        "SELECT to_regclass('bedrock.notification_preference') IS NOT NULL"))
+    if ok:
+        _schema_ready["prefs"] = True
+    else:
+        _warn_once("prefs", "bedrock.notification_preference does not exist; every "
+                   "notification preference defaults to enabled until %s is applied",
+                   _PREFS_MIGRATION)
+    return ok
+
+
+async def _type_allowed(conn, type: str) -> bool:
+    """Will the type CHECK on bedrock.notification accept this type? Legacy
+    types need no probe. For the newer ones, read the live constraint rather
+    than attempt the insert: a CheckViolation inside the poller's transaction
+    would roll back the whole batch and leave its watermark where it was, so
+    the same records come back next cycle — with their Slack DMs."""
+    if type in _LEGACY_TYPES or _schema_ready.get("types"):
+        return True
+    definition = await conn.fetchval(
+        "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+        "WHERE conname = 'notification_type_check' "
+        "  AND conrelid = 'bedrock.notification'::regclass")
+    if definition is None:
+        return True   # no constraint at all — nothing to violate
+    if all(f"'{t}'" in definition for t in ALL_TYPES):
+        _schema_ready["types"] = True
+        return True
+    ok = f"'{type}'" in definition
+    if not ok:
+        _warn_once(f"type:{type}", "notification type %s is not allowed by "
+                   "bedrock.notification's CHECK constraint yet; skipping until %s "
+                   "is applied", type, _PREFS_MIGRATION)
+    return ok
 
 
 def _slack_service():
@@ -84,6 +186,28 @@ def _slack_service():
     if not client:
         return None
     return client.services.get("slack")
+
+
+async def _get_preference(conn, user_email: str) -> Dict[str, bool]:
+    """Fetch a user's notification preference row, defaulting every
+    bucket to enabled when no row exists yet (opt-out, not opt-in)."""
+    defaults = {
+        "slack_enabled": True,
+        "account_activity_enabled": True,
+        "contact_activity_enabled": True,
+        "opportunity_activity_enabled": True,
+    }
+    if not await _prefs_table_ready(conn):
+        return defaults
+    row = await conn.fetchrow(
+        "SELECT slack_enabled, account_activity_enabled, contact_activity_enabled, "
+        "opportunity_activity_enabled FROM bedrock.notification_preference "
+        "WHERE user_email = $1",
+        user_email,
+    )
+    if not row:
+        return defaults
+    return {**defaults, **dict(row)}
 
 
 async def enqueue_notification(
@@ -97,7 +221,8 @@ async def enqueue_notification(
     """Insert a notification row and fire-and-forget the Slack DM.
 
     Returns the inserted row's id (UUID as str), or None when the insert
-    was skipped (recipient missing). Never raises on Slack failure — the
+    was skipped (recipient missing, or the recipient has muted this
+    notification's activity bucket). Never raises on Slack failure — the
     Slack worker logs and updates ``slack_status`` on the row.
     """
     if not recipient_email:
@@ -107,6 +232,20 @@ async def enqueue_notification(
         raise ValueError(f"Unknown notification type: {type}")
 
     recipient_norm = recipient_email.strip().lower()
+
+    if not await _type_allowed(conn, type):
+        return None
+
+    bucket = _ACTIVITY_BUCKET_BY_TYPE.get(type)
+    if bucket:
+        pref = await _get_preference(conn, recipient_norm)
+        if not pref[bucket]:
+            logger.debug(
+                "enqueue_notification: skip (recipient muted %s) type=%s recipient=%s",
+                bucket, type, recipient_norm,
+            )
+            return None
+
     payload_json = json.dumps(payload, default=_json_default)
 
     row = await conn.fetchrow(
@@ -120,12 +259,44 @@ async def enqueue_notification(
     )
     notif_id: str = str(row["id"])
 
-    # Fire Slack dispatch without blocking the request.
+    # Fire Slack dispatch without blocking the request. The task sends nothing
+    # until the row above is visible from its own connection — see
+    # _await_committed — so a caller whose transaction later rolls back never
+    # produces a DM for a notification that does not exist.
     asyncio.create_task(
         _dispatch_slack(notif_id, recipient_norm, type, payload, actor_email)
     )
 
     return notif_id
+
+
+# How long the Slack task will wait for the inserting transaction to commit.
+# Request handlers commit immediately; the poller commits once per batch after
+# a handful of DB round-trips. Anything slower than this is a rollback or a
+# hang, and either way the DM must not go out.
+_COMMIT_WAIT_SEC = 15.0
+_COMMIT_POLL_SEC = 0.25
+
+
+async def _await_committed(pool, notif_id: str) -> bool:
+    """True once the notification row is visible from a fresh connection —
+    i.e. the transaction that inserted it has committed. False if it never
+    appears within _COMMIT_WAIT_SEC (rolled back, or still open).
+
+    One short acquire per probe rather than holding a connection while
+    waiting, so a batch of fifty pending notifications cannot pin fifty pool
+    connections against the transaction they are all waiting on.
+    """
+    deadline = asyncio.get_running_loop().time() + _COMMIT_WAIT_SEC
+    while True:
+        async with pool.acquire() as conn:
+            seen = await conn.fetchval(
+                "SELECT 1 FROM bedrock.notification WHERE id = $1::uuid", notif_id)
+        if seen:
+            return True
+        if asyncio.get_running_loop().time() >= deadline:
+            return False
+        await asyncio.sleep(_COMMIT_POLL_SEC)
 
 
 async def _dispatch_slack(
@@ -142,7 +313,18 @@ async def _dispatch_slack(
         return
 
     try:
+        if not await _await_committed(pool, notif_id):
+            logger.warning(
+                "Slack dispatch: notif %s never became visible within %.0fs — the "
+                "inserting transaction rolled back or is still open; not sending",
+                notif_id, _COMMIT_WAIT_SEC)
+            return
         async with pool.acquire() as conn:
+            pref = await _get_preference(conn, recipient_email)
+            if not pref["slack_enabled"]:
+                await _mark_slack(conn, notif_id, "disabled", note="user_disabled_slack")
+                return
+
             slack_id = await _resolve_slack_id(conn, recipient_email)
             if not slack_id:
                 await _mark_slack(conn, notif_id, "skipped", note="no_slack_id")
@@ -338,6 +520,51 @@ def _format_slack_message(
             section_lines.append(f"*Contact:* *{payload['contact_name']}*")
         if payload.get("response_note"):
             section_lines.append(f"*Note:* {payload['response_note']}")
+    elif type in (TYPE_ACCOUNT_OWNER_CHANGED, TYPE_CONTACT_OWNER_CHANGED):
+        noun = "account" if type == TYPE_ACCOUNT_OWNER_CHANGED else "contact"
+        role = payload.get("role")
+        name = payload.get("account_name") or payload.get("contact_name") or payload.get("subtitle") or ""
+        if role == "gained":
+            headline = f":handshake: *{actor}* made you the owner"
+            if name:
+                section_lines.append(f"*{noun.capitalize()}:* *{name}*")
+        elif role == "lost":
+            headline = f":handshake: *{actor}* reassigned an {noun}"
+            if name:
+                section_lines.append(f"*{noun.capitalize()}:* {name}")
+            if payload.get("new_owner_name"):
+                section_lines.append(f"*Now owned by:* {payload['new_owner_name']}")
+        else:
+            headline = f":handshake: *{noun.capitalize()} ownership changed*"
+            if name:
+                section_lines.append(f"*{name}*")
+    elif type in (TYPE_ACCOUNT_COMMENT_ADDED, TYPE_CONTACT_COMMENT_ADDED):
+        noun = "account" if type == TYPE_ACCOUNT_COMMENT_ADDED else "contact"
+        name = payload.get("account_name") or payload.get("contact_name") or ""
+        headline = f":speech_balloon: *{actor}* commented on an {noun} you own"
+        if name:
+            section_lines.append(f"*{noun.capitalize()}:* *{name}*")
+        body = payload.get("comment_body") or payload.get("subtitle") or ""
+        if body:
+            section_lines.append(f"*Comment:* {body}")
+    elif type == TYPE_ACCOUNT_FILE_UPLOADED:
+        name = payload.get("account_name") or ""
+        headline = f":paperclip: *{actor}* uploaded a file to an account you own"
+        if name:
+            section_lines.append(f"*Account:* *{name}*")
+        if payload.get("file_name"):
+            section_lines.append(f"*File:* {payload['file_name']}")
+    elif type in (TYPE_ACCOUNT_TASK_ASSIGNED, TYPE_CONTACT_TASK_ASSIGNED):
+        noun = "account" if type == TYPE_ACCOUNT_TASK_ASSIGNED else "contact"
+        name = payload.get("account_name") or payload.get("contact_name") or ""
+        headline = f":bell: *{actor}* assigned a task on an {noun} you own"
+        if name:
+            section_lines.append(f"*{noun.capitalize()}:* *{name}*")
+        task = payload.get("task_title") or payload.get("subtitle")
+        if task:
+            section_lines.append(f"*Task:* {task}")
+        if payload.get("assignee_name"):
+            section_lines.append(f"*Assigned to:* {payload['assignee_name']}")
     else:
         headline = payload.get("title") or "Bedrock notification"
         sub = payload.get("subtitle") or ""

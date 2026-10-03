@@ -16,6 +16,7 @@ import { ButtonGroup, Toolbar } from "@/components/ui/Toolbar";
 import { totalWidth, useColumnWidths } from "@/lib/columnWidths";
 import { useColumnVisibility } from "@/lib/columnVisibility";
 import { fmtDate, fmtMoney } from "@/lib/format";
+import { searchMatcher } from "@/lib/search";
 import { cn } from "@/lib/utils";
 import { sortBy, useSort } from "@/lib/sort";
 import {
@@ -188,6 +189,12 @@ const ROW_HEIGHT = 52; // taller — name now has account on a second line
 const AWARDS_REFERRER = {
   from: { pathname: "/awards", label: "Awards" },
 } as const;
+
+/** Fields the toolbar search matches (see lib/search for the rules). */
+function awardSearchFields(a: Award, oppById: Map<string, SfOpportunity>) {
+  const opp = oppById.get(a.opportunity_id);
+  return [opp?.Name, opp?.Account?.Name, opp?.Owner?.Name, a.notes];
+}
 
 function pendingAmount(opp: SfOpportunity | undefined): number {
   const total = opp?.Amount ?? 0;
@@ -404,17 +411,8 @@ export function AwardsPage() {
   // owner picker reflects rows visible in the table. Chip `rules` are
   // excluded to keep the picker stable when an owner filter is applied.
   const awardsInView = useMemo(() => {
-    const needle = q.toLowerCase();
-    return (awardsData ?? []).filter((a) => {
-      if (!q) return true;
-      const opp = oppById.get(a.opportunity_id);
-      return (
-        (opp?.Name ?? "").toLowerCase().includes(needle) ||
-        (opp?.Account?.Name ?? "").toLowerCase().includes(needle) ||
-        (opp?.Owner?.Name ?? "").toLowerCase().includes(needle) ||
-        (a.notes ?? "").toLowerCase().includes(needle)
-      );
-    });
+    const list = awardsData ?? [];
+    return list.filter(searchMatcher(list, q, (a) => awardSearchFields(a, oppById)));
   }, [awardsData, oppById, q]);
 
   // Chip-filter facets — owner options are the union of:
@@ -493,17 +491,9 @@ export function AwardsPage() {
 
   const awards = awardsData ?? [];
   const filtered = useMemo(() => {
-    const needle = q.toLowerCase();
+    const searchHit = searchMatcher(awards, q, (a) => awardSearchFields(a, oppById));
     const filt = awards.filter((a) => {
-      if (q) {
-        const opp = oppById.get(a.opportunity_id);
-        const hit =
-          (opp?.Name ?? "").toLowerCase().includes(needle) ||
-          (opp?.Account?.Name ?? "").toLowerCase().includes(needle) ||
-          (opp?.Owner?.Name ?? "").toLowerCase().includes(needle) ||
-          (a.notes ?? "").toLowerCase().includes(needle);
-        if (!hit) return false;
-      }
+      if (!searchHit(a)) return false;
       for (const r of rules) {
         if (!ruleApplies(a, r, filterable)) return false;
       }

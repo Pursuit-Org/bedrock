@@ -56,17 +56,31 @@ async def init_db() -> None:
 
     _log_connection_target(DATABASE_URL)
 
-    # Step 1: Create connection pool
+    # Step 1: Create connection pool.
+    # Wrap in wait_for so an unreachable host (e.g. VPN down, remote DB
+    # not accessible from dev laptop) fails in 10 s instead of waiting
+    # for the OS TCP timeout (~75 s), which would stall the entire startup.
     try:
-        _pool = await asyncpg.create_pool(
-            DATABASE_URL,
-            min_size=2,
-            max_size=10,
-            # Kill queries that hang >30 s — prevents pool exhaustion when a
-            # single DB call blocks all 10 connections indefinitely.
-            command_timeout=30,
+        _pool = await asyncio.wait_for(
+            asyncpg.create_pool(
+                DATABASE_URL,
+                min_size=2,
+                max_size=10,
+                # Kill queries that hang >30 s — prevents pool exhaustion when a
+                # single DB call blocks all 10 connections indefinitely.
+                command_timeout=30,
+            ),
+            timeout=10,
         )
         logger.info("PostgreSQL pool created")
+    except asyncio.TimeoutError:
+        logger.warning(
+            "PostgreSQL pool creation timed out (10 s) — DB unreachable, "
+            "starting without DB (account statuses will be SF-only)"
+        )
+        _pool = None
+        _db_init_status = "disconnected"
+        return
     except Exception as e:
         logger.error(f"PostgreSQL pool creation failed: {e}")
         _pool = None

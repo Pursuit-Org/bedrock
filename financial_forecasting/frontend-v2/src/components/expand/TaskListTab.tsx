@@ -5,6 +5,7 @@ import { InlineDate, InlineSelect, InlineText } from "@/components/ui/InlineEdit
 import { SortableHeader } from "@/components/ui/SortableHeader";
 import { sortBy, useSort } from "@/lib/sort";
 import { useDeleteTask, useUpdateTask } from "@/services/opportunities";
+import { searchMatcher } from "@/lib/search";
 import { cn } from "@/lib/utils";
 import type { SfTask } from "@/types/salesforce";
 
@@ -105,14 +106,7 @@ export function TaskListTab({
   const visible = useMemo(() => {
     let base = scope === "open" ? open : scope === "completed" ? closed : [...open, ...closed];
     if (scope === "open" && overdueOnly) base = base.filter(isOverdue);
-    const q = query.trim().toLowerCase();
-    const filtered = base.filter((t) => {
-      if (!q) return true;
-      if ((t.Subject ?? "").toLowerCase().includes(q)) return true;
-      if ((t.Status ?? "").toLowerCase().includes(q)) return true;
-      if ((t.WhatName ?? "").toLowerCase().includes(q)) return true;
-      return false;
-    });
+    const filtered = base.filter(searchMatcher(base, query, (t) => [t.Subject, t.Status, t.WhatName]));
     if (sort.key == null) return filtered;
     return sortBy(filtered, sort, (t, key) => {
       switch (key) {

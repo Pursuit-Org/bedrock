@@ -12,6 +12,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 
+import { rankByQuery } from "@/lib/search";
 import { cn } from "@/lib/utils";
 
 export interface AwardOption {
@@ -84,15 +85,7 @@ export function AwardPicker({
   }, [open]);
 
   const filtered = useMemo(() => {
-    const needle = q.trim().toLowerCase();
-    if (!needle) return options.slice(0, maxVisible);
-    return options
-      .filter(
-        (o) =>
-          o.label.toLowerCase().includes(needle) ||
-          (o.sublabel ?? "").toLowerCase().includes(needle),
-      )
-      .slice(0, maxVisible);
+    return rankByQuery(options, q, (o) => [o.label, o.sublabel]).slice(0, maxVisible);
   }, [options, q, maxVisible]);
 
   const current = options.find((o) => o.value === value) ?? null;

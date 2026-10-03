@@ -15,6 +15,7 @@ import { fmtMoney } from "@/lib/format";
 import { sortBy, useSort } from "@/lib/sort";
 import { isOpen, isWon, SF_STAGE_OPTIONS, stageStatus } from "@/lib/stages";
 import { useStageChangeGate } from "@/lib/useStageChangeGate";
+import { searchMatcher } from "@/lib/search";
 import { useAccounts } from "@/services/accounts";
 import { useAwards, useUpdateAward, type AwardStatus } from "@/services/awards";
 import {
@@ -154,10 +155,7 @@ function OwnerAccounts({ ownerId }: { ownerId: string }) {
   }, [accounts, opps, ownerId]);
 
   const visible = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    const filtered = rows.filter((r) =>
-      !q || r.name.toLowerCase().includes(q),
-    );
+    const filtered = rows.filter(searchMatcher(rows, query, (r) => [r.name]));
     if (sort.key == null) return filtered.slice().sort((a, b) => b.open - a.open);
     return sortBy(filtered, sort, (r, key) => {
       switch (key) {
@@ -338,14 +336,9 @@ function OwnerOpps({ ownerId }: { ownerId: string }) {
   // sink to the bottom. Once the user clicks a column header, that
   // sort takes over.
   const visible = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    const filtered = scope.filter((o) => {
-      if (!q) return true;
-      if (o.Name?.toLowerCase().includes(q)) return true;
-      if (o.Account?.Name?.toLowerCase().includes(q)) return true;
-      if (o.StageName?.toLowerCase().includes(q)) return true;
-      return false;
-    });
+    const filtered = scope.filter(
+      searchMatcher(scope, query, (o) => [o.Name, o.Account?.Name, o.StageName]),
+    );
     if (sort.key == null) {
       return filtered.slice().sort((a, b) => {
         // Within scope, open at the top (sorted by close date asc),
@@ -572,14 +565,13 @@ function OwnerAwards({ ownerId }: { ownerId: string }) {
   const hiddenCount = rows.length - activeRows.length;
 
   const displayed = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    const filtered = scope.filter(({ award, opp }) => {
-      if (!q) return true;
-      if (opp?.Name?.toLowerCase().includes(q)) return true;
-      if (opp?.Account?.Name?.toLowerCase().includes(q)) return true;
-      if (award.award_status.toLowerCase().includes(q)) return true;
-      return false;
-    });
+    const filtered = scope.filter(
+      searchMatcher(scope, query, ({ award, opp }) => [
+        opp?.Name,
+        opp?.Account?.Name,
+        award.award_status,
+      ]),
+    );
     if (sort.key == null) return filtered;
     return sortBy(filtered, sort, ({ award, opp }, key) => {
       const total = opp?.Amount ?? 0;

@@ -87,6 +87,8 @@ from sf_errors import sf_http_error
 from services import pipeline_review
 from services.crm_parser import refresh_opp_cache as _refresh_opp_cache
 from services.cache import cache, CACHE_TTL_OPPORTUNITIES, CACHE_TTL_ACCOUNTS, CACHE_TTL_USERS, CACHE_TTL_CASHFLOW
+from services.entity_owner import find_org_user, notify_owner_changed, resolve_entity_owner
+from services.notifications import TYPE_ACCOUNT_FILE_UPLOADED, enqueue_notification
 from services.record_type_bucket import (
     bucket_soql_filter as _cashflow_bucket_soql,
     VALID_BUCKETS as _VALID_CASHFLOW_BUCKETS,
@@ -280,6 +282,15 @@ async def startup_event():
         logger.info("intro_notification_poller started")
     except Exception as e:
         logger.warning(f"intro_notification_poller failed to start: {e}")
+
+    # Prunes bedrock.notification rows past the 2-week retention window.
+    # Postgres-only — starts unconditionally.
+    try:
+        from services.notification_cleanup import run_forever as _notif_cleanup_loop
+        asyncio.create_task(_notif_cleanup_loop())
+        logger.info("notification_cleanup started")
+    except Exception as e:
+        logger.warning(f"notification_cleanup failed to start: {e}")
 
     logger.info(f"API started — connected services: {client.connected_services or ['none']}")
 
@@ -839,7 +850,10 @@ async def get_accounts(
             return []
         use_light = fields == "light"
         cache_key = (
-            f"accounts:{limit or 'all'}:"
+            # `v3` — bumped whenever a field joins a projection (v2:
+            # SecondaryAccountOwner__c, v3: Philanthropy__c on light) so
+            # pre-deploy cached rows aren't served.
+            f"accounts:v3:{limit or 'all'}:"
             f"{'light' if use_light else 'full'}:"
             f"{'active' if active_only else 'any'}"
         )
@@ -853,7 +867,9 @@ async def get_accounts(
             query = """
             SELECT Id, Name, Type, Industry, Website, Description,
                    BillingCity, BillingState, OwnerId, Owner.Name,
+                   SecondaryAccountOwner__c, SecondaryAccountOwner__r.Name,
                    Account_Tier__c, Active__c, Qualification_Status__c,
+                   Philanthropy__c, Qualification_Explanation__c,
                    npo02__TotalOppAmount__c, npo02__NumberOfClosedOpps__c,
                    Total_Revenue_Generated__c,
                    Last_Activity_Date__c, LastActivityDate,
@@ -867,6 +883,7 @@ async def get_accounts(
             SELECT Id, Name, Type, Industry, Phone, Fax, Website, Description,
                    BillingStreet, BillingCity, BillingState, BillingPostalCode, BillingCountry,
                    AnnualRevenue, NumberOfEmployees, AccountSource, OwnerId, Owner.Name,
+                   SecondaryAccountOwner__c, SecondaryAccountOwner__r.Name,
                    ParentId, RecordTypeId, RecordType.Name,
                    CreatedDate, LastModifiedDate, LastActivityDate,
                    Account_Tier__c, Active__c, Company_Size__c,
@@ -916,13 +933,19 @@ async def get_accounts(
         # FULL opportunity history of each account to classify
         # Re-activating vs Dormant correctly; the follow-up full-set
         # request attaches status to the same accounts.
+        status_complete = True
         if not active_only:
             try:
-                await _attach_account_status(records, salesforce)
+                status_complete = await _attach_account_status(records, salesforce)
             except Exception as ex:  # noqa: BLE001
+                status_complete = False
                 logger.warning(f"Failed to derive account_status; serving without it: {ex}")
 
-        cache.set(cache_key, records, CACHE_TTL_ACCOUNTS)
+        # A response with partial statuses is served, not cached: caching
+        # it would pin the degraded answer for CACHE_TTL_ACCOUNTS for every
+        # user, long after the database is back.
+        if status_complete:
+            cache.set(cache_key, records, CACHE_TTL_ACCOUNTS)
         return records
 
     except HTTPException:
@@ -932,8 +955,11 @@ async def get_accounts(
         raise sf_http_error(e, "records")
 
 
-async def _attach_account_status(accounts: list, salesforce) -> None:
-    """Compute and attach `account_status` to every account row.
+async def _attach_account_status(accounts: list, salesforce) -> bool:
+    """Compute and attach `account_status` to every account row. Returns
+    False when the bedrock DB was unavailable and only the SF-derivable
+    statuses could be attached (see below) — callers should not cache
+    such a response.
 
     Pulls the minimum data needed for the derivation:
       - SF opportunities (Id, AccountId, StageName, IsClosed,
@@ -949,13 +975,16 @@ async def _attach_account_status(accounts: list, salesforce) -> None:
 
     from db import get_pool
     from services.account_status import (
+        STATUS_INACTIVE,
+        STATUS_ON_HOLD,
+        STATUS_PURSUING,
         build_lookups,
         compute_account_status,
     )
 
     account_ids = [a.get("Id") for a in accounts if a.get("Id")]
     if not account_ids:
-        return
+        return True
 
     # 1. SF opportunities — slim projection, no record-type filter so the
     # status sees the full picture.
@@ -970,31 +999,52 @@ async def _attach_account_status(accounts: list, salesforce) -> None:
     # Scope activity to the 3-month window we actually care about
     # (anything older means Dormant either way), with a small buffer
     # for cron lag.
+    #
+    # The bedrock DB may be unreachable (e.g. VPN not connected, pool
+    # failed to initialize). Wrap only the DB queries in their own
+    # try/except so the statuses Salesforce alone can settle —
+    # Deprioritized, On Hold, Pursuing — still attach. Everything past
+    # that branch depends on awards and activity: without them an
+    # account with an active award would read "Prospect" and one with
+    # recent activity "Dormant". Those are left absent (None), not
+    # approximated — the UI shows "—" exactly as before this fallback.
     cutoff = datetime.now(_tz.utc) - timedelta(days=120)
-    pool = get_pool()
-    async with pool.acquire() as conn:
-        award_rows = await conn.fetch(
-            "SELECT opportunity_id, award_status FROM bedrock.award"
+    awards: list = []
+    activities: list = []
+    db_ok = True
+    try:
+        pool = get_pool()
+        if pool is None:
+            raise RuntimeError("DB pool unavailable")
+        async with pool.acquire() as conn:
+            award_rows = await conn.fetch(
+                "SELECT opportunity_id, award_status FROM bedrock.award"
+            )
+            act_rows = await conn.fetch(
+                "SELECT account_id, MAX(activity_date) AS activity_date "
+                "FROM bedrock.activity "
+                "WHERE account_id IS NOT NULL AND activity_date >= $1 "
+                "GROUP BY account_id",
+                cutoff,
+            )
+        awards = [dict(r) for r in award_rows]
+        activities = [dict(r) for r in act_rows]
+    except Exception as db_ex:
+        db_ok = False
+        logger.warning(
+            f"DB unavailable for account_status — attaching SF-only statuses: {db_ex}"
         )
-        act_rows = await conn.fetch(
-            "SELECT account_id, MAX(activity_date) AS activity_date "
-            "FROM bedrock.activity "
-            "WHERE account_id IS NOT NULL AND activity_date >= $1 "
-            "GROUP BY account_id",
-            cutoff,
-        )
-    awards = [dict(r) for r in award_rows]
-    activities = [dict(r) for r in act_rows]
 
     opps_by_account, awards_by_opp, latest_activity_by_account = build_lookups(
         opps, awards, activities,
     )
 
+    sf_only = {STATUS_INACTIVE, STATUS_ON_HOLD, STATUS_PURSUING}
     for a in accounts:
         aid = a.get("Id")
         if not aid:
             continue
-        a["account_status"] = compute_account_status(
+        status = compute_account_status(
             aid,
             opps_by_account,
             awards_by_opp,
@@ -1002,6 +1052,8 @@ async def _attach_account_status(accounts: list, salesforce) -> None:
             is_active=bool(a.get("Active__c", True)),
             qualification_status=a.get("Qualification_Status__c"),
         )
+        a["account_status"] = status if (db_ok or status in sf_only) else None
+    return db_ok
 
 
 @app.post("/api/salesforce/accounts")
@@ -1590,6 +1642,7 @@ async def upload_account_file(
     title: Optional[str] = Form(None),
     client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user=Depends(require_auth),
+    conn=Depends(get_db),
 ):
     """Upload a file and attach it to an Account.
 
@@ -1629,6 +1682,30 @@ async def upload_account_file(
         )
         records = version_q.get("records", []) or []
         content_document_id = records[0].get("ContentDocumentId") if records else None
+
+        try:
+            uploader_email = (user.get("email") or "").strip()
+            owner = await resolve_entity_owner(salesforce, "account", account_id)
+            if owner and owner["owner_email"].strip().lower() != uploader_email.lower():
+                org_row = await find_org_user(conn, owner["owner_email"])
+                if org_row:
+                    await enqueue_notification(
+                        conn,
+                        recipient_email=org_row["email"],
+                        type=TYPE_ACCOUNT_FILE_UPLOADED,
+                        payload={
+                            "title": "New file uploaded to an account you own",
+                            "subtitle": owner["record_name"],
+                            "account_name": owner["record_name"],
+                            "entity_id": account_id,
+                            "file_name": display_title,
+                            "actor_display_name": uploader_email,
+                            "target_url": f"/accounts/{account_id}",
+                        },
+                        actor_email=uploader_email,
+                    )
+        except Exception as e:
+            logger.warning("account file-upload notification failed for %s: %s", account_id, e)
 
         return ApiResponse(
             success=True,
@@ -2237,6 +2314,7 @@ async def update_account(
     update_request: AccountUpdateRequest,
     client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user = Depends(check_permission_or_internal("edit_accounts")),
+    conn=Depends(get_db),
 ):
     """Update a Salesforce account.
 
@@ -2270,9 +2348,31 @@ async def update_account(
                 update_request.updates["Drive_Strategy_Folder_URL__c"],
                 "Drive_Strategy_Folder_URL__c",
             )
+        # Read the current owner before the write so an OwnerId change can
+        # be diffed afterward — update_record returns only a bool, no
+        # record data.
+        _owner_before = None
+        if "OwnerId" in update_request.updates:
+            _owner_before = await resolve_entity_owner(salesforce, "account", account_id)
         success = await salesforce.update_record("Account", account_id, update_request.updates)
         if not success:
             raise HTTPException(400, "Salesforce rejected the update")
+        # Gated on the request, not on whether the OLD owner resolved: 11,601
+        # of 20,420 active accounts are owned by a deactivated SF user, and
+        # resolving one of those can come back None. Reassigning such an
+        # account to a live RM is exactly the hand-off this notification is
+        # for, and notify_owner_changed handles old_owner=None (new owner
+        # only).
+        if "OwnerId" in update_request.updates:
+            try:
+                _owner_after = await resolve_entity_owner(salesforce, "account", account_id)
+                await notify_owner_changed(
+                    conn, entity_type="account", entity_id=account_id,
+                    old_owner=_owner_before, new_owner=_owner_after,
+                    actor_email=(user.get("email") or "").strip(),
+                )
+            except Exception as e:
+                logger.warning("account owner-change notification failed for %s: %s", account_id, e)
         # For Active__c writes, read the field back immediately so the frontend
         # receives the server-authoritative value rather than assuming the write
         # persisted (Salesforce field-level security can silently ignore writes).
@@ -2390,10 +2490,7 @@ async def update_account(
         raise
     except Exception as e:
         logger.error(f"Error updating account {account_id}: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=400,
-            detail="Failed to update account. Check server logs or contact support.",
-        )
+        raise sf_http_error(e, "account")
 
 
 @app.delete("/api/salesforce/accounts/{account_id}")
@@ -2452,6 +2549,7 @@ async def update_contact(
     update_request: ContactUpdateRequest,
     client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user = Depends(check_permission_or_internal("edit_contacts")),
+    conn=Depends(get_db),
 ):
     """Update a Salesforce contact.
 
@@ -2467,9 +2565,22 @@ async def update_contact(
     try:
         salesforce = client.salesforce
         await _enforce_record_ownership(salesforce, "Contact", contact_id, user)
+        _owner_before = None
+        if "OwnerId" in update_request.updates:
+            _owner_before = await resolve_entity_owner(salesforce, "contact", contact_id)
         success = await salesforce.update_record("Contact", contact_id, update_request.updates)
         if not success:
             raise HTTPException(400, "Salesforce rejected the update")
+        if "OwnerId" in update_request.updates:   # see update_account
+            try:
+                _owner_after = await resolve_entity_owner(salesforce, "contact", contact_id)
+                await notify_owner_changed(
+                    conn, entity_type="contact", entity_id=contact_id,
+                    old_owner=_owner_before, new_owner=_owner_after,
+                    actor_email=(user.get("email") or "").strip(),
+                )
+            except Exception as e:
+                logger.warning("contact owner-change notification failed for %s: %s", contact_id, e)
         cache.invalidate_prefix("contacts:")
         logger.info(f"Contact {contact_id} updated by {user['user_id']}")
         return ApiResponse(success=True, data={"id": contact_id, "message": "Contact updated"})

@@ -18,6 +18,7 @@ import { InlineDate, InlineSelect } from "@/components/ui/InlineEdit";
 import { SortableHeader } from "@/components/ui/SortableHeader";
 import { fmtDate, fmtMoney } from "@/lib/format";
 import { sortBy, useSort } from "@/lib/sort";
+import { searchMatcher } from "@/lib/search";
 import { useUpdateAward, type Award, type AwardStatus } from "@/services/awards";
 import type { SfOpportunity } from "@/types/salesforce";
 
@@ -71,15 +72,13 @@ export function PortfolioAwards({ awards, oppsById, loading, canEdit }: Portfoli
   );
 
   const visible = useMemo(() => {
-    const q = query.trim().toLowerCase();
+    const searchHit = searchMatcher(awards, query, (a) => {
+      const opp = oppsById.get(a.opportunity_id);
+      return [opp?.Name, opp?.Account?.Name, a.award_status];
+    });
     const filtered = awards.filter((a) => {
       if (statusFilter !== "all" && a.award_status !== statusFilter) return false;
-      if (!q) return true;
-      const opp = oppsById.get(a.opportunity_id);
-      if (opp?.Name?.toLowerCase().includes(q)) return true;
-      if (opp?.Account?.Name?.toLowerCase().includes(q)) return true;
-      if (a.award_status.toLowerCase().includes(q)) return true;
-      return false;
+      return searchHit(a);
     });
     if (sort.key == null) return sortAwards(filtered);
     return sortBy(filtered, sort, (a, key) => {
