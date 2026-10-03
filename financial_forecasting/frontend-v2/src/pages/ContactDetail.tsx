@@ -17,11 +17,12 @@ import { Tag } from "@/components/ui/Tag";
 import { fmtDate, fmtMoneyFull } from "@/lib/format";
 import { isOpen, stageStatus } from "@/lib/stages";
 import { useAccountEnrichment } from "@/services/accounts";
+import { TaskListTab } from "@/components/expand/TaskListTab";
 import { useActivities } from "@/services/activities";
 import { useContacts, useUpdateContact } from "@/services/contacts";
-import { useOpportunities } from "@/services/opportunities";
+import { useContactTasks, useCreateGenericTask, useOpportunities } from "@/services/opportunities";
 import { useActiveUsers } from "@/services/users";
-import type { SfContact } from "@/types/salesforce";
+import type { SfContact, SfTask } from "@/types/salesforce";
 
 const LEAD_SOURCE_OPTIONS: { value: string; label: string }[] = [
   { value: "Web", label: "Web" },
@@ -56,6 +57,9 @@ export function ContactDetailPage() {
   const enrichment = useAccountEnrichment(contact?.AccountId ?? null);
   const usersQ = useActiveUsers();
   const updateContact = useUpdateContact();
+  const { data: tasks = [], isLoading: tasksLoading } = useContactTasks(id ?? "");
+  const createTask = useCreateGenericTask();
+  const taskContextResolver = (t: SfTask) => t.WhatName ?? null;
 
   const ownerOptions = useMemo(
     () => (usersQ.data ?? []).map((u) => ({ value: u.Id, label: u.Name })),
@@ -385,6 +389,25 @@ export function ContactDetailPage() {
             multiline
           />
         </div>
+      </SectionCard>
+
+      <SectionCard title="Tasks" storageScope="contact" defaultOpen>
+        <TaskListTab
+          tasks={tasks}
+          isLoading={tasksLoading}
+          placeholder="Add a task linked to this contact — Enter to create"
+          emptyMessage="No tasks linked to this contact."
+          ownerOptions={ownerOptions}
+          onCreate={async ({ subject, ownerId, activityDate }) => {
+            await createTask.mutateAsync({
+              Subject: subject,
+              WhoId: contact.Id,
+              OwnerId: ownerId ?? undefined,
+              ActivityDate: activityDate ?? undefined,
+            });
+          }}
+          contextResolver={taskContextResolver}
+        />
       </SectionCard>
 
       <SectionCard title="Linked projects" storageScope="contact">
