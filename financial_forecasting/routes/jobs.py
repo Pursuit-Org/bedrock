@@ -7706,7 +7706,7 @@ async def account_tasks(key: str = Query(...), user=Depends(require_auth), conn=
             (parent_type = 'opportunity' AND parent_id = ANY($1::text[]))
             OR (parent_type = 'prospect' AND parent_id = ANY($2::text[]))
         )
-        ORDER BY (status = 'done'), deadline ASC NULLS LAST, created_at DESC
+        ORDER BY (status = 'Completed'), deadline ASC NULLS LAST, created_at DESC
         """,
         list(opp_label.keys()), list(contact_label.keys()),
     )

@@ -365,7 +365,8 @@ export function AccountActivityTab({ account, scope = "engaged" }: { account: Jo
 
 // ── Tasks ──────────────────────────────────────────────────────────────────────────
 function TaskRollupRow({ t }: { t: AccountTask }) {
-  const done = t.status === "done";
+  // jobs_task statuses are VALID_STATUSES in routes/jobs_tasks.py; there is no "done".
+  const done = t.status === "Completed";
   return (
     <div className="flex items-center gap-2.5 rounded-md border border-border-strong/70 bg-surface px-3 py-1.5">
       <CheckSquare size={12} className={cn("shrink-0", done ? "text-green-600" : "text-ink-4")} />

@@ -156,3 +156,28 @@ def test_deal_type_filter_excludes_nonmatching():
     r = c.get("/api/jobs/accounts?deal_type=ft")
     assert r.status_code == 200, r.text
     assert all(a["account"] != "Acme" for a in r.json()["data"])   # capstone-only account filtered out
+
+
+# ── ACC-02: task rollups use the stored status vocabulary ──────────────────────
+
+def test_account_tasks_sort_completed_last():
+    # jobs_task stores "Completed"; there is no "done". Sorting on
+    # (status = 'done') left finished tasks mixed in with open ones.
+    conn = FakeConn(lists={
+        "SELECT id, title FROM bedrock.jobs_opportunity": [{"id": "o1", "title": "Eng"}],
+        "FROM bedrock.jobs_task": [],
+    })
+    r = make_jobs_client(conn).get("/api/jobs/account-tasks?key=acme")
+    assert r.status_code == 200, r.text
+    q = next(call[1] for call in conn.calls if "FROM bedrock.jobs_task" in call[1])
+    assert "ORDER BY (status = 'Completed')" in q
+
+
+def test_no_task_status_compares_to_done():
+    # Guard: every task status the API writes is in VALID_STATUSES.
+    import inspect
+    import re
+    import routes.jobs as jobs
+    from routes.jobs_tasks import VALID_STATUSES
+    assert "done" not in {s.lower() for s in VALID_STATUSES}
+    assert not re.search(r"status\s*(=|<>|!=)\s*'done'", inspect.getsource(jobs))
