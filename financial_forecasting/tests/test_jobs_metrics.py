@@ -30,6 +30,10 @@ def _placement(uid, builder, **ov):
     return row
 
 
+@pytest.mark.xfail(reason=(
+    "Asserts the audited-wrong behaviour (committed roles added into the placed "
+    "count). PRO-99 replaces that logic and rewrites this test; failing on main "
+    "since before PRO-95 re-enabled the Jobs tests in CI."))
 def test_placements_drill_is_ft_placed_plus_committed():
     conn = FakeConn(lists={
         # two FT placements for the same builder + one for another — the drill
