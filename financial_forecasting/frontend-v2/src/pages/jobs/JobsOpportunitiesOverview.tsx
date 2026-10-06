@@ -1503,9 +1503,10 @@ function Heatmap({ heatmap, buckets, rowHeader, isLoading, axis, activeSet, name
 
   const max = Math.max(1, ...heatmap.rows.flatMap((r) => r.cells));
   const canDrill = !!activeSet && !!nameOf;
-  // Priority rows are keyed "P3" on the wire but the member carries 3.
+  // Priority rows are keyed by display priority ("P1" = highest) but the member
+  // carries the stored value (5 = highest).
   const rowMatches = (m: OppActiveSetMember, rowKey: string) =>
-    axis === "stage" ? m.stage === rowKey : `P${m.priority ?? ""}` === rowKey;
+    axis === "stage" ? m.stage === rowKey : `P${displayPriority(m.priority) ?? ""}` === rowKey;
 
   const openRow = open ? heatmap.rows.find((r) => `${r.key}:${open.split(":")[1]}` === open) : null;
   const openBucket = open ? Number(open.split(":")[1]) : null;

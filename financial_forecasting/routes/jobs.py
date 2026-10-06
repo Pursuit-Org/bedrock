@@ -3670,10 +3670,13 @@ async def opportunities_overview(
          "total": sum(stage_heat.get(s, [0, 0, 0, 0, 0]))}
         for s in _OPP_STAGE_ORDER
     ]
+    # Priority is stored 1–5 with 5 = highest and displayed as P1 (highest) …
+    # P5, the same mapping as `displayPriority()` in JobsTeam.tsx. Labelling the
+    # row with the stored number put P5 deals in the P1 row (PIP-11).
     prio_rows = [
-        {"key": f"P{p}", "label": f"P{p}",
+        {"key": f"P{6 - p}", "label": f"P{6 - p}",
          "cells": prio_heat.get(p, [0, 0, 0, 0, 0]), "total": sum(prio_heat.get(p, [0, 0, 0, 0, 0]))}
-        for p in (1, 2, 3, 4, 5)
+        for p in (5, 4, 3, 2, 1)
     ]
     def _col_totals(rws):
         return [sum(r["cells"][i] for r in rws) for i in range(5)]

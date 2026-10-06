@@ -24,11 +24,11 @@ def _clear():
     app.dependency_overrides.clear()
 
 
-def _set_row(id_, name, *, created_days, moved_days, touch_days=None):
+def _set_row(id_, name, *, created_days, moved_days, touch_days=None, priority=None):
     created = NOW - timedelta(days=created_days)
     return {
         "id": id_, "account_name": name, "stage": "active_in_discussions", "deal_type": "ft",
-        "segment": None, "owner_email": "a@p.org", "priority": None, "created_at": created,
+        "segment": None, "owner_email": "a@p.org", "priority": priority, "created_at": created,
         "entered_stage": created, "stage_from_created": True,
         "opp_activity": None, "last_stage_change": None, "account_activity": None,
         "last_touch": None if touch_days is None else NOW - timedelta(days=touch_days),
@@ -70,6 +70,23 @@ def test_account_activity_keeps_status_active():
     c = make_jobs_client(OverviewConn(rows))
     d = c.get("/api/jobs/opportunities/overview").json()["data"]
     assert d["active_set"][0]["status"] == "active"
+
+
+def test_priority_heatmap_puts_highest_priority_in_p1_row():
+    # PIP-11: stored priority 5 is the highest (displayed P1). The P1 row used
+    # to hold stored-1 deals, i.e. the lowest priority.
+    rows = [
+        _set_row(UUID_A, "Top", created_days=3, moved_days=3, priority=5),
+        _set_row(UUID_B, "Top too", created_days=3, moved_days=3, priority=5),
+        _set_row("cccccccc-cccc-cccc-cccc-cccccccccccc", "Second", created_days=3,
+                 moved_days=3, priority=4),
+    ]
+    c = make_jobs_client(OverviewConn(rows))
+    heat = c.get("/api/jobs/opportunities/overview").json()["data"]["heatmaps"]["priority"]
+    assert [r["key"] for r in heat["rows"]] == ["P1", "P2", "P3", "P4", "P5"]
+    assert [r["label"] for r in heat["rows"]] == ["P1", "P2", "P3", "P4", "P5"]
+    totals = {r["key"]: r["total"] for r in heat["rows"]}
+    assert totals == {"P1": 2, "P2": 1, "P3": 0, "P4": 0, "P5": 0}
 
 
 def test_closed_won_counts_only_the_latest_change():
