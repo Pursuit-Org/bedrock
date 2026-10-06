@@ -7031,10 +7031,12 @@ async def jobs_accounts(
             g["account_id"] = rec["sf_account_id"]
         stages = {o["stage"] for o in opps}
         # An opportunity is "open" while it's anywhere in the live funnel —
-        # initial_outreach through builder interview (NOT closed/on-hold). These
+        # In Discussions through Offer / Contracting (NOT closed/on-hold). These
         # accounts are being actively pursued. Re-activating/Dormant is only for
-        # accounts whose opps are ALL closed-lost or on-hold.
-        has_open = any(s and (s == "initial_outreach" or s.startswith("active")) for s in stages)
+        # accounts whose opps are ALL closed-lost or on-hold. The old
+        # `startswith("active")` check missed the four stages added 2026-09-21
+        # (ACC-01: JPMC, Intuit, Airbnb and more read as Re-activating).
+        has_open = bool(stages & set(OPPORTUNITY_STAGES_ACTIVE_ANY))
         has_won = "closed_won" in stages
         last = g.pop("_last")
         recent = bool(last and (now - last).days <= 90)

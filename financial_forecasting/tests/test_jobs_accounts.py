@@ -62,6 +62,14 @@ def _accounts(conn):
     ("active_in_discussions", "Pursuing"),
     ("initial_outreach", "Pursuing"),
     ("active_builder_interview", "Pursuing"),
+    # ACC-01: the four stages added 2026-09-21 have no "active_" prefix and
+    # used to fall through to Re-activating / Dormant.
+    ("ask_submitted", "Pursuing"),
+    ("builder_submitted", "Pursuing"),
+    ("builder_interviewing", "Pursuing"),
+    ("offer_contracting", "Pursuing"),
+    ("lead_submitted", "Pursuing"),
+    ("reviewing_builders", "Pursuing"),
     ("closed_won", "Stewarding"),
 ])
 def test_status_open_and_won(stage, expected):
