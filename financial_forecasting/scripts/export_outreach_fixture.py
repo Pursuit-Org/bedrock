@@ -66,14 +66,27 @@ def fixture_sql() -> str:
     return f"""
     WITH win AS ({win}),
     prior AS ({prior}),
-    prior_first AS (
-      -- The earliest earlier event per (account, sender), cut to that account.
-      SELECT DISTINCT ON (c, p.sender) p.kind, p.ts, p.sender, p.activity_id, p.intro_id,
-             p.contact_id, p.contact_ids, ARRAY[c] AS companies, p.subject, p.email_from,
-             p.source, p.call_kind
+    firsts AS (
+      -- The earliest earlier event per (account, sender) on the window's
+      -- accounts, skipping mail the counting rules ignore, so the one kept is
+      -- one the rules count.
+      SELECT DISTINCT ON (c, p.sender) p.kind, p.ts, p.sender, p.activity_id, p.intro_id
       FROM prior p, unnest(p.companies) c
       WHERE c IN (SELECT unnest(companies) FROM win)
+        AND NOT (p.kind = 'email' AND (coalesce(p.subject, '') ~* '{_NOTICE_SQL}'
+                 OR {autoreply.replace("e.subject", "coalesce(p.subject, '')")}))
       ORDER BY c, p.sender, p.ts
+    ),
+    prior_first AS (
+      -- Each of those events WHOLE, with every account it reached: one event
+      -- cut into a row per account would read as copies of itself and be
+      -- counted once, losing the others' history.
+      SELECT DISTINCT p.kind, p.ts, p.sender, p.activity_id, p.intro_id, p.contact_id,
+             p.contact_ids, p.companies, p.subject, p.email_from, p.source, p.call_kind
+      FROM prior p JOIN firsts f
+        ON f.kind = p.kind AND f.ts = p.ts AND f.sender = p.sender
+       AND f.activity_id IS NOT DISTINCT FROM p.activity_id
+       AND f.intro_id IS NOT DISTINCT FROM p.intro_id
     )
     SELECT json_agg(json_build_array({", ".join(COLUMNS)})
                     ORDER BY part DESC, ts, kind, sender, activity_id, intro_id)

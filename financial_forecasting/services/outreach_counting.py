@@ -407,3 +407,50 @@ def events_sql(*, has_call_kind: bool = True, restrict_companies: bool = False,
            ev.email_from, ev.source, ev.call_kind, ev.recips AS recipients
     FROM ev {restrict}
     """
+
+
+def reference_sql() -> str:
+    """The three headline numbers in SQL alone: outreach, direct email and
+    accounts activated for a window. $1 window start, $2 window end, $3 the
+    senders (text[]).
+
+    The same candidates as events_sql, with this module's rules written a
+    second time, in SQL, so the data dictionary can hold a query that stands
+    on its own (PRO-97 stores it as the metric's sql_query) and anyone can
+    check Bedrock's number against it. Checked on production 2026-10-06: Wed
+    9/23 - Tue 9/29 on UTC days gives 36 / 27 / 16, Mon 9/21 - Sun 9/27 New
+    York gives 56 / 46 / 15, the same as the Python rules on the same data
+    (tests/test_outreach_counting.py). If a rule changes here, change it there.
+    """
+    notice = _CALENDAR_NOTICE.pattern.replace("(?:", "(")
+    auto_subj = " OR ".join(f"lower(coalesce(e.subject, '')) LIKE '%{p}%'" for p in AUTOREPLY_SUBJECTS)
+    auto_from = " OR ".join(f"lower(coalesce(e.email_from, '')) LIKE '%{p}%'" for p in AUTOREPLY_SENDERS)
+    candidates = events_sql(p_start="NULL", p_end="$2", p_senders="$3")
+    return f"""
+    WITH e AS ({candidates}),
+    counted AS (               -- automatic mail is not activity
+      SELECT * FROM e
+      WHERE NOT (e.kind = 'email' AND (e.subject ~* '{notice}' OR {auto_subj} OR {auto_from}))
+    ),
+    once AS (                  -- a send stored in two mailboxes counts once
+      SELECT DISTINCT ON (k) * FROM (
+        SELECT c.*, CASE WHEN c.kind = 'email' AND c.source = 'gmail-sync'
+                         THEN 'email|' || c.sender || '|' || c.ts::text || '|' ||
+                              coalesce(c.contact_id::text,
+                                       nullif(array_to_string(c.contact_ids, ','), ''),
+                                       c.activity_id::text)
+                         ELSE c.kind || '|' || coalesce(c.activity_id::text, c.intro_id::text, '')
+                              || '|' || c.ts::text END AS k
+        FROM counted c) x
+      ORDER BY k, ts
+    ),
+    first_activity AS (        -- D17: the first activity ever on each account
+      SELECT co, min(ts) AS first_ts FROM once, unnest(once.companies) co GROUP BY co
+    )
+    SELECT
+      count(*) FILTER (WHERE kind IN ('email', 'linkedin', 'text', 'intro')
+                         AND ts >= $1 AND ts < $2) AS outreach,
+      count(*) FILTER (WHERE kind = 'email' AND ts >= $1 AND ts < $2) AS direct_email,
+      (SELECT count(*) FROM first_activity WHERE first_ts >= $1 AND first_ts < $2) AS accounts_activated
+    FROM once
+    """

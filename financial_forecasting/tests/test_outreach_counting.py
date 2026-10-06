@@ -98,7 +98,7 @@ def test_rolling_week_on_new_york_days(events):
 
 def test_calendar_week_pins(events):
     """D8: a week is Monday to Sunday, New York time."""
-    assert _pins(events, CALENDAR_WEEK) == (56, 46, 20)
+    assert _pins(events, CALENDAR_WEEK) == (56, 46, 15)
 
 
 def _distinct(events):
@@ -131,6 +131,26 @@ def test_new_and_ongoing_split_adds_up(events):
     split = oc.split_new(win, act)
     assert sum(split.values()) == len(win)
     assert split["new"] >= len(act)    # every activated account came with at least one event
+
+
+def test_fixture_holds_each_event_once(events):
+    """Each fixture row is a whole event. An event cut into one row per
+    account reads as copies of itself, dedup keeps one, and the other accounts
+    lose their history: the first export did that and pinned 20 accounts
+    activated where the data says 15."""
+    keys = [(e.kind, e.sender, e.ts, e.activity_id, e.intro_id) for e in events]
+    assert len(keys) == len(set(keys))
+
+
+def test_reference_sql_applies_the_same_rules():
+    """The dictionary's stand-alone query (PRO-97) must use this module's rule
+    lists, not a copy that drifts. Its numbers were checked against the pins
+    above on production (see reference_sql)."""
+    sql = oc.reference_sql()
+    assert all(p in sql for p in oc.AUTOREPLY_SUBJECTS + oc.AUTOREPLY_SENDERS)
+    assert "appointment (booked|canceled|cancelled|rescheduled)" in sql
+    assert "DISTINCT ON (k)" in sql and "first_activity" in sql
+    assert "logged_by" not in sql.split("UNION ALL")[0]
 
 
 # ── the rules, case by case ──────────────────────────────────────────────────
