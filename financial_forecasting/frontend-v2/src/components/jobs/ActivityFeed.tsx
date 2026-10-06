@@ -108,7 +108,7 @@ function groupBadge(g: EventGroup): { label: string; icon: React.ReactNode; colo
         : g.to_stage === "revisit" ? "var(--amber)" : "var(--sky)",
     };
   }
-  const m = TOUCH_META[g.subkind ?? ""] ?? { label: "Touch", icon: <Mail size={11} /> };
+  const m = TOUCH_META[g.subkind ?? ""] ?? { label: "Activity", icon: <Mail size={11} /> };
   return { ...m, color: "var(--accent)" };
 }
 

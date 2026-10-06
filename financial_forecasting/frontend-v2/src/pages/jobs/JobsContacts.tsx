@@ -67,7 +67,7 @@ const COLUMN_ORDER: ColKey[] = ["name", "prospect", "flag", "title", "company", 
 const DEFAULT_VISIBLE: ColKey[] = ["name", "prospect", "flag", "title", "company", "tags", "owner", "connected", "last_touch", "listings"];
 const COL_LABELS: Record<ColKey, string> = {
   name: "Name", prospect: "Jobs prospect", flag: "Jobs stage", title: "Title", company: "Company", tags: "Tags", owner: "Owner", industry: "Industry",
-  last_touch: "Last touch", listings: "Job listings", tasks: "Open tasks", connected: "Connected staff", deal: "Linked deal", email: "Email", linkedin: "LinkedIn",
+  last_touch: "Last activity", listings: "Job listings", tasks: "Open tasks", connected: "Connected staff", deal: "Linked deal", email: "Email", linkedin: "LinkedIn",
 };
 // Default pixel widths — user-resizable via drag handles (useColumnWidths),
 // same grid components as the Opportunities table.

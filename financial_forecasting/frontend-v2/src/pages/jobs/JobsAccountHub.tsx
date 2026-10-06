@@ -64,7 +64,7 @@ const DEFAULT_VISIBLE: ColKey[] = ["account", "status", "owner", "investor", "si
 const COL_LABELS: Record<ColKey, string> = {
   account: "Account", status: "Status", owner: "Jobs owner",
   investor: "Investor", size: "Size", hq: "HQ", industry: "Industry", opps: "Opps",
-  contacts: "Contacts", listings: "Roles", hired: "Hired", tasks: "Open tasks", deal_types: "Deal types", last_activity: "Last touch",
+  contacts: "Contacts", listings: "Roles", hired: "Hired", tasks: "Open tasks", deal_types: "Deal types", last_activity: "Last activity",
 };
 // Default pixel widths — user-resizable via drag handles (useColumnWidths),
 // same grid components as the Opportunities table.
@@ -119,7 +119,7 @@ const FILTERABLE: Record<Field, FieldMeta<JobsAccount>> = {
   has_opps:     { label: "Has opportunities", type: "select", getValue: (a) => (a.opp_count > 0 ? "yes" : "no") },
   has_contacts: { label: "Has contacts",      type: "select", getValue: (a) => (a.prospect_count > 0 ? "yes" : "no") },
   // Top-of-funnel triage: filter by activity recency (Last 7/30/90 days dropdown).
-  last_activity: { label: "Last touch", type: "recency", getValue: (a) => a.last_activity_at ?? "" },
+  last_activity: { label: "Last activity", type: "recency", getValue: (a) => a.last_activity_at ?? "" },
   // Exact-date windows on the touch history (before/after a calendar date).
   first_contact_date: { label: "Initial outreach date", type: "date", getValue: (a) => a.first_activity_at ?? "" },
   last_contact_date: { label: "Last contact date", type: "date", getValue: (a) => a.last_activity_at ?? "" },
@@ -346,7 +346,7 @@ export function JobsAccountHub({ initialQuery }: { initialQuery?: string } = {})
         <select value={groupBy} onChange={(e) => { setGroupBy(e.target.value); setCollapsedGroups([]); }} title="Group rows by a field" className="h-7 shrink-0 rounded border border-border-strong bg-surface px-2 text-[12.5px] text-ink-2 outline-none focus:border-accent">
           {GROUP_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
         </select>
-        <select value={scope} onChange={(e) => setScope(e.target.value as "engaged" | "all")} title="Engaged hides cold, untouched contacts; All shows every jobs account" className="h-7 shrink-0 rounded border border-border-strong bg-surface px-2 text-[12.5px] text-ink-2 outline-none focus:border-accent">
+        <select value={scope} onChange={(e) => setScope(e.target.value as "engaged" | "all")} title="Engaged hides cold contacts with no activity; All shows every jobs account" className="h-7 shrink-0 rounded border border-border-strong bg-surface px-2 text-[12.5px] text-ink-2 outline-none focus:border-accent">
           <option value="engaged">Engaged</option>
           <option value="all">All accounts</option>
         </select>

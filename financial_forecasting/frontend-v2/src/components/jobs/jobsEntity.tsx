@@ -233,7 +233,7 @@ export function ContactActivityTab({ contactId }: { contactId: number }) {
         )}
       </div>
       {logging && <div className="px-3 pt-2"><LogActivityForm contactId={contactId} onClose={() => setLogging(false)} /></div>}
-      <JobsActivityList entries={data?.activity ?? []} total={data?.activity_total} emptyMessage="No emails, meetings, or logged touches for this contact yet." />
+      <JobsActivityList entries={data?.activity ?? []} total={data?.activity_total} emptyMessage="No emails, meetings, or logged activity for this contact yet." />
     </div>
   );
 }
@@ -355,7 +355,7 @@ export function warmthTier(w: WarmthInput): { label: string; dot: string; txt: s
   if (responded && (d <= 14 || (d <= 30 && recent >= 8)))
     return { label: "Hot", dot: "bg-red", txt: "text-red", hint: `responded · last activity ${d}d ago` };
   if (responded) return { label: "Warm", dot: "bg-amber", txt: "text-amber", hint: `responded · last activity ${d}d ago` };
-  return { label: "Cool", dot: "bg-sky-400", txt: "text-sky-600", hint: `${recent} touch${recent === 1 ? "" : "es"}, no response yet` };
+  return { label: "Cool", dot: "bg-sky-400", txt: "text-sky-600", hint: `${recent} ${recent === 1 ? "activity" : "activities"}, no response yet` };
 }
 
 export function AccountWarmth(w: WarmthInput) {

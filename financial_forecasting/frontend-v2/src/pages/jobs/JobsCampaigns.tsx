@@ -595,7 +595,7 @@ function CampaignDetail({ campaignKey, from, to, granularity }: {
           <ActivationGroup
             label="Activated"
             tone="accent"
-            hint="At least one outbound touch from Pursuit — email, call booked, text or LinkedIn."
+            hint="Any activity from Pursuit: an email, call, meeting, text, LinkedIn message or intro."
             rows={[
               { n: t.activated_accounts, of: t.accounts, unit: "accounts" },
               { n: t.activated_contacts, of: t.in_pipeline, unit: "contacts" },

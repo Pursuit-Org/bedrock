@@ -226,8 +226,8 @@ function CampaignDrill({ campaignKey, kind, label }: {
                   <th className="px-2 py-1.5 font-semibold">Company</th>
                   <th className="px-2 py-1.5 font-semibold">Reached</th>
                   <th className="px-2 py-1.5 font-semibold">When</th>
-                  <th className="px-2 py-1.5 text-right font-semibold">Touches</th>
-                  <th className="px-2 py-1.5 text-right font-semibold">Last touch</th>
+                  <th className="px-2 py-1.5 text-right font-semibold">Activity</th>
+                  <th className="px-2 py-1.5 text-right font-semibold">Last activity</th>
                 </>
               ) : (
                 <>

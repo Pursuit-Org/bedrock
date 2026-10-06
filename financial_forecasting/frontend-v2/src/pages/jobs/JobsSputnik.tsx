@@ -131,7 +131,7 @@ export function JobsSputnik() {
                   <SortableHeader label="Owner" sortKey="owner" sort={sort} onToggle={toggle} />
                 </th>
                 <th className="w-[120px] px-3 py-1.5 text-left font-semibold">
-                  <SortableHeader label="Last touch" sortKey="last" sort={sort} onToggle={toggle} />
+                  <SortableHeader label="Last activity" sortKey="last" sort={sort} onToggle={toggle} />
                 </th>
               </tr>
             </thead>

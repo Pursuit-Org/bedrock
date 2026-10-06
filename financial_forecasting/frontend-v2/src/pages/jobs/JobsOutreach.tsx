@@ -2,7 +2,7 @@ import { Fragment, useMemo, useState } from "react";
 import { DeltaChip } from "@/components/jobs/DeltaChip";
 import { Link } from "react-router-dom";
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip as ReTooltip } from "recharts";
-import { ChevronRight, ChevronDown, Loader2, Users } from "lucide-react";
+import { AlertTriangle, ChevronRight, ChevronDown, Loader2, Users } from "lucide-react";
 
 import {
   useOutreachScorecard,
@@ -189,7 +189,7 @@ function RowDrill({
               <span className="shrink-0 text-[11.5px] text-ink-3" title={g.actors.map(nameOf).join(", ")}>
                 {actorSummary(g.actors, nameOf)}
               </span>
-              <span className="w-[74px] shrink-0 text-right text-[11.5px] text-ink-4">{g.touches} touch{g.touches === 1 ? "" : "es"}</span>
+              <span className="w-[74px] shrink-0 text-right text-[11.5px] text-ink-4">{g.touches} {g.touches === 1 ? "activity" : "activities"}</span>
             </button>
             {open && (
               <div className="flex flex-col gap-3 bg-bg px-4 py-2 pl-10">
@@ -197,10 +197,10 @@ function RowDrill({
                   <div key={c.contact_id ?? `unlinked:${c.name}`} className="flex flex-col gap-1">
                     <div className="flex items-baseline gap-2">
                       <span className="text-[12.5px] font-medium text-ink">{c.name || "Unknown contact"}</span>
-                      <span className="text-[11px] text-ink-4">{c.touches.length} touch{c.touches.length === 1 ? "" : "es"}</span>
+                      <span className="text-[11px] text-ink-4">{c.touches.length} {c.touches.length === 1 ? "activity" : "activities"}</span>
                     </div>
                     {c.touches.length === 0 ? (
-                      <div className="text-[12px] text-ink-4">No jobs touches in this period.</div>
+                      <div className="text-[12px] text-ink-4">No jobs activity in this period.</div>
                     ) : (
                       <div className="flex items-baseline gap-2 text-[9.5px] font-bold uppercase tracking-wider text-ink-4">
                         <span className="w-[52px]">Type</span>
@@ -220,7 +220,7 @@ function RowDrill({
                         <span className="w-[124px] shrink-0 truncate text-[11.5px] text-ink-3"
                           title={t.actor
                             ? `${t.direction === "received" ? "Replied to" : "By"} ${nameOf(t.actor)} · ${t.actor}`
-                            : "No Pursuit sender recorded on this touch"}>
+                            : "No Pursuit sender recorded on this activity"}>
                           {t.actor ? nameOf(t.actor) : "—"}
                         </span>
                         <span className="w-[70px] shrink-0 text-right text-ink-4">{t.date ? fmtDate(t.date) : ""}</span>
@@ -243,7 +243,7 @@ function RowDrill({
       {data && data.touches_total !== undefined && data.touches_listed !== undefined
         && data.touches_total > data.touches_listed ? (
         <div className="px-4 py-2 text-[11.5px] text-ink-4">
-          Showing the {data.touches_listed.toLocaleString()} most recent of {data.touches_total.toLocaleString()} touches.
+          Showing the {data.touches_listed.toLocaleString()} most recent of {data.touches_total.toLocaleString()} activities.
           Older ones, and accounts reached only by them, are not listed.
         </div>
       ) : null}
@@ -413,7 +413,7 @@ function TouchDepthDrill({ bucket, nameOf }: {
           <tr className="bg-surface-2/60 text-left text-[10.5px] uppercase tracking-wider text-ink-3">
             <th className="px-3 py-1.5 font-semibold">Contact</th>
             <th className="px-2 py-1.5 font-semibold">Company</th>
-            <th className="px-2 py-1.5 text-right font-semibold">Touches</th>
+            <th className="px-2 py-1.5 text-right font-semibold">Activity</th>
             <th className="px-2 py-1.5 font-semibold">Owner</th>
           </tr>
         </thead>
@@ -485,12 +485,12 @@ function TouchDepthPanel({ scope, owner, nameOf, className }: {
   const openBucket = buckets.find((b) => b.key === open) ?? null;
   return (
     <Panel
-      title="Touch Depth"
+      title="Activity Depth"
       // Spells out both halves of the measure, because "3 touches" is
       // meaningless without knowing over what window and for whom. "Right now"
       // is load-bearing: this panel does not follow the period bar.
       desc={depth
-        ? `All ${depth.total} contacts sitting in initial outreach right now, by touches received in the last ${depth.weeks} weeks`
+        ? `All ${depth.total} contacts sitting in initial outreach right now, by activity Pursuit sent them in the last ${depth.weeks} weeks`
         : "Loading…"}
       className={className}
     >
@@ -700,8 +700,8 @@ function useTagLabels() {
 function TouchLog({ contactId }: { contactId: number }) {
   const { data, isLoading, isError } = useContactDetail(contactId);
   const [showAll, setShowAll] = useState(false);
-  if (isLoading) return <div className="flex items-center gap-2 text-[12px] text-ink-3"><Loader2 size={12} className="animate-spin" /> Loading the touches…</div>;
-  if (isError) return <div className="text-[12px] text-red">Couldn't load the touches.</div>;
+  if (isLoading) return <div className="flex items-center gap-2 text-[12px] text-ink-3"><Loader2 size={12} className="animate-spin" /> Loading the activity…</div>;
+  if (isError) return <div className="text-[12px] text-red">Couldn't load the activity.</div>;
   const jobs = (data?.activity ?? []).filter((a) => a.is_jobs);
   // Fall back to everything logged rather than claiming there are no touches:
   // the count on the row comes from a different relevance rule than is_jobs.
@@ -776,8 +776,8 @@ function ContactCellDrill({ label, contacts, whenLabel }: {
             <th className="px-2 py-1.5 font-semibold" title="Pursuit staff with a relationship to this contact">Staff</th>
             <th className="px-2 py-1.5 font-semibold" title="Campaign tags on this contact">Tags</th>
             <th className="px-2 py-1.5 font-semibold">{whenLabel}</th>
-            <th className="px-2 py-1.5 text-right font-semibold" title="Logged jobs touches — click a count to read them">Touches</th>
-            <th className="px-2 py-1.5 text-right font-semibold">Last touch</th>
+            <th className="px-2 py-1.5 text-right font-semibold" title="Logged jobs activity — click a count to read it">Activity</th>
+            <th className="px-2 py-1.5 text-right font-semibold">Last activity</th>
           </tr>
         </thead>
         <tbody>
@@ -802,7 +802,7 @@ function ContactCellDrill({ label, contacts, whenLabel }: {
                     {touches > 0 ? (
                       <button type="button"
                         onClick={() => setOpenTouches(isOpen ? null : c.contact_id)}
-                        title={`Read the ${touches} logged touch${touches === 1 ? "" : "es"} on ${c.full_name ?? "this contact"}`}
+                        title={`Read the ${touches} logged ${touches === 1 ? "activity" : "activities"} on ${c.full_name ?? "this contact"}`}
                         className={cn("font-semibold hover:underline", isOpen ? "text-accent" : "text-ink-2 hover:text-accent")}>
                         {touches}
                       </button>
@@ -917,7 +917,7 @@ function ActivityPipelineBlock({ activityPipeline, granularity, scope, owner, ra
     <div className="inline-flex items-center rounded-md border border-border-strong bg-surface p-0.5">
       {([["activity", "Activity"], ["owner", "Owner"]] as const).map(([k, label]) => (
         <button key={k} type="button" onClick={() => setCut(k)}
-          title={k === "activity" ? "What the team did, by type of touch"
+          title={k === "activity" ? "What the team did, by type of activity"
                                   : "Who carried their number, by person"}
           className={cn("rounded px-2 py-0.5 text-[12px] font-medium transition-colors",
             cut === k ? "bg-accent-soft text-accent" : "text-ink-2 hover:bg-surface-2")}>
@@ -1271,7 +1271,7 @@ const SUMMARY_CARDS: {
   tone: "ink" | "green";
   empty: string;
 }[] = [
-  { key: "accounts_activated", label: "Accounts activated", tone: "ink", empty: "No accounts came back from quiet in this period." },
+  { key: "accounts_activated", label: "Accounts activated", tone: "ink", empty: "No account had its first activity in this period." },
   { key: "outreach_activity", label: "Outreach Activity", tone: "ink", empty: "Nothing sent in this period." },
   { key: "calls_booked", label: "Calls booked", tone: "ink", empty: "No calls or meetings in this period." },
   { key: "converted", label: "Converted to oppty", tone: "green", empty: "No conversions in this period." },
@@ -1289,6 +1289,16 @@ function OutreachSummaryCards({ granularity, scope, owner, range }: {
 
   return (
     <div className="flex flex-col gap-3">
+      {data?.email_index?.stale ? (
+        <div className="flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-[11.5px] text-amber-900">
+          <AlertTriangle size={13} className="mt-0.5 flex-shrink-0" />
+          <span>
+            Email replies and follow-ups after{" "}
+            {data.email_index.last_indexed_at ? fmtDate(data.email_index.last_indexed_at) : "the last index run"}{" "}
+            are not counted yet, so recent numbers read low. The nightly email index is behind.
+          </span>
+        </div>
+      ) : null}
       <div className="grid grid-cols-2 items-stretch gap-4 lg:grid-cols-4">
         {SUMMARY_CARDS.map((c) => {
           const active = open === c.key;

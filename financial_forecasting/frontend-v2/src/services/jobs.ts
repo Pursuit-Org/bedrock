@@ -1388,9 +1388,12 @@ export type OutreachScope = OutreachScopeKind;
 
 export interface OutreachRange { from: string; to: string }
 
-export function useActivityTrends(granularity: "day" | "week" | "month", channel: OutreachChannel, owner?: string, scope: OutreachScope = "team", range?: OutreachRange) {
+/** `enabled` false skips the request: the Outreach tab opens on the volume
+ *  view, and this one only feeds the two account views. */
+export function useActivityTrends(granularity: "day" | "week" | "month", channel: OutreachChannel, owner?: string, scope: OutreachScope = "team", range?: OutreachRange, enabled = true) {
   const rangeKey = range ? `${range.from}..${range.to}` : "";
   return useQuery<ActivityTrends>({
+    enabled,
     queryKey: ["jobs", "activity-trends", granularity, channel, owner ?? scope, rangeKey],
     queryFn: async () => {
       const p = new URLSearchParams({ granularity, channel, scope });
@@ -1566,26 +1569,31 @@ export interface DrillRow {
   contact_id: number | null;
 }
 
+/** Whether the nightly per-message email index is keeping up with the sync.
+ *  When it is `stale`, replies and follow-ups since `last_indexed_at` are
+ *  missing from every outreach number (PRO-98). */
+export interface EmailIndexHealth {
+  last_indexed_at: string | null;
+  last_synced_at: string | null;
+  stale: boolean;
+  lag_hours: number | null;
+}
+
 export interface OutreachSummary {
   period: { from: string; to: string };
-  /** How long an account must go quiet before a touch counts as activation. */
-  dormant_days: number;
-  /** Accounts touched in the window that had gone quiet for `dormant_days`
-   *  before it — a first-ever touch or a genuine restart. Counting any touch
-   *  would re-activate the same account every period it got a follow-up. */
+  email_index?: EmailIndexHealth;
+  /** Accounts whose first activity ever is in the window (D17). */
   accounts_activated: number;
-  /** The wider number: any touch in the window. */
+  /** The wider number: any activity in the window. */
   accounts_reached: number;
-  /** Send volume — emails, LinkedIn messages and texts. Meetings and calls are
-   *  excluded: those are `calls_booked`, and counting them here would inflate
-   *  the effort number with outcomes. */
+  /** What the scope sent: emails (one per message), LinkedIn messages, texts
+   *  and facilitated intros. Meetings and calls are `calls_booked`. */
   outreach_activity: number;
   calls_booked: number;
   converted: number;
-  /** What each headline counts, capped — the counts above stay the source of
-   *  truth, so a truncated list can never make one of them wrong. */
+  /** What each headline counted, newest first, at most 60 shown. */
   drills: Record<"accounts_activated" | "outreach_activity" | "calls_booked" | "converted", DrillRow[]>;
-  /** Uncapped length of each drill list (the server lists at most 60). */
+  /** Full length of each list, which is the card's own number. */
   drill_totals?: Record<"accounts_activated" | "outreach_activity" | "calls_booked" | "converted", number>;
 }
 
@@ -2103,7 +2111,7 @@ export interface TagCampaignStats {
    *  booked, and splitting them made the smaller number look like a failure. */
   outreach: {
     emails: number; calls_booked: number; texts: number;
-    linkedin: number; notes: number; total: number;
+    linkedin: number; total: number;
     contacts_reached: number; accounts_reached: number;
     last_touch: string | null;
   };

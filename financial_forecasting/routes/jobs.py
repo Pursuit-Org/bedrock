@@ -5340,8 +5340,15 @@ async def outreach_summary(
             "subkind": None, "contact_id": None,
         })
 
+    # Whether the per-message email index is keeping up. When it isn't, recent
+    # replies and follow-ups are missing from every number here, so the page
+    # says so rather than showing a quietly low week (PRO-98).
+    from services.email_message_index import index_health
+    email_index = await index_health(conn)
+
     return {"success": True, "data": {
         "period": {"from": this_start.date().isoformat(), "to": this_end.date().isoformat()},
+        "email_index": email_index,
         "accounts_activated": len(activated),
         "accounts_reached": len(outreach_counting.touched_accounts(events)),
         "outreach_activity": c.outreach,

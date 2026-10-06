@@ -101,7 +101,9 @@ export function ActivityTrends({ scope, owner, range }: {
   // show the run the selected period sits inside.
   const trendRange = useMemo(() => trendWindow(range), [range]);
   const isVolume = split === "volume";
-  const accounts = useActivityTrends(gran, channel, owner || undefined, scope, trendRange);
+  // Only fetched once an account view is picked: the default volume view never
+  // reads it, and it was a whole extra scan on every Outreach tab load (PRO-98).
+  const accounts = useActivityTrends(gran, channel, owner || undefined, scope, trendRange, !isVolume);
   const volume = useVolumeTrends(gran, owner || undefined, scope, trendRange);
   const { isLoading, isError, refetch } = isVolume ? volume : accounts;
   const data = accounts.data;
@@ -251,7 +253,7 @@ function OutreachDetailDrawer({ period, gran, channel, owner, scope, onClose }: 
   return (
     <Drawer open={period != null} onClose={onClose}
       title={period ? `Outreach · ${fmtPeriod(period, gran)}` : "Outreach"}
-      subtitle={data ? `${data.total_touches} touches · ${data.total_accounts} accounts${owner ? ` · ${ownerName(owner)}` : ""}` : undefined}
+      subtitle={data ? `${data.total_touches} activities · ${data.total_accounts} accounts${owner ? ` · ${ownerName(owner)}` : ""}` : undefined}
       width={620}>
       {isLoading || !data ? (
         <div className="flex items-center gap-2 p-6 text-[13px] text-ink-3"><Loader2 size={15} className="animate-spin" /> Loading…</div>

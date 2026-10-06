@@ -212,7 +212,7 @@ export function JobsActivityList({ entries, total, emptyMessage = "No activity y
       </div>
       {jobs.length > 0 && (
         <>
-          <div className="bg-surface-2/60 px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-ink-4">Jobs touches</div>
+          <div className="bg-surface-2/60 px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-ink-4">Jobs activity</div>
           {jobs.map((a) => <Row key={a.id} a={a} />)}
         </>
       )}
