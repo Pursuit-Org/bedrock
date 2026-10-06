@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from tests.jobs_fakes import FakeConn, make_jobs_client
+from tests.jobs_fakes import EVENTS, PRIOR_EVENTS, FakeConn, event_row, make_jobs_client
 from tests.test_jobs_opps_overview import OverviewConn, _set_row
 
 NOW = datetime.now(timezone.utc)
@@ -70,32 +70,28 @@ def test_needs_attention_lists_every_flagged_deal_not_30():
 
 # ── KPI drawers (/outreach/summary) ─────────────────────────────────────────
 
-def test_outreach_summary_reports_each_drill_list_uncapped_size():
-    touch = {"at": NOW, "subkind": "email", "editor": "a@p.org", "subject": "Hi",
-             "contact_id": 1, "name": "Jo", "account": "X", "owner": None, "total_rows": 412}
-    activated = {"name": "X", "at": NOW, "editor": None, "owner": None,
-                 "last_prior": None, "total_rows": 75}
+def test_outreach_summary_lists_carry_their_full_length():
+    """Each card's list is the events the card counted, so its full length is
+    the card's own number, even past the 60 shown."""
+    from datetime import timedelta
+    from routes.jobs import _outreach_windows
+    t = _outreach_windows("week", None, None)[0] + timedelta(hours=1)   # inside last week
+    sends = [event_row(ts=t, contact_id=i, companies=[f"acct{i}"]) for i in range(75)]
+    calls = [event_row(kind="meeting", ts=t, source="calendar-sync") for _ in range(3)]
     converted = {"contact_id": 2, "name": "Al", "account": "Y", "at": NOW,
-                 "owner": None, "editor": None, "total_rows": 3}
-    conn = FakeConn(
-        rows={"acct_win": {"accounts_activated": 75, "accounts_reached": 90,
-                           "outreach_activity": 300, "calls_booked": 20},
-              "count(*) AS n": {"n": 3}},
-        lists={"converted_to_opportunity": [converted],
-               "FROM win w": [activated],
-               "FROM linked l": [touch]},
-    )
+                 "owner": None, "editor": None}
+    conn = FakeConn(lists={"converted_to_opportunity": [converted],
+                           PRIOR_EVENTS: [],          # no account worked before
+                           EVENTS: sends + calls})
     c = make_jobs_client(conn)
     r = c.get("/api/jobs/outreach/summary")
     assert r.status_code == 200, r.text
     d = r.json()["data"]
-    assert d["drill_totals"] == {"accounts_activated": 75, "outreach_activity": 412,
-                                 "calls_booked": 412, "converted": 3}
-    assert "total_rows" not in d["drills"]["outreach_activity"][0]
-    # The count is a window over the full set, taken before the LIMIT.
-    drill_qs = [q for q in conn.queries("fetch") if "LIMIT 60" in q]
-    assert len(drill_qs) == 4
-    assert all("count(*) OVER () AS total_rows" in q for q in drill_qs)
+    assert (d["outreach_activity"], d["calls_booked"], d["accounts_activated"], d["converted"]) == (75, 3, 75, 1)
+    assert d["drill_totals"] == {"accounts_activated": 75, "outreach_activity": 75,
+                                 "calls_booked": 3, "converted": 1}
+    assert len(d["drills"]["outreach_activity"]) == 60
+    assert len(d["drills"]["accounts_activated"]) == 60
 
 
 # ── Leadership metric drawer (/metrics/{key}) ───────────────────────────────
@@ -125,16 +121,15 @@ def test_metric_drawer_count_without_a_cap_is_the_row_count():
 # ── Activity feeds ──────────────────────────────────────────────────────────
 
 def test_outreach_activity_feed_reports_events_before_its_cap():
-    row = {"at": NOW, "subkind": "email", "editor": "a@p.org", "subject": "Hi",
-           "snippet": None, "contact_id": 1, "full_name": "Jo", "account": "X",
-           "owner": None, "owner_source": None, "total_rows": 950}
-    conn = FakeConn(lists={"FROM linked l": [row]})
+    """One row per thing sent (OUT-11), and the full count past the limit."""
+    sends = [event_row(ts=NOW) for _ in range(950)]
+    conn = FakeConn(lists={EVENTS: sends + [event_row(kind="meeting", ts=NOW)]})
     c = make_jobs_client(conn)
     r = c.get("/api/jobs/outreach/activity")
     assert r.status_code == 200, r.text
     d = r.json()["data"]
-    assert d["total"] == 950
-    assert len(d["events"]) == 1
+    assert d["total"] == 950           # the meeting is not a send
+    assert len(d["events"]) == 300
 
 
 def test_account_activity_reports_its_total_and_hides_the_window_column():
@@ -178,13 +173,12 @@ def test_responded_contacts_is_not_capped():
 
 # ── Outreach scorecard row drill ────────────────────────────────────────────
 
-def test_scorecard_drill_reports_touches_listed_and_matched():
+def test_scorecard_drill_lists_everything_its_row_counted():
     row = {"contact_id": 1, "full_name": "Jo", "current_company": "X",
-           "converted_at": NOW, "actor": None, "total_rows": 640}
-    conn = FakeConn(lists={"converted_at DESC LIMIT 500": [row]})
+           "converted_at": NOW, "actor": None}
+    conn = FakeConn(lists={"converted_at DESC": [row] * 640})
     c = make_jobs_client(conn)
     r = c.get("/api/jobs/outreach/scorecard/detail?key=converted_opportunities")
     assert r.status_code == 200, r.text
     d = r.json()["data"]
-    assert d["touches_listed"] == 1
-    assert d["touches_total"] == 640
+    assert d["touches_listed"] == d["touches_total"] == 640

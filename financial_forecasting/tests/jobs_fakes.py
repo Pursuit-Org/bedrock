@@ -72,6 +72,30 @@ class FakeConn:
         return any(needle in c[1] for c in self.calls)
 
 
+# Substrings that pick out services.outreach_counting.events_sql in FakeConn
+# dispatch. PRIOR_EVENTS (the activation lookback) must be registered BEFORE
+# EVENTS: the lookback is the same statement plus a filter, and the first
+# matching substring wins.
+EVENTS = "activity_email_message aem"
+PRIOR_EVENTS = "ev.companies &&"
+
+
+def event_row(kind="email", ts=None, sender="avni@pursuit.org", activity_id=None,
+              contact_id=None, companies=(), **kw):
+    """One events_sql row. Defaults to an email Avni sent, synced."""
+    import uuid
+    from datetime import datetime, timezone
+    row = {"kind": kind, "ts": ts or datetime.now(timezone.utc), "sender": sender,
+           "activity_id": activity_id or str(uuid.uuid4()), "intro_id": None,
+           "contact_id": contact_id, "contact_ids": [contact_id] if contact_id else [],
+           "companies": list(companies), "subject": None, "description": None,
+           "snippet": None, "email_from": sender if kind == "email" else None,
+           "source": "gmail-sync" if kind == "email" else "manual", "call_kind": None,
+           "recipients": []}
+    row.update(kw)
+    return row
+
+
 class FakeSalesforce:
     def __init__(self, query_results=None, create_ids=None):
         self.queries: list[str] = []

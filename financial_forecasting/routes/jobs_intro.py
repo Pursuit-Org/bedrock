@@ -328,7 +328,7 @@ async def log_facilitated_intro(
       * no notification — there is nobody to ask.
 
     Written straight to 'completed' with responded_at on the day it happened,
-    because that is the timestamp _send_events_sql counts it by. created_at stays
+    because that is the timestamp services/outreach_counting counts it by. created_at stays
     now(): when it happened and when it was typed in are different facts.
     """
     email = _email(user)

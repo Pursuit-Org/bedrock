@@ -1,7 +1,7 @@
 """Evals for jobs activity classification + the opportunities funnel shape."""
 import pytest
 
-from tests.jobs_fakes import FakeConn, make_jobs_client
+from tests.jobs_fakes import EVENTS, PRIOR_EVENTS, FakeConn, event_row, make_jobs_client
 
 
 @pytest.fixture(autouse=True)
@@ -147,16 +147,32 @@ def test_funnel_builders_job_ready_paid_ft():
 
 # ── activity-trends ─────────────────────────────────────────────────────────────
 
-from datetime import datetime, timezone  # noqa: E402
+from datetime import datetime, timedelta, timezone  # noqa: E402
 
 BASE = datetime(2026, 6, 15, tzinfo=timezone.utc)
 
 
+def _this_bucket(hours: int = 1):
+    """A moment inside the current week bucket (New York), so the trailing
+    12-bucket spine always contains it."""
+    from routes.jobs import _bucket_start, _NY
+    return _bucket_start(datetime.now(_NY), "week") + timedelta(hours=hours)
+
+
 def test_activity_trends_new_vs_existing_accounts():
+    """Each (activity, account) counts once per bar. An account counts as NEW
+    in the bucket of its first activity ever, EXISTING after that (D17)."""
+    t = _this_bucket()
     conn = FakeConn(
-        lists={"GROUP BY 1, 2": [{"bucket": BASE, "kind": "new", "n": 7},
-                                 {"bucket": BASE, "kind": "existing", "n": 4}]},
-        vals={"date_trunc": BASE, "damon.kornhauser": 50},
+        lists={
+            # Globex was worked before this bucket; Acme never was.
+            PRIOR_EVENTS: [event_row(ts=BASE, companies=["globex"])],
+            EVENTS: [event_row(ts=t, companies=["acme", "globex"]),
+                     event_row(ts=t, companies=["acme"], contact_id=7),
+                     # Not activity, so not on the chart, though it activates.
+                     event_row(kind="call_booked", ts=t, companies=["initech"])],
+        },
+        vals={"damon.kornhauser": 50},
     )
     c = make_jobs_client(conn)
     r = c.get("/api/jobs/activity-trends?granularity=week&channel=all")
@@ -165,26 +181,39 @@ def test_activity_trends_new_vs_existing_accounts():
     assert d["channel"] == "all"
     assert len(d["buckets"]) == 12                     # trailing 12, zero-filled
     last = d["buckets"][-1]
-    assert last["period"] == "2026-06-15"
-    assert last["new"] == 7 and last["existing"] == 4
+    assert last["period"] == t.date().isoformat()
+    assert last["new"] == 2 and last["existing"] == 1
     assert d["buckets"][0]["new"] == 0 and d["buckets"][0]["existing"] == 0   # zero-filled
-    assert d["totals"] == {"new": 7, "existing": 4, "touches": 11}
+    assert d["totals"] == {"new": 2, "existing": 1, "touches": 3}
     assert d["coverage_note"] is not None              # damon=50 < 200 → flagged
 
 
-def test_activity_trends_channel_passed_through():
-    conn = FakeConn(lists={"GROUP BY 1, 2": []}, vals={"date_trunc": BASE, "damon.kornhauser": 50})
+def test_activity_trends_channel_filters_the_bars_not_activation():
+    t = _this_bucket()
+    conn = FakeConn(lists={EVENTS: [
+        event_row(ts=t, companies=["acme"]),
+        event_row(kind="meeting", ts=t, companies=["acme"], source="calendar-sync"),
+    ]}, vals={"damon.kornhauser": 50})
     c = make_jobs_client(conn)
-    r = c.get("/api/jobs/activity-trends?granularity=month&channel=email")
+    r = c.get("/api/jobs/activity-trends?granularity=week&channel=meeting")
     assert r.status_code == 200, r.text
-    assert r.json()["data"]["channel"] == "email"
-    # the channel param is bound to the query
-    main = next(call for call in conn.calls if call[0] == "fetch" and "GROUP BY 1, 2" in call[1])
-    assert main[2][0] == "email"
+    d = r.json()["data"]
+    assert d["channel"] == "meeting"
+    assert d["totals"] == {"new": 1, "existing": 0, "touches": 1}
+
+
+def test_activity_trends_reads_team_senders_not_mailboxes():
+    """The events query is bound to the team's addresses, matched exactly."""
+    conn = FakeConn(lists={EVENTS: []}, vals={"damon.kornhauser": 500})
+    c = make_jobs_client(conn)
+    assert c.get("/api/jobs/activity-trends?granularity=week").status_code == 200
+    call = next(x for x in conn.calls if x[0] == "fetch" and EVENTS in x[1])
+    from routes.jobs import _jobs_team
+    assert call[2][2] == [e.lower() for e in _jobs_team()]
 
 
 def test_activity_trends_no_coverage_note_when_damon_synced():
-    conn = FakeConn(lists={"GROUP BY 1, 2": []}, vals={"date_trunc": BASE, "damon.kornhauser": 500})
+    conn = FakeConn(lists={EVENTS: []}, vals={"damon.kornhauser": 500})
     c = make_jobs_client(conn)
     r = c.get("/api/jobs/activity-trends?granularity=week")
     assert r.status_code == 200, r.text
@@ -192,7 +221,7 @@ def test_activity_trends_no_coverage_note_when_damon_synced():
 
 
 def test_activity_trends_monthly_has_12_buckets():
-    conn = FakeConn(lists={"GROUP BY 1, 2": []}, vals={"date_trunc": BASE, "damon.kornhauser": 50})
+    conn = FakeConn(lists={EVENTS: []}, vals={"damon.kornhauser": 50})
     c = make_jobs_client(conn)
     r = c.get("/api/jobs/activity-trends?granularity=month")
     assert r.status_code == 200, r.text
