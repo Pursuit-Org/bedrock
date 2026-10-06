@@ -1233,20 +1233,23 @@ export function Panel({
 }) {
   return (
     <section className={cn("rounded-2xl border border-border-strong bg-surface px-5 py-4", className)}>
-      <div className="mb-3 flex items-start justify-between gap-3">
-        {/* shrink-0: in a half-width panel the title lost the fight with the
-            controls and wrapped to two lines. Controls wrap gracefully; a
-            two-line title next to a one-line sibling does not. */}
-        <div className="shrink-0">
+      {/* flex-wrap: when the title block and the controls don't fit on one
+          line, the controls drop to their own line, right-aligned. The title
+          block used to be shrink-0, which kept a long `desc` on one line and
+          pushed the controls past the card's right edge, under the panel
+          beside it (Outreach Trends' Data points buttons, ~100px at laptop
+          widths). Only the title itself refuses to wrap now; `desc` may. */}
+      <div className="mb-3 flex flex-wrap items-start justify-between gap-x-3 gap-y-2">
+        <div className="min-w-0">
           <div className="flex items-center gap-2">
-            <h3 className="text-[14px] font-semibold text-ink">{title}</h3>
+            <h3 className="whitespace-nowrap text-[14px] font-semibold text-ink">{title}</h3>
             {badge ? (
               <span className="rounded-full bg-[var(--red-soft)] px-2 py-0.5 text-[11px] font-bold text-[var(--red)]">{badge}</span>
             ) : null}
           </div>
           {desc ? <p className="mt-0.5 text-[11.5px] text-ink-4">{desc}</p> : null}
         </div>
-        {action}
+        {action ? <div className="ml-auto">{action}</div> : null}
       </div>
       {children}
     </section>
