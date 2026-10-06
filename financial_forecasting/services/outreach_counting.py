@@ -208,8 +208,9 @@ class Event:
             return False
         if self.sender != other.sender or self.ts != other.ts:
             return False
-        mine, theirs = self.reach(), other.reach()
-        return bool(mine & theirs) or not (mine or theirs)
+        # Nobody known on either side is no evidence of a copy. The sync only
+        # keeps threads with an outside recipient, so this is rare anyway.
+        return bool(self.reach() & other.reach())
 
     def identity(self) -> tuple:
         """What makes two rows the same event, besides mailbox copies."""
@@ -468,9 +469,7 @@ def reference_sql() -> str:
           AND d.sender = c.sender AND d.ts = c.ts AND d.activity_id::text < c.activity_id::text
           AND (d.contact_ids && c.contact_ids
                OR ARRAY(SELECT lower(x) FROM unnest(d.recipients) x)
-                  && ARRAY(SELECT lower(x) FROM unnest(c.recipients) x)
-               OR (cardinality(d.contact_ids) + cardinality(d.recipients) = 0
-                   AND cardinality(c.contact_ids) + cardinality(c.recipients) = 0))))
+                  && ARRAY(SELECT lower(x) FROM unnest(c.recipients) x))))
       ORDER BY c.kind, coalesce(c.activity_id::text, c.intro_id::text), c.ts, c.contact_id
     ),
     first_activity AS (        -- D17: the first activity ever on each account
