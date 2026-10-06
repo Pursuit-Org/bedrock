@@ -101,6 +101,24 @@ def test_opportunities_funnel_follows_owner_filter():
     assert all("k@p.org" not in call[2] for call in conn_all.calls)
 
 
+def test_contacts_funnel_counts_not_a_fit():
+    # OVR-08: the snapshot query filtered not_a_fit out, so its row read 0.
+    conn = FakeConn(lists={"m.stage, c.full_name AS name": [
+        {"stage": "not_a_fit", "name": "Ana", "company": "Acme"},
+        {"stage": "not_a_fit", "name": "Ben", "company": "Beta"},
+        {"stage": "assigned", "name": "Cy", "company": "Gamma"},
+    ]}, rows={"reached_assigned": {"reached_assigned": 3, "reached_outreach": 0,
+                                   "reached_converted": 0}})
+    r = make_jobs_client(conn).get("/api/jobs/funnel/prospects")
+    assert r.status_code == 200, r.text
+    counts = {s["key"]: s["count"] for s in r.json()["data"]["stages"]}
+    assert counts["not_a_fit"] == 2
+    assert counts["assigned"] == 1
+    # And no membership read in either mode drops not_a_fit rows.
+    make_jobs_client(conn).get(f"/api/jobs/funnel/prospects{PERIOD}")
+    assert not any("<> 'not_a_fit'" in q for q in conn.queries())
+
+
 def test_funnel_unknown_type_404():
     c = make_jobs_client(FakeConn())
     r = c.get("/api/jobs/funnel/widgets")

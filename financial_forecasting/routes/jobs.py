@@ -2789,8 +2789,6 @@ async def get_funnel(
         # The Contacts funnel runs on the jobs-pipeline membership stage
         # (bedrock.jobs_contact_membership) — the stage the team actually
         # manages on the Contacts page — not the legacy contacts.contact_stage.
-        # on_hold shows as a terminal parking stage; not_a_fit is a dead
-        # disposition and stays out of the funnel.
         # Both off-ramps are rows, not omissions: Revisit is work you've parked
         # and Not a Fit is work you've ruled out, and a funnel that shows neither
         # implies every contact is still live. Terminal rows draw no conversion
@@ -2808,12 +2806,13 @@ async def get_funnel(
             {"key": "name", "label": "Contact"},
             {"key": "company", "label": "Company"},
         ]
+        # No `m.stage <> 'not_a_fit'` here: it emptied the Not a Fit row, which
+        # always read 0 (OVR-08; 61 contacts on 2026-10-06).
         rows = await conn.fetch(f"""
             SELECT m.stage, c.full_name AS name, c.current_company AS company
             FROM bedrock.jobs_contact_membership m
             JOIN public.contacts c ON c.contact_id = m.contact_id
-            WHERE m.stage <> 'not_a_fit'
-              AND ($1::text[] IS NULL OR lower(c.current_company) IN (
+            WHERE ($1::text[] IS NULL OR lower(c.current_company) IN (
                     SELECT lower(o.account_name) FROM bedrock.jobs_opportunity o
                     WHERE o.deleted_at IS NULL AND {_deal_type_sql('o.deal_type', 1)}
                       AND o.account_name IS NOT NULL))
@@ -2910,7 +2909,9 @@ async def get_funnel(
                        m.assigned_at, m.first_outreach_at, m.converted_at
                 FROM bedrock.jobs_contact_membership m
                 JOIN public.contacts c ON c.contact_id = m.contact_id
-                WHERE m.stage <> 'not_a_fit' AND $1::timestamptz IS NOT NULL
+                -- Not-a-fit contacts still entered the stages they passed
+                -- through, and the history read below already counts them.
+                WHERE $1::timestamptz IS NOT NULL
                   AND $2::timestamptz IS NOT NULL
                   {company_lens}
             """, p_from, p_to, dt)
