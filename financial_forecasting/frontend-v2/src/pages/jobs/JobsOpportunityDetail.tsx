@@ -28,11 +28,13 @@ import {
 import { withReferrer } from "@/components/detail";
 import { InlineDate, InlineSelect, InlineText } from "@/components/ui/InlineEdit";
 import { parseEstimatedJobs } from "@/lib/estimatedJobs";
+import { closedLostLabel, untitledOppHeading } from "@/components/jobs/oppLabels";
 import {
   useJobsOpportunity,
   useUpdateOpportunity,
   useDeleteOpportunity,
   useJobsStaff,
+  STAGE_LABELS,
   type DealType,
 } from "@/services/jobs";
 
@@ -87,7 +89,7 @@ export function JobsOpportunityDetailPage() {
       <div className="flex items-start gap-4">
         <AccountAvatar name={o.account_name ?? o.title ?? "—"} logoUrl={null} size={44} />
         <div className="min-w-0 flex-1">
-          <InlineText value={o.title} onSave={(v) => patch("title", v)} placeholder="Untitled opportunity" className="text-[22px] font-bold text-ink" />
+          <InlineText value={o.title} onSave={(v) => patch("title", v)} placeholder={untitledOppHeading(o.account_name)} className="text-[22px] font-bold text-ink" />
           <div className="mt-1 flex flex-wrap items-center gap-2 text-[12.5px] text-ink-3">
             <DealStagePill stage={o.stage} />
             {o.deal_type && <span className="font-medium uppercase tracking-wide text-ink-4">{DEAL_TYPE_LABELS[o.deal_type] ?? o.deal_type}</span>}
@@ -127,7 +129,7 @@ export function JobsOpportunityDetailPage() {
 
       {/* Stats */}
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-        <Stat label="Stage" value={o.stage} />
+        <Stat label="Stage" value={STAGE_LABELS[o.stage] ?? o.stage} />
         <Stat label="Deal type" value={o.deal_type ? (DEAL_TYPE_LABELS[o.deal_type] ?? o.deal_type) : "—"} />
         <Stat label="Roles" value={String(o.num_roles ?? 0)} />
         <Stat label="Last activity" value={lastActivity ? new Date(lastActivity).toLocaleDateString() : "—"} />
@@ -166,7 +168,7 @@ export function JobsOpportunityDetailPage() {
         </div>
         {o.closed_lost_reason ? (
           <div className="border-t border-border-strong px-5 py-3 text-[12px] text-ink-3">
-            <span className="font-semibold text-ink-2">Closed-lost:</span> {o.closed_lost_reason}{o.closed_lost_note ? ` — ${o.closed_lost_note}` : ""}
+            <span className="font-semibold text-ink-2">Closed-lost:</span> {closedLostLabel(o.closed_lost_reason)}{o.closed_lost_note ? ` — ${o.closed_lost_note}` : ""}
           </div>
         ) : null}
       </SectionCard>

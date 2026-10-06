@@ -32,6 +32,7 @@ import {
 } from "@/services/jobs";
 import { ActivitySourceIcon } from "@/components/ActivitySourceIcon";
 import { jobsOpportunityPath } from "@/components/jobs/jobsEntity";
+import { closedLostLabel } from "@/components/jobs/oppLabels";
 import { OppRolesSection } from "@/components/jobs/OppRolesSection";
 import { OppLogActivityForm } from "@/components/jobs/OppLogActivityForm";
 import { OppBuilderActivity } from "@/components/jobs/OppBuilderActivity";
@@ -603,13 +604,6 @@ const SEGMENT_OPTIONS: { value: string; label: string }[] = [
 ];
 
 const SEGMENT_LABELS: Record<string, string> = Object.fromEntries(SEGMENT_OPTIONS.map((s) => [s.value, s.label]));
-const CLOSED_LOST_LABELS: Record<string, string> = {
-  budget: "No budget", timing: "Timing / not now", hired_elsewhere: "Hired elsewhere",
-  not_a_fit: "Not a fit", no_response: "Went cold", role_cancelled: "Role cancelled",
-  not_interested: "Not interested", not_selected: "Not selected",
-  not_responsive: "Not responsive", revisit: "Revisit later", other: "Other",
-};
-
 /** Compact editable context strip at the top of an expanded deal: priority,
  *  segment, warm-intro attribution, and the closed-lost reason when applicable. */
 /** Campaign tags on an opportunity, drawn from the SAME catalog contacts use
@@ -722,7 +716,7 @@ function DealContextStrip({ deal }: { deal: JobsOpportunity }) {
       {isClosedLost ? (
         <Field label="Closed-lost reason">
           <span className="text-[12px] text-ink-2">
-            {deal.closed_lost_reason ? (CLOSED_LOST_LABELS[deal.closed_lost_reason] ?? deal.closed_lost_reason) : "—"}
+            {deal.closed_lost_reason ? closedLostLabel(deal.closed_lost_reason) : "—"}
             {deal.closed_lost_note ? <span className="text-ink-3"> — {deal.closed_lost_note}</span> : null}
           </span>
         </Field>
