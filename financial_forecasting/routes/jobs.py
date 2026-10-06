@@ -6512,6 +6512,43 @@ async def jobs_account_names(
     return {"success": True, "data": [{"account_key": r["key"], "account": r["name"]} for r in rows]}
 
 
+@router.get("/accounts/search")
+async def search_jobs_accounts(
+    q: str = Query(..., min_length=2),
+    limit: int = Query(8, ge=1, le=50),
+    user=Depends(require_auth), conn=Depends(get_db),
+):
+    """Accounts whose name matches `q`, for the top-bar search (Kwame
+    2026-10-02: "Blackstone" found no account). Same sources and engaged scope
+    as /accounts/names. Accounts with a deal come first, then names that start
+    with the query."""
+    escaped = q.strip().lower().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    rows = await conn.fetch(
+        f"""
+        SELECT key, (array_agg(name ORDER BY length(name)))[1] AS name,
+               count(*) FILTER (WHERE has_opp) AS opps
+        FROM (
+          SELECT lower(trim(account_name)) AS key, trim(account_name) AS name, true AS has_opp
+          FROM bedrock.jobs_opportunity
+          WHERE deleted_at IS NULL AND coalesce(trim(account_name),'') <> ''
+          UNION ALL
+          SELECT lower(trim(c.current_company)) AS key, trim(c.current_company) AS name, false
+          FROM public.contacts c
+          WHERE c.is_jobs_contact = true AND coalesce(trim(c.current_company),'') <> ''
+            AND {_engaged_clause('c')}
+        ) s
+        WHERE key LIKE $1
+        GROUP BY key
+        ORDER BY (count(*) FILTER (WHERE has_opp) = 0), (key NOT LIKE $2), name
+        LIMIT $3
+        """,
+        f"%{escaped}%", f"{escaped}%", limit,
+    )
+    return {"success": True, "data": [
+        {"account_key": r["key"], "account": r["name"], "opp_count": r["opps"]} for r in rows
+    ]}
+
+
 # ── Schema probes ─────────────────────────────────────────────────────────────
 # Migrations are applied by Jac, not by the app, so a feature can ship before its
 # column exists. Probing lets the same build work on both sides of a migration
@@ -8720,6 +8757,7 @@ async def list_opportunities(
 @router.get("/opportunities/search")
 async def search_opportunities(
     q: str = Query(..., min_length=1),
+    limit: int = Query(20, ge=1, le=50),
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
@@ -8738,9 +8776,9 @@ async def search_opportunities(
         WHERE deleted_at IS NULL
           AND (lower(trim(account_name)) LIKE $1 OR lower(trim(title)) LIKE $1)
         ORDER BY updated_at DESC
-        LIMIT 20
+        LIMIT $2
         """,
-        like,
+        like, limit,
     )
     return {"success": True, "data": [
         {"id": str(r["id"]), "account_name": r["account_name"], "title": r["title"], "stage": r["stage"]}

@@ -1,8 +1,9 @@
 /**
  * Inline global search — lives in the top bar with an anchored
  * dropdown of results. Replaces the modal `GlobalSearch` (still kept
- * around for cmd-K to focus this input). Same data source
- * (/api/salesforce/search), same keyboard nav.
+ * around for cmd-K to focus this input). Searches Salesforce
+ * (/api/salesforce/search) plus jobs contacts, accounts and deals; result
+ * grouping lives in topBarSearchItems.ts. Same keyboard nav.
  *
  * Design:
  *   - Input is always visible in the top bar.
@@ -24,6 +25,17 @@ import { Clock, Search, X } from "lucide-react";
 
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { STAGE_LABELS, type JobStage } from "@/services/jobs";
+import {
+  buildItems,
+  type BedrockContact,
+  type JobsAccountHit,
+  type JobsDealHit,
+  type ResultItem,
+  type SearchResults,
+} from "@/components/topBarSearchItems";
+
+const stageLabel = (s: string) => STAGE_LABELS[s as JobStage] ?? s;
 
 // ── Recent searches ─────────────────────────────────────────────────────────
 // Persist the user's last N clicked search results in localStorage so the
@@ -61,87 +73,6 @@ function pushRecent(prev: ResultItem[], item: ResultItem): ResultItem[] {
   // Dedupe by href (clicking the same record twice promotes it, doesn't dup).
   const filtered = prev.filter((p) => p.href !== item.href);
   return [item, ...filtered].slice(0, MAX_RECENTS);
-}
-
-interface SfRecord {
-  Id: string;
-  Name?: string;
-  Email?: string;
-  StageName?: string;
-  Amount?: number;
-  CloseDate?: string;
-  AccountName?: string;
-}
-
-interface SearchResults {
-  Account?: SfRecord[];
-  Contact?: SfRecord[];
-  Opportunity?: SfRecord[];
-}
-
-interface ResultItem {
-  group: string;
-  label: string;
-  sub?: string | null;
-  href: string;
-}
-
-/** A bedrock/jobs contact (public.contacts) — not necessarily in Salesforce. */
-interface BedrockContact {
-  contact_id: number;
-  full_name: string | null;
-  email: string | null;
-  current_title: string | null;
-  current_company: string | null;
-}
-
-function buildItems(results: SearchResults, bedrockContacts: BedrockContact[] = []): ResultItem[] {
-  const out: ResultItem[] = [];
-  for (const r of results.Account ?? []) {
-    out.push({
-      group: "Accounts",
-      label: r.Name ?? r.Id,
-      href: `/accounts/${r.Id}`,
-    });
-  }
-  const sfEmails = new Set<string>();
-  for (const r of results.Contact ?? []) {
-    if (r.Email) sfEmails.add(r.Email.toLowerCase());
-    out.push({
-      group: "PBD Contacts",
-      label: r.Name ?? r.Id,
-      sub: r.Email ?? null,
-      href: `/contacts/${r.Id}`,
-    });
-  }
-  // Bedrock/jobs contacts (32k+ in public.contacts, incl. people not in SF).
-  // Searches name + email + company, so e.g. "adonis" surfaces its contacts.
-  // Kept in a separate "Jobs Contacts" group (rather than merged into PBD
-  // Contacts above) so the dropdown's group header always makes clear which
-  // Bedrock section a same-named contact belongs to — a person can be a PBD
-  // (Salesforce) contact and a Jobs (public.contacts) contact with different
-  // emails, and previously both rendered under one unlabeled "Contacts"
-  // header with no way to tell which link went where.
-  for (const c of bedrockContacts) {
-    if (c.email && sfEmails.has(c.email.toLowerCase())) continue;
-    const name = c.full_name ?? c.email ?? `#${c.contact_id}`;
-    out.push({
-      group: "Jobs Contacts",
-      label: name,
-      sub: [c.current_title, c.current_company].filter(Boolean).join(" · ") || c.email || null,
-      // Deep-link straight to the contact's detail drawer (opens on arrival).
-      href: `/jobs/contacts?contact=${c.contact_id}`,
-    });
-  }
-  for (const r of results.Opportunity ?? []) {
-    out.push({
-      group: "Opportunities",
-      label: r.Name ?? r.Id,
-      sub: r.AccountName ?? r.StageName ?? null,
-      href: `/opportunities/${r.Id}`,
-    });
-  }
-  return out;
 }
 
 const PANEL_WIDTH = 480;
@@ -239,20 +170,28 @@ export function TopBarSearch() {
       abortRef.current = controller;
       const qs = encodeURIComponent(query.trim());
       try {
-        // SF + bedrock/jobs contacts in parallel; each fails independently so a
-        // Salesforce hiccup (e.g. not connected) still shows bedrock contacts.
-        const [sf, bedrock] = await Promise.all([
-          api.get<SearchResults>(`/api/salesforce/search?q=${qs}&limit=8`, { signal: controller.signal })
+        // SF + jobs contacts, accounts and deals in parallel; each fails
+        // independently so a Salesforce hiccup (e.g. not connected) still
+        // shows the jobs results, and vice versa.
+        const opts = { signal: controller.signal };
+        const [sf, jobsContacts, jobsAccounts, jobsDeals] = await Promise.all([
+          api.get<SearchResults>(`/api/salesforce/search?q=${qs}&limit=8`, opts)
             .then((r) => r.data)
             .catch(() => ({ Account: [], Contact: [], Opportunity: [] } as SearchResults)),
-          api.get<{ success: boolean; data: BedrockContact[] }>(`/api/jobs/contacts/search?q=${qs}&limit=8`, { signal: controller.signal })
+          api.get<{ success: boolean; data: BedrockContact[] }>(`/api/jobs/contacts/search?q=${qs}&limit=8`, opts)
             .then((r) => r.data.data)
             .catch(() => [] as BedrockContact[]),
+          api.get<{ success: boolean; data: JobsAccountHit[] }>(`/api/jobs/accounts/search?q=${qs}&limit=5`, opts)
+            .then((r) => r.data.data)
+            .catch(() => [] as JobsAccountHit[]),
+          api.get<{ success: boolean; data: JobsDealHit[] }>(`/api/jobs/opportunities/search?q=${qs}&limit=5`, opts)
+            .then((r) => r.data.data)
+            .catch(() => [] as JobsDealHit[]),
         ]);
         // A newer query may have started (and been aborted above) while
         // this one was resolving — only the latest request gets to write.
         if (reqId !== requestIdRef.current) return;
-        setItems(buildItems(sf, bedrock));
+        setItems(buildItems({ sf, jobsContacts, jobsAccounts, jobsDeals }, stageLabel));
         setActiveIdx(0);
       } catch {
         if (reqId === requestIdRef.current) setItems([]);

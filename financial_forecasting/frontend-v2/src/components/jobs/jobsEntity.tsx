@@ -17,6 +17,7 @@ import { RequestIntroDialog } from "@/components/jobs/RequestIntroDialog";
 import { RowExpandPanel } from "@/components/RowExpandPanel";
 import { InlineSelect, InlineText } from "@/components/ui/InlineEdit";
 import { cn } from "@/lib/utils";
+import { jobsAccountPath, jobsContactPath, jobsOpportunityPath } from "./jobsPaths";
 import {
   useContactDetail,
   useContactOpportunities,
@@ -41,9 +42,8 @@ export function oppRoleLabel(opp: { title?: string | null; deal_type?: DealType 
 }
 
 // ── Route helpers ────────────────────────────────────────────────────────────
-export const jobsOpportunityPath = (id: string) => `/jobs/opportunities/${id}`;
-export const jobsContactPath = (id: number) => `/jobs/contacts/${id}`;
-export const jobsAccountPath = (key: string) => `/jobs/accounts/${encodeURIComponent(key)}`;
+// Defined in jobsPaths.ts so plain (non-React) modules can share them.
+export { jobsOpportunityPath, jobsContactPath, jobsAccountPath };
 
 const jobsRef = withReferrer({ pathname: "/jobs", label: "Jobs" });
 

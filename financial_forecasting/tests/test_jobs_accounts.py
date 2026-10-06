@@ -181,3 +181,46 @@ def test_no_task_status_compares_to_done():
     from routes.jobs_tasks import VALID_STATUSES
     assert "done" not in {s.lower() for s in VALID_STATUSES}
     assert not re.search(r"status\s*(=|<>|!=)\s*'done'", inspect.getsource(jobs))
+
+
+# ── Top-bar search: jobs accounts (Kwame 2026-10-02) ───────────────────────────
+
+ACCT_SEARCH = "WHERE key LIKE $1"
+
+
+def test_account_search_finds_account_by_name():
+    conn = FakeConn(lists={ACCT_SEARCH: [{"key": "blackstone", "name": "Blackstone", "opps": 7}]})
+    r = make_jobs_client(conn).get("/api/jobs/accounts/search?q=Blackstone")
+    assert r.status_code == 200, r.text
+    assert r.json()["data"] == [{"account_key": "blackstone", "account": "Blackstone", "opp_count": 7}]
+    q, args = next((c[1], c[2]) for c in conn.calls if ACCT_SEARCH in c[1])
+    # Case-insensitive contains, prefix matches ranked first, default limit 8.
+    assert args == ("%blackstone%", "blackstone%", 8)
+    assert "FROM bedrock.jobs_opportunity" in q and "public.contacts c" in q
+
+
+def test_account_search_escapes_like_wildcards():
+    conn = FakeConn(lists={ACCT_SEARCH: []})
+    make_jobs_client(conn).get("/api/jobs/accounts/search?q=50%25_off")
+    args = next(c[2] for c in conn.calls if ACCT_SEARCH in c[1])
+    assert args[0] == "%50\%\_off%"
+
+
+def test_account_search_needs_two_characters():
+    r = make_jobs_client(FakeConn()).get("/api/jobs/accounts/search?q=b")
+    assert r.status_code == 422
+
+
+def test_account_search_route_is_not_shadowed():
+    # /accounts/{key}-style routes must not capture "search".
+    from main import app
+    paths = [getattr(r, "path", "") for r in app.routes]
+    assert "/api/jobs/accounts/search" in paths
+
+
+def test_opportunity_search_takes_a_limit():
+    conn = FakeConn(lists={"FROM bedrock.jobs_opportunity": []})
+    r = make_jobs_client(conn).get("/api/jobs/opportunities/search?q=black&limit=5")
+    assert r.status_code == 200, r.text
+    args = next(c[2] for c in conn.calls if "FROM bedrock.jobs_opportunity" in c[1])
+    assert args == ("%black%", 5)
