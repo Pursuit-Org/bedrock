@@ -214,9 +214,13 @@ function GroupDetail({ g }: { g: EventGroup }) {
 }
 
 export function ActivityFeed({
-  events, owners, isLoading, title, note, showSegments = true, owner, onOwner,
+  events, total, owners, isLoading, title, note, showSegments = true, owner, onOwner,
 }: {
   events: CampaignEvent[];
+  /** Events in the period before the server's cap. When it is more than
+   *  `events.length`, the feed says how many it is showing (PRO-96): the
+   *  oldest group shown may be partial, and anything older is not loaded. */
+  total?: number;
   owners: { email: string; contacts: number }[];
   isLoading: boolean;
   title?: string;
@@ -241,6 +245,13 @@ export function ActivityFeed({
     return groupEvents(rows);
   }, [events, segment, showSegments]);
   const shown = showAll ? groups : groups.slice(0, ACTIVITY_PAGE);
+  const truncated = total !== undefined && total > events.length;
+  const truncatedNote = truncated ? (
+    <p className="mt-2 text-[11.5px] text-ink-4">
+      Showing the {events.length.toLocaleString()} most recent of {(total ?? 0).toLocaleString()} events
+      in this period. Narrow the period or owner to see older ones.
+    </p>
+  ) : null;
 
   return (
     <Section
@@ -277,9 +288,12 @@ export function ActivityFeed({
           <Loader2 size={14} className="animate-spin" /> Loading activity…
         </div>
       ) : groups.length === 0 ? (
-        <div className="flex items-center justify-center rounded-lg border border-dashed border-border-strong px-4 py-8 text-[12px] text-ink-4">
-          No activity in this period.
-        </div>
+        <>
+          <div className="flex items-center justify-center rounded-lg border border-dashed border-border-strong px-4 py-8 text-[12px] text-ink-4">
+            {truncated ? "Nothing of this kind among the events loaded." : "No activity in this period."}
+          </div>
+          {truncatedNote}
+        </>
       ) : (
         <div className="flex flex-col">
           <div className="flex items-center gap-3 border-b border-border-strong px-3 pb-1.5 text-[10.5px] font-semibold uppercase tracking-wider text-ink-4">
@@ -349,6 +363,7 @@ export function ActivityFeed({
               {showAll ? "Show less" : `Show all ${groups.length}`}
             </button>
           ) : null}
+          {truncatedNote}
         </div>
       )}
     </Section>

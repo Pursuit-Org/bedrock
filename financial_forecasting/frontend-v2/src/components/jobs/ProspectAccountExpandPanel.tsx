@@ -51,6 +51,7 @@ import {
   type AccountGroupContact,
 } from "@/services/jobsAccounts";
 import { CallKindPicker } from "@/components/jobs/CallKindPicker";
+import { ActivityCapNote } from "@/components/jobs/JobsActivityList";
 import { ContactJobsFields } from "@/components/jobs/ContactJobsFields";
 
 // ── Stage styling ──────────────────────────────────────────────────────────
@@ -457,7 +458,7 @@ export function ContactDetail({ contactId }: { contactId: number }) {
         <div className="min-w-0 flex-1">
           <div className="mb-3 flex items-center justify-between">
             <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">
-              Engagement History ({data.activity.length})
+              Engagement History ({(data.activity_total ?? data.activity.length).toLocaleString()})
             </div>
             <button
               type="button"
@@ -468,6 +469,8 @@ export function ContactDetail({ contactId }: { contactId: number }) {
               Log Activity
             </button>
           </div>
+
+          <ActivityCapNote shown={data.activity.length} total={data.activity_total} className="mb-2 text-[11.5px] text-ink-4" />
 
           {showLogForm && (
             <LogActivityForm contactId={contactId} onClose={() => setShowLogForm(false)} />
@@ -714,7 +717,7 @@ function ContactActivityBlock({ contact }: { contact: AccountGroupContact }) {
           {initials(contact.full_name)}
         </div>
         <span className="text-[12px] font-semibold text-ink">{contact.full_name || "—"}</span>
-        <span className="text-[11px] text-ink-4">({activity.length})</span>
+        <span className="text-[11px] text-ink-4">({data?.activity_total ?? activity.length})</span>
       </div>
       <div className="flex flex-col gap-2 pl-8">
         {activity.slice(0, 8).map((act) => {

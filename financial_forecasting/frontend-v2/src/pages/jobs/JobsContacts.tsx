@@ -584,9 +584,9 @@ export function JobsContacts({ initialQuery, initialContactId, initialConnectedO
   const [bannerAddedToJobs, setBannerAddedToJobs] = useState(false);
   const { mutate: addContactToJobs } = useAddContactToJobs();
 
-  // Server-side search: the table only loads the first 500 pipeline contacts,
+  // Server-side search: the "All contacts" scope only loads the first 5,000,
   // so the search box must query the SERVER (all contacts), not just filter
-  // the loaded page — otherwise anyone past row 500 is unfindable. Debounced
+  // the loaded rows — otherwise anyone past the cap is unfindable. Debounced
   // so we don't refetch per keystroke; client-side filtering still applies on
   // top for instant narrowing.
   const [debouncedQuery, setDebouncedQuery] = useState(initialQuery ?? "");
@@ -603,9 +603,12 @@ export function JobsContacts({ initialQuery, initialContactId, initialConnectedO
   useEffect(() => { setSelected(new Set()); }, [scope, flagView, debouncedQuery]);
 
   const serverRules = useMemo(() => serializeRulesForServer(rules), [rules]);
-  const filteringActive = serverRules.length > 0 || !!debouncedQuery;
+  // Jobs scope (~7.7k) loads every page, so every count, group, sort and
+  // select-all covers everyone (PRO-96). "All contacts" (~47k) stops at 5,000
+  // and says so below; filters and search narrow it server-side.
   const { data: rawData, isLoading, isError, refetch } = useJobsContacts({
-    limit: filteringActive ? 5000 : 1200,
+    all: true,
+    maxRows: scope === "all" ? 5000 : undefined,
     search: debouncedQuery || undefined,
     flagged: flagView === "all" ? undefined : flagView === "flagged",
     scope,
@@ -613,7 +616,7 @@ export function JobsContacts({ initialQuery, initialContactId, initialConnectedO
   });
   const allContacts: JobContactWithDeal[] = useMemo(() => rawData?.data ?? [], [rawData]);
   const serverTotal = rawData?.total ?? 0;
-  const universeTruncated = filteringActive && serverTotal > allContacts.length;
+  const universeTruncated = serverTotal > allContacts.length;
 
   const openContact = useCallback((result: ContactSearchResult) => {
     if (allContacts.some((c) => c.contact_id === result.contact_id)) {
@@ -814,7 +817,9 @@ export function JobsContacts({ initialQuery, initialContactId, initialConnectedO
             {groupMode === "collapsed" ? <><ChevronsUpDown size={13} /> Expand all</> : <><ChevronsDownUp size={13} /> Collapse all</>}
           </button>
         )}
-        <span className="whitespace-nowrap font-mono text-[12px] text-ink-4">{isLoading ? "…" : `${filtered.length} contact${filtered.length === 1 ? "" : "s"}`}</span>
+        <span className="whitespace-nowrap font-mono text-[12px] text-ink-4">{isLoading ? "…" : universeTruncated
+          ? `${filtered.length.toLocaleString()} of ${serverTotal.toLocaleString()} contacts`
+          : `${filtered.length.toLocaleString()} contact${filtered.length === 1 ? "" : "s"}`}</span>
         <div className="ml-auto flex items-center gap-2">
           <ColumnChooser allColumns={COLUMN_ORDER} labels={COL_LABELS} visible={visibleCols} required={["name"]} onToggle={toggleCol} />
           <SavedViewsPicker<JobsContactsView> scopeKey="jobs-contacts" currentFilters={{ query, rules, visibleCols, groupBy, sort }} onLoad={(v) => { setQuery(v.query ?? ""); setRules(v.rules ?? []); const g = v.groupBy ?? ""; setGroupBy(g); setGroupExceptions(EMPTY); setGroupMode(g === ACCOUNT_GROUP ? "collapsed" : "expanded"); if (v.visibleCols?.length) replaceVisibleCols(v.visibleCols); if (v.sort) setSort(v.sort); }} />
@@ -902,7 +907,7 @@ export function JobsContacts({ initialQuery, initialContactId, initialConnectedO
 
       {universeTruncated && (
         <div className="border-x border-t border-amber-300 bg-amber-50 px-3 py-1.5 text-[11.5px] text-amber-900">
-          Filters matched {serverTotal.toLocaleString()} contacts — showing the first {allContacts.length.toLocaleString()}. Refine to narrow further.
+          Showing the first {allContacts.length.toLocaleString()} of {serverTotal.toLocaleString()} contacts. Counts, groups and select-all cover only those. Filter or search to narrow.
         </div>
       )}
 

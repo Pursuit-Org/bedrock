@@ -358,7 +358,7 @@ export function AccountActivityTab({ account, scope = "engaged" }: { account: Jo
           {type === "call" && <CallKindPicker value={callKind} onChange={setCallKind} className="basis-full" />}
         </div>
       )}
-      {isLoading ? <Loading /> : <JobsActivityList entries={data ?? []} emptyMessage="No activity across this account's opportunities or contacts yet." />}
+      {isLoading ? <Loading /> : <JobsActivityList entries={data?.entries ?? []} total={data?.total} emptyMessage="No activity across this account's opportunities or contacts yet." />}
     </div>
   );
 }

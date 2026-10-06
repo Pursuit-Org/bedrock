@@ -31,22 +31,35 @@ export interface DrillRow {
 
 const DRILL_PAGE = 5;
 
-export function DrillList({ rows, emptyLabel = "Nothing in this period.", className }: {
+export function DrillList({ rows, total, incompleteNote, emptyLabel = "Nothing in this period.", className }: {
   rows: DrillRow[];
+  /** How many rows exist when the server capped `rows` (PRO-96). When it is
+   *  more than `rows.length` the list says so rather than stopping silently. */
+  total?: number;
+  /** For lists filtered out of an already-capped feed, where the true row
+   *  count isn't known: says what the list was built from. */
+  incompleteNote?: string;
   emptyLabel?: string;
   className?: string;
 }) {
   const [showAll, setShowAll] = useState(false);
   const nameOf = useStaffNameResolver();
+  const note = incompleteNote
+    ? <p className="mt-2 text-[11.5px] text-ink-4">{incompleteNote}</p>
+    : null;
 
   if (rows.length === 0) {
     return (
-      <div className={cn("rounded-lg border border-dashed border-border-strong px-4 py-5 text-center text-[12px] text-ink-4", className)}>
-        {emptyLabel}
+      <div className={className}>
+        <div className="rounded-lg border border-dashed border-border-strong px-4 py-5 text-center text-[12px] text-ink-4">
+          {emptyLabel}
+        </div>
+        {note}
       </div>
     );
   }
   const shown = showAll ? rows : rows.slice(0, DRILL_PAGE);
+  const truncated = total !== undefined && total > rows.length;
   return (
     <div className={cn("flex flex-col", className)}>
       <div className="flex items-center gap-3 border-b border-border-strong pb-1.5 text-[10.5px] font-semibold uppercase tracking-wider text-ink-4">
@@ -81,12 +94,22 @@ export function DrillList({ rows, emptyLabel = "Nothing in this period.", classN
           </span>
         </div>
       ))}
-      {rows.length > DRILL_PAGE ? (
-        <button type="button" onClick={() => setShowAll((v) => !v)}
-          className="mt-2 self-start text-[12px] font-medium text-accent hover:underline">
-          {showAll ? "Show less" : `Show all ${rows.length}`}
-        </button>
+      {rows.length > DRILL_PAGE || truncated ? (
+        <div className="mt-2 flex items-baseline gap-2 text-[12px]">
+          {rows.length > DRILL_PAGE ? (
+            <button type="button" onClick={() => setShowAll((v) => !v)}
+              className="font-medium text-accent hover:underline">
+              {showAll ? "Show less" : `Show ${truncated ? "" : "all "}${rows.length}`}
+            </button>
+          ) : null}
+          {truncated ? (
+            <span className="text-ink-4">
+              The {rows.length} most recent of {(total ?? 0).toLocaleString()} are listed.
+            </span>
+          ) : null}
+        </div>
       ) : null}
+      {note}
     </div>
   );
 }

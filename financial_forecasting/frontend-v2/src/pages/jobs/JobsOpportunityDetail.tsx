@@ -184,7 +184,7 @@ export function JobsOpportunityDetailPage() {
         {/* Same log form as the Pipeline drawer, so a deal can be worked from
             its own page too. */}
         <OppLogActivityForm dealId={o.id} contacts={o.contacts ?? []} />
-        <JobsActivityList entries={o.activity ?? []} />
+        <JobsActivityList entries={o.activity ?? []} total={o.activity_total} />
       </SectionCard>
       <SectionCard title="Tasks" storageScope="jobs-opportunity"><div className="px-3 py-2"><JobsTasks parentType="opportunity" parentId={o.id} /></div></SectionCard>
       <SectionCard title="Comments" storageScope="jobs-opportunity"><div className="px-3 py-2"><JobsComments parentType="opportunity" parentId={o.id} /></div></SectionCard>

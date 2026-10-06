@@ -215,7 +215,9 @@ export function JobsOpportunitiesOverview() {
   const { data: oppsData } = useJobsOpportunities({
     owner_email: owner !== "all" ? owner : undefined,
     deal_type: dealType !== "all" ? dealType : undefined,
-    limit: 500,
+    // Every deal, not the 500 most recently updated: owner counts and the
+    // "Won, open tasks" card are built from these rows (PRO-96).
+    all: true,
   });
   const { data: allTasks = [] } = useAllJobsTasks();
   const openOpps = useMemo(() => (oppsData?.data ?? [])

@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import { useMutation, useQuery, useQueryClient, keepPreviousData, type QueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
+import { fetchAllPages } from "@/lib/fetchAllPages";
 import { serializeRulesForServer, type FilterRule } from "@/pages/cleanup/Filters";
 
 /**
@@ -158,6 +159,8 @@ export interface ContactsSummary {
 export interface JobsOpportunityDetail extends JobsOpportunity {
   stage_history: StageHistoryEntry[];
   activity: ActivityEntry[];
+  /** How many activities + intros exist; `activity` lists the newest 250 + 50. */
+  activity_total?: number;
   contacts: JobContact[];
 }
 
@@ -209,6 +212,9 @@ export interface OpportunityFilters {
   deal_type?: string;
   limit?: number;
   offset?: number;
+  /** Load every page, so counts built on the list cover every deal (PRO-96).
+   *  `limit`/`offset` are then ignored. */
+  all?: boolean;
 }
 
 // ── Labels & metadata ────────────────────────────────────────────────────────
@@ -398,6 +404,11 @@ export interface ContactFilters {
   search?: string;
   company?: string;
   limit?: number;
+  /** Load every page, so counts built on the list cover everyone (PRO-96).
+   *  `limit` is then ignored; `maxRows` caps very large universes, and the
+   *  caller must say "Showing X of Y" when data.length < total. */
+  all?: boolean;
+  maxRows?: number;
   flagged?: boolean;
   membership_stage?: string;
   industry?: string;
@@ -440,6 +451,8 @@ export interface CompanyBuilderRole {
 }
 export interface ContactDetail extends JobContactWithDeal {
   activity: ActivityEntry[];
+  /** How many activities + intros exist; `activity` lists the newest 100 + 50. */
+  activity_total?: number;
   connected_staff?: ConnectedStaff[];
   open_roles_list?: OpenRole[];   // the actual sourced roles (list carries only the count)
   builder_applications?: CompanyBuilderRole[];
@@ -496,16 +509,23 @@ export function useJobsContacts(filters: ContactFilters = {}) {
   if (filters.has_open_roles) params.set("has_open_roles", "true");
   if (filters.scope) params.set("scope", filters.scope);
   if (filters.rules && filters.rules.length > 0) params.set("filters", JSON.stringify(filters.rules));
-  params.set("limit", String(filters.limit ?? 200));
 
   return useQuery<{ data: JobContactWithDeal[]; total: number }>({
     queryKey: ["jobs", "contacts", filters],
     placeholderData: keepPreviousData,
     queryFn: async () => {
-      const { data } = await api.get<{ success: boolean; data: JobContactWithDeal[]; total: number }>(
-        `/api/jobs/contacts?${params}`
-      );
-      return { data: data.data, total: data.total };
+      const page = async (limit: number, offset: number) => {
+        const p = new URLSearchParams(params);
+        p.set("limit", String(limit));
+        p.set("offset", String(offset));
+        const { data } = await api.get<{ success: boolean; data: JobContactWithDeal[]; total: number }>(
+          `/api/jobs/contacts?${p}`
+        );
+        return { data: data.data, total: data.total };
+      };
+      // 2,000 a page: well under the server's 5,000 ceiling, and the pages
+      // load in parallel.
+      return filters.all ? fetchAllPages(page, 2000, filters.maxRows) : page(filters.limit ?? 200, 0);
     },
     staleTime: 60_000,
   });
@@ -831,7 +851,20 @@ function accountRollup<T>(kind: string, key: string | null) {
   });
 }
 
-export const useAccountActivity = (key: string | null) => accountRollup<ActivityEntry[]>("activity", key);
+/** An account's activity: the newest 250 entries plus how many exist, so the
+ *  tab can say "Showing X of Y" rather than stopping silently (PRO-96). */
+export function useAccountActivity(key: string | null) {
+  return useQuery<{ entries: ActivityEntry[]; total: number }>({
+    queryKey: ["jobs", "account-rollup", "activity", key],
+    queryFn: async () => {
+      const { data } = await api.get<{ success: boolean; data: ActivityEntry[]; total?: number }>(
+        `/api/jobs/account-activity?key=${encodeURIComponent(key ?? "")}`);
+      return { entries: data.data, total: data.total ?? data.data.length };
+    },
+    enabled: Boolean(key),
+    staleTime: 30_000,
+  });
+}
 export const useAccountTasks    = (key: string | null) => accountRollup<AccountTask[]>("tasks", key);
 export const useAccountComments = (key: string | null) => accountRollup<AccountComment[]>("comments", key);
 export const useAccountBuilders = (key: string | null) => accountRollup<{ rows: AccountBuilderRow[]; summary: Record<string, number> }>("builders", key);
@@ -1552,6 +1585,8 @@ export interface OutreachSummary {
   /** What each headline counts, capped — the counts above stay the source of
    *  truth, so a truncated list can never make one of them wrong. */
   drills: Record<"accounts_activated" | "outreach_activity" | "calls_booked" | "converted", DrillRow[]>;
+  /** Uncapped length of each drill list (the server lists at most 60). */
+  drill_totals?: Record<"accounts_activated" | "outreach_activity" | "calls_booked" | "converted", number>;
 }
 
 /** The three headline numbers on the Outreach tab, over the page's own window
@@ -1701,6 +1736,10 @@ export interface OutreachDrill {
   period: "this" | "last";
   count: number;
   contacts: OutreachDrillContact[];
+  /** Touches listed vs. matched: the server caps touches before grouping them
+   *  by contact, so when listed < total the oldest are missing. */
+  touches_listed?: number;
+  touches_total?: number;
 }
 
 /** One owner's numbers for a metric: what they owe, what they did, the gap.
@@ -1805,15 +1844,20 @@ export function useJobsOpportunities(filters: OpportunityFilters = {}) {
   if (filters.owner_email) params.set("owner_email",  filters.owner_email);
   if (filters.account_id)  params.set("account_id",   filters.account_id);
   if (filters.deal_type)   params.set("deal_type",    filters.deal_type);
-  params.set("limit",  String(filters.limit  ?? 200));
-  params.set("offset", String(filters.offset ?? 0));
 
   return useQuery<{ data: JobsOpportunity[]; total: number }>({
     queryKey: ["jobs", "opportunities", filters],
     placeholderData: keepPreviousData,
     queryFn: async () => {
-      const { data } = await api.get<ListResponse<JobsOpportunity>>(`/api/jobs/opportunities?${params}`);
-      return { data: data.data, total: data.total };
+      const page = async (limit: number, offset: number) => {
+        const p = new URLSearchParams(params);
+        p.set("limit", String(limit));
+        p.set("offset", String(offset));
+        const { data } = await api.get<ListResponse<JobsOpportunity>>(`/api/jobs/opportunities?${p}`);
+        return { data: data.data, total: data.total };
+      };
+      // 500 a page = the server's ceiling for this endpoint.
+      return filters.all ? fetchAllPages(page, 500) : page(filters.limit ?? 200, filters.offset ?? 0);
     },
     staleTime: 30_000,
   });
@@ -2117,6 +2161,8 @@ export interface CampaignEvent {
 export interface CampaignActivity {
   period: { from: string; to: string };
   owners: { email: string; contacts: number }[];
+  /** Events in the period before the server's cap (300 by default). */
+  total?: number;
   events: CampaignEvent[];
 }
 

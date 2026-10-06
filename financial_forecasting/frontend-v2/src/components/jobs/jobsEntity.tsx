@@ -233,7 +233,7 @@ export function ContactActivityTab({ contactId }: { contactId: number }) {
         )}
       </div>
       {logging && <div className="px-3 pt-2"><LogActivityForm contactId={contactId} onClose={() => setLogging(false)} /></div>}
-      <JobsActivityList entries={data?.activity ?? []} emptyMessage="No emails, meetings, or logged touches for this contact yet." />
+      <JobsActivityList entries={data?.activity ?? []} total={data?.activity_total} emptyMessage="No emails, meetings, or logged touches for this contact yet." />
     </div>
   );
 }

@@ -458,18 +458,31 @@ function MyNetworkZone({ scope }: { scope: NetworkScope }) {
       (prioritized && sort.key !== "priority" ? compare(band(a), band(b), "asc") : 0)
       || compare(val(a), val(b), sort.direction));
   }
-  const shown = showAll ? conns : conns.slice(0, 25);
-  // Group the shown rows by company (largest group first, no-company last).
+  const ROW_WINDOW = 25;
+  const shown = showAll ? conns : conns.slice(0, ROW_WINDOW);
+  // Group EVERY loaded row by company (largest group first, no-company last),
+  // so each header counts the whole group. Grouping only the first 25 shown
+  // made the counts and the ordering cover a slice (PRO-96). The 25-row window
+  // then applies to the rows rendered under the headers, not to the counts.
   const groups = useMemo(() => {
     if (!byCompany) return null;
     const m = new Map<string, NetworkConnection[]>();
-    for (const c of shown) {
+    for (const c of conns) {
       const k = c.current_company?.trim() || "No company";
       (m.get(k) ?? m.set(k, []).get(k)!).push(c);
     }
-    return [...m.entries()].sort((a, b) =>
+    const all = [...m.entries()].sort((a, b) =>
       a[0] === "No company" ? 1 : b[0] === "No company" ? -1 : b[1].length - a[1].length || a[0].localeCompare(b[0]));
-  }, [byCompany, shown]);
+    if (showAll) return all.map(([company, rows]) => ({ company, rows, total: rows.length }));
+    let budget = ROW_WINDOW;
+    const out: { company: string; rows: NetworkConnection[]; total: number }[] = [];
+    for (const [company, rows] of all) {
+      if (budget <= 0) break;
+      out.push({ company, rows: rows.slice(0, budget), total: rows.length });
+      budget -= rows.length;
+    }
+    return out;
+  }, [byCompany, conns, showAll]);
   const toggle = (id: number) => setExpandedId((p) => (p === id ? null : id));
   const filtering = rules.length > 0 || !!q || warmOnly;
   // `matched` is counted in SQL over the WHOLE network and is the real answer to
@@ -566,10 +579,10 @@ function MyNetworkZone({ scope }: { scope: NetworkScope }) {
               <SortableHeader label="Hiring fit" sortKey="fit" sort={sort} onToggle={toggleSort} />
               <SortableHeader label="Note" sortKey="note" sort={sort} onToggle={toggleSort} />
             </div>
-            {groups ? groups.map(([company, rows]) => (
+            {groups ? groups.map(({ company, rows, total }) => (
               <div key={company}>
                 <div className="flex items-baseline gap-2 border-t border-border-strong bg-surface-2/50 px-3 py-1 text-[11px] font-semibold text-ink-2">
-                  {company} <span className="font-normal tabular-nums text-ink-4">{rows.length}</span>
+                  {company} <span className="font-normal tabular-nums text-ink-4">{total}</span>
                 </div>
                 {rows.map((c) => <NetworkRow key={c.contact_id} c={c} expanded={expandedId === c.contact_id} onToggle={() => toggle(c.contact_id)} fitEnabled={fitEnabled} scope={scope} tagLabel={tagLabel} />)}
               </div>

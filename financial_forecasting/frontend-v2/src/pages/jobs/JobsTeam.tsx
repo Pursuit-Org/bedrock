@@ -38,6 +38,7 @@ import { OppLogActivityForm } from "@/components/jobs/OppLogActivityForm";
 import { OppBuilderActivity } from "@/components/jobs/OppBuilderActivity";
 import { JobsTasks } from "@/components/jobs/JobsTasks";
 import { JobsComments } from "@/components/jobs/JobsComments";
+import { ActivityCapNote } from "@/components/jobs/JobsActivityList";
 import { CommittedRolesModal } from "@/components/jobs/CommittedRolesModal";
 import { RowExpandPanel, type ExpandTab } from "@/components/RowExpandPanel";
 import { InlineText, InlineSelect, InlineDate } from "@/components/ui/InlineEdit";
@@ -754,7 +755,8 @@ export function DealExpandPanel({
     {
       id: "activity",
       label: "Activity",
-      count: detail?.activity?.length ?? null,
+      // The real total, not the newest 250 the tab lists (PRO-96).
+      count: detail ? (detail.activity_total ?? detail.activity.length) : null,
       render: () =>
         detailQ.isLoading ? (
           <TabLoading />
@@ -762,6 +764,7 @@ export function DealExpandPanel({
           <div className="flex flex-col">
             <OppLogActivityForm dealId={deal.id} contacts={detail?.contacts ?? []} />
             <ActivityTab entries={detail?.activity ?? []} />
+            <ActivityCapNote shown={detail?.activity?.length ?? 0} total={detail?.activity_total} />
           </div>
         ),
     },
@@ -2249,7 +2252,7 @@ export function JobsTeam() {
   );
 
   // Small dataset — load all opps and filter/sort/group client-side (mirrors Accounts).
-  const { data: rawData, isLoading } = useJobsOpportunities({ limit: 500 });
+  const { data: rawData, isLoading } = useJobsOpportunities({ all: true });
   const allDeals: JobsOpportunity[] = (rawData as { data: JobsOpportunity[]; total: number } | undefined)?.data ?? [];
 
   // Owner facet for the chip-filter + group labels.

@@ -64,10 +64,11 @@ const todayIso = () => {
 };
 
 // Shared filter shape so the page-level count and the zone hit the same
-// React Query cache entry.
+// React Query cache entry. Every page is loaded (`all`), so the zone and the
+// "X of Y contacted" strip count every contact, not the first 1,000 (PRO-96).
 const assignedFilters = (owner: string | null): ContactFilters => ({
   membership_stage: "assigned",
-  limit: 1000,
+  all: true,
   rules: owner ? [{ field: "owner", op: "equals", values: [owner] }] : undefined,
 });
 
@@ -75,7 +76,7 @@ const assignedFilters = (owner: string | null): ContactFilters => ({
 // week's stage entries for the "contacted" progress strip.
 const contactedFilters = (owner: string | null): ContactFilters => ({
   membership_stage: "initial_outreach",
-  limit: 1000,
+  all: true,
   rules: owner ? [{ field: "owner", op: "equals", values: [owner] }] : undefined,
 });
 
@@ -505,7 +506,7 @@ function OppTableRow({ o, needs, expanded, onToggle, showOwner, resolveName, onR
 }
 
 function OpportunitiesZone({ owner }: { owner: string | null }) {
-  const { data } = useJobsOpportunities({ owner_email: owner ?? undefined, limit: 500 });
+  const { data } = useJobsOpportunities({ owner_email: owner ?? undefined, all: true });
   const { data: overview } = useOpportunitiesOverview(owner ?? undefined);
   const resolveName = useStaffNameResolver();
   const [expandedId, setExpandedId] = useState<string | null>(null);

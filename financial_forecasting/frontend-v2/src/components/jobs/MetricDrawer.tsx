@@ -182,9 +182,9 @@ export function MetricDrawer({
       onClose={onClose}
       title={data?.title ?? "Details"}
       subtitle={data
-        ? data.count >= 500
-          ? "500 most recent shown — the metric counts all records"
-          : `${data.count} record${data.count === 1 ? "" : "s"}`
+        ? data.count > data.rows.length
+          ? `Showing the ${data.rows.length.toLocaleString()} most recent of ${data.count.toLocaleString()} records`
+          : `${data.count.toLocaleString()} record${data.count === 1 ? "" : "s"}`
         : undefined}
       width={760}
     >

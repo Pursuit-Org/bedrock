@@ -111,3 +111,32 @@ PRs 2, 4✓, 8✓, 9, 10✓ ship independently.
 ## Future Considerations
 
 - **Pipeline Cleanup Tool**: Build a dedicated cleanup/hygiene feature for stale opportunities (past close date or no updates in 30+ days). Removed from Overview dashboard — belongs as its own tool, not on the main dashboard.
+
+## PRO-96 — Remove silent caps (2026-10-06)
+
+> Linear: https://linear.app/pursuit-org/issue/PRO-96 · Branch: `integration/jobs-dashboards` · Reviewer: Jac (after 10/16)
+> Done when no number on a Jobs page comes from a truncated list. Each list either loads everything, or says "Showing X of Y".
+
+**Shared piece.** Add a `fetchAllPages` helper in `services/jobs.ts`. It reads the server `total` and pulls the remaining `offset` pages in parallel. `/contacts` and `/opportunities` already return `total` and accept `offset`. The frontend never sent `offset`.
+
+- [x] **CON-01 Contacts** (`JobsContacts.tsx:607`): jobs scope loads every page (7,731 rows), so sort, grouping, select-all and counts stay correct. "All contacts" scope (~47k) stays capped, with an always-visible "Showing X of Y" banner. Fix the stale "first 500" comment.
+- [x] **Assigned/Contacted** (`JobsHome.tsx:68-80`, `JobsOutreach.tsx:834` `useAssignedContacted`): currently `limit: 1000`, and the owner scorecard and home counts are built on it. Switch to fetch-all.
+- [x] **HOME-01/04, PIP-12 Needs attention** (`jobs.py:3784` `needs[:30]`): return the full list. It is bounded by active deals (~155 today).
+- [x] **PLN-01, PIP-05 Opportunities** (`JobsTeam.tsx:2252`, `JobsHome.tsx:508`, `JobsOpportunitiesOverview.tsx:215`): fetch-all instead of `limit: 500`.
+- [x] **KPI drawers** (`/outreach/summary` `DRILL_CAP=60`): return each drill's true total. `DrillList` shows "Showing 60 of N".
+- [x] **Leadership metric drawer** (`/metrics/{key}` `LIMIT 500`, `count: len(rows)`): return a real `total`. The drawer says "Showing 500 of N".
+- [x] **Activity feeds**: `/outreach/activity` (300), `/tag-campaigns/{key}/activity` (300), `/account-activity` (250), `/opportunities/{id}` activity (250), `/contacts/{id}` activity (150). Return `total`, and the UI says "Showing X of Y" wherever a count or "No activity" is shown.
+- [x] **Touch Depth drill** (40 per bucket): the "N not loaded" note shows up front as "Showing 40 of N", not only after "Show more".
+- [x] **My Network** (`JobsMyNetwork.tsx:461`): group from `conns`, not the first 25 `shown`.
+- [x] **Sweep**: `/outreach/responded-contacts` `LIMIT 200` (Home "Replied" count) and `/outreach/scorecard/detail` (`count: len(items)` after `LIMIT 500`) get a true total.
+- [x] Tests: pytest for each backend total and uncap; a node test for `fetchAllPages`.
+- [x] Verify: run the app, check Contacts shows 7,731, and spot-check each drawer.
+
+**Out of scope (already disclosed, or display-only):** the `JobsFunnels` "+N more" list, the `JobsAccountHub` render cap, the Airtable 3,000-row import cap, and the picker/search caps.
+
+**Review (2026-10-06).** Done on `integration/jobs-dashboards`.
+- Contacts loads all 7,733 Jobs contacts in 4 parallel pages. A production check confirmed the 4 pages return 7,733 distinct contacts with no repeats. The tiebreaker matters: 156 names are shared.
+- Capped lists now carry `count(*) OVER ()` taken before the LIMIT: summary `drill_totals`, metric drawer `count`, feed `total`, detail `activity_total`, scorecard `touches_total`. The UI says "Showing X of Y" wherever a cap applies.
+- Uncapped: `needs_attention`, `/outreach/responded-contacts`, and opportunities and assigned/contacted (fetch-all).
+- Tests: `tests/test_jobs_silent_caps.py` (12) and `frontend-v2/tests/fetchAllPages.test.ts` (5). The full pytest suite and all 44 node tests pass, and `tsc --noEmit` is clean.
+- Not verified in a browser: there is no local DB (`DATABASE_URL` is empty), so Jac should smoke-test Contacts (7,733) and the Outreach drawers on deploy.

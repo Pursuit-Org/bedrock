@@ -171,7 +171,23 @@ function groupComms(rows: ActivityEntry[]): Item[] {
   });
 }
 
-export function JobsActivityList({ entries, emptyMessage = "No activity yet." }: { entries: ActivityEntry[]; emptyMessage?: string }) {
+/** "Showing the N most recent of T" under a timeline the server capped
+ *  (PRO-96). Renders nothing when everything was returned. */
+export function ActivityCapNote({ shown, total, className }: { shown: number; total?: number; className?: string }) {
+  if (total === undefined || total <= shown) return null;
+  return (
+    <div className={className ?? "px-4 py-2 text-[11.5px] text-ink-4"}>
+      Showing the {shown.toLocaleString()} most recent of {total.toLocaleString()} activities.
+    </div>
+  );
+}
+
+export function JobsActivityList({ entries, total, emptyMessage = "No activity yet." }: {
+  entries: ActivityEntry[];
+  /** How many exist when the server capped `entries`. */
+  total?: number;
+  emptyMessage?: string;
+}) {
   const [q, setQ] = useState("");
   const live = useMemo(() => entries.filter((a) => !a.deleted_at), [entries]);
   const filtered = useMemo(() => {
@@ -209,6 +225,7 @@ export function JobsActivityList({ entries, emptyMessage = "No activity yet." }:
         </>
       )}
       {filtered.length === 0 && <div className="px-4 py-4 text-[12px] text-ink-3">No activity matches "{q}".</div>}
+      <ActivityCapNote shown={entries.length} total={total} />
     </div>
   );
 }

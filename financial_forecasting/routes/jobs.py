@@ -470,7 +470,8 @@ async def metric_drilldown(
         rows = await conn.fetch(f"""
             {cte}
             SELECT ext.counterpart AS email, ext.first_touch,
-                   p.full_name, p.current_company
+                   p.full_name, p.current_company,
+                   count(*) OVER () AS total_rows
             FROM ext
             LEFT JOIN LATERAL (
                 SELECT full_name, current_company FROM public.contacts c
@@ -724,6 +725,14 @@ async def metric_drilldown(
 
     title, fn = DISPATCH[key]
     columns, rows, entity = await fn()
+    # `count` is how many records the metric covers, not how many came back:
+    # first-touch lists stop at 500, and carry their uncapped size as
+    # total_rows so the drawer can say "Showing 500 of N" (PRO-96).
+    total = len(rows)
+    if rows and "total_rows" in rows[0]:
+        total = int(rows[0]["total_rows"])
+        for r in rows:
+            r.pop("total_rows", None)
     # columns may be a list (flat table) or a dict {columns, child_columns} (expandable)
     child_columns = None
     if isinstance(columns, dict):
@@ -740,7 +749,7 @@ async def metric_drilldown(
         "success": True,
         "data": {
             "title": title, "columns": columns, "rows": rows,
-            "count": len(rows), "entity": entity, "child_columns": child_columns,
+            "count": total, "entity": entity, "child_columns": child_columns,
         },
     }
 
@@ -3781,7 +3790,10 @@ async def opportunities_overview(
                          "unset": prio_unset, "populated": prio_unset < in_set},
             "stage": {"rows": stage_rows, "col_totals": _col_totals(stage_rows)},
         },
-        "needs_attention": needs[:30],
+        # Every flagged deal, uncapped: callers count it ("N need attention")
+        # and look deals up in it, so a slice silently undercounted (PRO-96).
+        # Bounded by the active set, which is a few hundred deals at most.
+        "needs_attention": needs,
         # Every active-set member with its grouping keys. Backs the drill-downs
         # on the aging bars, the set distribution and the heatmap cells — all
         # three filter this one array, so no drill can contradict its count.
@@ -5547,7 +5559,8 @@ async def outreach_scorecard_detail(
                       if owner and _SAFE_EMAIL.match(owner) else "")
         rows = await conn.fetch(f"""
             SELECT m.contact_id, c.full_name, c.current_company, m.converted_at,
-                   {_CONVERSION_OWNER} AS actor
+                   {_CONVERSION_OWNER} AS actor,
+                   count(*) OVER () AS total_rows
             {_CONVERSION_FROM}
             WHERE m.converted_at >= $1 AND m.converted_at < $2 {owner_pred}
             ORDER BY m.converted_at DESC LIMIT 500
@@ -5581,7 +5594,8 @@ async def outreach_scorecard_detail(
             SELECT t.contact_id,
                    c.full_name, c.current_company, a.activity_date, a.type, a.subject,
                    lower(coalesce(nullif(substring(a.email_from from '<([^>]+)>'), ''),
-                                  nullif(a.email_from, ''), a.logged_by)) AS actor
+                                  nullif(a.email_from, ''), a.logged_by)) AS actor,
+                   count(*) OVER () AS total_rows
             FROM at t
             JOIN woke ON woke.company = t.company
             JOIN bedrock.activity a ON a.id = t.id
@@ -5624,7 +5638,8 @@ async def outreach_scorecard_detail(
                    c.full_name, c.current_company,
                    a.type, a.subject, a.email_snippet, a.email_from,
                    (a.email_to)[1] AS first_to,
-                   ir.specific_ask, ir.context
+                   ir.specific_ask, ir.context,
+                   count(*) OVER () AS total_rows
             FROM ({src}) ev
             LEFT JOIN bedrock.activity a ON a.id = ev.act_id
             LEFT JOIN bedrock.intro_request ir ON ir.id = ev.intro_id
@@ -5664,8 +5679,19 @@ async def outreach_scorecard_detail(
     # without expanding to read the per-touch column.
     for g in items:
         g["actors"] = sorted({t["actor"] for t in g["touches"] if t.get("actor")})
+    # Touches are capped (500, or 2,000 for send/call events) before they are
+    # grouped by contact, so past the cap the oldest contacts and touches are
+    # missing. Report both numbers so the drill can say "Showing X of Y
+    # touches" rather than pass a partial list off as complete (PRO-96).
     return {"success": True, "data": {"kind": "activity", "key": key, "period": period,
-            "count": len(items), "contacts": items}}
+            "count": len(items), "contacts": items,
+            "touches_listed": len(rows), "touches_total": _window_total(rows)}}
+
+
+def _window_total(rows) -> int:
+    """The uncapped row count a capped query carried as `count(*) OVER () AS
+    total_rows` (evaluated before LIMIT). 0 when the query matched nothing."""
+    return int(rows[0]["total_rows"]) if rows else 0
 
 
 @router.get("/outreach/summary")
@@ -5792,7 +5818,11 @@ async def outreach_summary(
     # ── Drill rows, one list per card ───────────────────────────────────────
     # Capped rather than complete: the cards open a "what is behind this
     # number" list, not an export. The headline counts above are the source of
-    # truth, so a truncated list can never make one of them wrong.
+    # truth, so a truncated list can never make one of them wrong. Each list
+    # also carries its own uncapped length (`total_rows`, a window count taken
+    # before the LIMIT) so the drawer can say "Showing 60 of N" rather than
+    # stopping silently (PRO-96). That is the list's length, not the card's
+    # number: a send to three contacts is one send and three rows.
     DRILL_CAP = 60
 
     touch_drill_sql = f"""
@@ -5829,7 +5859,8 @@ async def outreach_summary(
         )
         SELECT l.activity_date AS at, l.type AS subkind, l.editor, l.subject,
                c.contact_id, c.full_name AS name, c.current_company AS account,
-               coalesce(m.owner_email, ja.owner_email) AS owner
+               coalesce(m.owner_email, ja.owner_email) AS owner,
+               count(*) OVER () AS total_rows
         FROM linked l
         JOIN public.contacts c ON c.contact_id = l.contact_id
         LEFT JOIN bedrock.jobs_contact_membership m ON m.contact_id = c.contact_id
@@ -5886,7 +5917,8 @@ async def outreach_summary(
           ORDER BY company, activity_date
         )
         SELECT w.display AS name, w.activity_date AS at, w.editor,
-               ja.owner_email AS owner, p.last_prior
+               ja.owner_email AS owner, p.last_prior,
+               count(*) OVER () AS total_rows
         FROM win w
         LEFT JOIN prior p ON p.company = w.company
         LEFT JOIN bedrock.jobs_account ja ON ja.account_key = w.company
@@ -5902,7 +5934,8 @@ async def outreach_summary(
                coalesce(m.owner_email, ja.owner_email) AS owner,
                (SELECT lower(h.changed_by) FROM bedrock.jobs_membership_stage_history h
                  WHERE h.contact_id = m.contact_id AND h.to_stage = 'converted_to_opportunity'
-                 ORDER BY h.changed_at DESC LIMIT 1) AS editor
+                 ORDER BY h.changed_at DESC LIMIT 1) AS editor,
+               count(*) OVER () AS total_rows
         FROM bedrock.jobs_contact_membership m
         JOIN public.contacts c ON c.contact_id = m.contact_id
         LEFT JOIN bedrock.jobs_account ja
@@ -5945,6 +5978,13 @@ async def outreach_summary(
                 "owner": r["owner"], "editor": r["editor"],
                 "detail": None, "subkind": None, "contact_id": r["contact_id"],
             } for r in converted_rows],
+        },
+        # Uncapped length of each drill list above (see DRILL_CAP).
+        "drill_totals": {
+            "accounts_activated": _window_total(activated),
+            "outreach_activity": _window_total(sends),
+            "calls_booked": _window_total(calls),
+            "converted": _window_total(converted_rows),
         },
     }}
 
@@ -6006,7 +6046,8 @@ async def outreach_activity_feed(
                c.contact_id, c.full_name, c.current_company AS account,
                coalesce(m.owner_email, ja.owner_email) AS owner,
                CASE WHEN m.owner_email IS NOT NULL THEN 'contact'
-                    WHEN ja.owner_email IS NOT NULL THEN 'account' END AS owner_source
+                    WHEN ja.owner_email IS NOT NULL THEN 'account' END AS owner_source,
+               count(*) OVER () AS total_rows
         FROM linked l
         JOIN public.contacts c ON c.contact_id = l.contact_id
         LEFT JOIN bedrock.jobs_contact_membership m ON m.contact_id = c.contact_id
@@ -6022,6 +6063,9 @@ async def outreach_activity_feed(
         # this feed, and a second owner control on the same page would be two
         # filters fighting over one list.
         "owners": [],
+        # Events in the window before the LIMIT, so the feed can say "Showing
+        # 300 of N" instead of stopping silently (PRO-96).
+        "total": _window_total(rows),
         "events": [{
             "at": r["at"].isoformat() if r["at"] else None,
             "kind": "touch",
@@ -6108,8 +6152,10 @@ async def outreach_responded_contacts(
           ON m.contact_id = c.contact_id AND m.stage = 'initial_outreach'
         LEFT JOIN touch_counts tc ON tc.cid = r.cid
         WHERE true {owner_where}
-        ORDER BY r.last_reply ASC
-        LIMIT 200
+        -- Uncapped: Home shows len(data) as the queue's size, and a LIMIT 200
+        -- silently undercounted it (PRO-96). Bounded by contacts sitting in
+        -- initial_outreach, and each row is small.
+        ORDER BY r.last_reply ASC, c.contact_id
     """, *params)
     return {"success": True, "data": [dict(r) for r in rows]}
 
@@ -7686,7 +7732,8 @@ async def account_activity(
                a.jobs_relevance, a.jobs_relevance_override,
             a.jobs_relevance, a.jobs_relevance_override,
             """ + _jobs_activity_flag("a") + """ AS is_jobs,
-               a.deleted_at
+               a.deleted_at,
+               count(*) OVER () AS total_rows
         FROM bedrock.activity a
         WHERE a.deleted_at IS NULL AND (
             ($1::uuid[] <> '{}' AND a.jobs_opportunity_id = ANY($1::uuid[]))
@@ -7705,8 +7752,12 @@ async def account_activity(
     )
     return {
         "success": True,
+        # Activities before the LIMIT, so the tab can say "Showing 250 of N"
+        # instead of stopping silently (PRO-96).
+        "total": _window_total(rows),
         "data": [
-            {**dict(r), "activity_date": r["activity_date"].isoformat() if r["activity_date"] else None,
+            {**{k: v for k, v in dict(r).items() if k != "total_rows"},
+             "activity_date": r["activity_date"].isoformat() if r["activity_date"] else None,
              "synced_at": r["synced_at"].isoformat() if r["synced_at"] else None,
              "id": str(r["id"]), "email_to": list(r["email_to"]) if r["email_to"] else None}
             for r in rows
@@ -8152,7 +8203,9 @@ async def list_contacts(
         -- Pipeline-first: contacts with a jobs stage sort above the (large)
         -- flagged-but-unstaged population, so every pipeline stage is visible
         -- without paging through ~47k blank prospects. Alphabetical within each.
-        ORDER BY (m.stage IS NOT NULL) DESC, c.full_name NULLS LAST
+        -- contact_id breaks ties (shared names) so offset pages never
+        -- repeat or skip a contact when the client loads every page.
+        ORDER BY (m.stage IS NOT NULL) DESC, c.full_name NULLS LAST, c.contact_id
         LIMIT ${i} OFFSET ${i+1}
         """,
         *params, limit, offset,
@@ -8344,7 +8397,8 @@ async def get_contact(
                a.logged_by, a.source, a.email_from, a.email_snippet,
                a.meeting_duration_minutes, a.deleted_at,
                a.jobs_relevance, a.jobs_relevance_override,
-               """ + _jobs_activity_flag("a") + """ AS is_jobs
+               """ + _jobs_activity_flag("a") + """ AS is_jobs,
+               count(*) OVER () AS total_rows
         FROM bedrock.activity a
         WHERE a.deleted_at IS NULL
           AND (
@@ -8364,17 +8418,21 @@ async def get_contact(
         contact_id,
         contact_email or "",
     )
-    all_activity: list = [dict(r) for r in rows_act]
+    all_activity: list = [{k: v for k, v in dict(r).items() if k != "total_rows"} for r in rows_act]
 
     # Facilitated intros live in bedrock.intro_request, not bedrock.activity —
     # activity.type has no 'intro' in its CHECK — so without this the one touch
     # the Outreach scorecard counts is the one touch missing from the contact's
     # own timeline. Shaped like an activity row rather than given a section of
     # its own: it is a touch, and it belongs in sequence with the rest.
-    all_activity.extend(await _intro_activity_rows(conn, [contact_id]))
+    intros, intro_total = await _intro_activity_rows(conn, [contact_id])
+    all_activity.extend(intros)
+    # The timeline lists the newest 100 activities and 50 intros; this is how
+    # many exist, so the tab can say "Showing X of Y" (PRO-96).
+    activity_total = _window_total(rows_act) + intro_total
 
     all_activity.sort(key=lambda x: x.get("activity_date") or "", reverse=True)
-    activity = all_activity[:150]
+    activity = all_activity
 
     # Who on staff is connected to this contact — from LinkedIn connections
     # (public.staff_contact_relationships), resolved to names via
@@ -8484,6 +8542,7 @@ async def get_contact(
             "crm_tags":        list(crm_tags or []),
             "deal":            deal,
             "activity":        [dict(a) for a in activity],
+            "activity_total":  activity_total,
             "connected_staff": connected_staff,
             "open_roles_list": open_roles,
             "builder_applications": builder_apps,
@@ -8499,20 +8558,22 @@ CONTACT_SELECT = """
            current_title, current_company, contact_stage, linkedin_url, source, airtable_id
 """
 
-async def _intro_activity_rows(conn, contact_ids: list[int], limit: int = 50) -> list[dict]:
-    """Acted-on facilitated intros for these contacts, shaped like activity rows.
+async def _intro_activity_rows(conn, contact_ids: list[int], limit: int = 50) -> tuple[list[dict], int]:
+    """Acted-on facilitated intros for these contacts, shaped like activity rows,
+    plus how many there are before `limit` (so timelines can show a true total).
 
     Shared by the contact timeline and the opportunity timeline, so an intro
     logged from either place reads the same in both (Kwame 2026-09-24)."""
     if not contact_ids:
-        return []
+        return [], 0
     from routes.jobs_intro import ASK_LABELS   # local: keeps the import one-way
 
     rows = await conn.fetch(
         """
         SELECT ir.id, ir.specific_ask, ir.context, ir.status, ir.requested_by_email,
                coalesce(ir.responded_at, ir.created_at) AS activity_date,
-               m.display_name AS connector_name, m.email AS connector_email
+               m.display_name AS connector_name, m.email AS connector_email,
+               count(*) OVER () AS total_rows
         FROM bedrock.intro_request ir
         LEFT JOIN bedrock.staff_user_id_map m ON m.staff_user_id = ir.connector_staff_id
         WHERE ir.contact_id = ANY($1::int[]) AND ir.status IN ('accepted', 'completed')
@@ -8540,7 +8601,7 @@ async def _intro_activity_rows(conn, contact_ids: list[int], limit: int = 50) ->
             "jobs_relevance": "jobs", "jobs_relevance_override": "jobs",
             "is_jobs": True,
         })
-    return out
+    return out, _window_total(rows)
 
 
 async def _resolve_contacts(conn, sf_contact_ids: list[str]) -> list[dict]:
@@ -8743,7 +8804,8 @@ async def list_opportunities(
             LIMIT 1
         ) lc ON true
         WHERE {where}
-        ORDER BY o.updated_at DESC
+        -- o.id breaks ties so offset pages never repeat or skip a deal.
+        ORDER BY o.updated_at DESC, o.id
         LIMIT ${i} OFFSET ${i+1}
         """,
         *params, limit, offset,
@@ -8878,7 +8940,8 @@ async def get_opportunity(
             a.source, a.logged_by, a.synced_at, a.email_from, a.email_to,
             a.email_snippet, a.email_body_text,
             a.meeting_duration_minutes, a.meeting_attendees, a.deleted_at,
-            """ + _jobs_activity_flag("a") + """ AS is_jobs
+            """ + _jobs_activity_flag("a") + """ AS is_jobs,
+            count(*) OVER () AS total_rows
         FROM bedrock.activity a
         WHERE a.deleted_at IS NULL
           AND (
@@ -8893,9 +8956,10 @@ async def get_opportunity(
     )
     # Intros for the deal's contacts, so one logged from the Pipeline drawer
     # shows up in the deal's own feed as well as the contact's.
-    all_activity = [dict(a) for a in activity]
-    all_activity.extend(await _intro_activity_rows(
-        conn, [c["contact_id"] for c in contacts if c.get("contact_id") is not None]))
+    all_activity = [{k: v for k, v in dict(a).items() if k != "total_rows"} for a in activity]
+    intros, intro_total = await _intro_activity_rows(
+        conn, [c["contact_id"] for c in contacts if c.get("contact_id") is not None])
+    all_activity.extend(intros)
     all_activity.sort(key=lambda x: x.get("activity_date") or "", reverse=True)
     return {
         "success": True,
@@ -8903,6 +8967,9 @@ async def get_opportunity(
             **_norm_opp(dict(row)),
             "stage_history": [dict(h) for h in history],
             "activity":      all_activity,
+            # Newest 250 activities + 50 intros are listed; this is how many
+            # exist, so the tab can say "Showing X of Y" (PRO-96).
+            "activity_total": _window_total(activity) + intro_total,
             "contacts":      contacts,
         },
     }
@@ -9705,7 +9772,8 @@ async def tag_campaign_activity(
         SELECT ev.at, ev.kind, ev.subkind, ev.contact_id, ev.actor,
                ev.subject, ev.snippet, ev.from_stage, ev.to_stage,
                c.full_name, c.current_company AS account,
-               own.owner, own.owner_source
+               own.owner, own.owner_source,
+               count(*) OVER () AS total_rows
         FROM ev
         JOIN public.contacts c ON c.contact_id = ev.contact_id
         LEFT JOIN own ON own.contact_id = ev.contact_id
@@ -9737,6 +9805,8 @@ async def tag_campaign_activity(
     return {"success": True, "data": {
         "period": {"from": d_from.isoformat(), "to": d_to.isoformat()},
         "owners": [{"email": r["owner"], "contacts": int(r["n"])} for r in owner_rows],
+        # Events matched before the LIMIT ("Showing 300 of N", PRO-96).
+        "total": _window_total(rows),
         "events": [{
             "at": r["at"].isoformat() if r["at"] else None,
             "kind": r["kind"],

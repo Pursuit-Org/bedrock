@@ -375,10 +375,11 @@ function toDrillRows(events: CampaignEvent[]): DrillRow[] {
   }));
 }
 
-function OutreachStats({ stats, events, loadingEvents }: {
+function OutreachStats({ stats, events, loadingEvents, eventsNote }: {
   stats: TagCampaignStats;
   events: CampaignEvent[];
   loadingEvents: boolean;
+  eventsNote?: string;
 }) {
   const o = stats.outreach;
   const [open, setOpen] = useState<string | null>(null);
@@ -423,6 +424,7 @@ function OutreachStats({ stats, events, loadingEvents }: {
         ) : (
           <DrillList
             rows={rows}
+            incompleteNote={eventsNote}
             emptyLabel={`No ${openChannel.label.toLowerCase()} in this period.`}
             className="rounded-lg border border-border-strong px-3 py-2"
           />
@@ -432,10 +434,11 @@ function OutreachStats({ stats, events, loadingEvents }: {
   );
 }
 
-function TrendChart({ stats, events, loadingEvents }: {
+function TrendChart({ stats, events, loadingEvents, eventsNote }: {
   stats: TagCampaignStats;
   events: CampaignEvent[];
   loadingEvents: boolean;
+  eventsNote?: string;
 }) {
   const [day, setDay] = useState<string | null>(null);
   const data = useMemo(() => stats.trend.map((p) => ({
@@ -511,7 +514,7 @@ function TrendChart({ stats, events, loadingEvents }: {
               <Loader2 size={14} className="animate-spin" /> Loading…
             </div>
           ) : (
-            <DrillList rows={rows} emptyLabel="Nothing went out on this date." />
+            <DrillList rows={rows} incompleteNote={eventsNote} emptyLabel="Nothing went out on this date." />
           )}
         </div>
       ) : null}
@@ -539,6 +542,7 @@ function CampaignActivity({ campaignKey, from, to }: {
   return (
     <ActivityFeed
       events={data?.events ?? []}
+      total={data?.total}
       owners={data?.owners ?? []}
       isLoading={isLoading}
       owner={owner}
@@ -560,6 +564,11 @@ function CampaignDetail({ campaignKey, from, to, granularity }: {
   // matches, which is fine — this one must stay unfiltered either way.
   const { data: activity, isLoading: loadingEvents } = useTagCampaignActivity(campaignKey, { from, to });
   const events = activity?.events ?? [];
+  // The tiles count every event in the period; their drill lists filter this
+  // capped feed, so when it was capped the lists say so (PRO-96).
+  const eventsNote = activity?.total !== undefined && activity.total > events.length
+    ? `Listed from the ${events.length.toLocaleString()} most recent of ${activity.total.toLocaleString()} events in this period. Older ones are not listed.`
+    : undefined;
   const [bucket, setBucket] = useState<PipelineBucket | null>(null);
 
   if (isLoading) {
@@ -609,11 +618,11 @@ function CampaignDetail({ campaignKey, from, to, granularity }: {
       </Section>
 
       <Section title="Outreach">
-        <OutreachStats stats={stats} events={events} loadingEvents={loadingEvents} />
+        <OutreachStats stats={stats} events={events} loadingEvents={loadingEvents} eventsNote={eventsNote} />
       </Section>
 
       <Section title="Outreach Trends" boxed>
-        <TrendChart stats={stats} events={events} loadingEvents={loadingEvents} />
+        <TrendChart stats={stats} events={events} loadingEvents={loadingEvents} eventsNote={eventsNote} />
       </Section>
 
       <CampaignActivity campaignKey={campaignKey} from={from} to={to} />

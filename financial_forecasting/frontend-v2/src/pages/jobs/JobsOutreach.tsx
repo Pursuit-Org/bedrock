@@ -238,6 +238,15 @@ function RowDrill({
           Show more ({accounts.length - DRILL_PAGE} more)
         </button>
       )}
+      {/* The server caps touches before grouping them, so past the cap the
+          oldest accounts and touches are missing — say so (PRO-96). */}
+      {data && data.touches_total !== undefined && data.touches_listed !== undefined
+        && data.touches_total > data.touches_listed ? (
+        <div className="px-4 py-2 text-[11.5px] text-ink-4">
+          Showing the {data.touches_listed.toLocaleString()} most recent of {data.touches_total.toLocaleString()} touches.
+          Older ones, and accounts reached only by them, are not listed.
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -430,11 +439,12 @@ function TouchDepthDrill({ bucket, nameOf }: {
           Show {hidden} more
         </button>
       ) : null}
-      {/* The server caps each bucket, so say what isn't here rather than
-          implying the list is complete. */}
-      {showAll && bucket.truncated > 0 ? (
+      {/* The server caps each bucket, so say what isn't here up front rather
+          than only after "Show more" (PRO-96). */}
+      {bucket.truncated > 0 ? (
         <div className="border-t border-border-strong px-3 py-1.5 text-[11px] text-ink-4">
-          {bucket.truncated} beyond the first {bucket.contacts.length} not loaded
+          {bucket.contacts.length} of {(bucket.contacts.length + bucket.truncated).toLocaleString()} contacts
+          can be listed here; the other {bucket.truncated.toLocaleString()} are counted above but not loaded.
         </div>
       ) : null}
     </div>
@@ -832,8 +842,10 @@ type AssignedContacted = { assigned: JobContactWithDeal[]; contacted: JobContact
 const EMPTY_AC: AssignedContacted = { assigned: [], contacted: [] };
 
 function useAssignedContacted(range?: OutreachDateRange) {
-  const { data: assignedData } = useJobsContacts({ membership_stage: "assigned", limit: 1000 });
-  const { data: contactedData } = useJobsContacts({ membership_stage: "initial_outreach", limit: 1000 });
+  // Every page, not the first 1,000: the scorecard's per-owner and team counts
+  // are built from these rows (PRO-96).
+  const { data: assignedData } = useJobsContacts({ membership_stage: "assigned", all: true });
+  const { data: contactedData } = useJobsContacts({ membership_stage: "initial_outreach", all: true });
   return useMemo(() => {
     // Contacted is a period event, so it follows the page's Period picker (it
     // used to hardcode the current Sun-week and ignore the selector entirely).
@@ -1239,6 +1251,7 @@ function OutboundActivityFeed({ granularity, scope, owner, range }: {
   return (
     <ActivityFeed
       events={data?.events ?? []}
+      total={data?.total}
       owners={[]}
       isLoading={isLoading}
       title="Activity"
@@ -1306,7 +1319,8 @@ function OutreachSummaryCards({ granularity, scope, owner, range }: {
       {openCard ? (
         <section className="rounded-2xl border border-border-strong bg-surface px-5 py-4">
           <h3 className="mb-3 text-[13px] font-semibold text-ink">{openCard.label}</h3>
-          <DrillList rows={data?.drills?.[openCard.key] ?? []} emptyLabel={openCard.empty} />
+          <DrillList rows={data?.drills?.[openCard.key] ?? []} total={data?.drill_totals?.[openCard.key]}
+            emptyLabel={openCard.empty} />
         </section>
       ) : null}
     </div>
