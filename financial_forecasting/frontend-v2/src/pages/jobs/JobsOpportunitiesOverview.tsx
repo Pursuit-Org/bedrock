@@ -318,6 +318,7 @@ export function JobsOpportunitiesOverview() {
         period={{ from: fmtDateInput(weekStart), to: fmtDateInput(weekEnd) }}
         periodLabel={rangeLabel}
         dealType={dealType}
+        owner={owner}
       />
 
       {/* ── Aging + Breakdown ─────────────────────────────────────────── */}

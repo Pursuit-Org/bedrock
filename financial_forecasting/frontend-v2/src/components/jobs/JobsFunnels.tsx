@@ -76,7 +76,7 @@ const DEAL_TYPE_FILTERS: { value: string; label: string }[] = [
   ),
 ];
 
-export function JobsFunnels({ builderSegment, only, period, periodLabel, dealType: dealTypeProp, defaultOpen }: {
+export function JobsFunnels({ builderSegment, only, period, periodLabel, dealType: dealTypeProp, owner, defaultOpen }: {
   builderSegment?: string;
   only?: FunnelType;
   /** Pass a window to get period-flow counts (records that ENTERED each stage).
@@ -87,6 +87,9 @@ export function JobsFunnels({ builderSegment, only, period, periodLabel, dealTyp
    *  row is hidden — otherwise the Pipeline page shows two deal-type controls
    *  that can disagree with each other. */
   dealType?: string;
+  /** Host page's Owner filter (an email, or "all"). Scopes the opportunities
+   *  funnel only. */
+  owner?: string;
   /** Open the stage breakdown on first render. Overview passes it; Outreach and
    *  Pipeline do not, so the funnel stays out of the way of their own tables. */
   defaultOpen?: boolean;
@@ -106,6 +109,7 @@ export function JobsFunnels({ builderSegment, only, period, periodLabel, dealTyp
     funnel === "builders" ? undefined : dealType,
     funnel === "builders" ? builderSegment : undefined,
     period,
+    owner,
   );
   const isPeriod = data?.mode === "period";
 

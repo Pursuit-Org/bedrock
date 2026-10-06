@@ -2662,6 +2662,7 @@ async def get_funnel(
     segment: Optional[str] = Query(None),
     period_from: Optional[str] = Query(None, description="YYYY-MM-DD, inclusive"),
     period_to: Optional[str] = Query(None, description="YYYY-MM-DD, inclusive"),
+    owner: Optional[str] = Query(None, description="Opportunities only: scope to one owner email"),
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
@@ -2685,8 +2686,12 @@ async def get_funnel(
     `deal_type` (ft | pt_contract | ...) scopes every funnel to that lens:
     opportunities by their own deal_type; prospects to contacts at companies
     that have a deal of that type; builders to applications on such opps.
+
+    `owner` scopes the opportunities funnel to one deal owner, matching the
+    Owner filter on the Pipeline page it sits on (PIP-07).
     """
     dt = _parse_deal_types(deal_type)
+    owner_f = owner if owner and owner != "all" else None
 
     # Period mode is opt-in and only meaningful where we stamp stage entry.
     period: Optional[tuple] = None
@@ -2736,8 +2741,9 @@ async def get_funnel(
                       FROM bedrock.jobs_role r WHERE r.opportunity_id = o.id) AS roles
             FROM bedrock.jobs_opportunity o
             WHERE o.deleted_at IS NULL AND {_deal_type_sql('o.deal_type', 1)}
+              AND ($2::text IS NULL OR o.owner_email = $2)
             ORDER BY o.account_name
-        """, dt)
+        """, dt, owner_f)
         by_stage: dict = {}
         for r in rows:
             # Canonical stage, so a deal still stored as active_builder_interview
@@ -2760,9 +2766,10 @@ async def get_funnel(
             WHERE h.from_stage IS NOT NULL
               AND h.changed_at >= now() - interval '30 days'
               AND {_deal_type_sql('o.deal_type', 1)}
+              AND ($2::text IS NULL OR o.owner_email = $2)
             ORDER BY h.opportunity_id, h.changed_at DESC
             LIMIT 100
-        """, dt)
+        """, dt, owner_f)
         for h in hist:
             h_from, h_to = canon_stage(h["from_stage"]), canon_stage(h["to_stage"])
             fi, ti = idx.get(h_from), idx.get(h_to)
@@ -2967,27 +2974,35 @@ async def get_funnel(
             ]
 
         else:  # opportunities
+            # Stages are canonicalised IN the query (PIP-07): history rows written
+            # before the 2026-09-21 rename carry retired names, which matched no
+            # funnel row and silently dropped out. Folding before DISTINCT ON
+            # also keeps an opp that hit two retired names that fold together
+            # (reviewing_builders → active_builder_interview) to one entry.
+            h_stage = canon_stage_sql("h.to_stage")
             orows = await conn.fetch(f"""
                 WITH hist AS (
-                    SELECT DISTINCT ON (h.opportunity_id, h.to_stage)
-                           h.opportunity_id AS oid, h.to_stage AS stage,
+                    SELECT DISTINCT ON (h.opportunity_id, {h_stage})
+                           h.opportunity_id AS oid, {h_stage} AS stage,
                            h.changed_at AS entered_at, h.changed_by
                     FROM bedrock.jobs_stage_history h
                     JOIN bedrock.jobs_opportunity o ON o.id = h.opportunity_id
                     WHERE o.deleted_at IS NULL
                       AND h.changed_at >= $1 AND h.changed_at < $2
                       AND {_deal_type_sql('o.deal_type', 3)}
-                    ORDER BY h.opportunity_id, h.to_stage, h.changed_at
+                      AND ($4::text IS NULL OR o.owner_email = $4)
+                    ORDER BY h.opportunity_id, {h_stage}, h.changed_at
                 ),
                 created AS (
                     -- An opp created straight into a stage never gets a history
                     -- row, so without this it would vanish from the funnel.
-                    SELECT o.id AS oid, o.stage, o.created_at AS entered_at,
-                           NULL::text AS changed_by
+                    SELECT o.id AS oid, {canon_stage_sql("o.stage")} AS stage,
+                           o.created_at AS entered_at, NULL::text AS changed_by
                     FROM bedrock.jobs_opportunity o
                     WHERE o.deleted_at IS NULL
                       AND o.created_at >= $1 AND o.created_at < $2
                       AND {_deal_type_sql('o.deal_type', 3)}
+                      AND ($4::text IS NULL OR o.owner_email = $4)
                       AND NOT EXISTS (SELECT 1 FROM bedrock.jobs_stage_history h2
                                       WHERE h2.opportunity_id = o.id)
                 )
@@ -2996,10 +3011,11 @@ async def get_funnel(
                 FROM (SELECT * FROM hist UNION ALL SELECT * FROM created) e
                 JOIN bedrock.jobs_opportunity o ON o.id = e.oid
                 ORDER BY e.entered_at DESC
-            """, p_from, p_to, dt)
+            """, p_from, p_to, dt, owner_f)
             for r in orows:
-                if r["stage"] in period_entries:
-                    period_entries[r["stage"]].append({
+                stage = canon_stage(r["stage"])
+                if stage in period_entries:
+                    period_entries[stage].append({
                         "name": r["name"], "deal_type": r["deal_type"],
                         "owner": r["owner"], "assigned_by": r["changed_by"],
                         "entered_at": r["entered_at"].isoformat() if r["entered_at"] else None,
@@ -3054,11 +3070,13 @@ async def get_funnel(
                         FROM bedrock.jobs_stage_history h
                         JOIN bedrock.jobs_opportunity o ON o.id = h.opportunity_id
                         WHERE o.deleted_at IS NULL AND {_deal_type_sql('o.deal_type', 1)}
+                          AND ($2::text IS NULL OR o.owner_email = $2)
                         UNION ALL
                         SELECT max(o.created_at) FROM bedrock.jobs_opportunity o
                         WHERE o.deleted_at IS NULL AND {_deal_type_sql('o.deal_type', 1)}
+                          AND ($2::text IS NULL OR o.owner_email = $2)
                     ) x
-                """, dt)
+                """, dt, owner_f)
 
     stages = []
     cohort_conv = locals().get("cohort_conv") or {}

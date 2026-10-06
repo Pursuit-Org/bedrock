@@ -1273,18 +1273,22 @@ export function useJobsFunnel(
   dealType?: string,
   segment?: string,
   period?: FunnelPeriod,
+  owner?: string,
 ) {
   const dt = dealType && dealType !== "all" ? dealType : undefined;
   const seg = segment && segment !== "all" ? segment : undefined;
+  // Only the opportunities funnel is owned by a deal owner.
+  const own = ftype === "opportunities" && owner && owner !== "all" ? owner : undefined;
   // The builders funnel has no stage-entry stamps, so a period would silently
   // return zeros — the backend ignores it, and we keep it out of the key too.
   const p0 = ftype === "builders" ? undefined : period;
   return useQuery<FunnelData>({
-    queryKey: ["jobs", "funnel", ftype, dt ?? "all", seg ?? "all", p0?.from ?? "", p0?.to ?? ""],
+    queryKey: ["jobs", "funnel", ftype, dt ?? "all", seg ?? "all", p0?.from ?? "", p0?.to ?? "", own ?? "all"],
     queryFn: async () => {
       const p = new URLSearchParams();
       if (dt) p.set("deal_type", dt);
       if (seg) p.set("segment", seg);
+      if (own) p.set("owner", own);
       if (p0?.from && p0?.to) {
         p.set("period_from", p0.from);
         p.set("period_to", p0.to);

@@ -56,6 +56,51 @@ def test_funnel_opportunities_starts_with_in_discussions():
         "closed_won", "closed_lost"]
 
 
+PERIOD = "?period_from=2026-09-28&period_to=2026-10-04"
+
+
+def _entry(stage, name):
+    from datetime import datetime, timezone
+    return {"stage": stage, "entered_at": datetime(2026, 9, 30, tzinfo=timezone.utc),
+            "changed_by": "k@p.org", "name": name, "deal_type": "ft", "owner": "a@p.org"}
+
+
+def test_period_funnel_counts_moves_into_retired_stage_names():
+    # PIP-07: history rows written before the 2026-09-21 rename carry retired
+    # stage names. They matched no funnel row and silently dropped out.
+    conn = FakeConn(lists={"WITH hist AS": [
+        _entry("reviewing_builders", "Acme"),
+        _entry("lead_submitted", "Beta"),
+        _entry("builder_submitted", "Gamma"),
+    ], OPP_FUNNEL: [], HIST: []})
+    c = make_jobs_client(conn)
+    r = c.get(f"/api/jobs/funnel/opportunities{PERIOD}")
+    assert r.status_code == 200, r.text
+    counts = {s["key"]: s["count"] for s in r.json()["data"]["stages"]}
+    assert counts["builder_submitted"] == 2
+    assert counts["active_in_discussions"] == 1
+    # Folded before DISTINCT ON, so two retired names that fold together count once.
+    q = next(call[1] for call in conn.calls if "WITH hist AS" in call[1])
+    assert "DISTINCT ON (h.opportunity_id, (CASE h.to_stage" in q
+
+
+def test_opportunities_funnel_follows_owner_filter():
+    # PIP-07: the Pipeline page's Owner filter never reached the funnel.
+    conn = FakeConn(lists={OPP_FUNNEL: [], HIST: []})
+    c = make_jobs_client(conn)
+    r = c.get(f"/api/jobs/funnel/opportunities{PERIOD}&owner=k@p.org")
+    assert r.status_code == 200, r.text
+    opp_calls = [call for call in conn.calls if "jobs_opportunity o" in call[1]]
+    assert opp_calls
+    for _kind, q, args in opp_calls:
+        assert "o.owner_email = $" in q, q
+        assert "k@p.org" in args
+    # "all" means no filter.
+    conn_all = FakeConn(lists={OPP_FUNNEL: [], HIST: []})
+    make_jobs_client(conn_all).get("/api/jobs/funnel/opportunities?owner=all")
+    assert all("k@p.org" not in call[2] for call in conn_all.calls)
+
+
 def test_funnel_unknown_type_404():
     c = make_jobs_client(FakeConn())
     r = c.get("/api/jobs/funnel/widgets")
