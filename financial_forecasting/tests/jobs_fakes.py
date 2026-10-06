@@ -45,19 +45,19 @@ class FakeConn:
                 return val
         return default
 
-    async def fetchrow(self, query, *args):
+    async def fetchrow(self, query, *args, timeout=None):
         self.calls.append(("fetchrow", query, args))
         return self._match(self.rows, query, None)
 
-    async def fetch(self, query, *args):
+    async def fetch(self, query, *args, timeout=None):
         self.calls.append(("fetch", query, args))
         return self._match(self.lists, query, [])
 
-    async def fetchval(self, query, *args):
+    async def fetchval(self, query, *args, timeout=None):
         self.calls.append(("fetchval", query, args))
         return self._match(self.vals, query, None)
 
-    async def execute(self, query, *args):
+    async def execute(self, query, *args, timeout=None):
         self.calls.append(("execute", query, args))
         return self._match(self.vals, query, "OK")
 

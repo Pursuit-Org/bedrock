@@ -20,8 +20,7 @@ logger = logging.getLogger("nightly_sync")
 
 
 async def main() -> int:
-    import asyncpg
-    from services.interaction_sync import run_interaction_sync
+    from services.interaction_sync import run_interaction_sync, sync_pool
 
     db_url = os.environ.get("DATABASE_URL")
     if not db_url:
@@ -33,12 +32,9 @@ async def main() -> int:
     if staff_emails:
         logger.info("restricted to %d staff: %s", len(staff_emails), staff_emails)
 
-    pool = await asyncpg.create_pool(db_url, min_size=1, max_size=6, command_timeout=600)
-    try:
+    async with sync_pool() as pool:
         summary = await run_interaction_sync(pool, since_days=since_days, staff_emails=staff_emails)
         logger.info("nightly sync complete: %s", summary)
-    finally:
-        await pool.close()
     return 0
 
 

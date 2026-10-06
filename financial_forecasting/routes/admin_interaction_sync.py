@@ -34,18 +34,20 @@ async def _run_sync_background(staff_emails=None, since_days=None):
     async with _sync_lock:
         _sync_status["running"] = True
         try:
-            from services.interaction_sync import run_interaction_sync
-            pool = get_pool()
-            # Pass the pool (not a single conn) so long backfills get a fresh
-            # connection per staff member and can't time out a shared one.
-            summary = await run_interaction_sync(
-                pool, staff_emails=staff_emails, since_days=since_days,
-            )
+            from services.interaction_sync import run_interaction_sync, sync_pool
+            # A pool of the sync's own (not a single conn) so long backfills get a
+            # fresh connection per staff member, and so its batch steps run under
+            # a batch-sized statement timeout instead of the web pool's 30 s,
+            # which silently stopped the email message index (PRO-98).
+            async with sync_pool(fallback=get_pool()) as pool:
+                summary = await run_interaction_sync(
+                    pool, staff_emails=staff_emails, since_days=since_days,
+                )
             _sync_status["last_summary"] = summary
             logger.info("interaction sync complete: %s", summary)
         except Exception as e:
-            logger.error("interaction sync failed: %s", e)
-            _sync_status["last_summary"] = {"error": str(e)}
+            logger.error("interaction sync failed: %r", e)
+            _sync_status["last_summary"] = {"error": repr(e)}
         finally:
             _sync_status["running"] = False
 

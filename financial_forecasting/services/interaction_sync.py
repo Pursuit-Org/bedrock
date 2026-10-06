@@ -1,9 +1,35 @@
 """Orchestrator: run Gmail + Calendar sync for all enabled sync_staff members."""
 
+import contextlib
 import logging
+import os
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# The sync's steps are batch jobs: a full relink, the message index, the
+# classifier. The web app's pool kills any statement at 30 seconds (db.py), which
+# is right for a page and wrong for these, and is what silently stopped the
+# email message index on 2026-09-24 (PRO-98). The sync gets its own pool.
+SYNC_COMMAND_TIMEOUT_SEC = 600
+
+
+@contextlib.asynccontextmanager
+async def sync_pool(fallback=None):
+    """A small pool of its own for one sync run, with a batch-sized statement
+    timeout, closed when the run ends. Falls back to `fallback` (the app's
+    pool) when DATABASE_URL isn't set, as in tests."""
+    import asyncpg
+    url = (os.getenv("DATABASE_URL") or "").strip()
+    if not url:
+        yield fallback
+        return
+    pool = await asyncpg.create_pool(url, min_size=1, max_size=4,
+                                     command_timeout=SYNC_COMMAND_TIMEOUT_SEC)
+    try:
+        yield pool
+    finally:
+        await pool.close()
 
 
 async def run_interaction_sync(
@@ -101,7 +127,7 @@ async def run_interaction_sync(
         finally:
             await _release_conn(enrich_conn)
     except Exception as e:
-        logger.error("domain enrichment failed: %s", e)
+        logger.error("domain enrichment failed: %r", e)
 
     # Jobs-prospect link pass — resolve newly-synced activity to jobs prospects
     # so the Performance dashboard's Engaged/Outreach/Calls reflect this run.
@@ -120,24 +146,26 @@ async def run_interaction_sync(
         finally:
             await _release_conn(link_conn)
     except Exception as e:
-        logger.error("jobs-prospect activity link failed: %s", e)
+        logger.error("jobs-prospect activity link failed: %r", e)
 
     # Message-level index — explode this run's synced threads into per-message
     # rows so outreach metrics date each send correctly (replies/follow-ups
     # otherwise inherit the thread's first-message date and vanish from weekly
-    # counts). Window matches the sync's own incremental horizon.
+    # counts). Window matches the sync's own incremental horizon, widened back
+    # to when the index last grew, so a failed night is made up on the next.
     messages_indexed = 0
     try:
         from services.email_message_index import refresh_email_message_index
         idx_conn = await _get_conn()
         try:
-            idx_result = await refresh_email_message_index(idx_conn, days_back=(since_days or 7))
+            idx_result = await refresh_email_message_index(
+                idx_conn, days_back=(since_days or 7), catch_up=True)
             messages_indexed = idx_result.get("inserted", 0)
         finally:
             await _release_conn(idx_conn)
         logger.info("email message index: %d new message rows", messages_indexed)
     except Exception as e:
-        logger.error("email message index failed: %s", e)
+        logger.error("email message index failed: %r", e)
 
     # Auto-add pass — flag EXISTING contacts the jobs team has engaged as jobs
     # prospects so the dashboard picks them up without manual tagging.
@@ -152,7 +180,7 @@ async def run_interaction_sync(
             await _release_conn(flag_conn)
         logger.info("auto-flagged %d existing contacts as jobs prospects", prospects_flagged)
     except Exception as e:
-        logger.error("jobs-prospect auto-flag failed: %s", e)
+        logger.error("jobs-prospect auto-flag failed: %r", e)
 
     # Funnel auto-advance — flagged contacts with real jobs outreach since the
     # flag move to initial_outreach on their own (the funnel moves itself).
@@ -165,7 +193,7 @@ async def run_interaction_sync(
             await _release_conn(adv_conn)
         logger.info("auto-advanced %d flagged contacts to initial_outreach", adv_result.get("advanced", 0))
     except Exception as e:
-        logger.error("membership auto-advance failed: %s", e)
+        logger.error("membership auto-advance failed: %r", e)
 
     # Candidate pipeline — for external counterparties in this run's activity:
     # link to an existing/SF-mirrored contact (via the alias index), else create
@@ -190,13 +218,13 @@ async def run_interaction_sync(
                 b = await sweep_builder_candidates(cand_conn)
                 logger.info("builder sweep: %s", b)
             except Exception as be:
-                logger.error("builder sweep failed: %s", be)
+                logger.error("builder sweep failed: %r", be)
         finally:
             await _release_conn(cand_conn)
         logger.info("candidate pipeline: created %d candidates, linked %d activity rows",
                     candidates_created, candidate_links)
     except Exception as e:
-        logger.error("candidate pipeline failed: %s", e)
+        logger.error("candidate pipeline failed: %r", e)
 
     # Jobs-relevance classification — label newly-synced staff email/meeting rows
     # (jobs | not_jobs | unclear) so outreach metrics count only jobs-related
@@ -215,7 +243,25 @@ async def run_interaction_sync(
         finally:
             await _release_conn(cls_conn)
     except Exception as e:
-        logger.error("jobs-relevance classification failed: %s", e)
+        logger.error("jobs-relevance classification failed: %r", e)
+
+    # Say loudly when the message index has fallen behind the sync. It failed
+    # silently from 9/24 to 10/6 while every outreach number quietly drifted.
+    email_index = None
+    try:
+        from services.email_message_index import index_health
+        health_conn = await _get_conn()
+        try:
+            email_index = await index_health(health_conn)
+        finally:
+            await _release_conn(health_conn)
+        if email_index["stale"]:
+            logger.error("EMAIL MESSAGE INDEX STALE: last grew %s, mail synced through %s "
+                         "(%s h behind) — outreach numbers undercount until it catches up",
+                         email_index["last_indexed_at"], email_index["last_synced_at"],
+                         email_index["lag_hours"])
+    except Exception as e:
+        logger.error("email message index health check failed: %r", e)
 
     logger.info(
         "interaction sync complete: %d staff, %d gmail, %d calendar, %d domains auto-mapped, %d jobs prospects linked, %d jobs prospects flagged, %d candidates created, %d activity classified",
@@ -231,5 +277,6 @@ async def run_interaction_sync(
         "candidates_created": candidates_created,
         "candidate_activity_linked": candidate_links,
         "activity_classified": activity_classified,
+        "email_index": email_index,
         "by_staff": results,
     }
