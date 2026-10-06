@@ -5,7 +5,7 @@ Re-activating (all stale but recent) / Dormant (all stale, old) > Prospect
 (prospects only, no opps). Plus owner + sf_account_id overrides from
 bedrock.jobs_account, and the deal_type filter.
 """
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -17,8 +17,12 @@ JA_SQL = "account_key, display_name, owner_email, status_override, sf_account_id
 ACT_SQL = "c.contact_id = a.participant_public_contact_id"  # the per-account warmth/actor aggregate
 HIRES_SQL = "count(DISTINCT user_id) AS n FROM ("           # builders-hired-per-account aggregate
 
-RECENT = datetime(2026, 6, 1, tzinfo=timezone.utc)   # within 90d of 2026-06-21
-OLD = datetime(2025, 1, 1, tzinfo=timezone.utc)      # > 90d
+# Relative to the real clock: the status rule compares against now(), so the
+# fixed 2026-06-01 that used to sit here aged out of the 90-day window and
+# flipped Re-activating to Dormant.
+_NOW = datetime.now(timezone.utc)
+RECENT = _NOW - timedelta(days=20)    # within the 90-day window
+OLD = _NOW - timedelta(days=400)      # well outside it
 
 
 @pytest.fixture(autouse=True)
