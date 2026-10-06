@@ -12,6 +12,7 @@ import {
   type FunnelMovement,
 } from "@/services/jobs";
 import { cn } from "@/lib/utils";
+import { FUNNEL_NOUN, funnelSubtitle } from "./funnelCopy";
 
 // ── Funnel-type config ─────────────────────────────────────────────────────
 
@@ -29,18 +30,6 @@ const FUNNEL_TITLE: Record<FunnelType, string> = {
   opportunities: "Opportunities",
   prospects: "Contacts",
   builders: "Builders",
-};
-
-const FUNNEL_SUBTITLE: Record<FunnelType, string> = {
-  opportunities: "Employer deals by stage · transitions in the last 30d",
-  prospects: "Jobs-pipeline contacts by stage",
-  builders: "Builder applications by stage",
-};
-
-const FUNNEL_NOUN: Record<FunnelType, string> = {
-  opportunities: "companies",
-  prospects: "contacts",
-  builders: "builders",
 };
 
 // Final/won stage keys per funnel — these render green.
@@ -267,9 +256,7 @@ function FunnelCard({
   // collapsed defers rather than hides.
   const [collapsed, setCollapsed] = useState(!defaultOpen);
 
-  const subtitle = isPeriod
-    ? `${FUNNEL_NOUN[funnel]} that entered each stage${periodLabel ? ` · ${periodLabel}` : ""}`
-    : FUNNEL_SUBTITLE[funnel];
+  const subtitle = funnelSubtitle(funnel, isPeriod, periodLabel);
   // An all-zero period is the normal state early in a week, and four empty bars
   // read as a broken render — say so in words instead.
   const allZero = stages.length > 0 && stages.every((s) => s.count === 0);
