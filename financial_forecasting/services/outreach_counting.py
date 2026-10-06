@@ -59,6 +59,8 @@ AUTOREPLY_SUBJECTS = (
     "ooo:", "ooo -", "away from", "on vacation", "on leave", "maternity leave",
     "thank you for your message", "thank you for your email", "thank you for contacting",
     "undeliverable", "delivery status notification", "mail delivery", "returned mail",
+    # Devika's auto-reply prefixes the original subject: "Slow to Respond Re: …".
+    "slow to respond",
 )
 AUTOREPLY_SENDERS = ("mailer-daemon", "postmaster", "no-reply", "noreply", "donotreply", "do-not-reply")
 

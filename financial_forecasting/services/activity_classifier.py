@@ -255,6 +255,15 @@ async def classify_new_activity(conn, limit: Optional[int] = None,
             (a.type='email' AND EXISTS (SELECT 1 FROM public.org_users o
                  WHERE o.is_active AND a.email_from ILIKE '%'||o.email||'%'))
             OR
+            -- A thread someone OUTSIDE Pursuit started, that staff replied in.
+            -- email_from is the thread's first sender, so the test above never
+            -- saw these: 141 threads the Jobs team wrote in since July sat
+            -- unclassified, and the outreach gate dropped every reply (PRO-98).
+            (a.type='email' AND EXISTS (
+                 SELECT 1 FROM bedrock.activity_email_message m
+                 JOIN public.org_users o ON o.is_active AND lower(o.email) = m.from_email
+                 WHERE m.activity_id = a.id))
+            OR
             (a.type='meeting' AND a.meeting_attendees IS NOT NULL AND EXISTS (
                  SELECT 1 FROM public.org_users o
                  WHERE o.is_active AND a.meeting_attendees::text ILIKE '%'||o.email||'%'))

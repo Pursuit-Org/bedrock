@@ -145,3 +145,23 @@ async def test_sync_pool_falls_back_to_the_app_pool_without_a_database_url(monke
     sentinel = object()
     async with sync_pool(fallback=sentinel) as pool:
         assert pool is sentinel
+
+
+@pytest.mark.asyncio
+async def test_classifier_also_reads_threads_others_started_that_staff_replied_in(monkeypatch):
+    """141 threads the Jobs team wrote in since July were never classified:
+    the selection read the thread's FIRST sender, so a reply on a thread an
+    employer started never qualified, and the outreach gate dropped it."""
+    from services import activity_classifier
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    conn = FakeConn()
+    out = await activity_classifier.classify_new_activity(conn, limit=1500)
+    assert out == {"classified": 0, "counts": {}}
+    q = next(c[1] for c in conn.calls if "a.jobs_relevance IS NULL" in c[1])
+    assert "JOIN public.org_users o ON o.is_active AND lower(o.email) = m.from_email" in q
+    assert q.rstrip().endswith("LIMIT 1500")
+
+
+def test_slow_to_respond_is_an_automatic_reply():
+    from services.outreach_counting import is_autoreply
+    assert is_autoreply("Slow to Respond Re: Jamie [Primary Ventures] <> Pursuit Team", None)

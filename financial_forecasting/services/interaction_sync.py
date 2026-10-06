@@ -12,6 +12,10 @@ logger = logging.getLogger(__name__)
 # is right for a page and wrong for these, and is what silently stopped the
 # email message index on 2026-09-24 (PRO-98). The sync gets its own pool.
 SYNC_COMMAND_TIMEOUT_SEC = 600
+# Newest first, at most this many rows a night, so a backlog (5,476 threads when
+# staff replies on threads others started became classifiable, PRO-98) drains
+# over a few nights instead of stretching one run past its limits.
+CLASSIFY_PER_RUN = 1500
 
 
 @contextlib.asynccontextmanager
@@ -236,7 +240,7 @@ async def run_interaction_sync(
         from services.activity_classifier import classify_new_activity
         cls_conn = await _get_conn()
         try:
-            cls_result = await classify_new_activity(cls_conn)
+            cls_result = await classify_new_activity(cls_conn, limit=CLASSIFY_PER_RUN)
             activity_classified = cls_result.get("classified", 0)
             logger.info("jobs-relevance: classified %d new activity rows %s",
                         activity_classified, cls_result.get("counts", {}))
