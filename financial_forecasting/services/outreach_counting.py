@@ -185,20 +185,35 @@ class Event:
         return self.kind == "email" and (
             is_autoreply(self.subject, self.email_from) or is_calendar_notice(self.subject))
 
-    def dedup_key(self) -> tuple:
-        """Identity of the real-world event. The same synced send is stored
-        once per mailbox it landed in, and the sync's own guard misses copies
-        whose recipient lists differ by mailbox (Devika's 9/23 Renaissance mail
-        is in both her mailbox and Kanika's). Same sender, same second, same
-        contact is one message. The contact is part of the key because one
-        person can send two different mails in the same second (Damon's two
-        "Appointment booked" mails on 9/28). Everything else is already unique
-        per row: a hand-logged email typed twice is two logs, not a copy."""
-        if self.kind == "email" and self.source == "gmail-sync":
-            who = self.contact_id if self.contact_id is not None else (
-                tuple(sorted(self.contact_ids)) or self.activity_id)
-            return ("email", self.sender, self.ts, who)
-        return (self.kind, self.activity_id or self.intro_id, self.ts)
+    @property
+    def is_synced_email(self) -> bool:
+        return self.kind == "email" and self.source == "gmail-sync"
+
+    def reach(self) -> frozenset:
+        """Everyone this event went to: its contacts and recipient addresses."""
+        ids = set(self.contact_ids) | ({self.contact_id} if self.contact_id is not None else set())
+        return frozenset({("c", i) for i in ids} | {("r", r.lower()) for r in self.recipients if r})
+
+    def same_message(self, other: "Event") -> bool:
+        """Two synced rows are copies of one message stored in two mailboxes.
+
+        The sync stores a send once per mailbox it landed in, and its own guard
+        misses copies whose recipient lists differ by mailbox (Devika's 9/23
+        Renaissance mail sits in both her mailbox and Kanika's), and each copy
+        may be linked to a different contact. Same sender, same second, and
+        anyone in common is one message. Nobody in common is two: one person
+        can send two different mails in the same second (Damon, 9/28). Only
+        synced mail has copies; a hand-logged email typed twice is two logs."""
+        if not (self.is_synced_email and other.is_synced_email):
+            return False
+        if self.sender != other.sender or self.ts != other.ts:
+            return False
+        mine, theirs = self.reach(), other.reach()
+        return bool(mine & theirs) or not (mine or theirs)
+
+    def identity(self) -> tuple:
+        """What makes two rows the same event, besides mailbox copies."""
+        return (self.kind, self.activity_id or self.intro_id, self.ts, self.contact_id)
 
     def metric(self, default_call_kind: str = "general") -> Optional[str]:
         """The Activity Pipeline row this event counts in, or None."""
@@ -212,21 +227,33 @@ class Event:
 def attribute(rows: Iterable, senders: Optional[Iterable[str]]) -> list[Event]:
     """The rows as counted activity: done by one of `senders` (all senders
     when None), not automatic mail, each real event once. Sorted oldest
-    first, so for duplicates the earliest copy is the one kept."""
+    first; of a message's copies, the first by activity id is the one kept
+    (reference_sql keeps the same one)."""
     allowed = None if senders is None else {s.strip().lower() for s in senders}
     events = sorted((r if isinstance(r, Event) else Event.from_row(r) for r in rows),
-                    key=lambda e: (e.ts, e.kind, e.activity_id or e.intro_id or ""))
+                    key=lambda e: (e.ts, e.kind, e.activity_id or e.intro_id or "", e.contact_id or 0))
+    events = [e for e in events
+              if (allowed is None or e.sender in allowed) and not e.is_automatic()]
+    return distinct(events)
+
+
+def distinct(events: Iterable[Event]) -> list[Event]:
+    """Each real event once: a synced message is dropped when an earlier copy
+    of it (by activity id, same sender and second) exists; any other row when
+    it repeats an earlier row exactly."""
     seen: set = set()
+    by_second: dict = {}
     out: list[Event] = []
     for e in events:
-        if allowed is not None and e.sender not in allowed:
+        if e.is_synced_email:
+            peers = by_second.setdefault((e.sender, e.ts), [])
+            copy = any(p.same_message(e) for p in peers)
+            peers.append(e)
+            if copy:
+                continue
+        elif e.identity() in seen:
             continue
-        if e.is_automatic():
-            continue
-        k = e.dedup_key()
-        if k in seen:
-            continue
-        seen.add(k)
+        seen.add(e.identity())
         out.append(e)
     return out
 
@@ -433,16 +460,18 @@ def reference_sql() -> str:
       WHERE NOT (e.kind = 'email' AND (e.subject ~* '{notice}' OR {auto_subj} OR {auto_from}))
     ),
     once AS (                  -- a send stored in two mailboxes counts once
-      SELECT DISTINCT ON (k) * FROM (
-        SELECT c.*, CASE WHEN c.kind = 'email' AND c.source = 'gmail-sync'
-                         THEN 'email|' || c.sender || '|' || c.ts::text || '|' ||
-                              coalesce(c.contact_id::text,
-                                       nullif(array_to_string(c.contact_ids, ','), ''),
-                                       c.activity_id::text)
-                         ELSE c.kind || '|' || coalesce(c.activity_id::text, c.intro_id::text, '')
-                              || '|' || c.ts::text END AS k
-        FROM counted c) x
-      ORDER BY k, ts
+      SELECT DISTINCT ON (c.kind, coalesce(c.activity_id::text, c.intro_id::text), c.ts, c.contact_id) c.*
+      FROM counted c
+      WHERE NOT (c.kind = 'email' AND c.source = 'gmail-sync' AND EXISTS (
+        SELECT 1 FROM counted d
+        WHERE d.kind = 'email' AND d.source = 'gmail-sync'
+          AND d.sender = c.sender AND d.ts = c.ts AND d.activity_id::text < c.activity_id::text
+          AND (d.contact_ids && c.contact_ids
+               OR ARRAY(SELECT lower(x) FROM unnest(d.recipients) x)
+                  && ARRAY(SELECT lower(x) FROM unnest(c.recipients) x)
+               OR (cardinality(d.contact_ids) + cardinality(d.recipients) = 0
+                   AND cardinality(c.contact_ids) + cardinality(c.recipients) = 0))))
+      ORDER BY c.kind, coalesce(c.activity_id::text, c.intro_id::text), c.ts, c.contact_id
     ),
     first_activity AS (        -- D17: the first activity ever on each account
       SELECT co, min(ts) AS first_ts FROM once, unnest(once.companies) co GROUP BY co

@@ -139,14 +139,18 @@ async def refresh_email_message_index(conn, days_back: Optional[int] = None, *,
 async def index_health(conn) -> dict[str, Any]:
     """Is the index keeping up with the sync?
 
-    Stale when it hasn't grown in STALE_AFTER_HOURS while the sync has kept
-    bringing in threads since. A quiet weekend with no new mail is not stale.
+    Stale when a thread that started more than STALE_AFTER_HOURS after the
+    index last grew has been synced. A quiet weekend with no new mail is not
+    stale. Read off the thread's start (activity_date), not synced_at: a
+    manual re-sync re-stamps synced_at on every thread without giving the
+    index anything new, which would raise a false alarm.
     """
     row = await conn.fetchrow(f"""
         SELECT {_LAST_GREW} AS last_indexed_at,
-               (SELECT max(synced_at) FROM bedrock.activity
+               (SELECT max(activity_date) FROM bedrock.activity
                  WHERE source = 'gmail-sync' AND deleted_at IS NULL
-                   AND synced_at > now() - interval '30 days') AS last_synced_at
+                   AND activity_date > now() - interval '30 days'
+                   AND activity_date <= now()) AS last_synced_at
     """)
     last_indexed = row["last_indexed_at"] if row else None
     last_synced = row["last_synced_at"] if row else None

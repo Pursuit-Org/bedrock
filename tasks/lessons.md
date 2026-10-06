@@ -3,6 +3,12 @@
 > Updated after every correction or mistake. Patterns to avoid repeating.
 > Review at session start.
 
+## 2026-10-06 — PRO-98 outreach counting (2 lessons)
+
+1. **Never cut a row into one-per-key when exporting fixtures for logic that dedups.** The anonymized fixture kept the earliest event per (account, sender) as `ARRAY[company]`, so one email that reached two accounts became two rows with one identity. The rules' cross-mailbox dedup kept one and silently erased the other account's history: calendar week pinned 20 accounts activated where the data says 15. Caught only because a second, independent implementation (`outreach_counting.reference_sql()` run on production) disagreed. **Rule**: export whole events with every field the rules read; when a pinned number comes from a fixture, cross-check it once against a query on the real data before trusting the pin.
+
+2. **Before reproducing an audit's numbers, vary the window boundaries first.** The 9/30 audit was described as "New York time" but only reproduced on UTC day boundaries (the app's own date handling then). Ten minutes of guessing at filters would have been saved by trying UTC vs NY first. **Rule**: when a reference number won't reproduce, check timezone and inclusive/exclusive window edges before touching the definition.
+
 ## 2026-04-16 — F1 buckets + Intacct kill switch (2 lessons)
 
 1. **Prefer env vars + `os.getenv` over a `config.py` indirection module.** When adding a feature flag (e.g., `INTACCT_AUTO_INVOICE_ENABLED`) in PR #135, my first draft added it to `financial_forecasting/config.py`. Turned out: (a) `config.py` is intentionally gitignored (legacy credentials file), (b) the only real consumer was `routes/auth.py` for Salesforce OAuth app creds — 8 call sites easily swapped to `os.getenv`. JP's call: retire `config.py` entirely, don't perpetuate the indirection. **Rule**: for any new backend config value, read env directly via a call-time helper (`def _flag_enabled() -> bool: return os.getenv(...).strip().lower() == "true"`). Tests flip with `monkeypatch.setenv` — standard pytest, no module-attr monkeypatching. Keep `.gitignore`'s `config.py` line as a safety net with a comment explaining the retirement, so a future contributor with old muscle memory can't accidentally re-introduce secrets-in-source.

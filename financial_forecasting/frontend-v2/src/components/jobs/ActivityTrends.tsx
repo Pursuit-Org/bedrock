@@ -268,7 +268,7 @@ function OutreachDetailDrawer({ period, gran, channel, owner, scope, onClose }: 
                 <span className="text-[11px] tabular-nums text-ink-4">{acc.touches.length}</span>
               </div>
               {acc.touches.map((t) => (
-                <div key={t.activity_id} className="flex items-start gap-2 border-t border-border-strong px-3 py-1.5">
+                <div key={`${t.activity_id}-${t.date}`} className="flex items-start gap-2 border-t border-border-strong px-3 py-1.5">
                   {t.channel === "meeting" ? <Calendar size={12} className="mt-0.5 shrink-0 text-ink-4" /> : <Mail size={12} className="mt-0.5 shrink-0 text-ink-4" />}
                   <div className="min-w-0 flex-1">
                     <div className="truncate text-[12px] text-ink">{t.contact || "—"}{t.subject ? <span className="text-ink-4"> · {t.subject}</span> : ""}</div>

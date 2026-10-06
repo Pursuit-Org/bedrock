@@ -8,7 +8,8 @@ activation needs to know whether an account was worked before.
 
 Anonymized in SQL, so nothing identifying leaves the database:
   * Pursuit staff addresses are kept: they ARE the attribution under test.
-  * Contacts, accounts, activity and intro ids are replaced by salted hashes.
+  * Contacts, accounts, recipient addresses, activity and intro ids are
+    replaced by salted hashes.
   * Subjects and bodies are dropped, except the leading "Appointment booked:"
     style prefix of an automatic calendar notice and a generic marker for an
     automatic reply, which is what the counting rules read.
@@ -61,7 +62,8 @@ def fixture_sql() -> str:
                CASE WHEN e.subject ~* '{_NOTICE_SQL}' THEN substring(e.subject from '^[^:]*:')
                     WHEN {autoreply} THEN 'Automatic reply:' END AS subject,
                CASE WHEN e.kind = 'email' THEN e.sender END AS email_from,
-               e.source, e.call_kind
+               e.source, e.call_kind,
+               ARRAY(SELECT 'r_' || left(md5('pro98:r' || lower(x)), 10) FROM unnest(e.recipients) x ORDER BY 1) AS recipients
         FROM {src} e"""
     return f"""
     WITH win AS ({win}),
@@ -82,7 +84,8 @@ def fixture_sql() -> str:
       -- cut into a row per account would read as copies of itself and be
       -- counted once, losing the others' history.
       SELECT DISTINCT p.kind, p.ts, p.sender, p.activity_id, p.intro_id, p.contact_id,
-             p.contact_ids, p.companies, p.subject, p.email_from, p.source, p.call_kind
+             p.contact_ids, p.companies, p.subject, p.email_from, p.source, p.call_kind,
+             p.recipients
       FROM prior p JOIN firsts f
         ON f.kind = p.kind AND f.ts = p.ts AND f.sender = p.sender
        AND f.activity_id IS NOT DISTINCT FROM p.activity_id
@@ -100,7 +103,8 @@ def fixture_sql() -> str:
 
 # One row per event, as an array in this order (keeps the fixture small).
 COLUMNS = ("part", "kind", "ts", "sender", "activity_id", "intro_id", "contact_id",
-           "contact_ids", "companies", "subject", "email_from", "source", "call_kind")
+           "contact_ids", "companies", "subject", "email_from", "source", "call_kind",
+           "recipients")
 
 
 async def main() -> None:

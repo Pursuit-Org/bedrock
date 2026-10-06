@@ -102,12 +102,7 @@ def test_calendar_week_pins(events):
 
 
 def _distinct(events):
-    seen, out = set(), []
-    for e in events:
-        if e.dedup_key() not in seen:
-            seen.add(e.dedup_key())
-            out.append(e)
-    return out
+    return oc.distinct(events)
 
 
 def test_cross_mailbox_copies_count_once(events):
@@ -138,7 +133,7 @@ def test_fixture_holds_each_event_once(events):
     account reads as copies of itself, dedup keeps one, and the other accounts
     lose their history: the first export did that and pinned 20 accounts
     activated where the data says 15."""
-    keys = [(e.kind, e.sender, e.ts, e.activity_id, e.intro_id) for e in events]
+    keys = [(e.kind, e.sender, e.ts, e.activity_id, e.intro_id, e.contact_id) for e in events]
     assert len(keys) == len(set(keys))
 
 
@@ -149,7 +144,7 @@ def test_reference_sql_applies_the_same_rules():
     sql = oc.reference_sql()
     assert all(p in sql for p in oc.AUTOREPLY_SUBJECTS + oc.AUTOREPLY_SENDERS)
     assert "appointment (booked|canceled|cancelled|rescheduled)" in sql
-    assert "DISTINCT ON (k)" in sql and "first_activity" in sql
+    assert "d.activity_id::text < c.activity_id::text" in sql and "first_activity" in sql
     assert "logged_by" not in sql.split("UNION ALL")[0]
 
 
@@ -169,6 +164,20 @@ def test_same_send_in_two_mailboxes_is_one():
     a = _ev(activity_id="a1")
     b = _ev(activity_id="a2")                      # same message, another mailbox
     assert len(oc.attribute([a, b], TEAM)) == 1
+
+
+def test_copies_linked_to_different_contacts_are_one_when_they_share_a_recipient():
+    """19 such groups since June: one message to several people, each mailbox's
+    copy linked to a different one of them."""
+    a = _ev(activity_id="a1", contact_id=1, recipients=("jo@acme.com", "al@acme.com"))
+    b = _ev(activity_id="a2", contact_id=2, recipients=("AL@acme.com",))
+    assert len(oc.attribute([a, b], TEAM)) == 1
+
+
+def test_two_call_booked_moves_in_the_same_second_are_two():
+    a = _ev(kind="call_booked", source="stage", activity_id=None, contact_id=1)
+    b = _ev(kind="call_booked", source="stage", activity_id=None, contact_id=2)
+    assert len(oc.attribute([a, b], TEAM)) == 2
 
 
 def test_two_sends_in_the_same_second_to_different_people_are_two():
