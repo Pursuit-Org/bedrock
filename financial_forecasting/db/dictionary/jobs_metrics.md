@@ -2220,6 +2220,36 @@ In a week, entries into the next stage divided by entries into this one (Employe
 - Date: in the week (Mon–Sun, New York)
 - Caveat: Computed from the two *_entering_stage measures; D11 replaces it with milestone conversion.
 
+### Opportunity stage ratio (`opportunity_stage_ratio`, draft)
+
+Opportunities sitting in the next stage now divided by those in this stage now, hidden above 100%. A ratio of standing counts, not a conversion rate; the Overview's opportunity funnel shows it until D11's milestone conversion replaces it.
+
+- Counts: Opportunities in the next stage now
+- Divided by: Opportunities in this stage now
+- Date: as of today
+- Caveat: Retired as a rate by D11 (stage-to-stage ratios over 100%).
+
+<details><summary>Reference query</summary>
+
+```sql
+WITH by_stage AS (
+  SELECT (CASE o.stage WHEN 'initial_outreach' THEN 'active_in_discussions' WHEN 'lead_submitted' THEN 'active_in_discussions' WHEN 'reviewing_builders' THEN 'builder_submitted' WHEN 'active_builder_interview' THEN 'builder_submitted' WHEN 'on_hold_not_interested' THEN 'closed_lost' WHEN 'on_hold_not_responsive' THEN 'closed_lost' WHEN 'on_hold_not_selected' THEN 'closed_lost' ELSE o.stage END) AS stage, count(*) AS n
+  FROM bedrock.jobs_opportunity o WHERE o.deleted_at IS NULL GROUP BY 1
+),
+ordered AS (
+  SELECT s.stage, s.ord, coalesce(b.n, 0) AS n
+  FROM unnest(ARRAY['active_in_discussions', 'ask_submitted', 'active_opportunity_confirmed', 'builder_submitted', 'builder_interviewing', 'offer_contracting', 'closed_won'])
+       WITH ORDINALITY s(stage, ord)
+  LEFT JOIN by_stage b USING (stage)
+)
+SELECT a.stage, b.stage AS next_stage,
+       CASE WHEN a.n > 0 AND b.n <= a.n THEN round(100.0 * b.n / a.n) END AS ratio_pct
+FROM ordered a JOIN ordered b ON b.ord = a.ord + 1
+ORDER BY a.ord
+```
+
+</details>
+
 ### Campaign conversion (`campaign_conversion`, draft)
 
 Of a campaign's contacts that were contacted or converted, the share converted. Shown once at least 5 contacts are in it.

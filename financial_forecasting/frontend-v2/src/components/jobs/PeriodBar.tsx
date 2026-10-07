@@ -34,11 +34,21 @@ function yesterday(): Date {
   return d;
 }
 
+/** Monday of the calendar week holding d (D8: weeks run Monday to Sunday). */
+function mondayOf(d: Date): Date {
+  const m = new Date(d);
+  m.setHours(0, 0, 0, 0);
+  m.setDate(m.getDate() - ((m.getDay() + 6) % 7));
+  return m;
+}
+
 /** Each preset sets the window AND the bucket size together — a month of dates
- *  shown in weekly buckets reads as a bug. All three are trailing windows ending
- *  yesterday.
+ *  shown in weekly buckets reads as a bug.
  *
- *  Weekly is the seven days ending yesterday, so on 21 Sep it reads 14–20 Sep. */
+ *  Weekly is the last full calendar week, Monday to Sunday (D8), so on Wed 7 Oct
+ *  it reads 28 Sep – 4 Oct. It used to be the seven days ending yesterday, which
+ *  disagreed with every Monday-to-Sunday number on the backend. Daily and
+ *  Monthly end yesterday. */
 export const PERIOD_PRESETS: {
   key: OutreachGranularity;
   label: string;
@@ -54,10 +64,11 @@ export const PERIOD_PRESETS: {
   {
     key: "week",
     label: "Weekly",
-    title: "The 7 days ending yesterday",
+    title: "The last full week, Monday to Sunday",
     get: () => {
-      const e = yesterday();
-      const s = new Date(e); s.setDate(e.getDate() - 6);
+      const s = mondayOf(new Date());
+      s.setDate(s.getDate() - 7);
+      const e = new Date(s); e.setDate(s.getDate() + 6);
       return [iso(s), iso(e)];
     },
   },
@@ -73,10 +84,11 @@ export const PERIOD_PRESETS: {
   },
 ];
 
-/** The default window on Outreach and Pipeline alike, so the two pages open on
- *  the same dates. */
-export function defaultPeriod(): [string, string] {
-  return PERIOD_PRESETS[1].get();
+/** The week each meeting reviews (D8): Monday's meeting looks at the last full
+ *  week (Outreach), Thursday's at the current week so far (Pipeline). */
+export function defaultPeriod(meeting: "monday" | "thursday" = "monday"): [string, string] {
+  if (meeting === "monday") return PERIOD_PRESETS[1].get();
+  return [iso(mondayOf(new Date())), iso(new Date())];
 }
 
 function fmt(v: string) {

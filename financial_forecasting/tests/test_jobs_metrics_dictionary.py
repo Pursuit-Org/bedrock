@@ -272,3 +272,48 @@ def test_markdown_copy_is_current():
     """The readable copy is generated; regenerate it after editing the JSON:
     python -m scripts.import_jobs_dictionary --markdown db/dictionary/jobs_metrics.md"""
     assert imp.DRAFTS.with_suffix(".md").read_text(encoding="utf-8") == imp.markdown(DRAFTS)
+
+
+# ── the checks: dictionary query vs Bedrock's calculation ────────────────────
+
+from scripts import check_jobs_metrics as check  # noqa: E402
+
+
+@pytest.mark.parametrize("chk", check.CHECKS, ids=lambda c: c.number)
+def test_each_check_reads_a_real_column_of_its_reference_query(chk):
+    sql = check._reference_sql(chk.number, DRAFTS)
+    assert sql and f"AS {chk.column}" in sql
+
+
+def test_every_single_value_number_on_the_tabs_is_checked():
+    """Numbers whose reference query returns one row are compared one to one.
+    The rest (stage tables, buckets, targets) are listed so the gap is known."""
+    checked = {c.number for c in check.CHECKS}
+    not_single = {"contacts_by_stage", "contacts_entering_stage", "opportunities_by_stage",
+                  "opportunities_entering_stage", "time_in_stage", "activity_depth",
+                  "contact_cohort_conversion", "stage_flow_conversion", "opportunity_stage_ratio",
+                  "campaign_contacts", "campaign_accounts", "campaign_reached", "campaign_conversion",
+                  "activity_target", "jobs_projection", "contacted", "won_open_tasks"}
+    assert set(jm.MEASURES) - checked == not_single
+
+
+@pytest.mark.skipif(not __import__("os").environ.get("CHECK_DATABASE_URL"),
+                    reason="needs CHECK_DATABASE_URL (a login that can read public.users)")
+def test_dictionary_and_bedrock_agree_on_the_last_week():
+    import asyncio
+    import asyncpg
+    from services import jobs_targets_store
+
+    async def run():
+        import os
+        pool = await asyncpg.create_pool(os.environ["CHECK_DATABASE_URL"], min_size=1, max_size=2)
+        try:
+            await jobs_targets_store.refresh(pool, force=True)
+            async with pool.acquire() as conn:
+                d_from, d_to = jm.meeting_week("monday")
+                return await check.compare(conn, d_from, d_to)
+        finally:
+            await pool.close()
+
+    results = asyncio.run(run())
+    assert [r for r in results if not r["match"]] == []

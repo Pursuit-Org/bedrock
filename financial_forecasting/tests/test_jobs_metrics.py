@@ -8,7 +8,8 @@ import pytest
 
 from tests.jobs_fakes import FakeConn, make_jobs_client
 
-SECURED = "FROM bedrock.secured_jobs()"
+# Employment records, read through the placement rule (services/jobs_metrics).
+SECURED = "bedrock.jobs_employment_records()"
 TRIALS = "r.is_trial = true"       # committed active trials (shown, not counted)
 COMMITTED = "r.is_trial = false"   # committed FT roles still open
 
@@ -59,13 +60,20 @@ def test_placements_drill_is_ft_placed_plus_committed():
     assert committed[0]["builder"] == "—"   # seat locked in, nobody placed yet
 
 
-def test_placements_drill_query_filters_full_time_only():
-    conn = FakeConn(lists={SECURED: [], COMMITTED: []})
+def test_placements_drill_lists_what_the_rule_counts():
+    """Full-time only, and only records the placement rule counts: not a
+    test account, pay recorded, not `pipeline`, started (PRO-97)."""
+    conn = FakeConn(lists={SECURED: [
+        _placement(1, "Ana"),
+        _placement(2, "Ben", employment_type="contract"),
+        _placement(3, "Cy", excluded=True),
+        _placement(4, "Di", engagement_stage="pipeline"),
+        _placement(5, "Ed", payment_amount=None),
+    ], COMMITTED: []})
     c = make_jobs_client(conn)
     r = c.get("/api/jobs/metrics/placements")
-    assert r.status_code == 200
-    secured_q = next(q for q in conn.queries("fetch") if SECURED in q)
-    assert "employment_type = 'full_time'" in secured_q   # never PT/contract
+    assert r.status_code == 200, r.text
+    assert [row["builder"] for row in r.json()["data"]["rows"]] == ["Ana"]
 
 
 def test_ft_salaries_drill_flat_editable():

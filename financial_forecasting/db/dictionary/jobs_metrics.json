@@ -901,6 +901,25 @@
           "caveat": "Computed from the two *_entering_stage measures; D11 replaces it with milestone conversion."
         },
         {
+          "key": "opportunity_stage_ratio",
+          "label": "Opportunity stage ratio",
+          "status": "draft",
+          "definition": "Opportunities sitting in the next stage now divided by those in this stage now, hidden above 100%. A ratio of standing counts, not a conversion rate; the Overview's opportunity funnel shows it until D11's milestone conversion replaces it.",
+          "numerator": "Opportunities in the next stage now",
+          "denominator": "Opportunities in this stage now",
+          "is_rate": true,
+          "sql_query": "WITH by_stage AS (\n  SELECT (CASE o.stage WHEN 'initial_outreach' THEN 'active_in_discussions' WHEN 'lead_submitted' THEN 'active_in_discussions' WHEN 'reviewing_builders' THEN 'builder_submitted' WHEN 'active_builder_interview' THEN 'builder_submitted' WHEN 'on_hold_not_interested' THEN 'closed_lost' WHEN 'on_hold_not_responsive' THEN 'closed_lost' WHEN 'on_hold_not_selected' THEN 'closed_lost' ELSE o.stage END) AS stage, count(*) AS n\n  FROM bedrock.jobs_opportunity o WHERE o.deleted_at IS NULL GROUP BY 1\n),\nordered AS (\n  SELECT s.stage, s.ord, coalesce(b.n, 0) AS n\n  FROM unnest(ARRAY['active_in_discussions', 'ask_submitted', 'active_opportunity_confirmed', 'builder_submitted', 'builder_interviewing', 'offer_contracting', 'closed_won'])\n       WITH ORDINALITY s(stage, ord)\n  LEFT JOIN by_stage b USING (stage)\n)\nSELECT a.stage, b.stage AS next_stage,\n       CASE WHEN a.n > 0 AND b.n <= a.n THEN round(100.0 * b.n / a.n) END AS ratio_pct\nFROM ordered a JOIN ordered b ON b.ord = a.ord + 1\nORDER BY a.ord",
+          "mappings": [],
+          "time_anchors": [
+            {
+              "kind": "state",
+              "label": "as of today",
+              "default": true
+            }
+          ],
+          "caveat": "Retired as a rate by D11 (stage-to-stage ratios over 100%)."
+        },
+        {
           "key": "campaign_conversion",
           "label": "Campaign conversion",
           "status": "draft",

@@ -604,10 +604,11 @@ function TouchDepthPanel({ scope, owner, nameOf, className }: {
 
 
 // ── Daily digest — Avni's morning Slack, computed ────────────────────────────
-const startOfWeekSunday = () => {
+// Monday of the current week (D8: weeks run Monday to Sunday).
+const startOfWeek = () => {
   const d = new Date();
   d.setHours(0, 0, 0, 0);
-  d.setDate(d.getDate() - d.getDay());
+  d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
   return d;
 };
 
@@ -849,7 +850,7 @@ function useAssignedContacted(range?: OutreachDateRange) {
   return useMemo(() => {
     // Contacted is a period event, so it follows the page's Period picker (it
     // used to hardcode the current Sun-week and ignore the selector entirely).
-    const pStart = range?.from ? new Date(`${range.from}T00:00:00`) : startOfWeekSunday();
+    const pStart = range?.from ? new Date(`${range.from}T00:00:00`) : startOfWeek();
     const pEnd = range?.to ? new Date(`${range.to}T23:59:59.999`) : new Date();
     const by = new Map<string, AssignedContacted>();
     const bucket = (email: string | null | undefined) => {

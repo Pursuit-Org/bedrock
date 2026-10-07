@@ -80,12 +80,12 @@ const contactedFilters = (owner: string | null): ContactFilters => ({
   rules: owner ? [{ field: "owner", op: "equals", values: [owner] }] : undefined,
 });
 
-// Start of the current Sun–Sat week (local) — matches the overview/scorecard's
-// Saturday week_end convention.
-const startOfWeekSunday = () => {
+// Monday of the current week (D8: weeks run Monday to Sunday, like the
+// Outreach and Pipeline numbers).
+const startOfWeek = () => {
   const d = new Date();
   d.setHours(0, 0, 0, 0);
-  d.setDate(d.getDate() - d.getDay());
+  d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
   return d;
 };
 
@@ -211,7 +211,7 @@ function AssignedContactsZone({ owner }: { owner: string | null }) {
   const { data: staff = [] } = useJobsStaff();
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const contacts = data?.data ?? [];
-  const weekStart = startOfWeekSunday();
+  const weekStart = startOfWeek();
   const thisWeek = contacts.filter((c) =>
     c.membership_stage_entered_at && new Date(c.membership_stage_entered_at) >= weekStart);
   const earlier = contacts.filter((c) =>

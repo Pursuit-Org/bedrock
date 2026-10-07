@@ -60,8 +60,41 @@ def test_stalled_measures_last_movement_not_creation():
     ]
     c = make_jobs_client(OverviewConn(rows))
     d = c.get("/api/jobs/opportunities/overview?deal_type=ft").json()["data"]
-    assert d["summary"]["stalled_6wk"] == 1
+    assert d["summary"]["stalled"] == 1
     assert [r["account"] for r in d["drills"]["stalled"]] == ["Quiet"]
+
+
+def test_stalled_is_four_weeks_everywhere_on_the_page():
+    """D3: an opportunity is stalled after 4 weeks without movement. The
+    card, its drill and the Stalled status all use that one rule (they used
+    to say 6 weeks, 14 days and 21 days)."""
+    rows = [
+        _set_row(UUID_A, "Five weeks", created_days=90, moved_days=35, touch_days=35),
+        _set_row(UUID_B, "Three weeks", created_days=90, moved_days=21, touch_days=21),
+    ]
+    c = make_jobs_client(OverviewConn(rows))
+    d = c.get("/api/jobs/opportunities/overview").json()["data"]
+    assert d["summary"]["stalled"] == 1
+    assert d["summary"]["stalled_label"] == "No activity in 4+ weeks"
+    assert [r["account"] for r in d["drills"]["stalled"]] == ["Five weeks"]
+    assert {r["account"]: r["status"] for r in d["active_set"]} == {
+        "Five weeks": "stalled", "Three weeks": "active"}
+
+
+def test_comments_dont_keep_an_opportunity_alive():
+    """D3: notes are comments, not activity, so they don't reset the clock."""
+    conn = OverviewConn([])
+    make_jobs_client(conn).get("/api/jobs/opportunities/overview")
+    q = next(q for q in conn.queries("fetch") if "WITH acct_last" in q)
+    assert q.count("a.type IN ('email', 'call', 'meeting', 'linkedin', 'text')") == 3
+
+
+def test_overview_numbers_carry_their_definitions():
+    c = make_jobs_client(OverviewConn([]))
+    d = c.get("/api/jobs/opportunities/overview?week_end=2026-09-27&start=2026-09-21").json()["data"]
+    defs = d["definitions"]
+    assert defs["stalled"]["measure"] == "stalled_opportunities"
+    assert defs["in_set"]["window"] == {"from": "2026-09-21", "to": "2026-09-27", "tz": "America/New_York"}
 
 
 def test_account_activity_keeps_status_active():

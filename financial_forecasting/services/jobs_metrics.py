@@ -126,6 +126,7 @@ MEASURES: dict[str, Measure] = {
     "converted_opportunities": Measure("employer_conversion", "contacts_converted"),
     "contact_cohort_conversion": Measure("employer_conversion", "contact_cohort_conversion"),
     "stage_flow_conversion":  Measure("employer_conversion", "stage_flow_conversion"),
+    "opportunity_stage_ratio": Measure("employer_conversion", "opportunity_stage_ratio"),
     "campaign_conversion":    Measure("employer_conversion", "campaign_conversion"),
     # Targets
     "activity_target":        Measure("jobs_targets", "activity_vs_target"),

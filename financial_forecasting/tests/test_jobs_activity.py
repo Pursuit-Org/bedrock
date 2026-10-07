@@ -126,12 +126,22 @@ def test_funnel_unknown_type_404():
 
 
 def test_funnel_builders_job_ready_paid_ft():
-    # bedrock.l3plus_funnel returns the L3+ pool with placement flags
-    conn = FakeConn(lists={"l3plus_funnel": [
-        {"name": "Ana", "is_paid": True,  "is_ft": True,  "company": "Acme", "role": "Eng"},
-        {"name": "Ben", "is_paid": True,  "is_ft": False, "company": "Beta", "role": "PT"},
-        {"name": "Cy",  "is_paid": False, "is_ft": False, "company": None,   "role": None},
-    ]})
+    # bedrock.l3plus_funnel returns the L3+ pool; who is placed follows the
+    # placement rule over employment records (services/jobs_metrics, PRO-97).
+    job = lambda uid, **kw: {"id": uid, "user_id": uid, "employment_type": "full_time",
+                             "engagement_stage": "active", "payment_amount": 80000,
+                             "start_date": None, "end_date": None, "excluded": False, **kw}
+    conn = FakeConn(lists={
+        "l3plus_funnel": [
+            {"user_id": 1, "name": "Ana", "company": "Acme", "role": "Eng"},
+            {"user_id": 2, "name": "Ben", "company": "Beta", "role": "PT"},
+            {"user_id": 3, "name": "Cy",  "company": None,   "role": None},
+        ],
+        "jobs_employment_records()": [
+            job(1), job(2, employment_type="contract"),
+            job(3, excluded=True),                       # a test account doesn't count
+            job(4),                                      # not in the job-ready pool
+        ]})
     c = make_jobs_client(conn)
     r = c.get("/api/jobs/funnel/builders")
     assert r.status_code == 200, r.text

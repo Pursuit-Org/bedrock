@@ -3158,7 +3158,9 @@ export interface OpportunitiesOverview {
   aging_basis: string;
   summary: {
     in_set: number; net_new: number; net_new_prev: number;
-    moved_committed: number; closed_lost: number; stalled_6wk: number;
+    moved_committed: number; closed_lost: number;
+    /** Open, no movement past the D3 limit (4 weeks). `stalled_label` says so. */
+    stalled: number; stalled_label: string;
   };
   aging: { buckets: OppAgingBucket[] };
   breakdowns: Record<OppBreakdownDim, OppBreakdownItem[]>;

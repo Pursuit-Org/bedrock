@@ -174,12 +174,11 @@ export function JobsOpportunitiesOverview() {
   const [heatAxis, setHeatAxis] = useState<HeatAxis>("stage");
   // Bucket size travels with the period preset, same as Outreach.
   const [granularity, setGranularity] = useState<OutreachGranularity>("week");
-  // Free-form window: both bounds inclusive, no snapping. Defaults to the
-  // calendar week (what the Weekly preset selects, matching Outreach); the
-  // presets and the two date inputs set it.
-  // Completed week, matching Outreach — see defaultPeriod.
+  // Free-form window: both bounds inclusive, no snapping. The presets and the
+  // two date inputs set it.
+  // The current week so far: Pipeline is the Thursday meeting's view (D8).
   const [range, setRange] = useState<{ start: Date; end: Date }>(() => {
-    const [f, t] = defaultPeriod();
+    const [f, t] = defaultPeriod("thursday");
     return { start: parseDateInput(f), end: parseDateInput(t) };
   });
   const weekStart = range.start;
@@ -295,9 +294,9 @@ export function JobsOpportunitiesOverview() {
         <SummaryCard tone="ink" label="Net new" value={s?.net_new} sub={rangeLabel} isLoading={isLoading}
           delta={s ? { n: netDelta, prev: s.net_new_prev, priorLabel: spanDays === 7 ? "last wk" : `prior ${spanDays}d` } : undefined}
           onClick={() => setDrill({ title: "Net new", note: `Created ${rangeLabel}`, rows: data?.drills?.net_new ?? [] })} />
-        <SummaryCard tone="ink" label="Stalled" value={s?.stalled_6wk} isLoading={isLoading}
-          sub="No movement in 6+ weeks"
-          onClick={() => setDrill({ title: "Stalled 6+ weeks", note: "Open, no stage change or activity on the deal or account in 6+ weeks · date is last movement", rows: data?.drills?.stalled ?? [] })} />
+        <SummaryCard tone="ink" label="Stalled" value={s?.stalled} isLoading={isLoading}
+          sub={s?.stalled_label ?? "No activity in 4+ weeks"}
+          onClick={() => setDrill({ title: "Stalled", note: `Open, no stage change and no activity (comments don't count) on the deal or anyone at its account · ${s?.stalled_label ?? ""} · date is last movement`, rows: data?.drills?.stalled ?? [] })} />
         {/* Stage-gate check: won on the board but the follow-through (e.g. the
             signed contract task) is still open — "signed contract = closed".
             Sits left of the outcome boxes: it's an action, they're a result. */}
