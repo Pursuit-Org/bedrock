@@ -63,6 +63,8 @@ def test_month_targets_are_a_third_of_the_quarter():
     class Pool:
         async def fetchval(self, q, *a): return True
         async def fetch(self, q, *a):
+            if "jobs_team_change" in q:
+                return []
             if "jobs_team_member" in q:
                 return [{"email": "a@pursuit.org"}]
             return [{"section": "pipeline", "metric": "jobs", "owner_email": None,

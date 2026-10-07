@@ -447,7 +447,7 @@ Everything the team sent: direct email, LinkedIn messages, texts and facilitated
 <details><summary>Reference query</summary>
 
 ```sql
-WITH w AS (SELECT ((coalesce(nullif(current_setting('dd.window_from', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 7))::timestamp AT TIME ZONE 'America/New_York') AS start_at, (((coalesce(nullif(current_setting('dd.window_to', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 1) + 1))::timestamp AT TIME ZONE 'America/New_York') AS end_at, (SELECT coalesce(array_agg(lower(email)), '{}') FROM bedrock.jobs_team_member WHERE active) AS team)
+WITH w AS (SELECT ((coalesce(nullif(current_setting('dd.window_from', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 7))::timestamp AT TIME ZONE 'America/New_York') AS start_at, (((coalesce(nullif(current_setting('dd.window_to', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 1) + 1))::timestamp AT TIME ZONE 'America/New_York') AS end_at, (SELECT coalesce(array_agg(DISTINCT lower(email)), '{}') FROM (SELECT email FROM bedrock.jobs_team_member UNION SELECT email FROM bedrock.jobs_team_change) t) AS team)
 SELECT outreach FROM (
     WITH e AS (
     WITH raw AS (
@@ -524,6 +524,10 @@ SELECT outreach FROM (
     counted AS (               -- automatic mail is not activity
       SELECT * FROM e
       WHERE NOT (e.kind = 'email' AND (e.subject ~* '^\s*(appointment (booked|canceled|cancelled|rescheduled)|(updated |new )?invitation|accepted|declined|tentatively accepted|(canceled|cancelled) event)( with note)?\s*:' OR lower(coalesce(e.subject, '')) LIKE '%out of office%' OR lower(coalesce(e.subject, '')) LIKE '%automatic reply%' OR lower(coalesce(e.subject, '')) LIKE '%auto-reply%' OR lower(coalesce(e.subject, '')) LIKE '%autoreply%' OR lower(coalesce(e.subject, '')) LIKE '%auto reply%' OR lower(coalesce(e.subject, '')) LIKE '%ooo:%' OR lower(coalesce(e.subject, '')) LIKE '%ooo -%' OR lower(coalesce(e.subject, '')) LIKE '%away from%' OR lower(coalesce(e.subject, '')) LIKE '%on vacation%' OR lower(coalesce(e.subject, '')) LIKE '%on leave%' OR lower(coalesce(e.subject, '')) LIKE '%maternity leave%' OR lower(coalesce(e.subject, '')) LIKE '%thank you for your message%' OR lower(coalesce(e.subject, '')) LIKE '%thank you for your email%' OR lower(coalesce(e.subject, '')) LIKE '%thank you for contacting%' OR lower(coalesce(e.subject, '')) LIKE '%undeliverable%' OR lower(coalesce(e.subject, '')) LIKE '%delivery status notification%' OR lower(coalesce(e.subject, '')) LIKE '%mail delivery%' OR lower(coalesce(e.subject, '')) LIKE '%returned mail%' OR lower(coalesce(e.subject, '')) LIKE '%slow to respond%' OR lower(coalesce(e.email_from, '')) LIKE '%mailer-daemon%' OR lower(coalesce(e.email_from, '')) LIKE '%postmaster%' OR lower(coalesce(e.email_from, '')) LIKE '%no-reply%' OR lower(coalesce(e.email_from, '')) LIKE '%noreply%' OR lower(coalesce(e.email_from, '')) LIKE '%donotreply%' OR lower(coalesce(e.email_from, '')) LIKE '%do-not-reply%'))
+        AND coalesce((
+    SELECT c.on_team FROM bedrock.jobs_team_change c
+    WHERE c.email = e.sender AND (c.effective_at IS NULL OR c.effective_at <= e.ts)
+    ORDER BY c.effective_at DESC NULLS LAST, c.id DESC LIMIT 1), false)
     ),
     once AS (                  -- a send stored in two mailboxes counts once
       SELECT DISTINCT ON (c.kind, coalesce(c.activity_id::text, c.intro_id::text), c.ts, c.contact_id) c.*
@@ -569,7 +573,7 @@ Emails the team sent, one per message (a follow-up counts on the day it went out
 <details><summary>Reference query</summary>
 
 ```sql
-WITH w AS (SELECT ((coalesce(nullif(current_setting('dd.window_from', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 7))::timestamp AT TIME ZONE 'America/New_York') AS start_at, (((coalesce(nullif(current_setting('dd.window_to', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 1) + 1))::timestamp AT TIME ZONE 'America/New_York') AS end_at, (SELECT coalesce(array_agg(lower(email)), '{}') FROM bedrock.jobs_team_member WHERE active) AS team)
+WITH w AS (SELECT ((coalesce(nullif(current_setting('dd.window_from', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 7))::timestamp AT TIME ZONE 'America/New_York') AS start_at, (((coalesce(nullif(current_setting('dd.window_to', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 1) + 1))::timestamp AT TIME ZONE 'America/New_York') AS end_at, (SELECT coalesce(array_agg(DISTINCT lower(email)), '{}') FROM (SELECT email FROM bedrock.jobs_team_member UNION SELECT email FROM bedrock.jobs_team_change) t) AS team)
 SELECT direct_email FROM (
     WITH e AS (
     WITH raw AS (
@@ -646,6 +650,10 @@ SELECT direct_email FROM (
     counted AS (               -- automatic mail is not activity
       SELECT * FROM e
       WHERE NOT (e.kind = 'email' AND (e.subject ~* '^\s*(appointment (booked|canceled|cancelled|rescheduled)|(updated |new )?invitation|accepted|declined|tentatively accepted|(canceled|cancelled) event)( with note)?\s*:' OR lower(coalesce(e.subject, '')) LIKE '%out of office%' OR lower(coalesce(e.subject, '')) LIKE '%automatic reply%' OR lower(coalesce(e.subject, '')) LIKE '%auto-reply%' OR lower(coalesce(e.subject, '')) LIKE '%autoreply%' OR lower(coalesce(e.subject, '')) LIKE '%auto reply%' OR lower(coalesce(e.subject, '')) LIKE '%ooo:%' OR lower(coalesce(e.subject, '')) LIKE '%ooo -%' OR lower(coalesce(e.subject, '')) LIKE '%away from%' OR lower(coalesce(e.subject, '')) LIKE '%on vacation%' OR lower(coalesce(e.subject, '')) LIKE '%on leave%' OR lower(coalesce(e.subject, '')) LIKE '%maternity leave%' OR lower(coalesce(e.subject, '')) LIKE '%thank you for your message%' OR lower(coalesce(e.subject, '')) LIKE '%thank you for your email%' OR lower(coalesce(e.subject, '')) LIKE '%thank you for contacting%' OR lower(coalesce(e.subject, '')) LIKE '%undeliverable%' OR lower(coalesce(e.subject, '')) LIKE '%delivery status notification%' OR lower(coalesce(e.subject, '')) LIKE '%mail delivery%' OR lower(coalesce(e.subject, '')) LIKE '%returned mail%' OR lower(coalesce(e.subject, '')) LIKE '%slow to respond%' OR lower(coalesce(e.email_from, '')) LIKE '%mailer-daemon%' OR lower(coalesce(e.email_from, '')) LIKE '%postmaster%' OR lower(coalesce(e.email_from, '')) LIKE '%no-reply%' OR lower(coalesce(e.email_from, '')) LIKE '%noreply%' OR lower(coalesce(e.email_from, '')) LIKE '%donotreply%' OR lower(coalesce(e.email_from, '')) LIKE '%do-not-reply%'))
+        AND coalesce((
+    SELECT c.on_team FROM bedrock.jobs_team_change c
+    WHERE c.email = e.sender AND (c.effective_at IS NULL OR c.effective_at <= e.ts)
+    ORDER BY c.effective_at DESC NULLS LAST, c.id DESC LIMIT 1), false)
     ),
     once AS (                  -- a send stored in two mailboxes counts once
       SELECT DISTINCT ON (c.kind, coalesce(c.activity_id::text, c.intro_id::text), c.ts, c.contact_id) c.*
@@ -691,7 +699,7 @@ LinkedIn messages the team logged.
 <details><summary>Reference query</summary>
 
 ```sql
-WITH w AS (SELECT ((coalesce(nullif(current_setting('dd.window_from', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 7))::timestamp AT TIME ZONE 'America/New_York') AS start_at, (((coalesce(nullif(current_setting('dd.window_to', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 1) + 1))::timestamp AT TIME ZONE 'America/New_York') AS end_at, (SELECT coalesce(array_agg(lower(email)), '{}') FROM bedrock.jobs_team_member WHERE active) AS team)
+WITH w AS (SELECT ((coalesce(nullif(current_setting('dd.window_from', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 7))::timestamp AT TIME ZONE 'America/New_York') AS start_at, (((coalesce(nullif(current_setting('dd.window_to', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 1) + 1))::timestamp AT TIME ZONE 'America/New_York') AS end_at, (SELECT coalesce(array_agg(DISTINCT lower(email)), '{}') FROM (SELECT email FROM bedrock.jobs_team_member UNION SELECT email FROM bedrock.jobs_team_change) t) AS team)
 SELECT linkedin FROM (
     WITH e AS (
     WITH raw AS (
@@ -768,6 +776,10 @@ SELECT linkedin FROM (
     counted AS (               -- automatic mail is not activity
       SELECT * FROM e
       WHERE NOT (e.kind = 'email' AND (e.subject ~* '^\s*(appointment (booked|canceled|cancelled|rescheduled)|(updated |new )?invitation|accepted|declined|tentatively accepted|(canceled|cancelled) event)( with note)?\s*:' OR lower(coalesce(e.subject, '')) LIKE '%out of office%' OR lower(coalesce(e.subject, '')) LIKE '%automatic reply%' OR lower(coalesce(e.subject, '')) LIKE '%auto-reply%' OR lower(coalesce(e.subject, '')) LIKE '%autoreply%' OR lower(coalesce(e.subject, '')) LIKE '%auto reply%' OR lower(coalesce(e.subject, '')) LIKE '%ooo:%' OR lower(coalesce(e.subject, '')) LIKE '%ooo -%' OR lower(coalesce(e.subject, '')) LIKE '%away from%' OR lower(coalesce(e.subject, '')) LIKE '%on vacation%' OR lower(coalesce(e.subject, '')) LIKE '%on leave%' OR lower(coalesce(e.subject, '')) LIKE '%maternity leave%' OR lower(coalesce(e.subject, '')) LIKE '%thank you for your message%' OR lower(coalesce(e.subject, '')) LIKE '%thank you for your email%' OR lower(coalesce(e.subject, '')) LIKE '%thank you for contacting%' OR lower(coalesce(e.subject, '')) LIKE '%undeliverable%' OR lower(coalesce(e.subject, '')) LIKE '%delivery status notification%' OR lower(coalesce(e.subject, '')) LIKE '%mail delivery%' OR lower(coalesce(e.subject, '')) LIKE '%returned mail%' OR lower(coalesce(e.subject, '')) LIKE '%slow to respond%' OR lower(coalesce(e.email_from, '')) LIKE '%mailer-daemon%' OR lower(coalesce(e.email_from, '')) LIKE '%postmaster%' OR lower(coalesce(e.email_from, '')) LIKE '%no-reply%' OR lower(coalesce(e.email_from, '')) LIKE '%noreply%' OR lower(coalesce(e.email_from, '')) LIKE '%donotreply%' OR lower(coalesce(e.email_from, '')) LIKE '%do-not-reply%'))
+        AND coalesce((
+    SELECT c.on_team FROM bedrock.jobs_team_change c
+    WHERE c.email = e.sender AND (c.effective_at IS NULL OR c.effective_at <= e.ts)
+    ORDER BY c.effective_at DESC NULLS LAST, c.id DESC LIMIT 1), false)
     ),
     once AS (                  -- a send stored in two mailboxes counts once
       SELECT DISTINCT ON (c.kind, coalesce(c.activity_id::text, c.intro_id::text), c.ts, c.contact_id) c.*
@@ -813,7 +825,7 @@ Texts the team logged.
 <details><summary>Reference query</summary>
 
 ```sql
-WITH w AS (SELECT ((coalesce(nullif(current_setting('dd.window_from', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 7))::timestamp AT TIME ZONE 'America/New_York') AS start_at, (((coalesce(nullif(current_setting('dd.window_to', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 1) + 1))::timestamp AT TIME ZONE 'America/New_York') AS end_at, (SELECT coalesce(array_agg(lower(email)), '{}') FROM bedrock.jobs_team_member WHERE active) AS team)
+WITH w AS (SELECT ((coalesce(nullif(current_setting('dd.window_from', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 7))::timestamp AT TIME ZONE 'America/New_York') AS start_at, (((coalesce(nullif(current_setting('dd.window_to', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 1) + 1))::timestamp AT TIME ZONE 'America/New_York') AS end_at, (SELECT coalesce(array_agg(DISTINCT lower(email)), '{}') FROM (SELECT email FROM bedrock.jobs_team_member UNION SELECT email FROM bedrock.jobs_team_change) t) AS team)
 SELECT text FROM (
     WITH e AS (
     WITH raw AS (
@@ -890,6 +902,10 @@ SELECT text FROM (
     counted AS (               -- automatic mail is not activity
       SELECT * FROM e
       WHERE NOT (e.kind = 'email' AND (e.subject ~* '^\s*(appointment (booked|canceled|cancelled|rescheduled)|(updated |new )?invitation|accepted|declined|tentatively accepted|(canceled|cancelled) event)( with note)?\s*:' OR lower(coalesce(e.subject, '')) LIKE '%out of office%' OR lower(coalesce(e.subject, '')) LIKE '%automatic reply%' OR lower(coalesce(e.subject, '')) LIKE '%auto-reply%' OR lower(coalesce(e.subject, '')) LIKE '%autoreply%' OR lower(coalesce(e.subject, '')) LIKE '%auto reply%' OR lower(coalesce(e.subject, '')) LIKE '%ooo:%' OR lower(coalesce(e.subject, '')) LIKE '%ooo -%' OR lower(coalesce(e.subject, '')) LIKE '%away from%' OR lower(coalesce(e.subject, '')) LIKE '%on vacation%' OR lower(coalesce(e.subject, '')) LIKE '%on leave%' OR lower(coalesce(e.subject, '')) LIKE '%maternity leave%' OR lower(coalesce(e.subject, '')) LIKE '%thank you for your message%' OR lower(coalesce(e.subject, '')) LIKE '%thank you for your email%' OR lower(coalesce(e.subject, '')) LIKE '%thank you for contacting%' OR lower(coalesce(e.subject, '')) LIKE '%undeliverable%' OR lower(coalesce(e.subject, '')) LIKE '%delivery status notification%' OR lower(coalesce(e.subject, '')) LIKE '%mail delivery%' OR lower(coalesce(e.subject, '')) LIKE '%returned mail%' OR lower(coalesce(e.subject, '')) LIKE '%slow to respond%' OR lower(coalesce(e.email_from, '')) LIKE '%mailer-daemon%' OR lower(coalesce(e.email_from, '')) LIKE '%postmaster%' OR lower(coalesce(e.email_from, '')) LIKE '%no-reply%' OR lower(coalesce(e.email_from, '')) LIKE '%noreply%' OR lower(coalesce(e.email_from, '')) LIKE '%donotreply%' OR lower(coalesce(e.email_from, '')) LIKE '%do-not-reply%'))
+        AND coalesce((
+    SELECT c.on_team FROM bedrock.jobs_team_change c
+    WHERE c.email = e.sender AND (c.effective_at IS NULL OR c.effective_at <= e.ts)
+    ORDER BY c.effective_at DESC NULLS LAST, c.id DESC LIMIT 1), false)
     ),
     once AS (                  -- a send stored in two mailboxes counts once
       SELECT DISTINCT ON (c.kind, coalesce(c.activity_id::text, c.intro_id::text), c.ts, c.contact_id) c.*
@@ -935,7 +951,7 @@ Intro requests the team made that were accepted or completed, on the day they we
 <details><summary>Reference query</summary>
 
 ```sql
-WITH w AS (SELECT ((coalesce(nullif(current_setting('dd.window_from', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 7))::timestamp AT TIME ZONE 'America/New_York') AS start_at, (((coalesce(nullif(current_setting('dd.window_to', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 1) + 1))::timestamp AT TIME ZONE 'America/New_York') AS end_at, (SELECT coalesce(array_agg(lower(email)), '{}') FROM bedrock.jobs_team_member WHERE active) AS team)
+WITH w AS (SELECT ((coalesce(nullif(current_setting('dd.window_from', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 7))::timestamp AT TIME ZONE 'America/New_York') AS start_at, (((coalesce(nullif(current_setting('dd.window_to', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 1) + 1))::timestamp AT TIME ZONE 'America/New_York') AS end_at, (SELECT coalesce(array_agg(DISTINCT lower(email)), '{}') FROM (SELECT email FROM bedrock.jobs_team_member UNION SELECT email FROM bedrock.jobs_team_change) t) AS team)
 SELECT intro FROM (
     WITH e AS (
     WITH raw AS (
@@ -1012,6 +1028,10 @@ SELECT intro FROM (
     counted AS (               -- automatic mail is not activity
       SELECT * FROM e
       WHERE NOT (e.kind = 'email' AND (e.subject ~* '^\s*(appointment (booked|canceled|cancelled|rescheduled)|(updated |new )?invitation|accepted|declined|tentatively accepted|(canceled|cancelled) event)( with note)?\s*:' OR lower(coalesce(e.subject, '')) LIKE '%out of office%' OR lower(coalesce(e.subject, '')) LIKE '%automatic reply%' OR lower(coalesce(e.subject, '')) LIKE '%auto-reply%' OR lower(coalesce(e.subject, '')) LIKE '%autoreply%' OR lower(coalesce(e.subject, '')) LIKE '%auto reply%' OR lower(coalesce(e.subject, '')) LIKE '%ooo:%' OR lower(coalesce(e.subject, '')) LIKE '%ooo -%' OR lower(coalesce(e.subject, '')) LIKE '%away from%' OR lower(coalesce(e.subject, '')) LIKE '%on vacation%' OR lower(coalesce(e.subject, '')) LIKE '%on leave%' OR lower(coalesce(e.subject, '')) LIKE '%maternity leave%' OR lower(coalesce(e.subject, '')) LIKE '%thank you for your message%' OR lower(coalesce(e.subject, '')) LIKE '%thank you for your email%' OR lower(coalesce(e.subject, '')) LIKE '%thank you for contacting%' OR lower(coalesce(e.subject, '')) LIKE '%undeliverable%' OR lower(coalesce(e.subject, '')) LIKE '%delivery status notification%' OR lower(coalesce(e.subject, '')) LIKE '%mail delivery%' OR lower(coalesce(e.subject, '')) LIKE '%returned mail%' OR lower(coalesce(e.subject, '')) LIKE '%slow to respond%' OR lower(coalesce(e.email_from, '')) LIKE '%mailer-daemon%' OR lower(coalesce(e.email_from, '')) LIKE '%postmaster%' OR lower(coalesce(e.email_from, '')) LIKE '%no-reply%' OR lower(coalesce(e.email_from, '')) LIKE '%noreply%' OR lower(coalesce(e.email_from, '')) LIKE '%donotreply%' OR lower(coalesce(e.email_from, '')) LIKE '%do-not-reply%'))
+        AND coalesce((
+    SELECT c.on_team FROM bedrock.jobs_team_change c
+    WHERE c.email = e.sender AND (c.effective_at IS NULL OR c.effective_at <= e.ts)
+    ORDER BY c.effective_at DESC NULLS LAST, c.id DESC LIMIT 1), false)
     ),
     once AS (                  -- a send stored in two mailboxes counts once
       SELECT DISTINCT ON (c.kind, coalesce(c.activity_id::text, c.intro_id::text), c.ts, c.contact_id) c.*
@@ -1057,7 +1077,7 @@ Calls the team logged and meetings on the team's calendars.
 <details><summary>Reference query</summary>
 
 ```sql
-WITH w AS (SELECT ((coalesce(nullif(current_setting('dd.window_from', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 7))::timestamp AT TIME ZONE 'America/New_York') AS start_at, (((coalesce(nullif(current_setting('dd.window_to', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 1) + 1))::timestamp AT TIME ZONE 'America/New_York') AS end_at, (SELECT coalesce(array_agg(lower(email)), '{}') FROM bedrock.jobs_team_member WHERE active) AS team)
+WITH w AS (SELECT ((coalesce(nullif(current_setting('dd.window_from', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 7))::timestamp AT TIME ZONE 'America/New_York') AS start_at, (((coalesce(nullif(current_setting('dd.window_to', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 1) + 1))::timestamp AT TIME ZONE 'America/New_York') AS end_at, (SELECT coalesce(array_agg(DISTINCT lower(email)), '{}') FROM (SELECT email FROM bedrock.jobs_team_member UNION SELECT email FROM bedrock.jobs_team_change) t) AS team)
 SELECT calls FROM (
     WITH e AS (
     WITH raw AS (
@@ -1134,6 +1154,10 @@ SELECT calls FROM (
     counted AS (               -- automatic mail is not activity
       SELECT * FROM e
       WHERE NOT (e.kind = 'email' AND (e.subject ~* '^\s*(appointment (booked|canceled|cancelled|rescheduled)|(updated |new )?invitation|accepted|declined|tentatively accepted|(canceled|cancelled) event)( with note)?\s*:' OR lower(coalesce(e.subject, '')) LIKE '%out of office%' OR lower(coalesce(e.subject, '')) LIKE '%automatic reply%' OR lower(coalesce(e.subject, '')) LIKE '%auto-reply%' OR lower(coalesce(e.subject, '')) LIKE '%autoreply%' OR lower(coalesce(e.subject, '')) LIKE '%auto reply%' OR lower(coalesce(e.subject, '')) LIKE '%ooo:%' OR lower(coalesce(e.subject, '')) LIKE '%ooo -%' OR lower(coalesce(e.subject, '')) LIKE '%away from%' OR lower(coalesce(e.subject, '')) LIKE '%on vacation%' OR lower(coalesce(e.subject, '')) LIKE '%on leave%' OR lower(coalesce(e.subject, '')) LIKE '%maternity leave%' OR lower(coalesce(e.subject, '')) LIKE '%thank you for your message%' OR lower(coalesce(e.subject, '')) LIKE '%thank you for your email%' OR lower(coalesce(e.subject, '')) LIKE '%thank you for contacting%' OR lower(coalesce(e.subject, '')) LIKE '%undeliverable%' OR lower(coalesce(e.subject, '')) LIKE '%delivery status notification%' OR lower(coalesce(e.subject, '')) LIKE '%mail delivery%' OR lower(coalesce(e.subject, '')) LIKE '%returned mail%' OR lower(coalesce(e.subject, '')) LIKE '%slow to respond%' OR lower(coalesce(e.email_from, '')) LIKE '%mailer-daemon%' OR lower(coalesce(e.email_from, '')) LIKE '%postmaster%' OR lower(coalesce(e.email_from, '')) LIKE '%no-reply%' OR lower(coalesce(e.email_from, '')) LIKE '%noreply%' OR lower(coalesce(e.email_from, '')) LIKE '%donotreply%' OR lower(coalesce(e.email_from, '')) LIKE '%do-not-reply%'))
+        AND coalesce((
+    SELECT c.on_team FROM bedrock.jobs_team_change c
+    WHERE c.email = e.sender AND (c.effective_at IS NULL OR c.effective_at <= e.ts)
+    ORDER BY c.effective_at DESC NULLS LAST, c.id DESC LIMIT 1), false)
     ),
     once AS (                  -- a send stored in two mailboxes counts once
       SELECT DISTINCT ON (c.kind, coalesce(c.activity_id::text, c.intro_id::text), c.ts, c.contact_id) c.*
@@ -1180,7 +1204,7 @@ Calls logged as discovery calls: a first real conversation with an employer. The
 <details><summary>Reference query</summary>
 
 ```sql
-WITH w AS (SELECT ((coalesce(nullif(current_setting('dd.window_from', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 7))::timestamp AT TIME ZONE 'America/New_York') AS start_at, (((coalesce(nullif(current_setting('dd.window_to', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 1) + 1))::timestamp AT TIME ZONE 'America/New_York') AS end_at, (SELECT coalesce(array_agg(lower(email)), '{}') FROM bedrock.jobs_team_member WHERE active) AS team)
+WITH w AS (SELECT ((coalesce(nullif(current_setting('dd.window_from', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 7))::timestamp AT TIME ZONE 'America/New_York') AS start_at, (((coalesce(nullif(current_setting('dd.window_to', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 1) + 1))::timestamp AT TIME ZONE 'America/New_York') AS end_at, (SELECT coalesce(array_agg(DISTINCT lower(email)), '{}') FROM (SELECT email FROM bedrock.jobs_team_member UNION SELECT email FROM bedrock.jobs_team_change) t) AS team)
 SELECT call_discovery FROM (
     WITH e AS (
     WITH raw AS (
@@ -1257,6 +1281,10 @@ SELECT call_discovery FROM (
     counted AS (               -- automatic mail is not activity
       SELECT * FROM e
       WHERE NOT (e.kind = 'email' AND (e.subject ~* '^\s*(appointment (booked|canceled|cancelled|rescheduled)|(updated |new )?invitation|accepted|declined|tentatively accepted|(canceled|cancelled) event)( with note)?\s*:' OR lower(coalesce(e.subject, '')) LIKE '%out of office%' OR lower(coalesce(e.subject, '')) LIKE '%automatic reply%' OR lower(coalesce(e.subject, '')) LIKE '%auto-reply%' OR lower(coalesce(e.subject, '')) LIKE '%autoreply%' OR lower(coalesce(e.subject, '')) LIKE '%auto reply%' OR lower(coalesce(e.subject, '')) LIKE '%ooo:%' OR lower(coalesce(e.subject, '')) LIKE '%ooo -%' OR lower(coalesce(e.subject, '')) LIKE '%away from%' OR lower(coalesce(e.subject, '')) LIKE '%on vacation%' OR lower(coalesce(e.subject, '')) LIKE '%on leave%' OR lower(coalesce(e.subject, '')) LIKE '%maternity leave%' OR lower(coalesce(e.subject, '')) LIKE '%thank you for your message%' OR lower(coalesce(e.subject, '')) LIKE '%thank you for your email%' OR lower(coalesce(e.subject, '')) LIKE '%thank you for contacting%' OR lower(coalesce(e.subject, '')) LIKE '%undeliverable%' OR lower(coalesce(e.subject, '')) LIKE '%delivery status notification%' OR lower(coalesce(e.subject, '')) LIKE '%mail delivery%' OR lower(coalesce(e.subject, '')) LIKE '%returned mail%' OR lower(coalesce(e.subject, '')) LIKE '%slow to respond%' OR lower(coalesce(e.email_from, '')) LIKE '%mailer-daemon%' OR lower(coalesce(e.email_from, '')) LIKE '%postmaster%' OR lower(coalesce(e.email_from, '')) LIKE '%no-reply%' OR lower(coalesce(e.email_from, '')) LIKE '%noreply%' OR lower(coalesce(e.email_from, '')) LIKE '%donotreply%' OR lower(coalesce(e.email_from, '')) LIKE '%do-not-reply%'))
+        AND coalesce((
+    SELECT c.on_team FROM bedrock.jobs_team_change c
+    WHERE c.email = e.sender AND (c.effective_at IS NULL OR c.effective_at <= e.ts)
+    ORDER BY c.effective_at DESC NULLS LAST, c.id DESC LIMIT 1), false)
     ),
     once AS (                  -- a send stored in two mailboxes counts once
       SELECT DISTINCT ON (c.kind, coalesce(c.activity_id::text, c.intro_id::text), c.ts, c.contact_id) c.*
@@ -1302,7 +1330,7 @@ Every other call and meeting, including calls with no type.
 <details><summary>Reference query</summary>
 
 ```sql
-WITH w AS (SELECT ((coalesce(nullif(current_setting('dd.window_from', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 7))::timestamp AT TIME ZONE 'America/New_York') AS start_at, (((coalesce(nullif(current_setting('dd.window_to', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 1) + 1))::timestamp AT TIME ZONE 'America/New_York') AS end_at, (SELECT coalesce(array_agg(lower(email)), '{}') FROM bedrock.jobs_team_member WHERE active) AS team)
+WITH w AS (SELECT ((coalesce(nullif(current_setting('dd.window_from', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 7))::timestamp AT TIME ZONE 'America/New_York') AS start_at, (((coalesce(nullif(current_setting('dd.window_to', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 1) + 1))::timestamp AT TIME ZONE 'America/New_York') AS end_at, (SELECT coalesce(array_agg(DISTINCT lower(email)), '{}') FROM (SELECT email FROM bedrock.jobs_team_member UNION SELECT email FROM bedrock.jobs_team_change) t) AS team)
 SELECT call_general FROM (
     WITH e AS (
     WITH raw AS (
@@ -1379,6 +1407,10 @@ SELECT call_general FROM (
     counted AS (               -- automatic mail is not activity
       SELECT * FROM e
       WHERE NOT (e.kind = 'email' AND (e.subject ~* '^\s*(appointment (booked|canceled|cancelled|rescheduled)|(updated |new )?invitation|accepted|declined|tentatively accepted|(canceled|cancelled) event)( with note)?\s*:' OR lower(coalesce(e.subject, '')) LIKE '%out of office%' OR lower(coalesce(e.subject, '')) LIKE '%automatic reply%' OR lower(coalesce(e.subject, '')) LIKE '%auto-reply%' OR lower(coalesce(e.subject, '')) LIKE '%autoreply%' OR lower(coalesce(e.subject, '')) LIKE '%auto reply%' OR lower(coalesce(e.subject, '')) LIKE '%ooo:%' OR lower(coalesce(e.subject, '')) LIKE '%ooo -%' OR lower(coalesce(e.subject, '')) LIKE '%away from%' OR lower(coalesce(e.subject, '')) LIKE '%on vacation%' OR lower(coalesce(e.subject, '')) LIKE '%on leave%' OR lower(coalesce(e.subject, '')) LIKE '%maternity leave%' OR lower(coalesce(e.subject, '')) LIKE '%thank you for your message%' OR lower(coalesce(e.subject, '')) LIKE '%thank you for your email%' OR lower(coalesce(e.subject, '')) LIKE '%thank you for contacting%' OR lower(coalesce(e.subject, '')) LIKE '%undeliverable%' OR lower(coalesce(e.subject, '')) LIKE '%delivery status notification%' OR lower(coalesce(e.subject, '')) LIKE '%mail delivery%' OR lower(coalesce(e.subject, '')) LIKE '%returned mail%' OR lower(coalesce(e.subject, '')) LIKE '%slow to respond%' OR lower(coalesce(e.email_from, '')) LIKE '%mailer-daemon%' OR lower(coalesce(e.email_from, '')) LIKE '%postmaster%' OR lower(coalesce(e.email_from, '')) LIKE '%no-reply%' OR lower(coalesce(e.email_from, '')) LIKE '%noreply%' OR lower(coalesce(e.email_from, '')) LIKE '%donotreply%' OR lower(coalesce(e.email_from, '')) LIKE '%do-not-reply%'))
+        AND coalesce((
+    SELECT c.on_team FROM bedrock.jobs_team_change c
+    WHERE c.email = e.sender AND (c.effective_at IS NULL OR c.effective_at <= e.ts)
+    ORDER BY c.effective_at DESC NULLS LAST, c.id DESC LIMIT 1), false)
     ),
     once AS (                  -- a send stored in two mailboxes counts once
       SELECT DISTINCT ON (c.kind, coalesce(c.activity_id::text, c.intro_id::text), c.ts, c.contact_id) c.*
@@ -1425,7 +1457,7 @@ Accounts whose first activity ever by the team falls in the week (D17). An intro
 <details><summary>Reference query</summary>
 
 ```sql
-WITH w AS (SELECT ((coalesce(nullif(current_setting('dd.window_from', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 7))::timestamp AT TIME ZONE 'America/New_York') AS start_at, (((coalesce(nullif(current_setting('dd.window_to', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 1) + 1))::timestamp AT TIME ZONE 'America/New_York') AS end_at, (SELECT coalesce(array_agg(lower(email)), '{}') FROM bedrock.jobs_team_member WHERE active) AS team)
+WITH w AS (SELECT ((coalesce(nullif(current_setting('dd.window_from', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 7))::timestamp AT TIME ZONE 'America/New_York') AS start_at, (((coalesce(nullif(current_setting('dd.window_to', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 1) + 1))::timestamp AT TIME ZONE 'America/New_York') AS end_at, (SELECT coalesce(array_agg(DISTINCT lower(email)), '{}') FROM (SELECT email FROM bedrock.jobs_team_member UNION SELECT email FROM bedrock.jobs_team_change) t) AS team)
 SELECT accounts_activated FROM (
     WITH e AS (
     WITH raw AS (
@@ -1502,6 +1534,10 @@ SELECT accounts_activated FROM (
     counted AS (               -- automatic mail is not activity
       SELECT * FROM e
       WHERE NOT (e.kind = 'email' AND (e.subject ~* '^\s*(appointment (booked|canceled|cancelled|rescheduled)|(updated |new )?invitation|accepted|declined|tentatively accepted|(canceled|cancelled) event)( with note)?\s*:' OR lower(coalesce(e.subject, '')) LIKE '%out of office%' OR lower(coalesce(e.subject, '')) LIKE '%automatic reply%' OR lower(coalesce(e.subject, '')) LIKE '%auto-reply%' OR lower(coalesce(e.subject, '')) LIKE '%autoreply%' OR lower(coalesce(e.subject, '')) LIKE '%auto reply%' OR lower(coalesce(e.subject, '')) LIKE '%ooo:%' OR lower(coalesce(e.subject, '')) LIKE '%ooo -%' OR lower(coalesce(e.subject, '')) LIKE '%away from%' OR lower(coalesce(e.subject, '')) LIKE '%on vacation%' OR lower(coalesce(e.subject, '')) LIKE '%on leave%' OR lower(coalesce(e.subject, '')) LIKE '%maternity leave%' OR lower(coalesce(e.subject, '')) LIKE '%thank you for your message%' OR lower(coalesce(e.subject, '')) LIKE '%thank you for your email%' OR lower(coalesce(e.subject, '')) LIKE '%thank you for contacting%' OR lower(coalesce(e.subject, '')) LIKE '%undeliverable%' OR lower(coalesce(e.subject, '')) LIKE '%delivery status notification%' OR lower(coalesce(e.subject, '')) LIKE '%mail delivery%' OR lower(coalesce(e.subject, '')) LIKE '%returned mail%' OR lower(coalesce(e.subject, '')) LIKE '%slow to respond%' OR lower(coalesce(e.email_from, '')) LIKE '%mailer-daemon%' OR lower(coalesce(e.email_from, '')) LIKE '%postmaster%' OR lower(coalesce(e.email_from, '')) LIKE '%no-reply%' OR lower(coalesce(e.email_from, '')) LIKE '%noreply%' OR lower(coalesce(e.email_from, '')) LIKE '%donotreply%' OR lower(coalesce(e.email_from, '')) LIKE '%do-not-reply%'))
+        AND coalesce((
+    SELECT c.on_team FROM bedrock.jobs_team_change c
+    WHERE c.email = e.sender AND (c.effective_at IS NULL OR c.effective_at <= e.ts)
+    ORDER BY c.effective_at DESC NULLS LAST, c.id DESC LIMIT 1), false)
     ),
     once AS (                  -- a send stored in two mailboxes counts once
       SELECT DISTINCT ON (c.kind, coalesce(c.activity_id::text, c.intro_id::text), c.ts, c.contact_id) c.*

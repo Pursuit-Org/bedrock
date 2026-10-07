@@ -274,7 +274,7 @@ def available() -> bool:
 # date window reads it from two settings, New York dates, both inclusive:
 #     SET dd.window_from = '2026-09-21'; SET dd.window_to = '2026-09-27';
 # With neither set it covers the last completed calendar week (D8). The Jobs
-# team is whoever is active in Settings › Targets › Jobs.
+# team is whoever was on it in Settings › Targets › Jobs when they did the work.
 
 DD_FROM = ("coalesce(nullif(current_setting('dd.window_from', true), '')::date, "
            "date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 7)")
@@ -283,8 +283,12 @@ DD_TO = ("(coalesce(nullif(current_setting('dd.window_to', true), '')::date, "
 DD_START = f"(({DD_FROM})::timestamp AT TIME ZONE 'America/New_York')"
 DD_END = f"(({DD_TO})::timestamp AT TIME ZONE 'America/New_York')"
 DD_TODAY = "(now() AT TIME ZONE 'America/New_York')::date"
-DD_TEAM = ("(SELECT coalesce(array_agg(lower(email)), '{}') "
-           "FROM bedrock.jobs_team_member WHERE active)")
+# Everyone ever on the Jobs team. Which of their activity counts is decided per
+# event by who was on the team at the time (reference_sql team_history;
+# decided 2026-10-07), so a change in Settings never recounts a past week.
+DD_TEAM = ("(SELECT coalesce(array_agg(DISTINCT lower(email)), '{}') FROM ("
+           "SELECT email FROM bedrock.jobs_team_member "
+           "UNION SELECT email FROM bedrock.jobs_team_change) t)")
 DD_PURSUIT = ("(SELECT coalesce(array_agg(DISTINCT lower(email)), '{}') "
               "FROM public.org_users WHERE is_active AND email IS NOT NULL)")
 
@@ -304,7 +308,7 @@ def dictionary_outreach_sql(cut: str) -> str:
     from services.outreach_counting import reference_sql
     col = OUTREACH_COLUMNS[cut]
     inner = reference_sql(p_start="(SELECT start_at FROM w)", p_end="(SELECT end_at FROM w)",
-                          p_senders="(SELECT team FROM w)")
+                          p_senders="(SELECT team FROM w)", team_history=True)
     return (f"WITH w AS (SELECT {DD_START} AS start_at, {DD_END} AS end_at, {DD_TEAM} AS team)\n"
             f"SELECT {col} FROM ({inner}) q")
 

@@ -85,7 +85,18 @@ async def put_jobs_team(body: TeamBody, user=Depends(check_permission("manage_jo
         if e not in members:
             members.append(e)
     editor = _editor(user)
+    has_history = await conn.fetchval("SELECT to_regclass('bedrock.jobs_team_change') IS NOT NULL")
     async with conn.transaction():
+        if has_history:
+            # Record who joins and who leaves, from now. Past weeks keep
+            # counting whoever was on the team then (decided 2026-10-07).
+            before = {r["email"] for r in await conn.fetch(
+                "SELECT email FROM bedrock.jobs_team_member WHERE active")}
+            for e, on in ([(e, True) for e in members if e not in before]
+                          + [(e, False) for e in sorted(before - set(members))]):
+                await conn.execute(
+                    "INSERT INTO bedrock.jobs_team_change (email, on_team, effective_at, changed_by) "
+                    "VALUES ($1, $2, now(), $3)", e, on, editor)
         # Removed people are deactivated, not deleted, so their targets and
         # history survive being taken off and put back on the team.
         await conn.execute(

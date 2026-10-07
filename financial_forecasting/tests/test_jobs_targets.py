@@ -32,13 +32,16 @@ def _reset():
 
 class Pool:
     """Just enough pool for store.refresh()."""
-    def __init__(self, exists=True, members=None, targets=None):
+    def __init__(self, exists=True, members=None, targets=None, history=None):
         self.exists, self.members, self.targets = exists, members or [], targets or []
+        self.history = history or []
 
     async def fetchval(self, q, *a):
         return self.exists
 
     async def fetch(self, q, *a):
+        if "jobs_team_change" in q:
+            return self.history
         return self.members if "jobs_team_member" in q else self.targets
 
 
@@ -233,3 +236,64 @@ def test_put_outreach_duplicate_email_is_400():
     r = c.put("/api/jobs/targets/outreach", json={
         "owners": {"A@pursuit.org": {"total_calls": 1}, "a@pursuit.org": {"total_calls": 2}}, "team": {}})
     assert r.status_code == 400
+
+
+# ── team history (decided 2026-10-07: changing the team never recounts the past) ──
+
+from datetime import datetime, timezone  # noqa: E402
+
+OCT5 = datetime(2026, 10, 5, 18, tzinfo=timezone.utc)
+SEP24 = datetime(2026, 9, 24, 15, tzinfo=timezone.utc)
+OCT6 = datetime(2026, 10, 6, 15, tzinfo=timezone.utc)
+# What production records: D7's team since the start; on 10/5 Kwame added and
+# Damon taken off.
+HISTORY = [{"email": e, "on_team": True, "effective_at": None}
+           for e in ("avni@pursuit.org", "damon.kornhauser@pursuit.org", "devika@pursuit.org")] + [
+    {"email": "kwame@pursuit.org", "on_team": True, "effective_at": OCT5},
+    {"email": "damon.kornhauser@pursuit.org", "on_team": False, "effective_at": OCT5},
+]
+NOW_TEAM = [{"email": "avni@pursuit.org"}, {"email": "devika@pursuit.org"}, {"email": "kwame@pursuit.org"}]
+
+
+def test_membership_follows_the_history():
+    _load(members=NOW_TEAM, history=HISTORY)
+    assert store.member_at("damon.kornhauser@pursuit.org", SEP24)
+    assert not store.member_at("damon.kornhauser@pursuit.org", OCT6)
+    assert not store.member_at("kwame@pursuit.org", SEP24)
+    assert store.member_at("kwame@pursuit.org", OCT6)
+    assert store.team_emails() == ["avni@pursuit.org", "devika@pursuit.org", "kwame@pursuit.org"]
+    assert store.ever_members() == ["avni@pursuit.org", "damon.kornhauser@pursuit.org",
+                                    "devika@pursuit.org", "kwame@pursuit.org"]
+    assert store.members_during(SEP24, OCT6) == store.ever_members()
+
+
+def test_without_history_the_current_list_counts_for_all_time():
+    """Before the migration runs, nothing changes."""
+    _load(members=NOW_TEAM)
+    assert not store.has_history()
+    assert store.member_at("kwame@pursuit.org", SEP24)
+    assert not store.member_at("damon.kornhauser@pursuit.org", SEP24)
+
+
+def test_a_past_week_keeps_who_did_its_work():
+    """Damon's 9/24 email still counts for the team; Kwame's doesn't (he joined
+    10/5). After 10/5 it is the other way round."""
+    from services import outreach_counting as oc
+    from routes.jobs import _team_scope
+    _load(members=NOW_TEAM, history=HISTORY)
+    ev = lambda who, at: oc.Event(kind="email", ts=at, sender=who, activity_id=f"{who}{at}",
+                                  contact_id=1, source="gmail-sync")
+    rows = [ev("damon.kornhauser@pursuit.org", SEP24), ev("kwame@pursuit.org", SEP24),
+            ev("damon.kornhauser@pursuit.org", OCT6), ev("kwame@pursuit.org", OCT6)]
+    kept = {(e.sender, e.ts) for e in oc.attribute(rows, _team_scope())}
+    assert kept == {("damon.kornhauser@pursuit.org", SEP24), ("kwame@pursuit.org", OCT6)}
+
+
+def test_saving_the_team_records_who_joined_and_who_left():
+    conn = _conn(members=[{"email": "avni@pursuit.org"}, {"email": "kwame@pursuit.org"}])
+    c = make_jobs_client(conn)
+    r = c.put("/api/jobs/targets/team",
+              json={"members": ["avni@pursuit.org", "damon.kornhauser@pursuit.org"]})
+    assert r.status_code == 200, r.text
+    changes = {(a[0], a[1]) for _, _, a in conn.executed("INSERT INTO bedrock.jobs_team_change")}
+    assert changes == {("damon.kornhauser@pursuit.org", True), ("kwame@pursuit.org", False)}

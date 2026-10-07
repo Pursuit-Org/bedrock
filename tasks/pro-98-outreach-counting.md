@@ -76,6 +76,15 @@ on a real account id waits for the account merges and the pick-from-a-list work 
 - Accounts activated: first **team** activity ever on the account (Red Barn activates 9/23).
 - Hermetic test fixture: anonymized production export of the audit window's events.
 
+## Decisions (Nina, 10/7)
+
+- Facilitated intros count toward accounts activated (as built: the audit week reads 16, not 9).
+- The Jobs team keeps its history: a change in Settings applies from when it's made, and past
+  weeks count whoever was on the team then. Built as `bedrock.jobs_team_change` (migration
+  `2026-10-07-jobs-team-history.sql`, seeded with D7's team since the start, Kwame on and Damon
+  off from 10/5). Used by every team-scoped count, the Owner cut and the dictionary queries.
+  Until Jac runs the migration, the current list counts for all time, as before.
+
 ## Plan (each step is a commit)
 
 - [x] **1. One counting module.** `services/outreach_counting.py`:

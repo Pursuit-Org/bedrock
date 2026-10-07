@@ -37,7 +37,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Iterable, Mapping, Optional
+from typing import Callable, Iterable, Mapping, Optional
 
 # Kinds of event. The first four are outreach the team SENT; call and meeting
 # are conversations; call_booked is a pipeline move that only matters for
@@ -225,16 +225,50 @@ class Event:
         return None
 
 
-def attribute(rows: Iterable, senders: Optional[Iterable[str]]) -> list[Event]:
-    """The rows as counted activity: done by one of `senders` (all senders
-    when None), not automatic mail, each real event once. Sorted oldest
-    first; of a message's copies, the first by activity id is the one kept
-    (reference_sql keeps the same one)."""
-    allowed = None if senders is None else {s.strip().lower() for s in senders}
+@dataclass(frozen=True)
+class Scope:
+    """Whose activity counts. `emails` is whose activity to read; `member`,
+    when given, says whether one person's activity at one moment counts.
+
+    The Jobs team keeps its history (decided 2026-10-07): someone's activity
+    counts for the team only while they were on it, so changing the team in
+    Settings never recounts a past week."""
+    emails: tuple
+    member: Optional[Callable[[str, datetime], bool]] = None
+
+    def __bool__(self) -> bool:
+        return bool(self.emails)
+
+    def counts(self, sender: Optional[str], at: datetime) -> bool:
+        if sender not in self._allowed:
+            return False
+        return self.member is None or self.member(sender, at)
+
+    @property
+    def _allowed(self) -> frozenset:
+        return frozenset(e.strip().lower() for e in self.emails)
+
+
+def as_scope(senders) -> Optional[Scope]:
+    """A Scope from a Scope, a list of addresses, or None (everyone)."""
+    if senders is None or isinstance(senders, Scope):
+        return senders
+    return Scope(tuple(senders))
+
+
+def attribute(rows: Iterable, senders) -> list[Event]:
+    """The rows as counted activity: done by someone in `senders` (a Scope,
+    a list of addresses, or None for everyone), not automatic mail, each
+    real event once. Sorted oldest first; of a message's copies, the first by
+    activity id is the one kept (reference_sql keeps the same one)."""
+    scope = as_scope(senders)
+    allowed = None if scope is None else scope._allowed
     events = sorted((r if isinstance(r, Event) else Event.from_row(r) for r in rows),
                     key=lambda e: (e.ts, e.kind, e.activity_id or e.intro_id or "", e.contact_id or 0))
     events = [e for e in events
-              if (allowed is None or e.sender in allowed) and not e.is_automatic()]
+              if (allowed is None or (e.sender in allowed
+                                      and (scope.member is None or scope.member(e.sender, e.ts))))
+              and not e.is_automatic()]
     return distinct(events)
 
 
@@ -438,7 +472,7 @@ def events_sql(*, has_call_kind: bool = True, restrict_companies: bool = False,
 
 
 def reference_sql(p_start: str = "$1", p_end: str = "$2", p_senders: str = "$3",
-                  default_call_kind: str = "general") -> str:
+                  default_call_kind: str = "general", team_history: bool = False) -> str:
     """Every outreach number for a window in SQL alone: outreach, direct
     email, LinkedIn, texts, intros, calls (discovery and general) and
     accounts activated. $1 window start, $2 window end, $3 the senders
@@ -456,7 +490,8 @@ def reference_sql(p_start: str = "$1", p_end: str = "$2", p_senders: str = "$3",
     s, e = f"({p_start})::timestamptz", f"({p_end})::timestamptz"
     in_win = f"ts >= {s} AND ts < {e}"
     return f"""
-    WITH {counted_once_ctes(p_start="NULL", p_end=p_end, p_senders=p_senders)},
+    WITH {counted_once_ctes(p_start="NULL", p_end=p_end, p_senders=p_senders,
+                            team_history=team_history)},
     first_activity AS (        -- D17: the first activity ever on each account
       SELECT co, min(ts) AS first_ts FROM once, unnest(once.companies) co GROUP BY co
     )
@@ -477,18 +512,31 @@ def reference_sql(p_start: str = "$1", p_end: str = "$2", p_senders: str = "$3",
     """
 
 
-def counted_once_ctes(p_start: str = "$1", p_end: str = "$2", p_senders: str = "$3") -> str:
+# SQL twin of jobs_targets_store.member_at: was e.sender on the Jobs team at
+# e.ts? The latest change at or before then decides (NULL effective_at = since
+# the start). Reads bedrock.jobs_team_change (migration 2026-10-07).
+TEAM_AT_EVENT_SQL = """coalesce((
+    SELECT c.on_team FROM bedrock.jobs_team_change c
+    WHERE c.email = e.sender AND (c.effective_at IS NULL OR c.effective_at <= e.ts)
+    ORDER BY c.effective_at DESC NULLS LAST, c.id DESC LIMIT 1), false)"""
+
+
+def counted_once_ctes(p_start: str = "$1", p_end: str = "$2", p_senders: str = "$3",
+                      team_history: bool = False) -> str:
     """CTEs `e`, `counted` and `once` (no leading WITH): the candidate events,
     minus automatic mail, each real event once. `once` is the SQL twin of
-    `attribute()`, for queries that have to stand on their own."""
+    `attribute()`, for queries that have to stand on their own. With
+    `team_history`, an event counts only if its sender was on the Jobs team
+    when they did it (TEAM_AT_EVENT_SQL)."""
     notice = _CALENDAR_NOTICE.pattern.replace("(?:", "(")
     auto_subj = " OR ".join(f"lower(coalesce(e.subject, '')) LIKE '%{p}%'" for p in AUTOREPLY_SUBJECTS)
     auto_from = " OR ".join(f"lower(coalesce(e.email_from, '')) LIKE '%{p}%'" for p in AUTOREPLY_SENDERS)
     candidates = events_sql(p_start=p_start, p_end=p_end, p_senders=p_senders)
+    team = f"\n        AND {TEAM_AT_EVENT_SQL}" if team_history else ""
     return f"""e AS ({candidates}),
     counted AS (               -- automatic mail is not activity
       SELECT * FROM e
-      WHERE NOT (e.kind = 'email' AND (e.subject ~* '{notice}' OR {auto_subj} OR {auto_from}))
+      WHERE NOT (e.kind = 'email' AND (e.subject ~* '{notice}' OR {auto_subj} OR {auto_from})){team}
     ),
     once AS (                  -- a send stored in two mailboxes counts once
       SELECT DISTINCT ON (c.kind, coalesce(c.activity_id::text, c.intro_id::text), c.ts, c.contact_id) c.*

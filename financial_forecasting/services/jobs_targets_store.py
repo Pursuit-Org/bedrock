@@ -1,9 +1,13 @@
 """Jobs team list + Jobs targets, read from the DB with a hardcoded fallback.
 
 Settings > Targets > Jobs edits two tables (migration 2026-09-29-jobs-targets):
-  bedrock.jobs_team_member  who is "the Jobs team"
+  bedrock.jobs_team_member  who is "the Jobs team" now
   bedrock.jobs_target       weekly outreach targets (per person + team rows)
                             and quarterly jobs targets (pipeline)
+and appends to a third (migration 2026-10-07-jobs-team-history):
+  bedrock.jobs_team_change  every change to the team, with when it took effect,
+                            so past weeks count who was on the team THEN
+                            (decided 2026-10-07: history is kept)
 
 Many Jobs query builders are synchronous and interpolate the team's addresses
 into SQL, so this module keeps a process-wide snapshot that those builders read
@@ -23,7 +27,7 @@ quote, whitespace or LIKE wildcard.
 import logging
 import re
 import time
-from datetime import date
+from datetime import date, datetime
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -66,6 +70,10 @@ class _Snapshot:
         self.team_cfg: dict[str, dict] = {}
         # quarter start -> jobs target
         self.pipeline: dict[date, int] = {}
+        # email -> [(effective_at or None for "since the start", on_team)],
+        # oldest first. Empty until the history migration runs, and then
+        # membership is the current list for all time, as it was before.
+        self.history: dict[str, list[tuple[Optional[datetime], bool]]] = {}
 
 
 _snap = _Snapshot()
@@ -102,6 +110,11 @@ async def refresh(pool, force: bool = False) -> None:
         targets = await pool.fetch(
             "SELECT section, metric, owner_email, period_start, value, team_mode "
             "FROM bedrock.jobs_target")
+        changes = []
+        if await pool.fetchval("SELECT to_regclass('bedrock.jobs_team_change') IS NOT NULL"):
+            changes = await pool.fetch(
+                "SELECT lower(email) AS email, on_team, effective_at FROM bedrock.jobs_team_change "
+                "ORDER BY effective_at NULLS FIRST, id")
     except Exception as e:  # never take a Jobs page down over targets
         logger.warning(f"jobs targets refresh failed, keeping previous snapshot: {e}")
         _snap.loaded_at = time.monotonic()
@@ -112,6 +125,9 @@ async def refresh(pool, force: bool = False) -> None:
     fresh.loaded_at = time.monotonic()
     team = [m["email"] for m in members if valid_email(m["email"])]
     fresh.team = team or list(DEFAULT_TEAM)
+    for c in changes:
+        if valid_email(c["email"]):
+            fresh.history.setdefault(c["email"], []).append((c["effective_at"], c["on_team"]))
     for t in targets:
         if t["section"] == "pipeline":
             if t["period_start"] is not None and t["value"] is not None:
@@ -131,6 +147,45 @@ def available() -> bool:
 def team_emails() -> list[str]:
     """The Jobs team, lowercased and validated. Never empty."""
     return list(_snap.team)
+
+
+def has_history() -> bool:
+    return bool(_snap.history)
+
+
+def member_at(email: str, at: datetime) -> bool:
+    """Was `email` on the Jobs team at `at`? The latest change at or before
+    `at` decides; before any history is recorded, the current list."""
+    e = (email or "").strip().lower()
+    if not _snap.history:
+        return e in _snap.team
+    on = False
+    for effective_at, on_team in _snap.history.get(e, ()):
+        if effective_at is not None and effective_at > at:
+            break
+        on = on_team
+    return on
+
+
+def ever_members() -> list[str]:
+    """Everyone who has ever been on the Jobs team: whose activity a team
+    count has to look at, before member_at() says which of it counts."""
+    return sorted(set(_snap.team) | set(_snap.history))
+
+
+def members_during(start: datetime, end: datetime) -> list[str]:
+    """Who was on the Jobs team at any moment in [start, end)."""
+    if not _snap.history:
+        return list(_snap.team)
+    out = []
+    for e, changes in _snap.history.items():
+        on = member_at(e, start)
+        for effective_at, on_team in changes:
+            if effective_at is not None and start <= effective_at < end and on_team:
+                on = True
+        if on:
+            out.append(e)
+    return sorted(out)
 
 
 def owner_weekly(email: str, metric: str) -> Optional[int]:

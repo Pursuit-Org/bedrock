@@ -4305,20 +4305,32 @@ def _account_key(name: Optional[str]) -> Optional[str]:
     return k or None
 
 
-async def _scope_senders(conn, scope: str, owner: Optional[str]) -> list[str]:
-    """Whose activity counts: one person (`owner` overrides the scope), the
-    Jobs team, everyone else on staff, or all of Pursuit. Bare lowercase
-    addresses, matched exactly."""
+def _team_scope(people: Optional[list[str]] = None) -> outreach_counting.Scope:
+    """The Jobs team as a counting scope, with its history: activity counts
+    while its sender was on the team (decided 2026-10-07), so a change in
+    Settings never recounts a past week. `people` narrows it (the Owner cut)."""
+    emails = people if people is not None else jobs_targets_store.ever_members()
+    return outreach_counting.Scope(tuple(e.lower() for e in emails),
+                                   member=jobs_targets_store.member_at)
+
+
+async def _scope_senders(conn, scope: str, owner: Optional[str]) -> outreach_counting.Scope:
+    """Whose activity counts: one person (`owner` overrides the scope, and
+    counts all of theirs), the Jobs team (as it was at the time), everyone else
+    on staff (whoever wasn't on the team at the time), or all of Pursuit. Bare
+    lowercase addresses, matched exactly."""
     if owner and _SAFE_EMAIL.match(owner):
-        return [owner.strip().lower()]
-    team = [e.lower() for e in _jobs_team()]
+        return outreach_counting.Scope((owner.strip().lower(),))
     if scope == "team":
-        return team
+        return _team_scope()
     rows = await conn.fetch(
         "SELECT DISTINCT lower(email) AS email FROM public.org_users "
         "WHERE is_active AND email IS NOT NULL")
-    staff = sorted({r["email"] for r in rows} - set(team))
-    return staff if scope == "staff" else team + staff
+    everyone = tuple(sorted({r["email"] for r in rows} | set(jobs_targets_store.ever_members())))
+    if scope == "staff":
+        return outreach_counting.Scope(
+            everyone, member=lambda e, at: not jobs_targets_store.member_at(e, at))
+    return outreach_counting.Scope(everyone)
 
 
 async def _events_sql(restrict_companies: bool = False) -> str:
@@ -4329,10 +4341,11 @@ async def _events_sql(restrict_companies: bool = False) -> str:
 
 async def _outreach_events(conn, start, end, senders) -> list:
     """Counted activity by `senders` in [start, end). Either bound may be None."""
-    if not senders:
+    scope = outreach_counting.as_scope(senders)
+    if not scope:
         return []
-    rows = await conn.fetch(await _events_sql(), start, end, senders)
-    return outreach_counting.attribute(rows, senders)
+    rows = await conn.fetch(await _events_sql(), start, end, list(scope.emails))
+    return outreach_counting.attribute(rows, scope)
 
 
 async def _activated_by_window(conn, events, windows, senders) -> list[dict]:
@@ -4349,10 +4362,11 @@ async def _activated_by_window(conn, events, windows, senders) -> list[dict]:
     first = min(s for s, _ in windows)
     touched = sorted({c for e in events if e.ts >= first for c in e.companies})
     prior = []
-    if touched and senders:
+    scope = outreach_counting.as_scope(senders)
+    if touched and scope:
         rows = await conn.fetch(await _events_sql(restrict_companies=True),
-                                None, first, senders, touched)
-        prior = outreach_counting.attribute(rows, senders)
+                                None, first, list(scope.emails), touched)
+        prior = outreach_counting.attribute(rows, scope)
     history = prior + [e for e in events if e.ts >= first]
     return [outreach_counting.activated_accounts(
                 outreach_counting.in_window(history, s, e),
@@ -5035,8 +5049,14 @@ async def outreach_scorecard_by_owner(
     _CONVERSION_OWNER for why, and `unattributed` for how far off they are.
     """
     this_start, this_end, last_start, last_end = _outreach_windows(granularity, date_from, date_to)
+    # Today's owners, plus anyone who was on the team during the periods
+    # shown, so a past week still has a row for whoever did its work. Each
+    # row counts only what that person did while on the team (2026-10-07).
     owners = [e.lower() for e in scorecard_owners() if _SAFE_EMAIL.match(e)]
-    events = await _outreach_events(conn, last_start, this_end, owners)
+    if jobs_targets_store.has_history():
+        owners += [e for e in jobs_targets_store.members_during(last_start, this_end)
+                   if e not in owners and _SAFE_EMAIL.match(e)]
+    events = await _outreach_events(conn, last_start, this_end, _team_scope(owners))
 
     rows = []
     for email in owners:
@@ -8827,7 +8847,7 @@ async def _campaign_activity(conn, pipe: dict) -> list[tuple]:
         has_call_kind=await _has_column("bedrock", "activity", "call_kind"),
         restrict_contacts=True)
     events = outreach_counting.attribute(
-        await conn.fetch(sql, None, None, senders, sorted(pipe)), senders)
+        await conn.fetch(sql, None, None, list(senders.emails), sorted(pipe)), senders)
     return [(e, cid, pipe[cid]) for e in events if e.kind != "call_booked"
             for cid in sorted({e.contact_id, *e.contact_ids} & pipe.keys())]
 
