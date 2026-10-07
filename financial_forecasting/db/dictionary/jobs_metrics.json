@@ -479,11 +479,11 @@
           "key": "campaign_contacts",
           "label": "Contacts in a campaign",
           "status": "draft",
-          "definition": "Jobs contacts carrying the campaign's tag.",
+          "definition": "Jobs contacts carrying the campaign's tag, counted once each. Only the current campaign shows by default; past ones are archived and selectable (D10).",
           "numerator": null,
           "denominator": "n/a (count)",
           "is_rate": false,
-          "sql_query": "SELECT t.tag AS campaign, count(DISTINCT c.contact_id) AS in_pipeline\nFROM public.contacts c, unnest(c.tags) t(tag)\nWHERE c.is_jobs_contact AND t.tag IN (SELECT slug FROM bedrock.contact_tag_catalog)\nGROUP BY 1 ORDER BY 2 DESC",
+          "sql_query": "",
           "mappings": [],
           "time_anchors": [
             {
@@ -492,7 +492,7 @@
               "default": true
             }
           ],
-          "caveat": "Only the current campaign shows by default; past ones are archived and selectable (D10, PRO-100). Campaign groups that merge several tags are applied by Bedrock and are not reproduced here."
+          "caveat": "Reference query with the PRO-100 campaign fixes: Bedrock groups tags into campaigns, and that grouping isn't reproduced here yet."
         },
         {
           "key": "campaign_accounts",
@@ -502,7 +502,7 @@
           "numerator": null,
           "denominator": "n/a (count)",
           "is_rate": false,
-          "sql_query": "SELECT t.tag AS campaign, count(DISTINCT lower(btrim(c.current_company))) AS accounts\nFROM public.contacts c, unnest(c.tags) t(tag)\nWHERE c.is_jobs_contact AND btrim(coalesce(c.current_company, '')) <> ''\n  AND t.tag IN (SELECT slug FROM bedrock.contact_tag_catalog)\nGROUP BY 1 ORDER BY 2 DESC",
+          "sql_query": "",
           "mappings": [],
           "time_anchors": [
             {
@@ -510,7 +510,8 @@
               "label": "as of today",
               "default": true
             }
-          ]
+          ],
+          "caveat": "Reference query with the PRO-100 campaign fixes."
         },
         {
           "key": "campaign_reached",

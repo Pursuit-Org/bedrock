@@ -1683,22 +1683,11 @@ SELECT CASE WHEN activity >= 4 THEN '4+' ELSE activity::text END AS bucket, coun
 
 ### Contacts in a campaign (`campaign_contacts`, draft)
 
-Jobs contacts carrying the campaign's tag.
+Jobs contacts carrying the campaign's tag, counted once each. Only the current campaign shows by default; past ones are archived and selectable (D10).
 
 - Divided by: n/a (count)
 - Date: as of today
-- Caveat: Only the current campaign shows by default; past ones are archived and selectable (D10, PRO-100). Campaign groups that merge several tags are applied by Bedrock and are not reproduced here.
-
-<details><summary>Reference query</summary>
-
-```sql
-SELECT t.tag AS campaign, count(DISTINCT c.contact_id) AS in_pipeline
-FROM public.contacts c, unnest(c.tags) t(tag)
-WHERE c.is_jobs_contact AND t.tag IN (SELECT slug FROM bedrock.contact_tag_catalog)
-GROUP BY 1 ORDER BY 2 DESC
-```
-
-</details>
+- Caveat: Reference query with the PRO-100 campaign fixes: Bedrock groups tags into campaigns, and that grouping isn't reproduced here yet.
 
 ### Accounts in a campaign (`campaign_accounts`, draft)
 
@@ -1706,18 +1695,7 @@ Distinct accounts (company names) among a campaign's contacts.
 
 - Divided by: n/a (count)
 - Date: as of today
-
-<details><summary>Reference query</summary>
-
-```sql
-SELECT t.tag AS campaign, count(DISTINCT lower(btrim(c.current_company))) AS accounts
-FROM public.contacts c, unnest(c.tags) t(tag)
-WHERE c.is_jobs_contact AND btrim(coalesce(c.current_company, '')) <> ''
-  AND t.tag IN (SELECT slug FROM bedrock.contact_tag_catalog)
-GROUP BY 1 ORDER BY 2 DESC
-```
-
-</details>
+- Caveat: Reference query with the PRO-100 campaign fixes.
 
 ### Campaign contacts and accounts reached (`campaign_reached`, draft)
 
