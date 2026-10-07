@@ -437,25 +437,55 @@ def events_sql(*, has_call_kind: bool = True, restrict_companies: bool = False,
     """
 
 
-def reference_sql() -> str:
-    """The three headline numbers in SQL alone: outreach, direct email and
-    accounts activated for a window. $1 window start, $2 window end, $3 the
-    senders (text[]).
+def reference_sql(p_start: str = "$1", p_end: str = "$2", p_senders: str = "$3",
+                  default_call_kind: str = "general") -> str:
+    """Every outreach number for a window in SQL alone: outreach, direct
+    email, LinkedIn, texts, intros, calls (discovery and general) and
+    accounts activated. $1 window start, $2 window end, $3 the senders
+    (text[]); `p_*` replace them with SQL expressions, which is how the data
+    dictionary's copy (db/dictionary/jobs_metrics.json) reads its window.
 
     The same candidates as events_sql, with this module's rules written a
     second time, in SQL, so the data dictionary can hold a query that stands
-    on its own (PRO-97 stores it as the metric's sql_query) and anyone can
+    on its own (PRO-97 stores it as each measure's sql_query) and anyone can
     check Bedrock's number against it. Checked on production 2026-10-06: Wed
     9/23 - Tue 9/29 on UTC days gives 36 / 27 / 16, Mon 9/21 - Sun 9/27 New
     York gives 56 / 46 / 15, the same as the Python rules on the same data
     (tests/test_outreach_counting.py). If a rule changes here, change it there.
     """
+    s, e = f"({p_start})::timestamptz", f"({p_end})::timestamptz"
+    in_win = f"ts >= {s} AND ts < {e}"
+    return f"""
+    WITH {counted_once_ctes(p_start="NULL", p_end=p_end, p_senders=p_senders)},
+    first_activity AS (        -- D17: the first activity ever on each account
+      SELECT co, min(ts) AS first_ts FROM once, unnest(once.companies) co GROUP BY co
+    )
+    SELECT
+      count(*) FILTER (WHERE kind IN ('email', 'linkedin', 'text', 'intro') AND {in_win}) AS outreach,
+      count(*) FILTER (WHERE kind = 'email' AND {in_win}) AS direct_email,
+      count(*) FILTER (WHERE kind = 'linkedin' AND {in_win}) AS linkedin,
+      count(*) FILTER (WHERE kind = 'text' AND {in_win}) AS text,
+      count(*) FILTER (WHERE kind = 'intro' AND {in_win}) AS intro,
+      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND {in_win}) AS calls,
+      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND {in_win}
+                         AND coalesce(call_kind, '{default_call_kind}') = 'discovery') AS call_discovery,
+      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND {in_win}
+                         AND coalesce(call_kind, '{default_call_kind}') = 'general') AS call_general,
+      (SELECT count(*) FROM first_activity
+        WHERE first_ts >= {s} AND first_ts < {e}) AS accounts_activated
+    FROM once
+    """
+
+
+def counted_once_ctes(p_start: str = "$1", p_end: str = "$2", p_senders: str = "$3") -> str:
+    """CTEs `e`, `counted` and `once` (no leading WITH): the candidate events,
+    minus automatic mail, each real event once. `once` is the SQL twin of
+    `attribute()`, for queries that have to stand on their own."""
     notice = _CALENDAR_NOTICE.pattern.replace("(?:", "(")
     auto_subj = " OR ".join(f"lower(coalesce(e.subject, '')) LIKE '%{p}%'" for p in AUTOREPLY_SUBJECTS)
     auto_from = " OR ".join(f"lower(coalesce(e.email_from, '')) LIKE '%{p}%'" for p in AUTOREPLY_SENDERS)
-    candidates = events_sql(p_start="NULL", p_end="$2", p_senders="$3")
-    return f"""
-    WITH e AS ({candidates}),
+    candidates = events_sql(p_start=p_start, p_end=p_end, p_senders=p_senders)
+    return f"""e AS ({candidates}),
     counted AS (               -- automatic mail is not activity
       SELECT * FROM e
       WHERE NOT (e.kind = 'email' AND (e.subject ~* '{notice}' OR {auto_subj} OR {auto_from}))
@@ -471,14 +501,23 @@ def reference_sql() -> str:
                OR ARRAY(SELECT lower(x) FROM unnest(d.recipients) x)
                   && ARRAY(SELECT lower(x) FROM unnest(c.recipients) x))))
       ORDER BY c.kind, coalesce(c.activity_id::text, c.intro_id::text), c.ts, c.contact_id
-    ),
-    first_activity AS (        -- D17: the first activity ever on each account
-      SELECT co, min(ts) AS first_ts FROM once, unnest(once.companies) co GROUP BY co
+    )"""
+
+
+def depth_sql(p_since: str = "$1", p_senders: str = "$2") -> str:
+    """Activity depth in SQL alone: for each contact sitting in Initial
+    Outreach now, how much activity `p_senders` sent them since `p_since`
+    (call bookings aren't activity). The twin of routes/jobs.py
+    `_touch_depth`. One row per contact: contact_id, owner_email, activity."""
+    return f"""
+    WITH {counted_once_ctes(p_start=p_since, p_end="NULL", p_senders=p_senders)},
+    reached AS (
+      SELECT DISTINCT o.kind, coalesce(o.activity_id::text, o.intro_id::text) AS id, o.ts, x.cid
+      FROM once o, unnest(o.contact_ids || o.contact_id) x(cid)
+      WHERE o.kind <> 'call_booked' AND x.cid IS NOT NULL
     )
-    SELECT
-      count(*) FILTER (WHERE kind IN ('email', 'linkedin', 'text', 'intro')
-                         AND ts >= $1 AND ts < $2) AS outreach,
-      count(*) FILTER (WHERE kind = 'email' AND ts >= $1 AND ts < $2) AS direct_email,
-      (SELECT count(*) FROM first_activity WHERE first_ts >= $1 AND first_ts < $2) AS accounts_activated
-    FROM once
+    SELECT m.contact_id, m.owner_email,
+           (SELECT count(*) FROM reached r WHERE r.cid = m.contact_id) AS activity
+    FROM bedrock.jobs_contact_membership m
+    WHERE m.stage = 'initial_outreach'
     """

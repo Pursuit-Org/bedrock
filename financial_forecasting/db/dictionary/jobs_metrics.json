@@ -1,0 +1,1036 @@
+{
+  "about": "PRO-97: the Jobs metrics for the data dictionary (bedrock.dd_metrics), drafted on the integration/jobs-dashboards branch. One object per concept, in the dd_metrics row shape; measures are the elements of `cuts`. `bedrock_key` is how Bedrock's services/jobs_metrics.py refers to the concept. An object with a metric_id updates that row: only the fields present change, `cuts` are merged by key, and `caveats_append` is added to the existing caveats. An object without one is a new row. scripts/import_jobs_dictionary.py applies this file (dry run by default).",
+  "drafted": "2026-10-07",
+  "concepts": [
+    {
+      "bedrock_key": "employment",
+      "metric_id": 171,
+      "name": "Employment",
+      "_update": "Changes the measures below; every other measure on #171 is left as it is.",
+      "caveats": "One placement rule for every measure here (decided 10/2, D2 and D4; settled 10/7, Nina): a builder is placed when they have an employment record with pay recorded, that isn't pro bono, isn't at the `pipeline` stage, has started (a missing start date counts and is a data gap to fill), isn't on an opportunity deleted as a data-entry error, and belongs to someone not excluded from metrics. Pursuit's own hires count whatever their role is now. Unpriced contract or freelance work doesn't count (8/16). Each builder counts once. Full-time is the core number; all paid work can be viewed.\n\nTrials: D2 says trials count as placed. Until PRO-99 builds that, a running trial is reported beside the number (trials_running), not in it.\n\nLeft the role: a builder who left still counts as placed (default from 10/2, open call); actively_employed_count says how many are still in the role.\n\never_employed_count.ever_employed_any_paid and builders_with_paid_work are the same number; consolidate them when the group confirms.\n\nReplaces the retired FT Roles Secured (#173) and Builders with Paid Work (#174) on the Jobs Overview.",
+      "cuts": [
+        {
+          "key": "ever_employed_count",
+          "label": "Placed (ever)",
+          "status": "draft",
+          "definition": "Builders ever placed: at least one employment record that counts under this entry's placement rule. full_time is the Jobs Overview's \"placed full-time\"; ever_employed_any_paid is all paid work. Cumulative: a builder who left the role still counts.",
+          "numerator": "Builders with a counted placement",
+          "denominator": "n/a (count)",
+          "is_rate": false,
+          "sql_query": "WITH placed AS (\n  -- Employment (#171): the records that count as a placement.\n  SELECT er.*\n  FROM public.employment_records er\n  LEFT JOIN public.users u ON u.user_id = er.user_id\n  WHERE coalesce(u.exclude_from_metrics, false) = false          -- not a test account\n    AND er.payment_amount > 0                                      -- pay recorded\n    AND er.employment_type IS DISTINCT FROM 'pro_bono'\n    AND er.engagement_stage IS DISTINCT FROM 'pipeline'            -- not a job yet\n    AND (er.start_date IS NULL OR er.start_date <= (now() AT TIME ZONE 'America/New_York')::date)            -- has started\n    AND (er.opportunity_id IS NULL OR NOT EXISTS (                 -- opportunity not deleted\n          SELECT 1 FROM bedrock.jobs_opportunity dop\n          WHERE dop.id = er.opportunity_id AND dop.deleted_at IS NOT NULL))\n)\nSELECT count(DISTINCT user_id) AS ever_employed_any_paid,\n       count(DISTINCT user_id) FILTER (WHERE employment_type = 'full_time') AS full_time\nFROM placed",
+          "mappings": [],
+          "time_anchors": [
+            {
+              "kind": "state",
+              "label": "as of today",
+              "default": true
+            }
+          ]
+        },
+        {
+          "key": "actively_employed_count",
+          "label": "In the role now",
+          "status": "draft",
+          "definition": "Placed builders who are in the job today: the record is active and hasn't reached its end date. full_time is the Overview card's \"still in role\".",
+          "numerator": "Placed builders in the role today",
+          "denominator": "n/a (count)",
+          "is_rate": false,
+          "sql_query": "WITH placed AS (\n  -- Employment (#171): the records that count as a placement.\n  SELECT er.*\n  FROM public.employment_records er\n  LEFT JOIN public.users u ON u.user_id = er.user_id\n  WHERE coalesce(u.exclude_from_metrics, false) = false          -- not a test account\n    AND er.payment_amount > 0                                      -- pay recorded\n    AND er.employment_type IS DISTINCT FROM 'pro_bono'\n    AND er.engagement_stage IS DISTINCT FROM 'pipeline'            -- not a job yet\n    AND (er.start_date IS NULL OR er.start_date <= (now() AT TIME ZONE 'America/New_York')::date)            -- has started\n    AND (er.opportunity_id IS NULL OR NOT EXISTS (                 -- opportunity not deleted\n          SELECT 1 FROM bedrock.jobs_opportunity dop\n          WHERE dop.id = er.opportunity_id AND dop.deleted_at IS NOT NULL))\n)\nSELECT count(DISTINCT user_id) FILTER (WHERE (engagement_stage = 'active' AND (end_date IS NULL OR end_date >= (now() AT TIME ZONE 'America/New_York')::date))) AS actively_employed_any_paid,\n       count(DISTINCT user_id) FILTER (WHERE employment_type = 'full_time' AND (engagement_stage = 'active' AND (end_date IS NULL OR end_date >= (now() AT TIME ZONE 'America/New_York')::date))) AS full_time\nFROM placed",
+          "mappings": [],
+          "time_anchors": [
+            {
+              "kind": "state",
+              "label": "as of today",
+              "default": true
+            }
+          ]
+        },
+        {
+          "key": "ever_employed_rate",
+          "label": "Placed rate (completers)",
+          "status": "draft",
+          "definition": "Of builders who completed L3, the share ever placed under this entry's placement rule.",
+          "numerator": "Placed program completers",
+          "denominator": "Program completers (completed L3)",
+          "is_rate": true,
+          "sql_query": "WITH placed AS (\n  -- Employment (#171): the records that count as a placement.\n  SELECT er.*\n  FROM public.employment_records er\n  LEFT JOIN public.users u ON u.user_id = er.user_id\n  WHERE coalesce(u.exclude_from_metrics, false) = false          -- not a test account\n    AND er.payment_amount > 0                                      -- pay recorded\n    AND er.employment_type IS DISTINCT FROM 'pro_bono'\n    AND er.engagement_stage IS DISTINCT FROM 'pipeline'            -- not a job yet\n    AND (er.start_date IS NULL OR er.start_date <= (now() AT TIME ZONE 'America/New_York')::date)            -- has started\n    AND (er.opportunity_id IS NULL OR NOT EXISTS (                 -- opportunity not deleted\n          SELECT 1 FROM bedrock.jobs_opportunity dop\n          WHERE dop.id = er.opportunity_id AND dop.deleted_at IS NOT NULL))\n),\ncompleters AS (\n  SELECT DISTINCT ue.user_id\n  FROM public.user_enrollment ue\n  JOIN public.cohort ch ON ch.cohort_id = ue.cohort_id\n  JOIN public.course co ON co.course_id = ch.course_id\n  LEFT JOIN public.users u ON u.user_id = ue.user_id\n  WHERE ue.status = 'completed' AND co.level = 'L3'\n    AND coalesce(u.exclude_from_metrics, false) = false\n)\nSELECT (SELECT count(DISTINCT p.user_id) FROM placed p JOIN completers c USING (user_id)) AS ever_employed_completers,\n       (SELECT count(*) FROM completers) AS program_completers,\n       round(100.0 * (SELECT count(DISTINCT p.user_id) FROM placed p JOIN completers c USING (user_id))\n             / nullif((SELECT count(*) FROM completers), 0), 1) AS rate_pct",
+          "mappings": [],
+          "time_anchors": [
+            {
+              "kind": "state",
+              "label": "as of today",
+              "default": true
+            }
+          ]
+        },
+        {
+          "key": "actively_employed_rate",
+          "label": "In-role rate (completers)",
+          "status": "draft",
+          "definition": "Of builders who completed L3, the share in a counted paid job today.",
+          "numerator": "Program completers in the role today",
+          "denominator": "Program completers (completed L3)",
+          "is_rate": true,
+          "sql_query": "WITH placed AS (\n  -- Employment (#171): the records that count as a placement.\n  SELECT er.*\n  FROM public.employment_records er\n  LEFT JOIN public.users u ON u.user_id = er.user_id\n  WHERE coalesce(u.exclude_from_metrics, false) = false          -- not a test account\n    AND er.payment_amount > 0                                      -- pay recorded\n    AND er.employment_type IS DISTINCT FROM 'pro_bono'\n    AND er.engagement_stage IS DISTINCT FROM 'pipeline'            -- not a job yet\n    AND (er.start_date IS NULL OR er.start_date <= (now() AT TIME ZONE 'America/New_York')::date)            -- has started\n    AND (er.opportunity_id IS NULL OR NOT EXISTS (                 -- opportunity not deleted\n          SELECT 1 FROM bedrock.jobs_opportunity dop\n          WHERE dop.id = er.opportunity_id AND dop.deleted_at IS NOT NULL))\n),\ncompleters AS (\n  SELECT DISTINCT ue.user_id\n  FROM public.user_enrollment ue\n  JOIN public.cohort ch ON ch.cohort_id = ue.cohort_id\n  JOIN public.course co ON co.course_id = ch.course_id\n  LEFT JOIN public.users u ON u.user_id = ue.user_id\n  WHERE ue.status = 'completed' AND co.level = 'L3'\n    AND coalesce(u.exclude_from_metrics, false) = false\n)\nSELECT (SELECT count(DISTINCT p.user_id) FROM placed p JOIN completers c USING (user_id) WHERE (engagement_stage = 'active' AND (end_date IS NULL OR end_date >= (now() AT TIME ZONE 'America/New_York')::date))) AS employed_completers,\n       (SELECT count(*) FROM completers) AS program_completers,\n       round(100.0 * (SELECT count(DISTINCT p.user_id) FROM placed p JOIN completers c USING (user_id) WHERE (engagement_stage = 'active' AND (end_date IS NULL OR end_date >= (now() AT TIME ZONE 'America/New_York')::date)))\n             / nullif((SELECT count(*) FROM completers), 0), 1) AS rate_pct",
+          "mappings": [],
+          "time_anchors": [
+            {
+              "kind": "state",
+              "label": "as of today",
+              "default": true
+            }
+          ]
+        },
+        {
+          "key": "builders_with_paid_work",
+          "label": "Builders with paid work",
+          "status": "draft",
+          "definition": "Builders with any counted paid work, full-time included, counted once each. The Jobs Overview's \"Builders with paid work\".",
+          "numerator": "Builders with a counted placement of any type",
+          "denominator": "n/a (count)",
+          "is_rate": false,
+          "sql_query": "WITH placed AS (\n  -- Employment (#171): the records that count as a placement.\n  SELECT er.*\n  FROM public.employment_records er\n  LEFT JOIN public.users u ON u.user_id = er.user_id\n  WHERE coalesce(u.exclude_from_metrics, false) = false          -- not a test account\n    AND er.payment_amount > 0                                      -- pay recorded\n    AND er.employment_type IS DISTINCT FROM 'pro_bono'\n    AND er.engagement_stage IS DISTINCT FROM 'pipeline'            -- not a job yet\n    AND (er.start_date IS NULL OR er.start_date <= (now() AT TIME ZONE 'America/New_York')::date)            -- has started\n    AND (er.opportunity_id IS NULL OR NOT EXISTS (                 -- opportunity not deleted\n          SELECT 1 FROM bedrock.jobs_opportunity dop\n          WHERE dop.id = er.opportunity_id AND dop.deleted_at IS NOT NULL))\n)\nSELECT count(DISTINCT user_id) AS builders_with_paid_work FROM placed",
+          "mappings": [],
+          "time_anchors": [
+            {
+              "kind": "state",
+              "label": "as of today",
+              "default": true
+            }
+          ]
+        },
+        {
+          "key": "ft_roles_secured",
+          "label": "Full-time roles secured",
+          "status": "draft",
+          "definition": "Full-time placed builders plus committed full-time roles nobody fills yet (Employer pipeline: committed_roles). The Jobs Overview headline. Under an L3 cohort filter only the builders count: an unfilled role has no cohort.",
+          "numerator": "Full-time placed builders + committed open full-time roles",
+          "denominator": "n/a (count)",
+          "is_rate": false,
+          "sql_query": "WITH placed AS (\n  -- Employment (#171): the records that count as a placement.\n  SELECT er.*\n  FROM public.employment_records er\n  LEFT JOIN public.users u ON u.user_id = er.user_id\n  WHERE coalesce(u.exclude_from_metrics, false) = false          -- not a test account\n    AND er.payment_amount > 0                                      -- pay recorded\n    AND er.employment_type IS DISTINCT FROM 'pro_bono'\n    AND er.engagement_stage IS DISTINCT FROM 'pipeline'            -- not a job yet\n    AND (er.start_date IS NULL OR er.start_date <= (now() AT TIME ZONE 'America/New_York')::date)            -- has started\n    AND (er.opportunity_id IS NULL OR NOT EXISTS (                 -- opportunity not deleted\n          SELECT 1 FROM bedrock.jobs_opportunity dop\n          WHERE dop.id = er.opportunity_id AND dop.deleted_at IS NOT NULL))\n)\nSELECT (SELECT count(DISTINCT user_id) FROM placed WHERE employment_type = 'full_time')\n     + (SELECT count(*) FROM (SELECT r.id, r.approx_salary FROM bedrock.jobs_role r JOIN bedrock.jobs_opportunity o ON o.id = r.opportunity_id WHERE r.status = 'open' AND o.deleted_at IS NULL AND r.commitment = 'committed' AND r.is_trial = false AND (r.employment_type = 'full_time' OR (r.employment_type IS NULL AND o.deal_type = 'ft'))) cr) AS ft_roles_secured",
+          "mappings": [],
+          "time_anchors": [
+            {
+              "kind": "state",
+              "label": "as of today",
+              "default": true
+            }
+          ]
+        },
+        {
+          "key": "placed_ft_rate",
+          "label": "Placed full-time, % of job-ready",
+          "status": "draft",
+          "definition": "Of the job-ready pool (#176), the share placed full-time.",
+          "numerator": "Job-ready builders placed full-time",
+          "denominator": "Job-ready pool (#176)",
+          "is_rate": true,
+          "sql_query": "WITH placed AS (\n  -- Employment (#171): the records that count as a placement.\n  SELECT er.*\n  FROM public.employment_records er\n  LEFT JOIN public.users u ON u.user_id = er.user_id\n  WHERE coalesce(u.exclude_from_metrics, false) = false          -- not a test account\n    AND er.payment_amount > 0                                      -- pay recorded\n    AND er.employment_type IS DISTINCT FROM 'pro_bono'\n    AND er.engagement_stage IS DISTINCT FROM 'pipeline'            -- not a job yet\n    AND (er.start_date IS NULL OR er.start_date <= (now() AT TIME ZONE 'America/New_York')::date)            -- has started\n    AND (er.opportunity_id IS NULL OR NOT EXISTS (                 -- opportunity not deleted\n          SELECT 1 FROM bedrock.jobs_opportunity dop\n          WHERE dop.id = er.opportunity_id AND dop.deleted_at IS NOT NULL))\n),\nl3plus AS (\n    SELECT DISTINCT ue.user_id\n    FROM public.user_enrollment ue\n    JOIN public.cohort ch ON ch.cohort_id = ue.cohort_id\n    JOIN public.course co ON co.course_id = ch.course_id\n    WHERE co.level = 'L3+'\n  ),\n  l3cohort AS (\n    SELECT DISTINCT ON (ue.user_id) ue.user_id, ch.name AS segment\n    FROM public.user_enrollment ue\n    JOIN public.cohort ch ON ch.cohort_id = ue.cohort_id\n    JOIN public.course co ON co.course_id = ch.course_id\n    WHERE co.level = 'L3' AND ue.user_id IN (SELECT user_id FROM l3plus)\n    ORDER BY ue.user_id, ue.enrolled_date DESC\n  ),\n  pool AS (\n    SELECT lp.user_id, COALESCE(lc.segment, 'Other L3+') AS segment\n    FROM l3plus lp LEFT JOIN l3cohort lc ON lc.user_id = lp.user_id\n  )\nSELECT (SELECT count(DISTINCT p.user_id) FROM placed p JOIN pool USING (user_id) WHERE p.employment_type = 'full_time') AS placed_ft,\n       (SELECT count(*) FROM pool) AS job_ready,\n       round(100.0 * (SELECT count(DISTINCT p.user_id) FROM placed p JOIN pool USING (user_id) WHERE p.employment_type = 'full_time')\n             / nullif((SELECT count(*) FROM pool), 0), 1) AS rate_pct",
+          "mappings": [],
+          "time_anchors": [
+            {
+              "kind": "state",
+              "label": "as of today",
+              "default": true
+            }
+          ]
+        },
+        {
+          "key": "trials_running",
+          "label": "In a paid trial",
+          "status": "draft",
+          "definition": "Builders in a committed paid trial that is under way: a builder fills it and its end date, if any, hasn't passed. Shown beside the placed number until PRO-99 decides how trials count (D2).",
+          "numerator": "Builders in a running committed trial",
+          "denominator": "n/a (count)",
+          "is_rate": false,
+          "sql_query": "SELECT count(DISTINCT r.filled_by_user_id) AS trials_running\nFROM bedrock.jobs_role r JOIN bedrock.jobs_opportunity o ON o.id = r.opportunity_id\nWHERE o.deleted_at IS NULL AND r.commitment = 'committed' AND r.is_trial = true AND r.filled_by_user_id IS NOT NULL AND r.status <> 'cancelled' AND (r.end_date IS NULL OR r.end_date >= CURRENT_DATE)",
+          "mappings": [],
+          "time_anchors": [
+            {
+              "kind": "state",
+              "label": "as of today",
+              "default": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "bedrock_key": "salary",
+      "metric_id": 164,
+      "name": "Post-program salary",
+      "_update": "Changes the two measures below; every other measure on #164 is left as it is.",
+      "caveats_append": "The Jobs Overview's Avg FT salary reads avg_ft_salary_placed and avg_ft_salary_secured, which use Employment's (#171) placement rule: test accounts, unstarted, `pipeline` and deleted-opportunity records are out, Pursuit's own hires are in. Each builder's highest full-time salary counts once. Replaces the retired Avg FT Salary (#175).",
+      "cuts": [
+        {
+          "key": "avg_ft_salary_placed",
+          "label": "Avg FT salary, placed builders",
+          "status": "draft",
+          "definition": "The average of what full-time placed builders are paid, taking each builder's highest full-time salary once. Placed is Employment's (#171) rule.",
+          "numerator": "Sum of each FT-placed builder's highest FT salary",
+          "denominator": "FT-placed builders",
+          "is_rate": false,
+          "sql_query": "WITH placed AS (\n  -- Employment (#171): the records that count as a placement.\n  SELECT er.*\n  FROM public.employment_records er\n  LEFT JOIN public.users u ON u.user_id = er.user_id\n  WHERE coalesce(u.exclude_from_metrics, false) = false          -- not a test account\n    AND er.payment_amount > 0                                      -- pay recorded\n    AND er.employment_type IS DISTINCT FROM 'pro_bono'\n    AND er.engagement_stage IS DISTINCT FROM 'pipeline'            -- not a job yet\n    AND (er.start_date IS NULL OR er.start_date <= (now() AT TIME ZONE 'America/New_York')::date)            -- has started\n    AND (er.opportunity_id IS NULL OR NOT EXISTS (                 -- opportunity not deleted\n          SELECT 1 FROM bedrock.jobs_opportunity dop\n          WHERE dop.id = er.opportunity_id AND dop.deleted_at IS NOT NULL))\n),\nper_builder AS (\n  SELECT user_id, max(payment_amount) AS salary FROM placed\n  WHERE employment_type = 'full_time' GROUP BY user_id\n)\nSELECT round(avg(salary)) AS avg_ft_salary, count(*) AS placed_builders FROM per_builder",
+          "mappings": [],
+          "time_anchors": [
+            {
+              "kind": "state",
+              "label": "as of today",
+              "default": true
+            }
+          ]
+        },
+        {
+          "key": "avg_ft_salary_secured",
+          "label": "Avg FT salary, secured",
+          "status": "draft",
+          "definition": "Placed builders' salaries (as avg_ft_salary_placed) blended with the expected salary of committed full-time roles nobody fills yet. A forecast of what the cohort is earning towards, not current pay. Under an L3 cohort filter it is placed-only.",
+          "numerator": "FT-placed salaries + committed open FT roles' expected salary",
+          "denominator": "FT-placed builders + committed open FT roles with a salary",
+          "is_rate": false,
+          "sql_query": "WITH placed AS (\n  -- Employment (#171): the records that count as a placement.\n  SELECT er.*\n  FROM public.employment_records er\n  LEFT JOIN public.users u ON u.user_id = er.user_id\n  WHERE coalesce(u.exclude_from_metrics, false) = false          -- not a test account\n    AND er.payment_amount > 0                                      -- pay recorded\n    AND er.employment_type IS DISTINCT FROM 'pro_bono'\n    AND er.engagement_stage IS DISTINCT FROM 'pipeline'            -- not a job yet\n    AND (er.start_date IS NULL OR er.start_date <= (now() AT TIME ZONE 'America/New_York')::date)            -- has started\n    AND (er.opportunity_id IS NULL OR NOT EXISTS (                 -- opportunity not deleted\n          SELECT 1 FROM bedrock.jobs_opportunity dop\n          WHERE dop.id = er.opportunity_id AND dop.deleted_at IS NOT NULL))\n),\nper_builder AS (\n  SELECT user_id, max(payment_amount) AS salary FROM placed\n  WHERE employment_type = 'full_time' GROUP BY user_id\n)\nSELECT round(avg(salary)) AS avg_ft_salary, count(*) AS salaries_counted FROM (\n  SELECT salary FROM per_builder\n  UNION ALL\n  SELECT approx_salary FROM (SELECT r.id, r.approx_salary FROM bedrock.jobs_role r JOIN bedrock.jobs_opportunity o ON o.id = r.opportunity_id WHERE r.status = 'open' AND o.deleted_at IS NULL AND r.commitment = 'committed' AND r.is_trial = false AND (r.employment_type = 'full_time' OR (r.employment_type IS NULL AND o.deal_type = 'ft'))) cr WHERE approx_salary > 0\n) s",
+          "mappings": [],
+          "time_anchors": [
+            {
+              "kind": "state",
+              "label": "as of today",
+              "default": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "bedrock_key": "job_ready_pool",
+      "metric_id": 176,
+      "name": "Job-ready pool (L3+)",
+      "_update": "Adds the `pool` measure (the total, which Bedrock reads); by_l3_cohort is left as it is.",
+      "cuts": [
+        {
+          "key": "pool",
+          "label": "Job-ready pool",
+          "status": "draft",
+          "definition": "Builders ever enrolled in an L3+ course, counted once each. The denominator for placement rates on the Jobs Overview.",
+          "numerator": "Distinct builders enrolled in an L3+ course",
+          "denominator": "n/a (count)",
+          "is_rate": false,
+          "sql_query": "WITH l3plus AS (\n    SELECT DISTINCT ue.user_id\n    FROM public.user_enrollment ue\n    JOIN public.cohort ch ON ch.cohort_id = ue.cohort_id\n    JOIN public.course co ON co.course_id = ch.course_id\n    WHERE co.level = 'L3+'\n  ),\n  l3cohort AS (\n    SELECT DISTINCT ON (ue.user_id) ue.user_id, ch.name AS segment\n    FROM public.user_enrollment ue\n    JOIN public.cohort ch ON ch.cohort_id = ue.cohort_id\n    JOIN public.course co ON co.course_id = ch.course_id\n    WHERE co.level = 'L3' AND ue.user_id IN (SELECT user_id FROM l3plus)\n    ORDER BY ue.user_id, ue.enrolled_date DESC\n  ),\n  pool AS (\n    SELECT lp.user_id, COALESCE(lc.segment, 'Other L3+') AS segment\n    FROM l3plus lp LEFT JOIN l3cohort lc ON lc.user_id = lp.user_id\n  )\nSELECT count(*) AS job_ready_pool FROM pool",
+          "mappings": [],
+          "time_anchors": [
+            {
+              "kind": "state",
+              "label": "as of today",
+              "default": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "bedrock_key": "retention",
+      "metric_id": 123,
+      "name": "Job retention",
+      "_update": "Definition and caveats only.",
+      "definition": "Whether placed builders stay employed over time, and salary at long-tenure milestones. Placed builders who have left a role still count as placed (Employment #171); how many are still in the role is Employment's actively_employed_count. Largely blocked by data: employment records carry few start and end dates.",
+      "caveats_append": "10/2 (PRO-94): a builder who left the role still counts as placed; the Overview card shows how many are still in it. Whether to keep the word \"placed\" is open (Avni)."
+    },
+    {
+      "bedrock_key": "employer_outreach",
+      "metric_id": null,
+      "name": "Employer outreach",
+      "stage": "Jobs",
+      "subdomain": "Employer outreach",
+      "status": "draft",
+      "owner_team": "Jobs",
+      "is_north_star": false,
+      "hidden": false,
+      "sort_order": 200,
+      "definition": "What the Jobs team does to open conversations with employers, week by week. Activity is an external touch the team sent: an email, a call, a meeting, a LinkedIn message or a text. Synced email and hand-logged activity both count; comments don't (D17). Each is credited to who did it: an email to its sender, never to the mailbox it was synced into.",
+      "base_population": "Jobs-related activity by the Jobs team (Settings › Targets › Jobs), Mon–Sun weeks, New York time.",
+      "grain": "activity event",
+      "source_system": "Bedrock (bedrock.activity, activity_email_message, intro_request, jobs_contact_membership)",
+      "refresh_cadence": "Live; email syncs nightly",
+      "time_of_measurement": "Calendar week, Monday to Sunday, New York time (D8). Any range can be picked.",
+      "segments": [
+        "Owner",
+        "Campaign"
+      ],
+      "aliases": [
+        "touches",
+        "outreach activity"
+      ],
+      "example_questions": [
+        "How much outreach did the team send last week?",
+        "How many new accounts did we start working this week?"
+      ],
+      "caveats": "\"Touches\" is retired as a term (D17). The Jobs team is whoever is active in Settings › Targets › Jobs today; membership has no history, so past weeks are recounted with today's team. A send stored in two mailboxes counts once, and Google Calendar notices and auto-replies are not outreach (decided 10/6, PRO-98). Jobs-related is the classifier's verdict, or a person's override of it; the account owner can tag or untag (PRO-101). The account is the contact's company name (lower-cased) until accounts are picked from a list (PRO-101).",
+      "cuts": [
+        {
+          "key": "outreach_sent",
+          "label": "Outreach",
+          "status": "draft",
+          "definition": "Everything the team sent: direct email, LinkedIn messages, texts and facilitated intros.",
+          "numerator": "Sends by the team in the week",
+          "denominator": "n/a (count)",
+          "is_rate": false,
+          "sql_query": "WITH w AS (SELECT ((coalesce(nullif(current_setting('dd.window_from', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 7))::timestamp AT TIME ZONE 'America/New_York') AS start_at, (((coalesce(nullif(current_setting('dd.window_to', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 1) + 1))::timestamp AT TIME ZONE 'America/New_York') AS end_at, (SELECT coalesce(array_agg(lower(email)), '{}') FROM bedrock.jobs_team_member WHERE active) AS team)\nSELECT outreach FROM (\n    WITH e AS (\n    WITH raw AS (\n      -- Synced email, one row per message, by the message's own sender.\n      SELECT 'email'::text AS kind, aem.sent_at AS ts, lower(aem.from_email) AS sender,\n             a.id AS activity_id, NULL::uuid AS intro_id,\n             a.participant_public_contact_id AS contact_id, coalesce(a.email_to, '{}'::text[]) || coalesce(a.email_cc, '{}'::text[]) AS recips,\n             a.subject, a.description, a.email_snippet AS snippet, a.email_from, a.source,\n             NULL::text AS call_kind\n      FROM bedrock.activity_email_message aem\n      JOIN bedrock.activity a ON a.id = aem.activity_id\n      WHERE aem.from_email = ANY(((SELECT team FROM w))::text[]) AND ((NULL)::timestamptz IS NULL OR aem.sent_at >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR aem.sent_at < ((SELECT end_at FROM w))::timestamptz)\n        AND a.deleted_at IS NULL AND a.type = 'email' AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))\n      UNION ALL\n      -- Email with no indexed messages: hand-logged, Salesforce-sourced, or\n      -- synced since the index last ran. The row stands for itself, by its\n      -- own sender (never the mailbox it was synced from).\n      SELECT 'email', a.activity_date, lower(btrim(coalesce(substring(a.email_from from '<([^>]+)>'), nullif(a.email_from, ''), CASE WHEN a.source = 'manual' THEN a.logged_by END))),\n             a.id, NULL::uuid, a.participant_public_contact_id, coalesce(a.email_to, '{}'::text[]) || coalesce(a.email_cc, '{}'::text[]),\n             a.subject, a.description, a.email_snippet, a.email_from, a.source, NULL::text\n      FROM bedrock.activity a\n      WHERE a.deleted_at IS NULL AND a.type = 'email' AND ((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz)\n        AND lower(btrim(coalesce(substring(a.email_from from '<([^>]+)>'), nullif(a.email_from, ''), CASE WHEN a.source = 'manual' THEN a.logged_by END))) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))\n        AND NOT EXISTS (SELECT 1 FROM bedrock.activity_email_message m WHERE m.activity_id = a.id)\n      UNION ALL\n      -- Hand-logged LinkedIn, text and calls, and meetings: whoever logged\n      -- it, or whose calendar it is on.\n      SELECT a.type, a.activity_date, lower(btrim(a.logged_by)),\n             a.id, NULL::uuid, a.participant_public_contact_id,\n             CASE WHEN a.type = 'meeting' THEN ARRAY(SELECT att->>'email' FROM jsonb_array_elements(coalesce(a.meeting_attendees, '[]'::jsonb)) att) ELSE '{}'::text[] END,\n             a.subject, a.description, NULL::text, a.email_from, a.source,\n             CASE WHEN a.type = 'call' THEN a.call_kind END\n      FROM bedrock.activity a\n      WHERE a.deleted_at IS NULL AND a.type IN ('linkedin', 'text', 'call', 'meeting')\n        AND ((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz) AND lower(btrim(a.logged_by)) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))\n      UNION ALL\n      -- A facilitated intro that was acted on, by who asked for it. Its\n      -- subject is the ask (routes.jobs_intro.ASK_LABELS names it).\n      SELECT 'intro', coalesce(ir.responded_at, ir.created_at), lower(ir.requested_by_email),\n             NULL::uuid, ir.id, ir.contact_id, '{}'::text[],\n             ir.specific_ask, ir.context, NULL::text, NULL::text, 'intro', NULL::text\n      FROM bedrock.intro_request ir\n      WHERE ir.status IN ('accepted', 'completed')\n        AND lower(ir.requested_by_email) = ANY(((SELECT team FROM w))::text[])\n        AND ((NULL)::timestamptz IS NULL OR coalesce(ir.responded_at, ir.created_at) >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR coalesce(ir.responded_at, ir.created_at) < ((SELECT end_at FROM w))::timestamptz)\n      UNION ALL\n      -- The first move to Call Booked, by who moved it. A meeting someone\n      -- else set up (Nick) enters here with no outreach behind it.\n      SELECT 'call_booked', h.changed_at, lower(h.changed_by),\n             NULL::uuid, NULL::uuid, h.contact_id, '{}'::text[],\n             NULL::text, NULL::text, NULL::text, NULL::text, 'stage', NULL::text\n      FROM (SELECT DISTINCT ON (contact_id) contact_id, changed_at, changed_by\n              FROM bedrock.jobs_membership_stage_history\n             WHERE to_stage = 'call_booked' ORDER BY contact_id, changed_at) h\n      WHERE lower(h.changed_by) = ANY(((SELECT team FROM w))::text[]) AND ((NULL)::timestamptz IS NULL OR h.changed_at >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR h.changed_at < ((SELECT end_at FROM w))::timestamptz)\n    ),\n    ev AS (\n      SELECT r.*, reach.contact_ids, reach.companies\n      FROM raw r\n      CROSS JOIN LATERAL (\n        SELECT coalesce(array_agg(DISTINCT c.contact_id), '{}') AS contact_ids,\n               coalesce(array_agg(DISTINCT lower(btrim(c.current_company)))\n                          FILTER (WHERE btrim(coalesce(c.current_company, '')) <> ''), '{}') AS companies\n        FROM public.contacts c\n        WHERE c.contact_id = r.contact_id\n           OR lower(c.email) = ANY(ARRAY(SELECT lower(x) FROM unnest(r.recips) x))\n      ) reach\n    )\n    SELECT ev.kind, ev.ts, ev.sender, ev.activity_id, ev.intro_id, ev.contact_id,\n           ev.contact_ids, ev.companies, ev.subject, ev.description, ev.snippet,\n           ev.email_from, ev.source, ev.call_kind, ev.recips AS recipients\n    FROM ev \n    ),\n    counted AS (               -- automatic mail is not activity\n      SELECT * FROM e\n      WHERE NOT (e.kind = 'email' AND (e.subject ~* '^\\s*(appointment (booked|canceled|cancelled|rescheduled)|(updated |new )?invitation|accepted|declined|tentatively accepted|(canceled|cancelled) event)( with note)?\\s*:' OR lower(coalesce(e.subject, '')) LIKE '%out of office%' OR lower(coalesce(e.subject, '')) LIKE '%automatic reply%' OR lower(coalesce(e.subject, '')) LIKE '%auto-reply%' OR lower(coalesce(e.subject, '')) LIKE '%autoreply%' OR lower(coalesce(e.subject, '')) LIKE '%auto reply%' OR lower(coalesce(e.subject, '')) LIKE '%ooo:%' OR lower(coalesce(e.subject, '')) LIKE '%ooo -%' OR lower(coalesce(e.subject, '')) LIKE '%away from%' OR lower(coalesce(e.subject, '')) LIKE '%on vacation%' OR lower(coalesce(e.subject, '')) LIKE '%on leave%' OR lower(coalesce(e.subject, '')) LIKE '%maternity leave%' OR lower(coalesce(e.subject, '')) LIKE '%thank you for your message%' OR lower(coalesce(e.subject, '')) LIKE '%thank you for your email%' OR lower(coalesce(e.subject, '')) LIKE '%thank you for contacting%' OR lower(coalesce(e.subject, '')) LIKE '%undeliverable%' OR lower(coalesce(e.subject, '')) LIKE '%delivery status notification%' OR lower(coalesce(e.subject, '')) LIKE '%mail delivery%' OR lower(coalesce(e.subject, '')) LIKE '%returned mail%' OR lower(coalesce(e.subject, '')) LIKE '%slow to respond%' OR lower(coalesce(e.email_from, '')) LIKE '%mailer-daemon%' OR lower(coalesce(e.email_from, '')) LIKE '%postmaster%' OR lower(coalesce(e.email_from, '')) LIKE '%no-reply%' OR lower(coalesce(e.email_from, '')) LIKE '%noreply%' OR lower(coalesce(e.email_from, '')) LIKE '%donotreply%' OR lower(coalesce(e.email_from, '')) LIKE '%do-not-reply%'))\n    ),\n    once AS (                  -- a send stored in two mailboxes counts once\n      SELECT DISTINCT ON (c.kind, coalesce(c.activity_id::text, c.intro_id::text), c.ts, c.contact_id) c.*\n      FROM counted c\n      WHERE NOT (c.kind = 'email' AND c.source = 'gmail-sync' AND EXISTS (\n        SELECT 1 FROM counted d\n        WHERE d.kind = 'email' AND d.source = 'gmail-sync'\n          AND d.sender = c.sender AND d.ts = c.ts AND d.activity_id::text < c.activity_id::text\n          AND (d.contact_ids && c.contact_ids\n               OR ARRAY(SELECT lower(x) FROM unnest(d.recipients) x)\n                  && ARRAY(SELECT lower(x) FROM unnest(c.recipients) x))))\n      ORDER BY c.kind, coalesce(c.activity_id::text, c.intro_id::text), c.ts, c.contact_id\n    ),\n    first_activity AS (        -- D17: the first activity ever on each account\n      SELECT co, min(ts) AS first_ts FROM once, unnest(once.companies) co GROUP BY co\n    )\n    SELECT\n      count(*) FILTER (WHERE kind IN ('email', 'linkedin', 'text', 'intro') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS outreach,\n      count(*) FILTER (WHERE kind = 'email' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS direct_email,\n      count(*) FILTER (WHERE kind = 'linkedin' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS linkedin,\n      count(*) FILTER (WHERE kind = 'text' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS text,\n      count(*) FILTER (WHERE kind = 'intro' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS intro,\n      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS calls,\n      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz\n                         AND coalesce(call_kind, 'general') = 'discovery') AS call_discovery,\n      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz\n                         AND coalesce(call_kind, 'general') = 'general') AS call_general,\n      (SELECT count(*) FROM first_activity\n        WHERE first_ts >= ((SELECT start_at FROM w))::timestamptz AND first_ts < ((SELECT end_at FROM w))::timestamptz) AS accounts_activated\n    FROM once\n    ) q",
+          "mappings": [],
+          "time_anchors": [
+            {
+              "kind": "event",
+              "label": "in the week (Mon–Sun, New York)",
+              "default": true,
+              "meaning": "dd.window_from / dd.window_to, New York dates; default the last completed calendar week"
+            }
+          ]
+        },
+        {
+          "key": "direct_email_sent",
+          "label": "Direct email",
+          "status": "draft",
+          "definition": "Emails the team sent, one per message (a follow-up counts on the day it went out). A copy stored in two mailboxes counts once; calendar notices and auto-replies don't count.",
+          "numerator": null,
+          "denominator": "n/a (count)",
+          "is_rate": false,
+          "sql_query": "WITH w AS (SELECT ((coalesce(nullif(current_setting('dd.window_from', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 7))::timestamp AT TIME ZONE 'America/New_York') AS start_at, (((coalesce(nullif(current_setting('dd.window_to', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 1) + 1))::timestamp AT TIME ZONE 'America/New_York') AS end_at, (SELECT coalesce(array_agg(lower(email)), '{}') FROM bedrock.jobs_team_member WHERE active) AS team)\nSELECT direct_email FROM (\n    WITH e AS (\n    WITH raw AS (\n      -- Synced email, one row per message, by the message's own sender.\n      SELECT 'email'::text AS kind, aem.sent_at AS ts, lower(aem.from_email) AS sender,\n             a.id AS activity_id, NULL::uuid AS intro_id,\n             a.participant_public_contact_id AS contact_id, coalesce(a.email_to, '{}'::text[]) || coalesce(a.email_cc, '{}'::text[]) AS recips,\n             a.subject, a.description, a.email_snippet AS snippet, a.email_from, a.source,\n             NULL::text AS call_kind\n      FROM bedrock.activity_email_message aem\n      JOIN bedrock.activity a ON a.id = aem.activity_id\n      WHERE aem.from_email = ANY(((SELECT team FROM w))::text[]) AND ((NULL)::timestamptz IS NULL OR aem.sent_at >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR aem.sent_at < ((SELECT end_at FROM w))::timestamptz)\n        AND a.deleted_at IS NULL AND a.type = 'email' AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))\n      UNION ALL\n      -- Email with no indexed messages: hand-logged, Salesforce-sourced, or\n      -- synced since the index last ran. The row stands for itself, by its\n      -- own sender (never the mailbox it was synced from).\n      SELECT 'email', a.activity_date, lower(btrim(coalesce(substring(a.email_from from '<([^>]+)>'), nullif(a.email_from, ''), CASE WHEN a.source = 'manual' THEN a.logged_by END))),\n             a.id, NULL::uuid, a.participant_public_contact_id, coalesce(a.email_to, '{}'::text[]) || coalesce(a.email_cc, '{}'::text[]),\n             a.subject, a.description, a.email_snippet, a.email_from, a.source, NULL::text\n      FROM bedrock.activity a\n      WHERE a.deleted_at IS NULL AND a.type = 'email' AND ((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz)\n        AND lower(btrim(coalesce(substring(a.email_from from '<([^>]+)>'), nullif(a.email_from, ''), CASE WHEN a.source = 'manual' THEN a.logged_by END))) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))\n        AND NOT EXISTS (SELECT 1 FROM bedrock.activity_email_message m WHERE m.activity_id = a.id)\n      UNION ALL\n      -- Hand-logged LinkedIn, text and calls, and meetings: whoever logged\n      -- it, or whose calendar it is on.\n      SELECT a.type, a.activity_date, lower(btrim(a.logged_by)),\n             a.id, NULL::uuid, a.participant_public_contact_id,\n             CASE WHEN a.type = 'meeting' THEN ARRAY(SELECT att->>'email' FROM jsonb_array_elements(coalesce(a.meeting_attendees, '[]'::jsonb)) att) ELSE '{}'::text[] END,\n             a.subject, a.description, NULL::text, a.email_from, a.source,\n             CASE WHEN a.type = 'call' THEN a.call_kind END\n      FROM bedrock.activity a\n      WHERE a.deleted_at IS NULL AND a.type IN ('linkedin', 'text', 'call', 'meeting')\n        AND ((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz) AND lower(btrim(a.logged_by)) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))\n      UNION ALL\n      -- A facilitated intro that was acted on, by who asked for it. Its\n      -- subject is the ask (routes.jobs_intro.ASK_LABELS names it).\n      SELECT 'intro', coalesce(ir.responded_at, ir.created_at), lower(ir.requested_by_email),\n             NULL::uuid, ir.id, ir.contact_id, '{}'::text[],\n             ir.specific_ask, ir.context, NULL::text, NULL::text, 'intro', NULL::text\n      FROM bedrock.intro_request ir\n      WHERE ir.status IN ('accepted', 'completed')\n        AND lower(ir.requested_by_email) = ANY(((SELECT team FROM w))::text[])\n        AND ((NULL)::timestamptz IS NULL OR coalesce(ir.responded_at, ir.created_at) >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR coalesce(ir.responded_at, ir.created_at) < ((SELECT end_at FROM w))::timestamptz)\n      UNION ALL\n      -- The first move to Call Booked, by who moved it. A meeting someone\n      -- else set up (Nick) enters here with no outreach behind it.\n      SELECT 'call_booked', h.changed_at, lower(h.changed_by),\n             NULL::uuid, NULL::uuid, h.contact_id, '{}'::text[],\n             NULL::text, NULL::text, NULL::text, NULL::text, 'stage', NULL::text\n      FROM (SELECT DISTINCT ON (contact_id) contact_id, changed_at, changed_by\n              FROM bedrock.jobs_membership_stage_history\n             WHERE to_stage = 'call_booked' ORDER BY contact_id, changed_at) h\n      WHERE lower(h.changed_by) = ANY(((SELECT team FROM w))::text[]) AND ((NULL)::timestamptz IS NULL OR h.changed_at >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR h.changed_at < ((SELECT end_at FROM w))::timestamptz)\n    ),\n    ev AS (\n      SELECT r.*, reach.contact_ids, reach.companies\n      FROM raw r\n      CROSS JOIN LATERAL (\n        SELECT coalesce(array_agg(DISTINCT c.contact_id), '{}') AS contact_ids,\n               coalesce(array_agg(DISTINCT lower(btrim(c.current_company)))\n                          FILTER (WHERE btrim(coalesce(c.current_company, '')) <> ''), '{}') AS companies\n        FROM public.contacts c\n        WHERE c.contact_id = r.contact_id\n           OR lower(c.email) = ANY(ARRAY(SELECT lower(x) FROM unnest(r.recips) x))\n      ) reach\n    )\n    SELECT ev.kind, ev.ts, ev.sender, ev.activity_id, ev.intro_id, ev.contact_id,\n           ev.contact_ids, ev.companies, ev.subject, ev.description, ev.snippet,\n           ev.email_from, ev.source, ev.call_kind, ev.recips AS recipients\n    FROM ev \n    ),\n    counted AS (               -- automatic mail is not activity\n      SELECT * FROM e\n      WHERE NOT (e.kind = 'email' AND (e.subject ~* '^\\s*(appointment (booked|canceled|cancelled|rescheduled)|(updated |new )?invitation|accepted|declined|tentatively accepted|(canceled|cancelled) event)( with note)?\\s*:' OR lower(coalesce(e.subject, '')) LIKE '%out of office%' OR lower(coalesce(e.subject, '')) LIKE '%automatic reply%' OR lower(coalesce(e.subject, '')) LIKE '%auto-reply%' OR lower(coalesce(e.subject, '')) LIKE '%autoreply%' OR lower(coalesce(e.subject, '')) LIKE '%auto reply%' OR lower(coalesce(e.subject, '')) LIKE '%ooo:%' OR lower(coalesce(e.subject, '')) LIKE '%ooo -%' OR lower(coalesce(e.subject, '')) LIKE '%away from%' OR lower(coalesce(e.subject, '')) LIKE '%on vacation%' OR lower(coalesce(e.subject, '')) LIKE '%on leave%' OR lower(coalesce(e.subject, '')) LIKE '%maternity leave%' OR lower(coalesce(e.subject, '')) LIKE '%thank you for your message%' OR lower(coalesce(e.subject, '')) LIKE '%thank you for your email%' OR lower(coalesce(e.subject, '')) LIKE '%thank you for contacting%' OR lower(coalesce(e.subject, '')) LIKE '%undeliverable%' OR lower(coalesce(e.subject, '')) LIKE '%delivery status notification%' OR lower(coalesce(e.subject, '')) LIKE '%mail delivery%' OR lower(coalesce(e.subject, '')) LIKE '%returned mail%' OR lower(coalesce(e.subject, '')) LIKE '%slow to respond%' OR lower(coalesce(e.email_from, '')) LIKE '%mailer-daemon%' OR lower(coalesce(e.email_from, '')) LIKE '%postmaster%' OR lower(coalesce(e.email_from, '')) LIKE '%no-reply%' OR lower(coalesce(e.email_from, '')) LIKE '%noreply%' OR lower(coalesce(e.email_from, '')) LIKE '%donotreply%' OR lower(coalesce(e.email_from, '')) LIKE '%do-not-reply%'))\n    ),\n    once AS (                  -- a send stored in two mailboxes counts once\n      SELECT DISTINCT ON (c.kind, coalesce(c.activity_id::text, c.intro_id::text), c.ts, c.contact_id) c.*\n      FROM counted c\n      WHERE NOT (c.kind = 'email' AND c.source = 'gmail-sync' AND EXISTS (\n        SELECT 1 FROM counted d\n        WHERE d.kind = 'email' AND d.source = 'gmail-sync'\n          AND d.sender = c.sender AND d.ts = c.ts AND d.activity_id::text < c.activity_id::text\n          AND (d.contact_ids && c.contact_ids\n               OR ARRAY(SELECT lower(x) FROM unnest(d.recipients) x)\n                  && ARRAY(SELECT lower(x) FROM unnest(c.recipients) x))))\n      ORDER BY c.kind, coalesce(c.activity_id::text, c.intro_id::text), c.ts, c.contact_id\n    ),\n    first_activity AS (        -- D17: the first activity ever on each account\n      SELECT co, min(ts) AS first_ts FROM once, unnest(once.companies) co GROUP BY co\n    )\n    SELECT\n      count(*) FILTER (WHERE kind IN ('email', 'linkedin', 'text', 'intro') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS outreach,\n      count(*) FILTER (WHERE kind = 'email' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS direct_email,\n      count(*) FILTER (WHERE kind = 'linkedin' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS linkedin,\n      count(*) FILTER (WHERE kind = 'text' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS text,\n      count(*) FILTER (WHERE kind = 'intro' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS intro,\n      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS calls,\n      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz\n                         AND coalesce(call_kind, 'general') = 'discovery') AS call_discovery,\n      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz\n                         AND coalesce(call_kind, 'general') = 'general') AS call_general,\n      (SELECT count(*) FROM first_activity\n        WHERE first_ts >= ((SELECT start_at FROM w))::timestamptz AND first_ts < ((SELECT end_at FROM w))::timestamptz) AS accounts_activated\n    FROM once\n    ) q",
+          "mappings": [],
+          "time_anchors": [
+            {
+              "kind": "event",
+              "label": "in the week (Mon–Sun, New York)",
+              "default": true,
+              "meaning": "dd.window_from / dd.window_to, New York dates; default the last completed calendar week"
+            }
+          ]
+        },
+        {
+          "key": "linkedin_message_sent",
+          "label": "LinkedIn messages",
+          "status": "draft",
+          "definition": "LinkedIn messages the team logged.",
+          "numerator": null,
+          "denominator": "n/a (count)",
+          "is_rate": false,
+          "sql_query": "WITH w AS (SELECT ((coalesce(nullif(current_setting('dd.window_from', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 7))::timestamp AT TIME ZONE 'America/New_York') AS start_at, (((coalesce(nullif(current_setting('dd.window_to', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 1) + 1))::timestamp AT TIME ZONE 'America/New_York') AS end_at, (SELECT coalesce(array_agg(lower(email)), '{}') FROM bedrock.jobs_team_member WHERE active) AS team)\nSELECT linkedin FROM (\n    WITH e AS (\n    WITH raw AS (\n      -- Synced email, one row per message, by the message's own sender.\n      SELECT 'email'::text AS kind, aem.sent_at AS ts, lower(aem.from_email) AS sender,\n             a.id AS activity_id, NULL::uuid AS intro_id,\n             a.participant_public_contact_id AS contact_id, coalesce(a.email_to, '{}'::text[]) || coalesce(a.email_cc, '{}'::text[]) AS recips,\n             a.subject, a.description, a.email_snippet AS snippet, a.email_from, a.source,\n             NULL::text AS call_kind\n      FROM bedrock.activity_email_message aem\n      JOIN bedrock.activity a ON a.id = aem.activity_id\n      WHERE aem.from_email = ANY(((SELECT team FROM w))::text[]) AND ((NULL)::timestamptz IS NULL OR aem.sent_at >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR aem.sent_at < ((SELECT end_at FROM w))::timestamptz)\n        AND a.deleted_at IS NULL AND a.type = 'email' AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))\n      UNION ALL\n      -- Email with no indexed messages: hand-logged, Salesforce-sourced, or\n      -- synced since the index last ran. The row stands for itself, by its\n      -- own sender (never the mailbox it was synced from).\n      SELECT 'email', a.activity_date, lower(btrim(coalesce(substring(a.email_from from '<([^>]+)>'), nullif(a.email_from, ''), CASE WHEN a.source = 'manual' THEN a.logged_by END))),\n             a.id, NULL::uuid, a.participant_public_contact_id, coalesce(a.email_to, '{}'::text[]) || coalesce(a.email_cc, '{}'::text[]),\n             a.subject, a.description, a.email_snippet, a.email_from, a.source, NULL::text\n      FROM bedrock.activity a\n      WHERE a.deleted_at IS NULL AND a.type = 'email' AND ((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz)\n        AND lower(btrim(coalesce(substring(a.email_from from '<([^>]+)>'), nullif(a.email_from, ''), CASE WHEN a.source = 'manual' THEN a.logged_by END))) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))\n        AND NOT EXISTS (SELECT 1 FROM bedrock.activity_email_message m WHERE m.activity_id = a.id)\n      UNION ALL\n      -- Hand-logged LinkedIn, text and calls, and meetings: whoever logged\n      -- it, or whose calendar it is on.\n      SELECT a.type, a.activity_date, lower(btrim(a.logged_by)),\n             a.id, NULL::uuid, a.participant_public_contact_id,\n             CASE WHEN a.type = 'meeting' THEN ARRAY(SELECT att->>'email' FROM jsonb_array_elements(coalesce(a.meeting_attendees, '[]'::jsonb)) att) ELSE '{}'::text[] END,\n             a.subject, a.description, NULL::text, a.email_from, a.source,\n             CASE WHEN a.type = 'call' THEN a.call_kind END\n      FROM bedrock.activity a\n      WHERE a.deleted_at IS NULL AND a.type IN ('linkedin', 'text', 'call', 'meeting')\n        AND ((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz) AND lower(btrim(a.logged_by)) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))\n      UNION ALL\n      -- A facilitated intro that was acted on, by who asked for it. Its\n      -- subject is the ask (routes.jobs_intro.ASK_LABELS names it).\n      SELECT 'intro', coalesce(ir.responded_at, ir.created_at), lower(ir.requested_by_email),\n             NULL::uuid, ir.id, ir.contact_id, '{}'::text[],\n             ir.specific_ask, ir.context, NULL::text, NULL::text, 'intro', NULL::text\n      FROM bedrock.intro_request ir\n      WHERE ir.status IN ('accepted', 'completed')\n        AND lower(ir.requested_by_email) = ANY(((SELECT team FROM w))::text[])\n        AND ((NULL)::timestamptz IS NULL OR coalesce(ir.responded_at, ir.created_at) >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR coalesce(ir.responded_at, ir.created_at) < ((SELECT end_at FROM w))::timestamptz)\n      UNION ALL\n      -- The first move to Call Booked, by who moved it. A meeting someone\n      -- else set up (Nick) enters here with no outreach behind it.\n      SELECT 'call_booked', h.changed_at, lower(h.changed_by),\n             NULL::uuid, NULL::uuid, h.contact_id, '{}'::text[],\n             NULL::text, NULL::text, NULL::text, NULL::text, 'stage', NULL::text\n      FROM (SELECT DISTINCT ON (contact_id) contact_id, changed_at, changed_by\n              FROM bedrock.jobs_membership_stage_history\n             WHERE to_stage = 'call_booked' ORDER BY contact_id, changed_at) h\n      WHERE lower(h.changed_by) = ANY(((SELECT team FROM w))::text[]) AND ((NULL)::timestamptz IS NULL OR h.changed_at >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR h.changed_at < ((SELECT end_at FROM w))::timestamptz)\n    ),\n    ev AS (\n      SELECT r.*, reach.contact_ids, reach.companies\n      FROM raw r\n      CROSS JOIN LATERAL (\n        SELECT coalesce(array_agg(DISTINCT c.contact_id), '{}') AS contact_ids,\n               coalesce(array_agg(DISTINCT lower(btrim(c.current_company)))\n                          FILTER (WHERE btrim(coalesce(c.current_company, '')) <> ''), '{}') AS companies\n        FROM public.contacts c\n        WHERE c.contact_id = r.contact_id\n           OR lower(c.email) = ANY(ARRAY(SELECT lower(x) FROM unnest(r.recips) x))\n      ) reach\n    )\n    SELECT ev.kind, ev.ts, ev.sender, ev.activity_id, ev.intro_id, ev.contact_id,\n           ev.contact_ids, ev.companies, ev.subject, ev.description, ev.snippet,\n           ev.email_from, ev.source, ev.call_kind, ev.recips AS recipients\n    FROM ev \n    ),\n    counted AS (               -- automatic mail is not activity\n      SELECT * FROM e\n      WHERE NOT (e.kind = 'email' AND (e.subject ~* '^\\s*(appointment (booked|canceled|cancelled|rescheduled)|(updated |new )?invitation|accepted|declined|tentatively accepted|(canceled|cancelled) event)( with note)?\\s*:' OR lower(coalesce(e.subject, '')) LIKE '%out of office%' OR lower(coalesce(e.subject, '')) LIKE '%automatic reply%' OR lower(coalesce(e.subject, '')) LIKE '%auto-reply%' OR lower(coalesce(e.subject, '')) LIKE '%autoreply%' OR lower(coalesce(e.subject, '')) LIKE '%auto reply%' OR lower(coalesce(e.subject, '')) LIKE '%ooo:%' OR lower(coalesce(e.subject, '')) LIKE '%ooo -%' OR lower(coalesce(e.subject, '')) LIKE '%away from%' OR lower(coalesce(e.subject, '')) LIKE '%on vacation%' OR lower(coalesce(e.subject, '')) LIKE '%on leave%' OR lower(coalesce(e.subject, '')) LIKE '%maternity leave%' OR lower(coalesce(e.subject, '')) LIKE '%thank you for your message%' OR lower(coalesce(e.subject, '')) LIKE '%thank you for your email%' OR lower(coalesce(e.subject, '')) LIKE '%thank you for contacting%' OR lower(coalesce(e.subject, '')) LIKE '%undeliverable%' OR lower(coalesce(e.subject, '')) LIKE '%delivery status notification%' OR lower(coalesce(e.subject, '')) LIKE '%mail delivery%' OR lower(coalesce(e.subject, '')) LIKE '%returned mail%' OR lower(coalesce(e.subject, '')) LIKE '%slow to respond%' OR lower(coalesce(e.email_from, '')) LIKE '%mailer-daemon%' OR lower(coalesce(e.email_from, '')) LIKE '%postmaster%' OR lower(coalesce(e.email_from, '')) LIKE '%no-reply%' OR lower(coalesce(e.email_from, '')) LIKE '%noreply%' OR lower(coalesce(e.email_from, '')) LIKE '%donotreply%' OR lower(coalesce(e.email_from, '')) LIKE '%do-not-reply%'))\n    ),\n    once AS (                  -- a send stored in two mailboxes counts once\n      SELECT DISTINCT ON (c.kind, coalesce(c.activity_id::text, c.intro_id::text), c.ts, c.contact_id) c.*\n      FROM counted c\n      WHERE NOT (c.kind = 'email' AND c.source = 'gmail-sync' AND EXISTS (\n        SELECT 1 FROM counted d\n        WHERE d.kind = 'email' AND d.source = 'gmail-sync'\n          AND d.sender = c.sender AND d.ts = c.ts AND d.activity_id::text < c.activity_id::text\n          AND (d.contact_ids && c.contact_ids\n               OR ARRAY(SELECT lower(x) FROM unnest(d.recipients) x)\n                  && ARRAY(SELECT lower(x) FROM unnest(c.recipients) x))))\n      ORDER BY c.kind, coalesce(c.activity_id::text, c.intro_id::text), c.ts, c.contact_id\n    ),\n    first_activity AS (        -- D17: the first activity ever on each account\n      SELECT co, min(ts) AS first_ts FROM once, unnest(once.companies) co GROUP BY co\n    )\n    SELECT\n      count(*) FILTER (WHERE kind IN ('email', 'linkedin', 'text', 'intro') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS outreach,\n      count(*) FILTER (WHERE kind = 'email' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS direct_email,\n      count(*) FILTER (WHERE kind = 'linkedin' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS linkedin,\n      count(*) FILTER (WHERE kind = 'text' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS text,\n      count(*) FILTER (WHERE kind = 'intro' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS intro,\n      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS calls,\n      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz\n                         AND coalesce(call_kind, 'general') = 'discovery') AS call_discovery,\n      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz\n                         AND coalesce(call_kind, 'general') = 'general') AS call_general,\n      (SELECT count(*) FROM first_activity\n        WHERE first_ts >= ((SELECT start_at FROM w))::timestamptz AND first_ts < ((SELECT end_at FROM w))::timestamptz) AS accounts_activated\n    FROM once\n    ) q",
+          "mappings": [],
+          "time_anchors": [
+            {
+              "kind": "event",
+              "label": "in the week (Mon–Sun, New York)",
+              "default": true,
+              "meaning": "dd.window_from / dd.window_to, New York dates; default the last completed calendar week"
+            }
+          ]
+        },
+        {
+          "key": "text_sent",
+          "label": "Texts",
+          "status": "draft",
+          "definition": "Texts the team logged.",
+          "numerator": null,
+          "denominator": "n/a (count)",
+          "is_rate": false,
+          "sql_query": "WITH w AS (SELECT ((coalesce(nullif(current_setting('dd.window_from', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 7))::timestamp AT TIME ZONE 'America/New_York') AS start_at, (((coalesce(nullif(current_setting('dd.window_to', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 1) + 1))::timestamp AT TIME ZONE 'America/New_York') AS end_at, (SELECT coalesce(array_agg(lower(email)), '{}') FROM bedrock.jobs_team_member WHERE active) AS team)\nSELECT text FROM (\n    WITH e AS (\n    WITH raw AS (\n      -- Synced email, one row per message, by the message's own sender.\n      SELECT 'email'::text AS kind, aem.sent_at AS ts, lower(aem.from_email) AS sender,\n             a.id AS activity_id, NULL::uuid AS intro_id,\n             a.participant_public_contact_id AS contact_id, coalesce(a.email_to, '{}'::text[]) || coalesce(a.email_cc, '{}'::text[]) AS recips,\n             a.subject, a.description, a.email_snippet AS snippet, a.email_from, a.source,\n             NULL::text AS call_kind\n      FROM bedrock.activity_email_message aem\n      JOIN bedrock.activity a ON a.id = aem.activity_id\n      WHERE aem.from_email = ANY(((SELECT team FROM w))::text[]) AND ((NULL)::timestamptz IS NULL OR aem.sent_at >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR aem.sent_at < ((SELECT end_at FROM w))::timestamptz)\n        AND a.deleted_at IS NULL AND a.type = 'email' AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))\n      UNION ALL\n      -- Email with no indexed messages: hand-logged, Salesforce-sourced, or\n      -- synced since the index last ran. The row stands for itself, by its\n      -- own sender (never the mailbox it was synced from).\n      SELECT 'email', a.activity_date, lower(btrim(coalesce(substring(a.email_from from '<([^>]+)>'), nullif(a.email_from, ''), CASE WHEN a.source = 'manual' THEN a.logged_by END))),\n             a.id, NULL::uuid, a.participant_public_contact_id, coalesce(a.email_to, '{}'::text[]) || coalesce(a.email_cc, '{}'::text[]),\n             a.subject, a.description, a.email_snippet, a.email_from, a.source, NULL::text\n      FROM bedrock.activity a\n      WHERE a.deleted_at IS NULL AND a.type = 'email' AND ((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz)\n        AND lower(btrim(coalesce(substring(a.email_from from '<([^>]+)>'), nullif(a.email_from, ''), CASE WHEN a.source = 'manual' THEN a.logged_by END))) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))\n        AND NOT EXISTS (SELECT 1 FROM bedrock.activity_email_message m WHERE m.activity_id = a.id)\n      UNION ALL\n      -- Hand-logged LinkedIn, text and calls, and meetings: whoever logged\n      -- it, or whose calendar it is on.\n      SELECT a.type, a.activity_date, lower(btrim(a.logged_by)),\n             a.id, NULL::uuid, a.participant_public_contact_id,\n             CASE WHEN a.type = 'meeting' THEN ARRAY(SELECT att->>'email' FROM jsonb_array_elements(coalesce(a.meeting_attendees, '[]'::jsonb)) att) ELSE '{}'::text[] END,\n             a.subject, a.description, NULL::text, a.email_from, a.source,\n             CASE WHEN a.type = 'call' THEN a.call_kind END\n      FROM bedrock.activity a\n      WHERE a.deleted_at IS NULL AND a.type IN ('linkedin', 'text', 'call', 'meeting')\n        AND ((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz) AND lower(btrim(a.logged_by)) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))\n      UNION ALL\n      -- A facilitated intro that was acted on, by who asked for it. Its\n      -- subject is the ask (routes.jobs_intro.ASK_LABELS names it).\n      SELECT 'intro', coalesce(ir.responded_at, ir.created_at), lower(ir.requested_by_email),\n             NULL::uuid, ir.id, ir.contact_id, '{}'::text[],\n             ir.specific_ask, ir.context, NULL::text, NULL::text, 'intro', NULL::text\n      FROM bedrock.intro_request ir\n      WHERE ir.status IN ('accepted', 'completed')\n        AND lower(ir.requested_by_email) = ANY(((SELECT team FROM w))::text[])\n        AND ((NULL)::timestamptz IS NULL OR coalesce(ir.responded_at, ir.created_at) >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR coalesce(ir.responded_at, ir.created_at) < ((SELECT end_at FROM w))::timestamptz)\n      UNION ALL\n      -- The first move to Call Booked, by who moved it. A meeting someone\n      -- else set up (Nick) enters here with no outreach behind it.\n      SELECT 'call_booked', h.changed_at, lower(h.changed_by),\n             NULL::uuid, NULL::uuid, h.contact_id, '{}'::text[],\n             NULL::text, NULL::text, NULL::text, NULL::text, 'stage', NULL::text\n      FROM (SELECT DISTINCT ON (contact_id) contact_id, changed_at, changed_by\n              FROM bedrock.jobs_membership_stage_history\n             WHERE to_stage = 'call_booked' ORDER BY contact_id, changed_at) h\n      WHERE lower(h.changed_by) = ANY(((SELECT team FROM w))::text[]) AND ((NULL)::timestamptz IS NULL OR h.changed_at >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR h.changed_at < ((SELECT end_at FROM w))::timestamptz)\n    ),\n    ev AS (\n      SELECT r.*, reach.contact_ids, reach.companies\n      FROM raw r\n      CROSS JOIN LATERAL (\n        SELECT coalesce(array_agg(DISTINCT c.contact_id), '{}') AS contact_ids,\n               coalesce(array_agg(DISTINCT lower(btrim(c.current_company)))\n                          FILTER (WHERE btrim(coalesce(c.current_company, '')) <> ''), '{}') AS companies\n        FROM public.contacts c\n        WHERE c.contact_id = r.contact_id\n           OR lower(c.email) = ANY(ARRAY(SELECT lower(x) FROM unnest(r.recips) x))\n      ) reach\n    )\n    SELECT ev.kind, ev.ts, ev.sender, ev.activity_id, ev.intro_id, ev.contact_id,\n           ev.contact_ids, ev.companies, ev.subject, ev.description, ev.snippet,\n           ev.email_from, ev.source, ev.call_kind, ev.recips AS recipients\n    FROM ev \n    ),\n    counted AS (               -- automatic mail is not activity\n      SELECT * FROM e\n      WHERE NOT (e.kind = 'email' AND (e.subject ~* '^\\s*(appointment (booked|canceled|cancelled|rescheduled)|(updated |new )?invitation|accepted|declined|tentatively accepted|(canceled|cancelled) event)( with note)?\\s*:' OR lower(coalesce(e.subject, '')) LIKE '%out of office%' OR lower(coalesce(e.subject, '')) LIKE '%automatic reply%' OR lower(coalesce(e.subject, '')) LIKE '%auto-reply%' OR lower(coalesce(e.subject, '')) LIKE '%autoreply%' OR lower(coalesce(e.subject, '')) LIKE '%auto reply%' OR lower(coalesce(e.subject, '')) LIKE '%ooo:%' OR lower(coalesce(e.subject, '')) LIKE '%ooo -%' OR lower(coalesce(e.subject, '')) LIKE '%away from%' OR lower(coalesce(e.subject, '')) LIKE '%on vacation%' OR lower(coalesce(e.subject, '')) LIKE '%on leave%' OR lower(coalesce(e.subject, '')) LIKE '%maternity leave%' OR lower(coalesce(e.subject, '')) LIKE '%thank you for your message%' OR lower(coalesce(e.subject, '')) LIKE '%thank you for your email%' OR lower(coalesce(e.subject, '')) LIKE '%thank you for contacting%' OR lower(coalesce(e.subject, '')) LIKE '%undeliverable%' OR lower(coalesce(e.subject, '')) LIKE '%delivery status notification%' OR lower(coalesce(e.subject, '')) LIKE '%mail delivery%' OR lower(coalesce(e.subject, '')) LIKE '%returned mail%' OR lower(coalesce(e.subject, '')) LIKE '%slow to respond%' OR lower(coalesce(e.email_from, '')) LIKE '%mailer-daemon%' OR lower(coalesce(e.email_from, '')) LIKE '%postmaster%' OR lower(coalesce(e.email_from, '')) LIKE '%no-reply%' OR lower(coalesce(e.email_from, '')) LIKE '%noreply%' OR lower(coalesce(e.email_from, '')) LIKE '%donotreply%' OR lower(coalesce(e.email_from, '')) LIKE '%do-not-reply%'))\n    ),\n    once AS (                  -- a send stored in two mailboxes counts once\n      SELECT DISTINCT ON (c.kind, coalesce(c.activity_id::text, c.intro_id::text), c.ts, c.contact_id) c.*\n      FROM counted c\n      WHERE NOT (c.kind = 'email' AND c.source = 'gmail-sync' AND EXISTS (\n        SELECT 1 FROM counted d\n        WHERE d.kind = 'email' AND d.source = 'gmail-sync'\n          AND d.sender = c.sender AND d.ts = c.ts AND d.activity_id::text < c.activity_id::text\n          AND (d.contact_ids && c.contact_ids\n               OR ARRAY(SELECT lower(x) FROM unnest(d.recipients) x)\n                  && ARRAY(SELECT lower(x) FROM unnest(c.recipients) x))))\n      ORDER BY c.kind, coalesce(c.activity_id::text, c.intro_id::text), c.ts, c.contact_id\n    ),\n    first_activity AS (        -- D17: the first activity ever on each account\n      SELECT co, min(ts) AS first_ts FROM once, unnest(once.companies) co GROUP BY co\n    )\n    SELECT\n      count(*) FILTER (WHERE kind IN ('email', 'linkedin', 'text', 'intro') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS outreach,\n      count(*) FILTER (WHERE kind = 'email' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS direct_email,\n      count(*) FILTER (WHERE kind = 'linkedin' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS linkedin,\n      count(*) FILTER (WHERE kind = 'text' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS text,\n      count(*) FILTER (WHERE kind = 'intro' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS intro,\n      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS calls,\n      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz\n                         AND coalesce(call_kind, 'general') = 'discovery') AS call_discovery,\n      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz\n                         AND coalesce(call_kind, 'general') = 'general') AS call_general,\n      (SELECT count(*) FROM first_activity\n        WHERE first_ts >= ((SELECT start_at FROM w))::timestamptz AND first_ts < ((SELECT end_at FROM w))::timestamptz) AS accounts_activated\n    FROM once\n    ) q",
+          "mappings": [],
+          "time_anchors": [
+            {
+              "kind": "event",
+              "label": "in the week (Mon–Sun, New York)",
+              "default": true,
+              "meaning": "dd.window_from / dd.window_to, New York dates; default the last completed calendar week"
+            }
+          ]
+        },
+        {
+          "key": "facilitated_intro_sent",
+          "label": "Facilitated intros",
+          "status": "draft",
+          "definition": "Intro requests the team made that were accepted or completed, on the day they were acted on.",
+          "numerator": null,
+          "denominator": "n/a (count)",
+          "is_rate": false,
+          "sql_query": "WITH w AS (SELECT ((coalesce(nullif(current_setting('dd.window_from', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 7))::timestamp AT TIME ZONE 'America/New_York') AS start_at, (((coalesce(nullif(current_setting('dd.window_to', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 1) + 1))::timestamp AT TIME ZONE 'America/New_York') AS end_at, (SELECT coalesce(array_agg(lower(email)), '{}') FROM bedrock.jobs_team_member WHERE active) AS team)\nSELECT intro FROM (\n    WITH e AS (\n    WITH raw AS (\n      -- Synced email, one row per message, by the message's own sender.\n      SELECT 'email'::text AS kind, aem.sent_at AS ts, lower(aem.from_email) AS sender,\n             a.id AS activity_id, NULL::uuid AS intro_id,\n             a.participant_public_contact_id AS contact_id, coalesce(a.email_to, '{}'::text[]) || coalesce(a.email_cc, '{}'::text[]) AS recips,\n             a.subject, a.description, a.email_snippet AS snippet, a.email_from, a.source,\n             NULL::text AS call_kind\n      FROM bedrock.activity_email_message aem\n      JOIN bedrock.activity a ON a.id = aem.activity_id\n      WHERE aem.from_email = ANY(((SELECT team FROM w))::text[]) AND ((NULL)::timestamptz IS NULL OR aem.sent_at >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR aem.sent_at < ((SELECT end_at FROM w))::timestamptz)\n        AND a.deleted_at IS NULL AND a.type = 'email' AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))\n      UNION ALL\n      -- Email with no indexed messages: hand-logged, Salesforce-sourced, or\n      -- synced since the index last ran. The row stands for itself, by its\n      -- own sender (never the mailbox it was synced from).\n      SELECT 'email', a.activity_date, lower(btrim(coalesce(substring(a.email_from from '<([^>]+)>'), nullif(a.email_from, ''), CASE WHEN a.source = 'manual' THEN a.logged_by END))),\n             a.id, NULL::uuid, a.participant_public_contact_id, coalesce(a.email_to, '{}'::text[]) || coalesce(a.email_cc, '{}'::text[]),\n             a.subject, a.description, a.email_snippet, a.email_from, a.source, NULL::text\n      FROM bedrock.activity a\n      WHERE a.deleted_at IS NULL AND a.type = 'email' AND ((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz)\n        AND lower(btrim(coalesce(substring(a.email_from from '<([^>]+)>'), nullif(a.email_from, ''), CASE WHEN a.source = 'manual' THEN a.logged_by END))) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))\n        AND NOT EXISTS (SELECT 1 FROM bedrock.activity_email_message m WHERE m.activity_id = a.id)\n      UNION ALL\n      -- Hand-logged LinkedIn, text and calls, and meetings: whoever logged\n      -- it, or whose calendar it is on.\n      SELECT a.type, a.activity_date, lower(btrim(a.logged_by)),\n             a.id, NULL::uuid, a.participant_public_contact_id,\n             CASE WHEN a.type = 'meeting' THEN ARRAY(SELECT att->>'email' FROM jsonb_array_elements(coalesce(a.meeting_attendees, '[]'::jsonb)) att) ELSE '{}'::text[] END,\n             a.subject, a.description, NULL::text, a.email_from, a.source,\n             CASE WHEN a.type = 'call' THEN a.call_kind END\n      FROM bedrock.activity a\n      WHERE a.deleted_at IS NULL AND a.type IN ('linkedin', 'text', 'call', 'meeting')\n        AND ((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz) AND lower(btrim(a.logged_by)) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))\n      UNION ALL\n      -- A facilitated intro that was acted on, by who asked for it. Its\n      -- subject is the ask (routes.jobs_intro.ASK_LABELS names it).\n      SELECT 'intro', coalesce(ir.responded_at, ir.created_at), lower(ir.requested_by_email),\n             NULL::uuid, ir.id, ir.contact_id, '{}'::text[],\n             ir.specific_ask, ir.context, NULL::text, NULL::text, 'intro', NULL::text\n      FROM bedrock.intro_request ir\n      WHERE ir.status IN ('accepted', 'completed')\n        AND lower(ir.requested_by_email) = ANY(((SELECT team FROM w))::text[])\n        AND ((NULL)::timestamptz IS NULL OR coalesce(ir.responded_at, ir.created_at) >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR coalesce(ir.responded_at, ir.created_at) < ((SELECT end_at FROM w))::timestamptz)\n      UNION ALL\n      -- The first move to Call Booked, by who moved it. A meeting someone\n      -- else set up (Nick) enters here with no outreach behind it.\n      SELECT 'call_booked', h.changed_at, lower(h.changed_by),\n             NULL::uuid, NULL::uuid, h.contact_id, '{}'::text[],\n             NULL::text, NULL::text, NULL::text, NULL::text, 'stage', NULL::text\n      FROM (SELECT DISTINCT ON (contact_id) contact_id, changed_at, changed_by\n              FROM bedrock.jobs_membership_stage_history\n             WHERE to_stage = 'call_booked' ORDER BY contact_id, changed_at) h\n      WHERE lower(h.changed_by) = ANY(((SELECT team FROM w))::text[]) AND ((NULL)::timestamptz IS NULL OR h.changed_at >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR h.changed_at < ((SELECT end_at FROM w))::timestamptz)\n    ),\n    ev AS (\n      SELECT r.*, reach.contact_ids, reach.companies\n      FROM raw r\n      CROSS JOIN LATERAL (\n        SELECT coalesce(array_agg(DISTINCT c.contact_id), '{}') AS contact_ids,\n               coalesce(array_agg(DISTINCT lower(btrim(c.current_company)))\n                          FILTER (WHERE btrim(coalesce(c.current_company, '')) <> ''), '{}') AS companies\n        FROM public.contacts c\n        WHERE c.contact_id = r.contact_id\n           OR lower(c.email) = ANY(ARRAY(SELECT lower(x) FROM unnest(r.recips) x))\n      ) reach\n    )\n    SELECT ev.kind, ev.ts, ev.sender, ev.activity_id, ev.intro_id, ev.contact_id,\n           ev.contact_ids, ev.companies, ev.subject, ev.description, ev.snippet,\n           ev.email_from, ev.source, ev.call_kind, ev.recips AS recipients\n    FROM ev \n    ),\n    counted AS (               -- automatic mail is not activity\n      SELECT * FROM e\n      WHERE NOT (e.kind = 'email' AND (e.subject ~* '^\\s*(appointment (booked|canceled|cancelled|rescheduled)|(updated |new )?invitation|accepted|declined|tentatively accepted|(canceled|cancelled) event)( with note)?\\s*:' OR lower(coalesce(e.subject, '')) LIKE '%out of office%' OR lower(coalesce(e.subject, '')) LIKE '%automatic reply%' OR lower(coalesce(e.subject, '')) LIKE '%auto-reply%' OR lower(coalesce(e.subject, '')) LIKE '%autoreply%' OR lower(coalesce(e.subject, '')) LIKE '%auto reply%' OR lower(coalesce(e.subject, '')) LIKE '%ooo:%' OR lower(coalesce(e.subject, '')) LIKE '%ooo -%' OR lower(coalesce(e.subject, '')) LIKE '%away from%' OR lower(coalesce(e.subject, '')) LIKE '%on vacation%' OR lower(coalesce(e.subject, '')) LIKE '%on leave%' OR lower(coalesce(e.subject, '')) LIKE '%maternity leave%' OR lower(coalesce(e.subject, '')) LIKE '%thank you for your message%' OR lower(coalesce(e.subject, '')) LIKE '%thank you for your email%' OR lower(coalesce(e.subject, '')) LIKE '%thank you for contacting%' OR lower(coalesce(e.subject, '')) LIKE '%undeliverable%' OR lower(coalesce(e.subject, '')) LIKE '%delivery status notification%' OR lower(coalesce(e.subject, '')) LIKE '%mail delivery%' OR lower(coalesce(e.subject, '')) LIKE '%returned mail%' OR lower(coalesce(e.subject, '')) LIKE '%slow to respond%' OR lower(coalesce(e.email_from, '')) LIKE '%mailer-daemon%' OR lower(coalesce(e.email_from, '')) LIKE '%postmaster%' OR lower(coalesce(e.email_from, '')) LIKE '%no-reply%' OR lower(coalesce(e.email_from, '')) LIKE '%noreply%' OR lower(coalesce(e.email_from, '')) LIKE '%donotreply%' OR lower(coalesce(e.email_from, '')) LIKE '%do-not-reply%'))\n    ),\n    once AS (                  -- a send stored in two mailboxes counts once\n      SELECT DISTINCT ON (c.kind, coalesce(c.activity_id::text, c.intro_id::text), c.ts, c.contact_id) c.*\n      FROM counted c\n      WHERE NOT (c.kind = 'email' AND c.source = 'gmail-sync' AND EXISTS (\n        SELECT 1 FROM counted d\n        WHERE d.kind = 'email' AND d.source = 'gmail-sync'\n          AND d.sender = c.sender AND d.ts = c.ts AND d.activity_id::text < c.activity_id::text\n          AND (d.contact_ids && c.contact_ids\n               OR ARRAY(SELECT lower(x) FROM unnest(d.recipients) x)\n                  && ARRAY(SELECT lower(x) FROM unnest(c.recipients) x))))\n      ORDER BY c.kind, coalesce(c.activity_id::text, c.intro_id::text), c.ts, c.contact_id\n    ),\n    first_activity AS (        -- D17: the first activity ever on each account\n      SELECT co, min(ts) AS first_ts FROM once, unnest(once.companies) co GROUP BY co\n    )\n    SELECT\n      count(*) FILTER (WHERE kind IN ('email', 'linkedin', 'text', 'intro') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS outreach,\n      count(*) FILTER (WHERE kind = 'email' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS direct_email,\n      count(*) FILTER (WHERE kind = 'linkedin' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS linkedin,\n      count(*) FILTER (WHERE kind = 'text' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS text,\n      count(*) FILTER (WHERE kind = 'intro' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS intro,\n      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS calls,\n      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz\n                         AND coalesce(call_kind, 'general') = 'discovery') AS call_discovery,\n      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz\n                         AND coalesce(call_kind, 'general') = 'general') AS call_general,\n      (SELECT count(*) FROM first_activity\n        WHERE first_ts >= ((SELECT start_at FROM w))::timestamptz AND first_ts < ((SELECT end_at FROM w))::timestamptz) AS accounts_activated\n    FROM once\n    ) q",
+          "mappings": [],
+          "time_anchors": [
+            {
+              "kind": "event",
+              "label": "in the week (Mon–Sun, New York)",
+              "default": true,
+              "meaning": "dd.window_from / dd.window_to, New York dates; default the last completed calendar week"
+            }
+          ]
+        },
+        {
+          "key": "calls",
+          "label": "Calls",
+          "status": "draft",
+          "definition": "Calls the team logged and meetings on the team's calendars.",
+          "numerator": null,
+          "denominator": "n/a (count)",
+          "is_rate": false,
+          "sql_query": "WITH w AS (SELECT ((coalesce(nullif(current_setting('dd.window_from', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 7))::timestamp AT TIME ZONE 'America/New_York') AS start_at, (((coalesce(nullif(current_setting('dd.window_to', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 1) + 1))::timestamp AT TIME ZONE 'America/New_York') AS end_at, (SELECT coalesce(array_agg(lower(email)), '{}') FROM bedrock.jobs_team_member WHERE active) AS team)\nSELECT calls FROM (\n    WITH e AS (\n    WITH raw AS (\n      -- Synced email, one row per message, by the message's own sender.\n      SELECT 'email'::text AS kind, aem.sent_at AS ts, lower(aem.from_email) AS sender,\n             a.id AS activity_id, NULL::uuid AS intro_id,\n             a.participant_public_contact_id AS contact_id, coalesce(a.email_to, '{}'::text[]) || coalesce(a.email_cc, '{}'::text[]) AS recips,\n             a.subject, a.description, a.email_snippet AS snippet, a.email_from, a.source,\n             NULL::text AS call_kind\n      FROM bedrock.activity_email_message aem\n      JOIN bedrock.activity a ON a.id = aem.activity_id\n      WHERE aem.from_email = ANY(((SELECT team FROM w))::text[]) AND ((NULL)::timestamptz IS NULL OR aem.sent_at >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR aem.sent_at < ((SELECT end_at FROM w))::timestamptz)\n        AND a.deleted_at IS NULL AND a.type = 'email' AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))\n      UNION ALL\n      -- Email with no indexed messages: hand-logged, Salesforce-sourced, or\n      -- synced since the index last ran. The row stands for itself, by its\n      -- own sender (never the mailbox it was synced from).\n      SELECT 'email', a.activity_date, lower(btrim(coalesce(substring(a.email_from from '<([^>]+)>'), nullif(a.email_from, ''), CASE WHEN a.source = 'manual' THEN a.logged_by END))),\n             a.id, NULL::uuid, a.participant_public_contact_id, coalesce(a.email_to, '{}'::text[]) || coalesce(a.email_cc, '{}'::text[]),\n             a.subject, a.description, a.email_snippet, a.email_from, a.source, NULL::text\n      FROM bedrock.activity a\n      WHERE a.deleted_at IS NULL AND a.type = 'email' AND ((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz)\n        AND lower(btrim(coalesce(substring(a.email_from from '<([^>]+)>'), nullif(a.email_from, ''), CASE WHEN a.source = 'manual' THEN a.logged_by END))) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))\n        AND NOT EXISTS (SELECT 1 FROM bedrock.activity_email_message m WHERE m.activity_id = a.id)\n      UNION ALL\n      -- Hand-logged LinkedIn, text and calls, and meetings: whoever logged\n      -- it, or whose calendar it is on.\n      SELECT a.type, a.activity_date, lower(btrim(a.logged_by)),\n             a.id, NULL::uuid, a.participant_public_contact_id,\n             CASE WHEN a.type = 'meeting' THEN ARRAY(SELECT att->>'email' FROM jsonb_array_elements(coalesce(a.meeting_attendees, '[]'::jsonb)) att) ELSE '{}'::text[] END,\n             a.subject, a.description, NULL::text, a.email_from, a.source,\n             CASE WHEN a.type = 'call' THEN a.call_kind END\n      FROM bedrock.activity a\n      WHERE a.deleted_at IS NULL AND a.type IN ('linkedin', 'text', 'call', 'meeting')\n        AND ((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz) AND lower(btrim(a.logged_by)) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))\n      UNION ALL\n      -- A facilitated intro that was acted on, by who asked for it. Its\n      -- subject is the ask (routes.jobs_intro.ASK_LABELS names it).\n      SELECT 'intro', coalesce(ir.responded_at, ir.created_at), lower(ir.requested_by_email),\n             NULL::uuid, ir.id, ir.contact_id, '{}'::text[],\n             ir.specific_ask, ir.context, NULL::text, NULL::text, 'intro', NULL::text\n      FROM bedrock.intro_request ir\n      WHERE ir.status IN ('accepted', 'completed')\n        AND lower(ir.requested_by_email) = ANY(((SELECT team FROM w))::text[])\n        AND ((NULL)::timestamptz IS NULL OR coalesce(ir.responded_at, ir.created_at) >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR coalesce(ir.responded_at, ir.created_at) < ((SELECT end_at FROM w))::timestamptz)\n      UNION ALL\n      -- The first move to Call Booked, by who moved it. A meeting someone\n      -- else set up (Nick) enters here with no outreach behind it.\n      SELECT 'call_booked', h.changed_at, lower(h.changed_by),\n             NULL::uuid, NULL::uuid, h.contact_id, '{}'::text[],\n             NULL::text, NULL::text, NULL::text, NULL::text, 'stage', NULL::text\n      FROM (SELECT DISTINCT ON (contact_id) contact_id, changed_at, changed_by\n              FROM bedrock.jobs_membership_stage_history\n             WHERE to_stage = 'call_booked' ORDER BY contact_id, changed_at) h\n      WHERE lower(h.changed_by) = ANY(((SELECT team FROM w))::text[]) AND ((NULL)::timestamptz IS NULL OR h.changed_at >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR h.changed_at < ((SELECT end_at FROM w))::timestamptz)\n    ),\n    ev AS (\n      SELECT r.*, reach.contact_ids, reach.companies\n      FROM raw r\n      CROSS JOIN LATERAL (\n        SELECT coalesce(array_agg(DISTINCT c.contact_id), '{}') AS contact_ids,\n               coalesce(array_agg(DISTINCT lower(btrim(c.current_company)))\n                          FILTER (WHERE btrim(coalesce(c.current_company, '')) <> ''), '{}') AS companies\n        FROM public.contacts c\n        WHERE c.contact_id = r.contact_id\n           OR lower(c.email) = ANY(ARRAY(SELECT lower(x) FROM unnest(r.recips) x))\n      ) reach\n    )\n    SELECT ev.kind, ev.ts, ev.sender, ev.activity_id, ev.intro_id, ev.contact_id,\n           ev.contact_ids, ev.companies, ev.subject, ev.description, ev.snippet,\n           ev.email_from, ev.source, ev.call_kind, ev.recips AS recipients\n    FROM ev \n    ),\n    counted AS (               -- automatic mail is not activity\n      SELECT * FROM e\n      WHERE NOT (e.kind = 'email' AND (e.subject ~* '^\\s*(appointment (booked|canceled|cancelled|rescheduled)|(updated |new )?invitation|accepted|declined|tentatively accepted|(canceled|cancelled) event)( with note)?\\s*:' OR lower(coalesce(e.subject, '')) LIKE '%out of office%' OR lower(coalesce(e.subject, '')) LIKE '%automatic reply%' OR lower(coalesce(e.subject, '')) LIKE '%auto-reply%' OR lower(coalesce(e.subject, '')) LIKE '%autoreply%' OR lower(coalesce(e.subject, '')) LIKE '%auto reply%' OR lower(coalesce(e.subject, '')) LIKE '%ooo:%' OR lower(coalesce(e.subject, '')) LIKE '%ooo -%' OR lower(coalesce(e.subject, '')) LIKE '%away from%' OR lower(coalesce(e.subject, '')) LIKE '%on vacation%' OR lower(coalesce(e.subject, '')) LIKE '%on leave%' OR lower(coalesce(e.subject, '')) LIKE '%maternity leave%' OR lower(coalesce(e.subject, '')) LIKE '%thank you for your message%' OR lower(coalesce(e.subject, '')) LIKE '%thank you for your email%' OR lower(coalesce(e.subject, '')) LIKE '%thank you for contacting%' OR lower(coalesce(e.subject, '')) LIKE '%undeliverable%' OR lower(coalesce(e.subject, '')) LIKE '%delivery status notification%' OR lower(coalesce(e.subject, '')) LIKE '%mail delivery%' OR lower(coalesce(e.subject, '')) LIKE '%returned mail%' OR lower(coalesce(e.subject, '')) LIKE '%slow to respond%' OR lower(coalesce(e.email_from, '')) LIKE '%mailer-daemon%' OR lower(coalesce(e.email_from, '')) LIKE '%postmaster%' OR lower(coalesce(e.email_from, '')) LIKE '%no-reply%' OR lower(coalesce(e.email_from, '')) LIKE '%noreply%' OR lower(coalesce(e.email_from, '')) LIKE '%donotreply%' OR lower(coalesce(e.email_from, '')) LIKE '%do-not-reply%'))\n    ),\n    once AS (                  -- a send stored in two mailboxes counts once\n      SELECT DISTINCT ON (c.kind, coalesce(c.activity_id::text, c.intro_id::text), c.ts, c.contact_id) c.*\n      FROM counted c\n      WHERE NOT (c.kind = 'email' AND c.source = 'gmail-sync' AND EXISTS (\n        SELECT 1 FROM counted d\n        WHERE d.kind = 'email' AND d.source = 'gmail-sync'\n          AND d.sender = c.sender AND d.ts = c.ts AND d.activity_id::text < c.activity_id::text\n          AND (d.contact_ids && c.contact_ids\n               OR ARRAY(SELECT lower(x) FROM unnest(d.recipients) x)\n                  && ARRAY(SELECT lower(x) FROM unnest(c.recipients) x))))\n      ORDER BY c.kind, coalesce(c.activity_id::text, c.intro_id::text), c.ts, c.contact_id\n    ),\n    first_activity AS (        -- D17: the first activity ever on each account\n      SELECT co, min(ts) AS first_ts FROM once, unnest(once.companies) co GROUP BY co\n    )\n    SELECT\n      count(*) FILTER (WHERE kind IN ('email', 'linkedin', 'text', 'intro') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS outreach,\n      count(*) FILTER (WHERE kind = 'email' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS direct_email,\n      count(*) FILTER (WHERE kind = 'linkedin' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS linkedin,\n      count(*) FILTER (WHERE kind = 'text' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS text,\n      count(*) FILTER (WHERE kind = 'intro' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS intro,\n      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS calls,\n      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz\n                         AND coalesce(call_kind, 'general') = 'discovery') AS call_discovery,\n      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz\n                         AND coalesce(call_kind, 'general') = 'general') AS call_general,\n      (SELECT count(*) FROM first_activity\n        WHERE first_ts >= ((SELECT start_at FROM w))::timestamptz AND first_ts < ((SELECT end_at FROM w))::timestamptz) AS accounts_activated\n    FROM once\n    ) q",
+          "mappings": [],
+          "time_anchors": [
+            {
+              "kind": "event",
+              "label": "in the week (Mon–Sun, New York)",
+              "default": true,
+              "meaning": "dd.window_from / dd.window_to, New York dates; default the last completed calendar week"
+            }
+          ]
+        },
+        {
+          "key": "call_discovery",
+          "label": "Discovery calls",
+          "status": "draft",
+          "definition": "Calls logged as discovery calls: a first real conversation with an employer. The Owner cut's \"Calls\" column.",
+          "numerator": null,
+          "denominator": "n/a (count)",
+          "is_rate": false,
+          "sql_query": "WITH w AS (SELECT ((coalesce(nullif(current_setting('dd.window_from', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 7))::timestamp AT TIME ZONE 'America/New_York') AS start_at, (((coalesce(nullif(current_setting('dd.window_to', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 1) + 1))::timestamp AT TIME ZONE 'America/New_York') AS end_at, (SELECT coalesce(array_agg(lower(email)), '{}') FROM bedrock.jobs_team_member WHERE active) AS team)\nSELECT call_discovery FROM (\n    WITH e AS (\n    WITH raw AS (\n      -- Synced email, one row per message, by the message's own sender.\n      SELECT 'email'::text AS kind, aem.sent_at AS ts, lower(aem.from_email) AS sender,\n             a.id AS activity_id, NULL::uuid AS intro_id,\n             a.participant_public_contact_id AS contact_id, coalesce(a.email_to, '{}'::text[]) || coalesce(a.email_cc, '{}'::text[]) AS recips,\n             a.subject, a.description, a.email_snippet AS snippet, a.email_from, a.source,\n             NULL::text AS call_kind\n      FROM bedrock.activity_email_message aem\n      JOIN bedrock.activity a ON a.id = aem.activity_id\n      WHERE aem.from_email = ANY(((SELECT team FROM w))::text[]) AND ((NULL)::timestamptz IS NULL OR aem.sent_at >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR aem.sent_at < ((SELECT end_at FROM w))::timestamptz)\n        AND a.deleted_at IS NULL AND a.type = 'email' AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))\n      UNION ALL\n      -- Email with no indexed messages: hand-logged, Salesforce-sourced, or\n      -- synced since the index last ran. The row stands for itself, by its\n      -- own sender (never the mailbox it was synced from).\n      SELECT 'email', a.activity_date, lower(btrim(coalesce(substring(a.email_from from '<([^>]+)>'), nullif(a.email_from, ''), CASE WHEN a.source = 'manual' THEN a.logged_by END))),\n             a.id, NULL::uuid, a.participant_public_contact_id, coalesce(a.email_to, '{}'::text[]) || coalesce(a.email_cc, '{}'::text[]),\n             a.subject, a.description, a.email_snippet, a.email_from, a.source, NULL::text\n      FROM bedrock.activity a\n      WHERE a.deleted_at IS NULL AND a.type = 'email' AND ((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz)\n        AND lower(btrim(coalesce(substring(a.email_from from '<([^>]+)>'), nullif(a.email_from, ''), CASE WHEN a.source = 'manual' THEN a.logged_by END))) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))\n        AND NOT EXISTS (SELECT 1 FROM bedrock.activity_email_message m WHERE m.activity_id = a.id)\n      UNION ALL\n      -- Hand-logged LinkedIn, text and calls, and meetings: whoever logged\n      -- it, or whose calendar it is on.\n      SELECT a.type, a.activity_date, lower(btrim(a.logged_by)),\n             a.id, NULL::uuid, a.participant_public_contact_id,\n             CASE WHEN a.type = 'meeting' THEN ARRAY(SELECT att->>'email' FROM jsonb_array_elements(coalesce(a.meeting_attendees, '[]'::jsonb)) att) ELSE '{}'::text[] END,\n             a.subject, a.description, NULL::text, a.email_from, a.source,\n             CASE WHEN a.type = 'call' THEN a.call_kind END\n      FROM bedrock.activity a\n      WHERE a.deleted_at IS NULL AND a.type IN ('linkedin', 'text', 'call', 'meeting')\n        AND ((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz) AND lower(btrim(a.logged_by)) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))\n      UNION ALL\n      -- A facilitated intro that was acted on, by who asked for it. Its\n      -- subject is the ask (routes.jobs_intro.ASK_LABELS names it).\n      SELECT 'intro', coalesce(ir.responded_at, ir.created_at), lower(ir.requested_by_email),\n             NULL::uuid, ir.id, ir.contact_id, '{}'::text[],\n             ir.specific_ask, ir.context, NULL::text, NULL::text, 'intro', NULL::text\n      FROM bedrock.intro_request ir\n      WHERE ir.status IN ('accepted', 'completed')\n        AND lower(ir.requested_by_email) = ANY(((SELECT team FROM w))::text[])\n        AND ((NULL)::timestamptz IS NULL OR coalesce(ir.responded_at, ir.created_at) >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR coalesce(ir.responded_at, ir.created_at) < ((SELECT end_at FROM w))::timestamptz)\n      UNION ALL\n      -- The first move to Call Booked, by who moved it. A meeting someone\n      -- else set up (Nick) enters here with no outreach behind it.\n      SELECT 'call_booked', h.changed_at, lower(h.changed_by),\n             NULL::uuid, NULL::uuid, h.contact_id, '{}'::text[],\n             NULL::text, NULL::text, NULL::text, NULL::text, 'stage', NULL::text\n      FROM (SELECT DISTINCT ON (contact_id) contact_id, changed_at, changed_by\n              FROM bedrock.jobs_membership_stage_history\n             WHERE to_stage = 'call_booked' ORDER BY contact_id, changed_at) h\n      WHERE lower(h.changed_by) = ANY(((SELECT team FROM w))::text[]) AND ((NULL)::timestamptz IS NULL OR h.changed_at >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR h.changed_at < ((SELECT end_at FROM w))::timestamptz)\n    ),\n    ev AS (\n      SELECT r.*, reach.contact_ids, reach.companies\n      FROM raw r\n      CROSS JOIN LATERAL (\n        SELECT coalesce(array_agg(DISTINCT c.contact_id), '{}') AS contact_ids,\n               coalesce(array_agg(DISTINCT lower(btrim(c.current_company)))\n                          FILTER (WHERE btrim(coalesce(c.current_company, '')) <> ''), '{}') AS companies\n        FROM public.contacts c\n        WHERE c.contact_id = r.contact_id\n           OR lower(c.email) = ANY(ARRAY(SELECT lower(x) FROM unnest(r.recips) x))\n      ) reach\n    )\n    SELECT ev.kind, ev.ts, ev.sender, ev.activity_id, ev.intro_id, ev.contact_id,\n           ev.contact_ids, ev.companies, ev.subject, ev.description, ev.snippet,\n           ev.email_from, ev.source, ev.call_kind, ev.recips AS recipients\n    FROM ev \n    ),\n    counted AS (               -- automatic mail is not activity\n      SELECT * FROM e\n      WHERE NOT (e.kind = 'email' AND (e.subject ~* '^\\s*(appointment (booked|canceled|cancelled|rescheduled)|(updated |new )?invitation|accepted|declined|tentatively accepted|(canceled|cancelled) event)( with note)?\\s*:' OR lower(coalesce(e.subject, '')) LIKE '%out of office%' OR lower(coalesce(e.subject, '')) LIKE '%automatic reply%' OR lower(coalesce(e.subject, '')) LIKE '%auto-reply%' OR lower(coalesce(e.subject, '')) LIKE '%autoreply%' OR lower(coalesce(e.subject, '')) LIKE '%auto reply%' OR lower(coalesce(e.subject, '')) LIKE '%ooo:%' OR lower(coalesce(e.subject, '')) LIKE '%ooo -%' OR lower(coalesce(e.subject, '')) LIKE '%away from%' OR lower(coalesce(e.subject, '')) LIKE '%on vacation%' OR lower(coalesce(e.subject, '')) LIKE '%on leave%' OR lower(coalesce(e.subject, '')) LIKE '%maternity leave%' OR lower(coalesce(e.subject, '')) LIKE '%thank you for your message%' OR lower(coalesce(e.subject, '')) LIKE '%thank you for your email%' OR lower(coalesce(e.subject, '')) LIKE '%thank you for contacting%' OR lower(coalesce(e.subject, '')) LIKE '%undeliverable%' OR lower(coalesce(e.subject, '')) LIKE '%delivery status notification%' OR lower(coalesce(e.subject, '')) LIKE '%mail delivery%' OR lower(coalesce(e.subject, '')) LIKE '%returned mail%' OR lower(coalesce(e.subject, '')) LIKE '%slow to respond%' OR lower(coalesce(e.email_from, '')) LIKE '%mailer-daemon%' OR lower(coalesce(e.email_from, '')) LIKE '%postmaster%' OR lower(coalesce(e.email_from, '')) LIKE '%no-reply%' OR lower(coalesce(e.email_from, '')) LIKE '%noreply%' OR lower(coalesce(e.email_from, '')) LIKE '%donotreply%' OR lower(coalesce(e.email_from, '')) LIKE '%do-not-reply%'))\n    ),\n    once AS (                  -- a send stored in two mailboxes counts once\n      SELECT DISTINCT ON (c.kind, coalesce(c.activity_id::text, c.intro_id::text), c.ts, c.contact_id) c.*\n      FROM counted c\n      WHERE NOT (c.kind = 'email' AND c.source = 'gmail-sync' AND EXISTS (\n        SELECT 1 FROM counted d\n        WHERE d.kind = 'email' AND d.source = 'gmail-sync'\n          AND d.sender = c.sender AND d.ts = c.ts AND d.activity_id::text < c.activity_id::text\n          AND (d.contact_ids && c.contact_ids\n               OR ARRAY(SELECT lower(x) FROM unnest(d.recipients) x)\n                  && ARRAY(SELECT lower(x) FROM unnest(c.recipients) x))))\n      ORDER BY c.kind, coalesce(c.activity_id::text, c.intro_id::text), c.ts, c.contact_id\n    ),\n    first_activity AS (        -- D17: the first activity ever on each account\n      SELECT co, min(ts) AS first_ts FROM once, unnest(once.companies) co GROUP BY co\n    )\n    SELECT\n      count(*) FILTER (WHERE kind IN ('email', 'linkedin', 'text', 'intro') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS outreach,\n      count(*) FILTER (WHERE kind = 'email' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS direct_email,\n      count(*) FILTER (WHERE kind = 'linkedin' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS linkedin,\n      count(*) FILTER (WHERE kind = 'text' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS text,\n      count(*) FILTER (WHERE kind = 'intro' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS intro,\n      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS calls,\n      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz\n                         AND coalesce(call_kind, 'general') = 'discovery') AS call_discovery,\n      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz\n                         AND coalesce(call_kind, 'general') = 'general') AS call_general,\n      (SELECT count(*) FROM first_activity\n        WHERE first_ts >= ((SELECT start_at FROM w))::timestamptz AND first_ts < ((SELECT end_at FROM w))::timestamptz) AS accounts_activated\n    FROM once\n    ) q",
+          "mappings": [],
+          "time_anchors": [
+            {
+              "kind": "event",
+              "label": "in the week (Mon–Sun, New York)",
+              "default": true,
+              "meaning": "dd.window_from / dd.window_to, New York dates; default the last completed calendar week"
+            }
+          ],
+          "caveat": "Call type is optional today, so most calls read as general (PRO-102 makes it required)."
+        },
+        {
+          "key": "call_general",
+          "label": "General calls",
+          "status": "draft",
+          "definition": "Every other call and meeting, including calls with no type.",
+          "numerator": null,
+          "denominator": "n/a (count)",
+          "is_rate": false,
+          "sql_query": "WITH w AS (SELECT ((coalesce(nullif(current_setting('dd.window_from', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 7))::timestamp AT TIME ZONE 'America/New_York') AS start_at, (((coalesce(nullif(current_setting('dd.window_to', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 1) + 1))::timestamp AT TIME ZONE 'America/New_York') AS end_at, (SELECT coalesce(array_agg(lower(email)), '{}') FROM bedrock.jobs_team_member WHERE active) AS team)\nSELECT call_general FROM (\n    WITH e AS (\n    WITH raw AS (\n      -- Synced email, one row per message, by the message's own sender.\n      SELECT 'email'::text AS kind, aem.sent_at AS ts, lower(aem.from_email) AS sender,\n             a.id AS activity_id, NULL::uuid AS intro_id,\n             a.participant_public_contact_id AS contact_id, coalesce(a.email_to, '{}'::text[]) || coalesce(a.email_cc, '{}'::text[]) AS recips,\n             a.subject, a.description, a.email_snippet AS snippet, a.email_from, a.source,\n             NULL::text AS call_kind\n      FROM bedrock.activity_email_message aem\n      JOIN bedrock.activity a ON a.id = aem.activity_id\n      WHERE aem.from_email = ANY(((SELECT team FROM w))::text[]) AND ((NULL)::timestamptz IS NULL OR aem.sent_at >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR aem.sent_at < ((SELECT end_at FROM w))::timestamptz)\n        AND a.deleted_at IS NULL AND a.type = 'email' AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))\n      UNION ALL\n      -- Email with no indexed messages: hand-logged, Salesforce-sourced, or\n      -- synced since the index last ran. The row stands for itself, by its\n      -- own sender (never the mailbox it was synced from).\n      SELECT 'email', a.activity_date, lower(btrim(coalesce(substring(a.email_from from '<([^>]+)>'), nullif(a.email_from, ''), CASE WHEN a.source = 'manual' THEN a.logged_by END))),\n             a.id, NULL::uuid, a.participant_public_contact_id, coalesce(a.email_to, '{}'::text[]) || coalesce(a.email_cc, '{}'::text[]),\n             a.subject, a.description, a.email_snippet, a.email_from, a.source, NULL::text\n      FROM bedrock.activity a\n      WHERE a.deleted_at IS NULL AND a.type = 'email' AND ((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz)\n        AND lower(btrim(coalesce(substring(a.email_from from '<([^>]+)>'), nullif(a.email_from, ''), CASE WHEN a.source = 'manual' THEN a.logged_by END))) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))\n        AND NOT EXISTS (SELECT 1 FROM bedrock.activity_email_message m WHERE m.activity_id = a.id)\n      UNION ALL\n      -- Hand-logged LinkedIn, text and calls, and meetings: whoever logged\n      -- it, or whose calendar it is on.\n      SELECT a.type, a.activity_date, lower(btrim(a.logged_by)),\n             a.id, NULL::uuid, a.participant_public_contact_id,\n             CASE WHEN a.type = 'meeting' THEN ARRAY(SELECT att->>'email' FROM jsonb_array_elements(coalesce(a.meeting_attendees, '[]'::jsonb)) att) ELSE '{}'::text[] END,\n             a.subject, a.description, NULL::text, a.email_from, a.source,\n             CASE WHEN a.type = 'call' THEN a.call_kind END\n      FROM bedrock.activity a\n      WHERE a.deleted_at IS NULL AND a.type IN ('linkedin', 'text', 'call', 'meeting')\n        AND ((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz) AND lower(btrim(a.logged_by)) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))\n      UNION ALL\n      -- A facilitated intro that was acted on, by who asked for it. Its\n      -- subject is the ask (routes.jobs_intro.ASK_LABELS names it).\n      SELECT 'intro', coalesce(ir.responded_at, ir.created_at), lower(ir.requested_by_email),\n             NULL::uuid, ir.id, ir.contact_id, '{}'::text[],\n             ir.specific_ask, ir.context, NULL::text, NULL::text, 'intro', NULL::text\n      FROM bedrock.intro_request ir\n      WHERE ir.status IN ('accepted', 'completed')\n        AND lower(ir.requested_by_email) = ANY(((SELECT team FROM w))::text[])\n        AND ((NULL)::timestamptz IS NULL OR coalesce(ir.responded_at, ir.created_at) >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR coalesce(ir.responded_at, ir.created_at) < ((SELECT end_at FROM w))::timestamptz)\n      UNION ALL\n      -- The first move to Call Booked, by who moved it. A meeting someone\n      -- else set up (Nick) enters here with no outreach behind it.\n      SELECT 'call_booked', h.changed_at, lower(h.changed_by),\n             NULL::uuid, NULL::uuid, h.contact_id, '{}'::text[],\n             NULL::text, NULL::text, NULL::text, NULL::text, 'stage', NULL::text\n      FROM (SELECT DISTINCT ON (contact_id) contact_id, changed_at, changed_by\n              FROM bedrock.jobs_membership_stage_history\n             WHERE to_stage = 'call_booked' ORDER BY contact_id, changed_at) h\n      WHERE lower(h.changed_by) = ANY(((SELECT team FROM w))::text[]) AND ((NULL)::timestamptz IS NULL OR h.changed_at >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR h.changed_at < ((SELECT end_at FROM w))::timestamptz)\n    ),\n    ev AS (\n      SELECT r.*, reach.contact_ids, reach.companies\n      FROM raw r\n      CROSS JOIN LATERAL (\n        SELECT coalesce(array_agg(DISTINCT c.contact_id), '{}') AS contact_ids,\n               coalesce(array_agg(DISTINCT lower(btrim(c.current_company)))\n                          FILTER (WHERE btrim(coalesce(c.current_company, '')) <> ''), '{}') AS companies\n        FROM public.contacts c\n        WHERE c.contact_id = r.contact_id\n           OR lower(c.email) = ANY(ARRAY(SELECT lower(x) FROM unnest(r.recips) x))\n      ) reach\n    )\n    SELECT ev.kind, ev.ts, ev.sender, ev.activity_id, ev.intro_id, ev.contact_id,\n           ev.contact_ids, ev.companies, ev.subject, ev.description, ev.snippet,\n           ev.email_from, ev.source, ev.call_kind, ev.recips AS recipients\n    FROM ev \n    ),\n    counted AS (               -- automatic mail is not activity\n      SELECT * FROM e\n      WHERE NOT (e.kind = 'email' AND (e.subject ~* '^\\s*(appointment (booked|canceled|cancelled|rescheduled)|(updated |new )?invitation|accepted|declined|tentatively accepted|(canceled|cancelled) event)( with note)?\\s*:' OR lower(coalesce(e.subject, '')) LIKE '%out of office%' OR lower(coalesce(e.subject, '')) LIKE '%automatic reply%' OR lower(coalesce(e.subject, '')) LIKE '%auto-reply%' OR lower(coalesce(e.subject, '')) LIKE '%autoreply%' OR lower(coalesce(e.subject, '')) LIKE '%auto reply%' OR lower(coalesce(e.subject, '')) LIKE '%ooo:%' OR lower(coalesce(e.subject, '')) LIKE '%ooo -%' OR lower(coalesce(e.subject, '')) LIKE '%away from%' OR lower(coalesce(e.subject, '')) LIKE '%on vacation%' OR lower(coalesce(e.subject, '')) LIKE '%on leave%' OR lower(coalesce(e.subject, '')) LIKE '%maternity leave%' OR lower(coalesce(e.subject, '')) LIKE '%thank you for your message%' OR lower(coalesce(e.subject, '')) LIKE '%thank you for your email%' OR lower(coalesce(e.subject, '')) LIKE '%thank you for contacting%' OR lower(coalesce(e.subject, '')) LIKE '%undeliverable%' OR lower(coalesce(e.subject, '')) LIKE '%delivery status notification%' OR lower(coalesce(e.subject, '')) LIKE '%mail delivery%' OR lower(coalesce(e.subject, '')) LIKE '%returned mail%' OR lower(coalesce(e.subject, '')) LIKE '%slow to respond%' OR lower(coalesce(e.email_from, '')) LIKE '%mailer-daemon%' OR lower(coalesce(e.email_from, '')) LIKE '%postmaster%' OR lower(coalesce(e.email_from, '')) LIKE '%no-reply%' OR lower(coalesce(e.email_from, '')) LIKE '%noreply%' OR lower(coalesce(e.email_from, '')) LIKE '%donotreply%' OR lower(coalesce(e.email_from, '')) LIKE '%do-not-reply%'))\n    ),\n    once AS (                  -- a send stored in two mailboxes counts once\n      SELECT DISTINCT ON (c.kind, coalesce(c.activity_id::text, c.intro_id::text), c.ts, c.contact_id) c.*\n      FROM counted c\n      WHERE NOT (c.kind = 'email' AND c.source = 'gmail-sync' AND EXISTS (\n        SELECT 1 FROM counted d\n        WHERE d.kind = 'email' AND d.source = 'gmail-sync'\n          AND d.sender = c.sender AND d.ts = c.ts AND d.activity_id::text < c.activity_id::text\n          AND (d.contact_ids && c.contact_ids\n               OR ARRAY(SELECT lower(x) FROM unnest(d.recipients) x)\n                  && ARRAY(SELECT lower(x) FROM unnest(c.recipients) x))))\n      ORDER BY c.kind, coalesce(c.activity_id::text, c.intro_id::text), c.ts, c.contact_id\n    ),\n    first_activity AS (        -- D17: the first activity ever on each account\n      SELECT co, min(ts) AS first_ts FROM once, unnest(once.companies) co GROUP BY co\n    )\n    SELECT\n      count(*) FILTER (WHERE kind IN ('email', 'linkedin', 'text', 'intro') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS outreach,\n      count(*) FILTER (WHERE kind = 'email' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS direct_email,\n      count(*) FILTER (WHERE kind = 'linkedin' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS linkedin,\n      count(*) FILTER (WHERE kind = 'text' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS text,\n      count(*) FILTER (WHERE kind = 'intro' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS intro,\n      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS calls,\n      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz\n                         AND coalesce(call_kind, 'general') = 'discovery') AS call_discovery,\n      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz\n                         AND coalesce(call_kind, 'general') = 'general') AS call_general,\n      (SELECT count(*) FROM first_activity\n        WHERE first_ts >= ((SELECT start_at FROM w))::timestamptz AND first_ts < ((SELECT end_at FROM w))::timestamptz) AS accounts_activated\n    FROM once\n    ) q",
+          "mappings": [],
+          "time_anchors": [
+            {
+              "kind": "event",
+              "label": "in the week (Mon–Sun, New York)",
+              "default": true,
+              "meaning": "dd.window_from / dd.window_to, New York dates; default the last completed calendar week"
+            }
+          ]
+        },
+        {
+          "key": "accounts_activated",
+          "label": "Accounts activated",
+          "status": "draft",
+          "definition": "Accounts whose first activity ever by the team falls in the week (D17). An intro counts. A meeting someone else sets up (Nick) counts when the contact enters at Call Booked.",
+          "numerator": "Accounts first worked in the week",
+          "denominator": "n/a (count)",
+          "is_rate": false,
+          "sql_query": "WITH w AS (SELECT ((coalesce(nullif(current_setting('dd.window_from', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 7))::timestamp AT TIME ZONE 'America/New_York') AS start_at, (((coalesce(nullif(current_setting('dd.window_to', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 1) + 1))::timestamp AT TIME ZONE 'America/New_York') AS end_at, (SELECT coalesce(array_agg(lower(email)), '{}') FROM bedrock.jobs_team_member WHERE active) AS team)\nSELECT accounts_activated FROM (\n    WITH e AS (\n    WITH raw AS (\n      -- Synced email, one row per message, by the message's own sender.\n      SELECT 'email'::text AS kind, aem.sent_at AS ts, lower(aem.from_email) AS sender,\n             a.id AS activity_id, NULL::uuid AS intro_id,\n             a.participant_public_contact_id AS contact_id, coalesce(a.email_to, '{}'::text[]) || coalesce(a.email_cc, '{}'::text[]) AS recips,\n             a.subject, a.description, a.email_snippet AS snippet, a.email_from, a.source,\n             NULL::text AS call_kind\n      FROM bedrock.activity_email_message aem\n      JOIN bedrock.activity a ON a.id = aem.activity_id\n      WHERE aem.from_email = ANY(((SELECT team FROM w))::text[]) AND ((NULL)::timestamptz IS NULL OR aem.sent_at >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR aem.sent_at < ((SELECT end_at FROM w))::timestamptz)\n        AND a.deleted_at IS NULL AND a.type = 'email' AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))\n      UNION ALL\n      -- Email with no indexed messages: hand-logged, Salesforce-sourced, or\n      -- synced since the index last ran. The row stands for itself, by its\n      -- own sender (never the mailbox it was synced from).\n      SELECT 'email', a.activity_date, lower(btrim(coalesce(substring(a.email_from from '<([^>]+)>'), nullif(a.email_from, ''), CASE WHEN a.source = 'manual' THEN a.logged_by END))),\n             a.id, NULL::uuid, a.participant_public_contact_id, coalesce(a.email_to, '{}'::text[]) || coalesce(a.email_cc, '{}'::text[]),\n             a.subject, a.description, a.email_snippet, a.email_from, a.source, NULL::text\n      FROM bedrock.activity a\n      WHERE a.deleted_at IS NULL AND a.type = 'email' AND ((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz)\n        AND lower(btrim(coalesce(substring(a.email_from from '<([^>]+)>'), nullif(a.email_from, ''), CASE WHEN a.source = 'manual' THEN a.logged_by END))) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))\n        AND NOT EXISTS (SELECT 1 FROM bedrock.activity_email_message m WHERE m.activity_id = a.id)\n      UNION ALL\n      -- Hand-logged LinkedIn, text and calls, and meetings: whoever logged\n      -- it, or whose calendar it is on.\n      SELECT a.type, a.activity_date, lower(btrim(a.logged_by)),\n             a.id, NULL::uuid, a.participant_public_contact_id,\n             CASE WHEN a.type = 'meeting' THEN ARRAY(SELECT att->>'email' FROM jsonb_array_elements(coalesce(a.meeting_attendees, '[]'::jsonb)) att) ELSE '{}'::text[] END,\n             a.subject, a.description, NULL::text, a.email_from, a.source,\n             CASE WHEN a.type = 'call' THEN a.call_kind END\n      FROM bedrock.activity a\n      WHERE a.deleted_at IS NULL AND a.type IN ('linkedin', 'text', 'call', 'meeting')\n        AND ((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz) AND lower(btrim(a.logged_by)) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))\n      UNION ALL\n      -- A facilitated intro that was acted on, by who asked for it. Its\n      -- subject is the ask (routes.jobs_intro.ASK_LABELS names it).\n      SELECT 'intro', coalesce(ir.responded_at, ir.created_at), lower(ir.requested_by_email),\n             NULL::uuid, ir.id, ir.contact_id, '{}'::text[],\n             ir.specific_ask, ir.context, NULL::text, NULL::text, 'intro', NULL::text\n      FROM bedrock.intro_request ir\n      WHERE ir.status IN ('accepted', 'completed')\n        AND lower(ir.requested_by_email) = ANY(((SELECT team FROM w))::text[])\n        AND ((NULL)::timestamptz IS NULL OR coalesce(ir.responded_at, ir.created_at) >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR coalesce(ir.responded_at, ir.created_at) < ((SELECT end_at FROM w))::timestamptz)\n      UNION ALL\n      -- The first move to Call Booked, by who moved it. A meeting someone\n      -- else set up (Nick) enters here with no outreach behind it.\n      SELECT 'call_booked', h.changed_at, lower(h.changed_by),\n             NULL::uuid, NULL::uuid, h.contact_id, '{}'::text[],\n             NULL::text, NULL::text, NULL::text, NULL::text, 'stage', NULL::text\n      FROM (SELECT DISTINCT ON (contact_id) contact_id, changed_at, changed_by\n              FROM bedrock.jobs_membership_stage_history\n             WHERE to_stage = 'call_booked' ORDER BY contact_id, changed_at) h\n      WHERE lower(h.changed_by) = ANY(((SELECT team FROM w))::text[]) AND ((NULL)::timestamptz IS NULL OR h.changed_at >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR h.changed_at < ((SELECT end_at FROM w))::timestamptz)\n    ),\n    ev AS (\n      SELECT r.*, reach.contact_ids, reach.companies\n      FROM raw r\n      CROSS JOIN LATERAL (\n        SELECT coalesce(array_agg(DISTINCT c.contact_id), '{}') AS contact_ids,\n               coalesce(array_agg(DISTINCT lower(btrim(c.current_company)))\n                          FILTER (WHERE btrim(coalesce(c.current_company, '')) <> ''), '{}') AS companies\n        FROM public.contacts c\n        WHERE c.contact_id = r.contact_id\n           OR lower(c.email) = ANY(ARRAY(SELECT lower(x) FROM unnest(r.recips) x))\n      ) reach\n    )\n    SELECT ev.kind, ev.ts, ev.sender, ev.activity_id, ev.intro_id, ev.contact_id,\n           ev.contact_ids, ev.companies, ev.subject, ev.description, ev.snippet,\n           ev.email_from, ev.source, ev.call_kind, ev.recips AS recipients\n    FROM ev \n    ),\n    counted AS (               -- automatic mail is not activity\n      SELECT * FROM e\n      WHERE NOT (e.kind = 'email' AND (e.subject ~* '^\\s*(appointment (booked|canceled|cancelled|rescheduled)|(updated |new )?invitation|accepted|declined|tentatively accepted|(canceled|cancelled) event)( with note)?\\s*:' OR lower(coalesce(e.subject, '')) LIKE '%out of office%' OR lower(coalesce(e.subject, '')) LIKE '%automatic reply%' OR lower(coalesce(e.subject, '')) LIKE '%auto-reply%' OR lower(coalesce(e.subject, '')) LIKE '%autoreply%' OR lower(coalesce(e.subject, '')) LIKE '%auto reply%' OR lower(coalesce(e.subject, '')) LIKE '%ooo:%' OR lower(coalesce(e.subject, '')) LIKE '%ooo -%' OR lower(coalesce(e.subject, '')) LIKE '%away from%' OR lower(coalesce(e.subject, '')) LIKE '%on vacation%' OR lower(coalesce(e.subject, '')) LIKE '%on leave%' OR lower(coalesce(e.subject, '')) LIKE '%maternity leave%' OR lower(coalesce(e.subject, '')) LIKE '%thank you for your message%' OR lower(coalesce(e.subject, '')) LIKE '%thank you for your email%' OR lower(coalesce(e.subject, '')) LIKE '%thank you for contacting%' OR lower(coalesce(e.subject, '')) LIKE '%undeliverable%' OR lower(coalesce(e.subject, '')) LIKE '%delivery status notification%' OR lower(coalesce(e.subject, '')) LIKE '%mail delivery%' OR lower(coalesce(e.subject, '')) LIKE '%returned mail%' OR lower(coalesce(e.subject, '')) LIKE '%slow to respond%' OR lower(coalesce(e.email_from, '')) LIKE '%mailer-daemon%' OR lower(coalesce(e.email_from, '')) LIKE '%postmaster%' OR lower(coalesce(e.email_from, '')) LIKE '%no-reply%' OR lower(coalesce(e.email_from, '')) LIKE '%noreply%' OR lower(coalesce(e.email_from, '')) LIKE '%donotreply%' OR lower(coalesce(e.email_from, '')) LIKE '%do-not-reply%'))\n    ),\n    once AS (                  -- a send stored in two mailboxes counts once\n      SELECT DISTINCT ON (c.kind, coalesce(c.activity_id::text, c.intro_id::text), c.ts, c.contact_id) c.*\n      FROM counted c\n      WHERE NOT (c.kind = 'email' AND c.source = 'gmail-sync' AND EXISTS (\n        SELECT 1 FROM counted d\n        WHERE d.kind = 'email' AND d.source = 'gmail-sync'\n          AND d.sender = c.sender AND d.ts = c.ts AND d.activity_id::text < c.activity_id::text\n          AND (d.contact_ids && c.contact_ids\n               OR ARRAY(SELECT lower(x) FROM unnest(d.recipients) x)\n                  && ARRAY(SELECT lower(x) FROM unnest(c.recipients) x))))\n      ORDER BY c.kind, coalesce(c.activity_id::text, c.intro_id::text), c.ts, c.contact_id\n    ),\n    first_activity AS (        -- D17: the first activity ever on each account\n      SELECT co, min(ts) AS first_ts FROM once, unnest(once.companies) co GROUP BY co\n    )\n    SELECT\n      count(*) FILTER (WHERE kind IN ('email', 'linkedin', 'text', 'intro') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS outreach,\n      count(*) FILTER (WHERE kind = 'email' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS direct_email,\n      count(*) FILTER (WHERE kind = 'linkedin' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS linkedin,\n      count(*) FILTER (WHERE kind = 'text' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS text,\n      count(*) FILTER (WHERE kind = 'intro' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS intro,\n      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS calls,\n      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz\n                         AND coalesce(call_kind, 'general') = 'discovery') AS call_discovery,\n      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz\n                         AND coalesce(call_kind, 'general') = 'general') AS call_general,\n      (SELECT count(*) FROM first_activity\n        WHERE first_ts >= ((SELECT start_at FROM w))::timestamptz AND first_ts < ((SELECT end_at FROM w))::timestamptz) AS accounts_activated\n    FROM once\n    ) q",
+          "mappings": [],
+          "time_anchors": [
+            {
+              "kind": "event",
+              "label": "in the week (Mon–Sun, New York)",
+              "default": true,
+              "meaning": "dd.window_from / dd.window_to, New York dates; default the last completed calendar week"
+            }
+          ]
+        },
+        {
+          "key": "contacted",
+          "label": "Contacted",
+          "status": "draft",
+          "definition": "Contacts at Initial Outreach now whose move there falls in the week, by the contact's owner, beside the contacts assigned in the week. Shown as contacted / (assigned + contacted).",
+          "numerator": "Contacts moved to Initial Outreach in the week (still there)",
+          "denominator": "Those + contacts assigned in the week (still assigned)",
+          "is_rate": false,
+          "sql_query": "WITH w AS (SELECT ((coalesce(nullif(current_setting('dd.window_from', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 7))::timestamp AT TIME ZONE 'America/New_York') AS start_at, (((coalesce(nullif(current_setting('dd.window_to', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 1) + 1))::timestamp AT TIME ZONE 'America/New_York') AS end_at),\nentered AS (\n  SELECT m.contact_id, (CASE m.stage WHEN 'on_hold' THEN 'revisit' ELSE m.stage END) AS stage, c.owner_email,\n         coalesce((SELECT max(h.changed_at) FROM bedrock.jobs_membership_stage_history h\n                    WHERE h.contact_id = m.contact_id AND h.to_stage = m.stage),\n                  CASE m.stage WHEN 'initial_outreach' THEN m.first_outreach_at\n                               WHEN 'converted_to_opportunity' THEN m.converted_at END,\n                  m.assigned_at) AS entered_at\n  FROM bedrock.jobs_contact_membership m JOIN public.contacts c ON c.contact_id = m.contact_id\n  WHERE m.stage IN ('assigned', 'initial_outreach')\n)\nSELECT count(*) FILTER (WHERE stage = 'initial_outreach') AS contacted,\n       count(*) FILTER (WHERE stage = 'assigned') AS assigned\nFROM entered WHERE entered_at >= (SELECT start_at FROM w) AND entered_at < (SELECT end_at FROM w)",
+          "mappings": [],
+          "time_anchors": [
+            {
+              "kind": "event",
+              "label": "in the week (Mon–Sun, New York)",
+              "default": true,
+              "meaning": "dd.window_from / dd.window_to, New York dates; default the last completed calendar week"
+            }
+          ],
+          "caveat": "PRO-100 settles one meaning of \"contacted\" for every tab; today Campaigns and the funnel each read it differently."
+        },
+        {
+          "key": "activity_depth",
+          "label": "Activity depth",
+          "status": "draft",
+          "definition": "For every contact sitting in Initial Outreach now, how much activity anyone at Pursuit sent them in the last four weeks: 0, 1, 2, 3 or 4+. A work queue, not a weekly number.",
+          "numerator": null,
+          "denominator": "Contacts in Initial Outreach now",
+          "is_rate": false,
+          "sql_query": "WITH w AS (SELECT now() - interval '4 weeks' AS since, (SELECT coalesce(array_agg(DISTINCT lower(email)), '{}') FROM public.org_users WHERE is_active AND email IS NOT NULL) AS senders)\nSELECT CASE WHEN activity >= 4 THEN '4+' ELSE activity::text END AS bucket, count(*) AS contacts FROM (\n    WITH e AS (\n    WITH raw AS (\n      -- Synced email, one row per message, by the message's own sender.\n      SELECT 'email'::text AS kind, aem.sent_at AS ts, lower(aem.from_email) AS sender,\n             a.id AS activity_id, NULL::uuid AS intro_id,\n             a.participant_public_contact_id AS contact_id, coalesce(a.email_to, '{}'::text[]) || coalesce(a.email_cc, '{}'::text[]) AS recips,\n             a.subject, a.description, a.email_snippet AS snippet, a.email_from, a.source,\n             NULL::text AS call_kind\n      FROM bedrock.activity_email_message aem\n      JOIN bedrock.activity a ON a.id = aem.activity_id\n      WHERE aem.from_email = ANY(((SELECT senders FROM w))::text[]) AND (((SELECT since FROM w))::timestamptz IS NULL OR aem.sent_at >= ((SELECT since FROM w))::timestamptz) AND ((NULL)::timestamptz IS NULL OR aem.sent_at < (NULL)::timestamptz)\n        AND a.deleted_at IS NULL AND a.type = 'email' AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))\n      UNION ALL\n      -- Email with no indexed messages: hand-logged, Salesforce-sourced, or\n      -- synced since the index last ran. The row stands for itself, by its\n      -- own sender (never the mailbox it was synced from).\n      SELECT 'email', a.activity_date, lower(btrim(coalesce(substring(a.email_from from '<([^>]+)>'), nullif(a.email_from, ''), CASE WHEN a.source = 'manual' THEN a.logged_by END))),\n             a.id, NULL::uuid, a.participant_public_contact_id, coalesce(a.email_to, '{}'::text[]) || coalesce(a.email_cc, '{}'::text[]),\n             a.subject, a.description, a.email_snippet, a.email_from, a.source, NULL::text\n      FROM bedrock.activity a\n      WHERE a.deleted_at IS NULL AND a.type = 'email' AND (((SELECT since FROM w))::timestamptz IS NULL OR a.activity_date >= ((SELECT since FROM w))::timestamptz) AND ((NULL)::timestamptz IS NULL OR a.activity_date < (NULL)::timestamptz)\n        AND lower(btrim(coalesce(substring(a.email_from from '<([^>]+)>'), nullif(a.email_from, ''), CASE WHEN a.source = 'manual' THEN a.logged_by END))) = ANY(((SELECT senders FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))\n        AND NOT EXISTS (SELECT 1 FROM bedrock.activity_email_message m WHERE m.activity_id = a.id)\n      UNION ALL\n      -- Hand-logged LinkedIn, text and calls, and meetings: whoever logged\n      -- it, or whose calendar it is on.\n      SELECT a.type, a.activity_date, lower(btrim(a.logged_by)),\n             a.id, NULL::uuid, a.participant_public_contact_id,\n             CASE WHEN a.type = 'meeting' THEN ARRAY(SELECT att->>'email' FROM jsonb_array_elements(coalesce(a.meeting_attendees, '[]'::jsonb)) att) ELSE '{}'::text[] END,\n             a.subject, a.description, NULL::text, a.email_from, a.source,\n             CASE WHEN a.type = 'call' THEN a.call_kind END\n      FROM bedrock.activity a\n      WHERE a.deleted_at IS NULL AND a.type IN ('linkedin', 'text', 'call', 'meeting')\n        AND (((SELECT since FROM w))::timestamptz IS NULL OR a.activity_date >= ((SELECT since FROM w))::timestamptz) AND ((NULL)::timestamptz IS NULL OR a.activity_date < (NULL)::timestamptz) AND lower(btrim(a.logged_by)) = ANY(((SELECT senders FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))\n      UNION ALL\n      -- A facilitated intro that was acted on, by who asked for it. Its\n      -- subject is the ask (routes.jobs_intro.ASK_LABELS names it).\n      SELECT 'intro', coalesce(ir.responded_at, ir.created_at), lower(ir.requested_by_email),\n             NULL::uuid, ir.id, ir.contact_id, '{}'::text[],\n             ir.specific_ask, ir.context, NULL::text, NULL::text, 'intro', NULL::text\n      FROM bedrock.intro_request ir\n      WHERE ir.status IN ('accepted', 'completed')\n        AND lower(ir.requested_by_email) = ANY(((SELECT senders FROM w))::text[])\n        AND (((SELECT since FROM w))::timestamptz IS NULL OR coalesce(ir.responded_at, ir.created_at) >= ((SELECT since FROM w))::timestamptz) AND ((NULL)::timestamptz IS NULL OR coalesce(ir.responded_at, ir.created_at) < (NULL)::timestamptz)\n      UNION ALL\n      -- The first move to Call Booked, by who moved it. A meeting someone\n      -- else set up (Nick) enters here with no outreach behind it.\n      SELECT 'call_booked', h.changed_at, lower(h.changed_by),\n             NULL::uuid, NULL::uuid, h.contact_id, '{}'::text[],\n             NULL::text, NULL::text, NULL::text, NULL::text, 'stage', NULL::text\n      FROM (SELECT DISTINCT ON (contact_id) contact_id, changed_at, changed_by\n              FROM bedrock.jobs_membership_stage_history\n             WHERE to_stage = 'call_booked' ORDER BY contact_id, changed_at) h\n      WHERE lower(h.changed_by) = ANY(((SELECT senders FROM w))::text[]) AND (((SELECT since FROM w))::timestamptz IS NULL OR h.changed_at >= ((SELECT since FROM w))::timestamptz) AND ((NULL)::timestamptz IS NULL OR h.changed_at < (NULL)::timestamptz)\n    ),\n    ev AS (\n      SELECT r.*, reach.contact_ids, reach.companies\n      FROM raw r\n      CROSS JOIN LATERAL (\n        SELECT coalesce(array_agg(DISTINCT c.contact_id), '{}') AS contact_ids,\n               coalesce(array_agg(DISTINCT lower(btrim(c.current_company)))\n                          FILTER (WHERE btrim(coalesce(c.current_company, '')) <> ''), '{}') AS companies\n        FROM public.contacts c\n        WHERE c.contact_id = r.contact_id\n           OR lower(c.email) = ANY(ARRAY(SELECT lower(x) FROM unnest(r.recips) x))\n      ) reach\n    )\n    SELECT ev.kind, ev.ts, ev.sender, ev.activity_id, ev.intro_id, ev.contact_id,\n           ev.contact_ids, ev.companies, ev.subject, ev.description, ev.snippet,\n           ev.email_from, ev.source, ev.call_kind, ev.recips AS recipients\n    FROM ev \n    ),\n    counted AS (               -- automatic mail is not activity\n      SELECT * FROM e\n      WHERE NOT (e.kind = 'email' AND (e.subject ~* '^\\s*(appointment (booked|canceled|cancelled|rescheduled)|(updated |new )?invitation|accepted|declined|tentatively accepted|(canceled|cancelled) event)( with note)?\\s*:' OR lower(coalesce(e.subject, '')) LIKE '%out of office%' OR lower(coalesce(e.subject, '')) LIKE '%automatic reply%' OR lower(coalesce(e.subject, '')) LIKE '%auto-reply%' OR lower(coalesce(e.subject, '')) LIKE '%autoreply%' OR lower(coalesce(e.subject, '')) LIKE '%auto reply%' OR lower(coalesce(e.subject, '')) LIKE '%ooo:%' OR lower(coalesce(e.subject, '')) LIKE '%ooo -%' OR lower(coalesce(e.subject, '')) LIKE '%away from%' OR lower(coalesce(e.subject, '')) LIKE '%on vacation%' OR lower(coalesce(e.subject, '')) LIKE '%on leave%' OR lower(coalesce(e.subject, '')) LIKE '%maternity leave%' OR lower(coalesce(e.subject, '')) LIKE '%thank you for your message%' OR lower(coalesce(e.subject, '')) LIKE '%thank you for your email%' OR lower(coalesce(e.subject, '')) LIKE '%thank you for contacting%' OR lower(coalesce(e.subject, '')) LIKE '%undeliverable%' OR lower(coalesce(e.subject, '')) LIKE '%delivery status notification%' OR lower(coalesce(e.subject, '')) LIKE '%mail delivery%' OR lower(coalesce(e.subject, '')) LIKE '%returned mail%' OR lower(coalesce(e.subject, '')) LIKE '%slow to respond%' OR lower(coalesce(e.email_from, '')) LIKE '%mailer-daemon%' OR lower(coalesce(e.email_from, '')) LIKE '%postmaster%' OR lower(coalesce(e.email_from, '')) LIKE '%no-reply%' OR lower(coalesce(e.email_from, '')) LIKE '%noreply%' OR lower(coalesce(e.email_from, '')) LIKE '%donotreply%' OR lower(coalesce(e.email_from, '')) LIKE '%do-not-reply%'))\n    ),\n    once AS (                  -- a send stored in two mailboxes counts once\n      SELECT DISTINCT ON (c.kind, coalesce(c.activity_id::text, c.intro_id::text), c.ts, c.contact_id) c.*\n      FROM counted c\n      WHERE NOT (c.kind = 'email' AND c.source = 'gmail-sync' AND EXISTS (\n        SELECT 1 FROM counted d\n        WHERE d.kind = 'email' AND d.source = 'gmail-sync'\n          AND d.sender = c.sender AND d.ts = c.ts AND d.activity_id::text < c.activity_id::text\n          AND (d.contact_ids && c.contact_ids\n               OR ARRAY(SELECT lower(x) FROM unnest(d.recipients) x)\n                  && ARRAY(SELECT lower(x) FROM unnest(c.recipients) x))))\n      ORDER BY c.kind, coalesce(c.activity_id::text, c.intro_id::text), c.ts, c.contact_id\n    ),\n    reached AS (\n      SELECT DISTINCT o.kind, coalesce(o.activity_id::text, o.intro_id::text) AS id, o.ts, x.cid\n      FROM once o, unnest(o.contact_ids || o.contact_id) x(cid)\n      WHERE o.kind <> 'call_booked' AND x.cid IS NOT NULL\n    )\n    SELECT m.contact_id, m.owner_email,\n           (SELECT count(*) FROM reached r WHERE r.cid = m.contact_id) AS activity\n    FROM bedrock.jobs_contact_membership m\n    WHERE m.stage = 'initial_outreach'\n    ) d GROUP BY 1 ORDER BY 1",
+          "mappings": [],
+          "time_anchors": [
+            {
+              "kind": "state",
+              "label": "last 4 weeks, as of now",
+              "default": true
+            }
+          ]
+        },
+        {
+          "key": "campaign_contacts",
+          "label": "Contacts in a campaign",
+          "status": "draft",
+          "definition": "Jobs contacts carrying the campaign's tag.",
+          "numerator": null,
+          "denominator": "n/a (count)",
+          "is_rate": false,
+          "sql_query": "SELECT t.tag AS campaign, count(DISTINCT c.contact_id) AS in_pipeline\nFROM public.contacts c, unnest(c.tags) t(tag)\nWHERE c.is_jobs_contact AND t.tag IN (SELECT slug FROM bedrock.contact_tag_catalog)\nGROUP BY 1 ORDER BY 2 DESC",
+          "mappings": [],
+          "time_anchors": [
+            {
+              "kind": "state",
+              "label": "as of today",
+              "default": true
+            }
+          ],
+          "caveat": "Only the current campaign shows by default; past ones are archived and selectable (D10, PRO-100). Campaign groups that merge several tags are applied by Bedrock and are not reproduced here."
+        },
+        {
+          "key": "campaign_accounts",
+          "label": "Accounts in a campaign",
+          "status": "draft",
+          "definition": "Distinct accounts (company names) among a campaign's contacts.",
+          "numerator": null,
+          "denominator": "n/a (count)",
+          "is_rate": false,
+          "sql_query": "SELECT t.tag AS campaign, count(DISTINCT lower(btrim(c.current_company))) AS accounts\nFROM public.contacts c, unnest(c.tags) t(tag)\nWHERE c.is_jobs_contact AND btrim(coalesce(c.current_company, '')) <> ''\n  AND t.tag IN (SELECT slug FROM bedrock.contact_tag_catalog)\nGROUP BY 1 ORDER BY 2 DESC",
+          "mappings": [],
+          "time_anchors": [
+            {
+              "kind": "state",
+              "label": "as of today",
+              "default": true
+            }
+          ]
+        },
+        {
+          "key": "campaign_reached",
+          "label": "Campaign contacts and accounts reached",
+          "status": "draft",
+          "definition": "A campaign's contacts (and their accounts) that anyone at Pursuit has ever sent activity to. Shown on Campaigns as \"Activated\"; not the same as Accounts activated, which is the team's first activity on an account in a week.",
+          "numerator": "Campaign contacts (or accounts) with any activity from Pursuit",
+          "denominator": "Campaign contacts (or accounts)",
+          "is_rate": false,
+          "sql_query": "",
+          "mappings": [],
+          "time_anchors": [],
+          "caveat": "Reference query to be written with the PRO-100 campaign fixes; Bedrock counts it from the same events as Outreach (services/outreach_counting) for every Pursuit sender, all time."
+        }
+      ]
+    },
+    {
+      "bedrock_key": "employer_pipeline",
+      "metric_id": null,
+      "name": "Employer pipeline",
+      "stage": "Jobs",
+      "subdomain": "Employer pipeline",
+      "status": "draft",
+      "owner_team": "Jobs",
+      "is_north_star": false,
+      "hidden": false,
+      "sort_order": 210,
+      "definition": "Where the team's employer work stands: contacts by stage, opportunities by stage, what moved, what stalled, and the full-time roles employers have committed to. An opportunity is any positive expression of interest from an employer; \"deal\" is renamed \"opportunity\" everywhere.",
+      "base_population": "Jobs contacts (bedrock.jobs_contact_membership) and opportunities (bedrock.jobs_opportunity, not deleted).",
+      "grain": "contact or opportunity",
+      "source_system": "Bedrock",
+      "refresh_cadence": "Live",
+      "time_of_measurement": "As of the end of the window for counts that stand; calendar weeks, New York time, for moves (D8).",
+      "segments": [
+        "Owner",
+        "Deal type",
+        "Stage",
+        "Priority",
+        "Campaign"
+      ],
+      "aliases": [
+        "deals",
+        "pipeline"
+      ],
+      "caveats": "Stages read in the current vocabulary: retired stage names are folded into the stage they were migrated to (e.g. Reviewing Builders → Builder Submitted, the three On Hold stages → Closed Lost, On Hold contacts → Revisit). Open-market roles count only when Pursuit is actively pushing them, marked Low likelihood. Stalled (D3): no jobs-related activity for 2 weeks on a contact, 4 on an opportunity, 6 on an account; comments don't count; an account is stalled only when none of its contacts were touched and none of its opportunities moved.",
+      "cuts": [
+        {
+          "key": "committed_roles",
+          "label": "Committed roles",
+          "status": "draft",
+          "definition": "Full-time seats an employer has committed to and nobody fills yet: open, committed (not open-market), not a trial (a trial converts into its own full-time role), on a live opportunity, and full-time, typed so or untyped on a full-time opportunity.",
+          "numerator": null,
+          "denominator": "n/a (count)",
+          "is_rate": false,
+          "sql_query": "SELECT count(*) AS committed_roles FROM (SELECT r.id, r.approx_salary FROM bedrock.jobs_role r JOIN bedrock.jobs_opportunity o ON o.id = r.opportunity_id WHERE r.status = 'open' AND o.deleted_at IS NULL AND r.commitment = 'committed' AND r.is_trial = false AND (r.employment_type = 'full_time' OR (r.employment_type IS NULL AND o.deal_type = 'ft'))) cr",
+          "mappings": [],
+          "time_anchors": [
+            {
+              "kind": "state",
+              "label": "as of today",
+              "default": true
+            }
+          ]
+        },
+        {
+          "key": "contacts_by_stage",
+          "label": "Contacts by stage",
+          "status": "draft",
+          "definition": "Jobs contacts by the stage they sit in now: Assigned, Initial Outreach, Scheduling, Call Booked, Converted to Opportunity, Revisit, Not a Fit.",
+          "numerator": null,
+          "denominator": "n/a (count)",
+          "is_rate": false,
+          "sql_query": "SELECT (CASE m.stage WHEN 'on_hold' THEN 'revisit' ELSE m.stage END) AS stage, count(*) AS contacts\nFROM bedrock.jobs_contact_membership m JOIN public.contacts c ON c.contact_id = m.contact_id\nGROUP BY 1 ORDER BY 2 DESC",
+          "mappings": [],
+          "time_anchors": [
+            {
+              "kind": "state",
+              "label": "as of today",
+              "default": true
+            }
+          ]
+        },
+        {
+          "key": "contacts_entering_stage",
+          "label": "Contacts entering each stage",
+          "status": "draft",
+          "definition": "Contacts that entered each stage in the week, each contact once per stage. Read from the membership's own stamps (assigned, first outreach, converted) and the stage history.",
+          "numerator": null,
+          "denominator": "n/a (count)",
+          "is_rate": false,
+          "sql_query": "WITH w AS (SELECT ((coalesce(nullif(current_setting('dd.window_from', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 7))::timestamp AT TIME ZONE 'America/New_York') AS start_at, (((coalesce(nullif(current_setting('dd.window_to', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 1) + 1))::timestamp AT TIME ZONE 'America/New_York') AS end_at),\nstamps AS (\n  SELECT m.contact_id, 'assigned' AS stage FROM bedrock.jobs_contact_membership m\n   JOIN public.contacts c ON c.contact_id = m.contact_id\n   WHERE m.assigned_at >= (SELECT start_at FROM w) AND m.assigned_at < (SELECT end_at FROM w)\n  UNION SELECT m.contact_id, 'initial_outreach' FROM bedrock.jobs_contact_membership m\n   JOIN public.contacts c ON c.contact_id = m.contact_id\n   WHERE m.first_outreach_at >= (SELECT start_at FROM w) AND m.first_outreach_at < (SELECT end_at FROM w)\n  UNION SELECT m.contact_id, 'converted_to_opportunity' FROM bedrock.jobs_contact_membership m\n   JOIN public.contacts c ON c.contact_id = m.contact_id\n   WHERE m.converted_at >= (SELECT start_at FROM w) AND m.converted_at < (SELECT end_at FROM w)\n),\nhist AS (\n  SELECT h.contact_id, (CASE h.to_stage WHEN 'on_hold' THEN 'revisit' ELSE h.to_stage END) AS stage\n  FROM bedrock.jobs_membership_stage_history h JOIN public.contacts c ON c.contact_id = h.contact_id\n  WHERE h.changed_at >= (SELECT start_at FROM w) AND h.changed_at < (SELECT end_at FROM w)\n)\nSELECT stage, count(*) AS contacts\nFROM (SELECT * FROM stamps UNION SELECT * FROM hist) e\nWHERE stage IN ('assigned', 'initial_outreach', 'scheduling', 'call_booked', 'converted_to_opportunity', 'revisit', 'not_a_fit')\nGROUP BY 1 ORDER BY 2 DESC",
+          "mappings": [],
+          "time_anchors": [
+            {
+              "kind": "event",
+              "label": "in the week (Mon–Sun, New York)",
+              "default": true,
+              "meaning": "dd.window_from / dd.window_to, New York dates; default the last completed calendar week"
+            }
+          ]
+        },
+        {
+          "key": "opportunities_by_stage",
+          "label": "Opportunities by stage",
+          "status": "draft",
+          "definition": "Opportunities by the stage they sit in now, closed ones included.",
+          "numerator": null,
+          "denominator": "n/a (count)",
+          "is_rate": false,
+          "sql_query": "SELECT (CASE o.stage WHEN 'initial_outreach' THEN 'active_in_discussions' WHEN 'lead_submitted' THEN 'active_in_discussions' WHEN 'reviewing_builders' THEN 'builder_submitted' WHEN 'active_builder_interview' THEN 'builder_submitted' WHEN 'on_hold_not_interested' THEN 'closed_lost' WHEN 'on_hold_not_responsive' THEN 'closed_lost' WHEN 'on_hold_not_selected' THEN 'closed_lost' ELSE o.stage END) AS stage, count(*) AS opportunities\nFROM bedrock.jobs_opportunity o WHERE o.deleted_at IS NULL GROUP BY 1 ORDER BY 2 DESC",
+          "mappings": [],
+          "time_anchors": [
+            {
+              "kind": "state",
+              "label": "as of today",
+              "default": true
+            }
+          ]
+        },
+        {
+          "key": "opportunities_entering_stage",
+          "label": "Opportunities entering each stage",
+          "status": "draft",
+          "definition": "Opportunities that entered each stage in the week, each once per stage, from the stage history; an opportunity created straight into a stage enters it when created.",
+          "numerator": null,
+          "denominator": "n/a (count)",
+          "is_rate": false,
+          "sql_query": "WITH w AS (SELECT ((coalesce(nullif(current_setting('dd.window_from', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 7))::timestamp AT TIME ZONE 'America/New_York') AS start_at, (((coalesce(nullif(current_setting('dd.window_to', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 1) + 1))::timestamp AT TIME ZONE 'America/New_York') AS end_at),\nhist AS (\n  SELECT DISTINCT h.opportunity_id AS oid, (CASE h.to_stage WHEN 'initial_outreach' THEN 'active_in_discussions' WHEN 'lead_submitted' THEN 'active_in_discussions' WHEN 'reviewing_builders' THEN 'builder_submitted' WHEN 'active_builder_interview' THEN 'builder_submitted' WHEN 'on_hold_not_interested' THEN 'closed_lost' WHEN 'on_hold_not_responsive' THEN 'closed_lost' WHEN 'on_hold_not_selected' THEN 'closed_lost' ELSE h.to_stage END) AS stage\n  FROM bedrock.jobs_stage_history h JOIN bedrock.jobs_opportunity o ON o.id = h.opportunity_id\n  WHERE o.deleted_at IS NULL AND h.changed_at >= (SELECT start_at FROM w) AND h.changed_at < (SELECT end_at FROM w)\n),\ncreated AS (\n  SELECT o.id AS oid, (CASE o.stage WHEN 'initial_outreach' THEN 'active_in_discussions' WHEN 'lead_submitted' THEN 'active_in_discussions' WHEN 'reviewing_builders' THEN 'builder_submitted' WHEN 'active_builder_interview' THEN 'builder_submitted' WHEN 'on_hold_not_interested' THEN 'closed_lost' WHEN 'on_hold_not_responsive' THEN 'closed_lost' WHEN 'on_hold_not_selected' THEN 'closed_lost' ELSE o.stage END) AS stage FROM bedrock.jobs_opportunity o\n  WHERE o.deleted_at IS NULL AND o.created_at >= (SELECT start_at FROM w) AND o.created_at < (SELECT end_at FROM w)\n    AND NOT EXISTS (SELECT 1 FROM bedrock.jobs_stage_history h2 WHERE h2.opportunity_id = o.id)\n)\nSELECT stage, count(*) AS opportunities FROM (SELECT * FROM hist UNION ALL SELECT * FROM created) e\nGROUP BY 1 ORDER BY 2 DESC",
+          "mappings": [],
+          "time_anchors": [
+            {
+              "kind": "event",
+              "label": "in the week (Mon–Sun, New York)",
+              "default": true,
+              "meaning": "dd.window_from / dd.window_to, New York dates; default the last completed calendar week"
+            }
+          ]
+        },
+        {
+          "key": "opportunities_open",
+          "label": "Open opportunities",
+          "status": "draft",
+          "definition": "Opportunities open at the end of the window: created by then, in a working stage, and not closed by then. A past week shows what was open then.",
+          "numerator": null,
+          "denominator": "n/a (count)",
+          "is_rate": false,
+          "sql_query": "WITH w AS (SELECT ((coalesce(nullif(current_setting('dd.window_from', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 7))::timestamp AT TIME ZONE 'America/New_York') AS start_at, (((coalesce(nullif(current_setting('dd.window_to', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 1) + 1))::timestamp AT TIME ZONE 'America/New_York') AS end_at),\nacct_last AS (\n  -- The latest external activity at each opportunity's account: any contact\n  -- whose company is the account, by participant link or meeting attendee.\n  SELECT k, max(at) AS at FROM (\n    SELECT lower(trim(c.current_company)) AS k, a.activity_date AS at\n    FROM bedrock.activity a\n    JOIN public.contacts c ON c.contact_id = a.participant_public_contact_id\n    WHERE (a.deleted_at IS NULL AND a.type IN ('email', 'call', 'meeting', 'linkedin', 'text') AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))) AND a.activity_date < (SELECT end_at FROM w)\n    UNION ALL\n    SELECT lower(trim(c.current_company)), a.activity_date\n    FROM bedrock.activity a,\n         jsonb_array_elements(coalesce(a.meeting_attendees, '[]'::jsonb)) att\n    JOIN public.contacts c ON lower(c.email) = lower(att->>'email')\n    WHERE a.source = 'calendar-sync' AND (a.deleted_at IS NULL AND a.type IN ('email', 'call', 'meeting', 'linkedin', 'text') AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))) AND a.activity_date < (SELECT end_at FROM w)\n  ) x\n  WHERE coalesce(k, '') <> ''\n  GROUP BY k\n),\nopen_set AS (\n  -- Opportunities open at the end of the window.\n  SELECT o.*,\n         greatest(o.created_at,\n                  (SELECT max(h.changed_at) FROM bedrock.jobs_stage_history h\n                    WHERE h.opportunity_id = o.id AND h.changed_at < (SELECT end_at FROM w)),\n                  (SELECT max(a.activity_date) FROM bedrock.activity a\n                    WHERE a.jobs_opportunity_id = o.id AND (a.deleted_at IS NULL AND a.type IN ('email', 'call', 'meeting', 'linkedin', 'text') AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))) AND a.activity_date < (SELECT end_at FROM w)),\n                  al.at) AS last_movement\n  FROM bedrock.jobs_opportunity o\n  LEFT JOIN acct_last al ON al.k = lower(trim(o.account_name))\n  WHERE o.deleted_at IS NULL\n    AND o.created_at < (SELECT end_at FROM w)\n    AND (o.closed_at IS NULL OR o.closed_at >= (SELECT end_at FROM w))\n    AND (o.stage IN ('active_in_discussions', 'ask_submitted', 'active_opportunity_confirmed', 'builder_submitted', 'builder_interviewing', 'offer_contracting', 'lead_submitted', 'initial_outreach', 'reviewing_builders', 'active_builder_interview') OR (o.closed_at IS NOT NULL AND o.closed_at >= (SELECT end_at FROM w)))\n)\nSELECT count(*) AS opportunities_open FROM open_set",
+          "mappings": [],
+          "time_anchors": [
+            {
+              "kind": "state",
+              "label": "as of the end of the window",
+              "default": true,
+              "meaning": "open at New York midnight after dd.window_to"
+            }
+          ]
+        },
+        {
+          "key": "opportunities_new",
+          "label": "New opportunities",
+          "status": "draft",
+          "definition": "Opportunities created in the week.",
+          "numerator": null,
+          "denominator": "n/a (count)",
+          "is_rate": false,
+          "sql_query": "WITH w AS (SELECT ((coalesce(nullif(current_setting('dd.window_from', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 7))::timestamp AT TIME ZONE 'America/New_York') AS start_at, (((coalesce(nullif(current_setting('dd.window_to', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 1) + 1))::timestamp AT TIME ZONE 'America/New_York') AS end_at)\nSELECT count(*) AS opportunities_new FROM bedrock.jobs_opportunity o\nWHERE o.deleted_at IS NULL AND o.created_at >= (SELECT start_at FROM w) AND o.created_at < (SELECT end_at FROM w)",
+          "mappings": [],
+          "time_anchors": [
+            {
+              "kind": "event",
+              "label": "in the week (Mon–Sun, New York)",
+              "default": true,
+              "meaning": "dd.window_from / dd.window_to, New York dates; default the last completed calendar week"
+            }
+          ]
+        },
+        {
+          "key": "stalled_opportunities",
+          "label": "Stalled opportunities",
+          "status": "draft",
+          "definition": "Open opportunities with no movement for more than 4 weeks (D3): no stage change, and no external activity on the opportunity or with anyone at its account. Comments don't count.",
+          "numerator": "Open opportunities with no movement for 4+ weeks",
+          "denominator": "Open opportunities",
+          "is_rate": false,
+          "sql_query": "WITH w AS (SELECT ((coalesce(nullif(current_setting('dd.window_from', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 7))::timestamp AT TIME ZONE 'America/New_York') AS start_at, (((coalesce(nullif(current_setting('dd.window_to', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 1) + 1))::timestamp AT TIME ZONE 'America/New_York') AS end_at),\nacct_last AS (\n  -- The latest external activity at each opportunity's account: any contact\n  -- whose company is the account, by participant link or meeting attendee.\n  SELECT k, max(at) AS at FROM (\n    SELECT lower(trim(c.current_company)) AS k, a.activity_date AS at\n    FROM bedrock.activity a\n    JOIN public.contacts c ON c.contact_id = a.participant_public_contact_id\n    WHERE (a.deleted_at IS NULL AND a.type IN ('email', 'call', 'meeting', 'linkedin', 'text') AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))) AND a.activity_date < (SELECT end_at FROM w)\n    UNION ALL\n    SELECT lower(trim(c.current_company)), a.activity_date\n    FROM bedrock.activity a,\n         jsonb_array_elements(coalesce(a.meeting_attendees, '[]'::jsonb)) att\n    JOIN public.contacts c ON lower(c.email) = lower(att->>'email')\n    WHERE a.source = 'calendar-sync' AND (a.deleted_at IS NULL AND a.type IN ('email', 'call', 'meeting', 'linkedin', 'text') AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))) AND a.activity_date < (SELECT end_at FROM w)\n  ) x\n  WHERE coalesce(k, '') <> ''\n  GROUP BY k\n),\nopen_set AS (\n  -- Opportunities open at the end of the window.\n  SELECT o.*,\n         greatest(o.created_at,\n                  (SELECT max(h.changed_at) FROM bedrock.jobs_stage_history h\n                    WHERE h.opportunity_id = o.id AND h.changed_at < (SELECT end_at FROM w)),\n                  (SELECT max(a.activity_date) FROM bedrock.activity a\n                    WHERE a.jobs_opportunity_id = o.id AND (a.deleted_at IS NULL AND a.type IN ('email', 'call', 'meeting', 'linkedin', 'text') AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))) AND a.activity_date < (SELECT end_at FROM w)),\n                  al.at) AS last_movement\n  FROM bedrock.jobs_opportunity o\n  LEFT JOIN acct_last al ON al.k = lower(trim(o.account_name))\n  WHERE o.deleted_at IS NULL\n    AND o.created_at < (SELECT end_at FROM w)\n    AND (o.closed_at IS NULL OR o.closed_at >= (SELECT end_at FROM w))\n    AND (o.stage IN ('active_in_discussions', 'ask_submitted', 'active_opportunity_confirmed', 'builder_submitted', 'builder_interviewing', 'offer_contracting', 'lead_submitted', 'initial_outreach', 'reviewing_builders', 'active_builder_interview') OR (o.closed_at IS NOT NULL AND o.closed_at >= (SELECT end_at FROM w)))\n)\nSELECT count(*) FILTER (WHERE last_movement < least((SELECT end_at FROM w), now()) - interval '4 weeks') AS stalled_opportunities,\n       count(*) AS opportunities_open\nFROM open_set",
+          "mappings": [],
+          "time_anchors": [
+            {
+              "kind": "state",
+              "label": "as of the end of the window",
+              "default": true,
+              "meaning": "open at New York midnight after dd.window_to"
+            }
+          ]
+        },
+        {
+          "key": "stalled_contacts",
+          "label": "Stalled contacts",
+          "status": "draft",
+          "definition": "Contacts being worked (Assigned to Call Booked) with no external activity and no stage change for more than 2 weeks (D3). Not on a card yet.",
+          "numerator": "Open contacts quiet for 2+ weeks",
+          "denominator": "Open contacts",
+          "is_rate": false,
+          "sql_query": "WITH last AS (\n  SELECT m.contact_id,\n         greatest(m.assigned_at,\n                  (SELECT max(h.changed_at) FROM bedrock.jobs_membership_stage_history h\n                    WHERE h.contact_id = m.contact_id),\n                  (SELECT max(a.activity_date) FROM bedrock.activity a\n                    WHERE a.participant_public_contact_id = m.contact_id AND (a.deleted_at IS NULL AND a.type IN ('email', 'call', 'meeting', 'linkedin', 'text') AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))))) AS last_at\n  FROM bedrock.jobs_contact_membership m\n  WHERE m.stage IN ('assigned', 'initial_outreach', 'scheduling', 'call_booked')\n)\nSELECT count(*) FILTER (WHERE last_at IS NULL OR last_at < now() - interval '2 weeks') AS stalled_contacts,\n       count(*) AS open_contacts\nFROM last",
+          "mappings": [],
+          "time_anchors": [
+            {
+              "kind": "state",
+              "label": "as of today",
+              "default": true
+            }
+          ]
+        },
+        {
+          "key": "stalled_accounts",
+          "label": "Stalled accounts",
+          "status": "draft",
+          "definition": "Accounts with an open contact or opportunity where no contact was touched and no opportunity moved for more than 6 weeks (D3). Not on a card yet.",
+          "numerator": "Open accounts quiet for 6+ weeks",
+          "denominator": "Open accounts",
+          "is_rate": false,
+          "sql_query": "WITH open_accounts AS (\n  SELECT DISTINCT lower(btrim(c.current_company)) AS k\n  FROM bedrock.jobs_contact_membership m JOIN public.contacts c ON c.contact_id = m.contact_id\n  WHERE m.stage IN ('assigned', 'initial_outreach', 'scheduling', 'call_booked')\n    AND btrim(coalesce(c.current_company, '')) <> ''\n  UNION\n  SELECT DISTINCT lower(btrim(o.account_name)) FROM bedrock.jobs_opportunity o\n  WHERE o.deleted_at IS NULL AND o.stage IN ('active_in_discussions', 'ask_submitted', 'active_opportunity_confirmed', 'builder_submitted', 'builder_interviewing', 'offer_contracting', 'lead_submitted', 'initial_outreach', 'reviewing_builders', 'active_builder_interview') AND btrim(coalesce(o.account_name, '')) <> ''\n),\ntouched AS (\n  SELECT lower(btrim(c.current_company)) AS k, max(a.activity_date) AS at\n  FROM bedrock.activity a JOIN public.contacts c ON c.contact_id = a.participant_public_contact_id\n  WHERE (a.deleted_at IS NULL AND a.type IN ('email', 'call', 'meeting', 'linkedin', 'text') AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))) GROUP BY 1\n),\nmoved AS (\n  SELECT lower(btrim(o.account_name)) AS k, max(h.changed_at) AS at\n  FROM bedrock.jobs_stage_history h JOIN bedrock.jobs_opportunity o ON o.id = h.opportunity_id\n  WHERE o.deleted_at IS NULL GROUP BY 1\n)\nSELECT count(*) FILTER (WHERE greatest(t.at, mv.at) IS NULL\n                          OR greatest(t.at, mv.at) < now() - interval '6 weeks') AS stalled_accounts,\n       count(*) AS open_accounts\nFROM open_accounts oa LEFT JOIN touched t USING (k) LEFT JOIN moved mv USING (k)",
+          "mappings": [],
+          "time_anchors": [
+            {
+              "kind": "state",
+              "label": "as of today",
+              "default": true
+            }
+          ]
+        },
+        {
+          "key": "closed_won",
+          "label": "Closed won",
+          "status": "draft",
+          "definition": "Opportunities whose latest stage change before the end of the window moved them to Closed Won, inside the window. A won-then-reverted misclick doesn't count.",
+          "numerator": null,
+          "denominator": "n/a (count)",
+          "is_rate": false,
+          "sql_query": "WITH w AS (SELECT ((coalesce(nullif(current_setting('dd.window_from', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 7))::timestamp AT TIME ZONE 'America/New_York') AS start_at, (((coalesce(nullif(current_setting('dd.window_to', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 1) + 1))::timestamp AT TIME ZONE 'America/New_York') AS end_at)\nSELECT count(*) AS closed_won FROM (\n  SELECT DISTINCT ON (h.opportunity_id) h.to_stage, h.changed_at\n  FROM bedrock.jobs_stage_history h JOIN bedrock.jobs_opportunity o ON o.id = h.opportunity_id\n  WHERE o.deleted_at IS NULL AND h.changed_at < (SELECT end_at FROM w)\n  ORDER BY h.opportunity_id, h.changed_at DESC\n) last_change WHERE to_stage = 'closed_won' AND changed_at >= (SELECT start_at FROM w)",
+          "mappings": [],
+          "time_anchors": [
+            {
+              "kind": "event",
+              "label": "in the week (Mon–Sun, New York)",
+              "default": true,
+              "meaning": "dd.window_from / dd.window_to, New York dates; default the last completed calendar week"
+            }
+          ]
+        },
+        {
+          "key": "closed_lost",
+          "label": "Closed lost",
+          "status": "draft",
+          "definition": "As closed_won, for Closed Lost.",
+          "numerator": null,
+          "denominator": "n/a (count)",
+          "is_rate": false,
+          "sql_query": "WITH w AS (SELECT ((coalesce(nullif(current_setting('dd.window_from', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 7))::timestamp AT TIME ZONE 'America/New_York') AS start_at, (((coalesce(nullif(current_setting('dd.window_to', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 1) + 1))::timestamp AT TIME ZONE 'America/New_York') AS end_at)\nSELECT count(*) AS closed_lost FROM (\n  SELECT DISTINCT ON (h.opportunity_id) h.to_stage, h.changed_at\n  FROM bedrock.jobs_stage_history h JOIN bedrock.jobs_opportunity o ON o.id = h.opportunity_id\n  WHERE o.deleted_at IS NULL AND h.changed_at < (SELECT end_at FROM w)\n  ORDER BY h.opportunity_id, h.changed_at DESC\n) last_change WHERE to_stage = 'closed_lost' AND changed_at >= (SELECT start_at FROM w)",
+          "mappings": [],
+          "time_anchors": [
+            {
+              "kind": "event",
+              "label": "in the week (Mon–Sun, New York)",
+              "default": true,
+              "meaning": "dd.window_from / dd.window_to, New York dates; default the last completed calendar week"
+            }
+          ]
+        },
+        {
+          "key": "won_open_tasks",
+          "label": "Won, with open tasks",
+          "status": "draft",
+          "definition": "Closed Won opportunities that still have a task not marked Completed.",
+          "numerator": null,
+          "denominator": "n/a (count)",
+          "is_rate": false,
+          "sql_query": "SELECT count(*) AS won_open_tasks FROM bedrock.jobs_opportunity o\nWHERE o.deleted_at IS NULL AND o.stage = 'closed_won' AND EXISTS (\n  SELECT 1 FROM bedrock.jobs_task t WHERE t.parent_type = 'opportunity' AND t.parent_id = o.id::text\n    AND t.deleted_at IS NULL AND t.status <> 'Completed')",
+          "mappings": [],
+          "time_anchors": [
+            {
+              "kind": "state",
+              "label": "as of today",
+              "default": true
+            }
+          ]
+        },
+        {
+          "key": "time_in_stage",
+          "label": "Time in stage",
+          "status": "draft",
+          "definition": "Open opportunities by how long they have been in their current stage: under 2 weeks, 2–4, 4–6, 6–8, 8+. Opportunities with no recorded stage change are aged from creation.",
+          "numerator": null,
+          "denominator": "Open opportunities",
+          "is_rate": false,
+          "sql_query": "WITH w AS (SELECT ((coalesce(nullif(current_setting('dd.window_from', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 7))::timestamp AT TIME ZONE 'America/New_York') AS start_at, (((coalesce(nullif(current_setting('dd.window_to', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 1) + 1))::timestamp AT TIME ZONE 'America/New_York') AS end_at),\nacct_last AS (\n  -- The latest external activity at each opportunity's account: any contact\n  -- whose company is the account, by participant link or meeting attendee.\n  SELECT k, max(at) AS at FROM (\n    SELECT lower(trim(c.current_company)) AS k, a.activity_date AS at\n    FROM bedrock.activity a\n    JOIN public.contacts c ON c.contact_id = a.participant_public_contact_id\n    WHERE (a.deleted_at IS NULL AND a.type IN ('email', 'call', 'meeting', 'linkedin', 'text') AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))) AND a.activity_date < (SELECT end_at FROM w)\n    UNION ALL\n    SELECT lower(trim(c.current_company)), a.activity_date\n    FROM bedrock.activity a,\n         jsonb_array_elements(coalesce(a.meeting_attendees, '[]'::jsonb)) att\n    JOIN public.contacts c ON lower(c.email) = lower(att->>'email')\n    WHERE a.source = 'calendar-sync' AND (a.deleted_at IS NULL AND a.type IN ('email', 'call', 'meeting', 'linkedin', 'text') AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))) AND a.activity_date < (SELECT end_at FROM w)\n  ) x\n  WHERE coalesce(k, '') <> ''\n  GROUP BY k\n),\nopen_set AS (\n  -- Opportunities open at the end of the window.\n  SELECT o.*,\n         greatest(o.created_at,\n                  (SELECT max(h.changed_at) FROM bedrock.jobs_stage_history h\n                    WHERE h.opportunity_id = o.id AND h.changed_at < (SELECT end_at FROM w)),\n                  (SELECT max(a.activity_date) FROM bedrock.activity a\n                    WHERE a.jobs_opportunity_id = o.id AND (a.deleted_at IS NULL AND a.type IN ('email', 'call', 'meeting', 'linkedin', 'text') AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))) AND a.activity_date < (SELECT end_at FROM w)),\n                  al.at) AS last_movement\n  FROM bedrock.jobs_opportunity o\n  LEFT JOIN acct_last al ON al.k = lower(trim(o.account_name))\n  WHERE o.deleted_at IS NULL\n    AND o.created_at < (SELECT end_at FROM w)\n    AND (o.closed_at IS NULL OR o.closed_at >= (SELECT end_at FROM w))\n    AND (o.stage IN ('active_in_discussions', 'ask_submitted', 'active_opportunity_confirmed', 'builder_submitted', 'builder_interviewing', 'offer_contracting', 'lead_submitted', 'initial_outreach', 'reviewing_builders', 'active_builder_interview') OR (o.closed_at IS NOT NULL AND o.closed_at >= (SELECT end_at FROM w)))\n),\naged AS (\n  SELECT extract(day FROM least((SELECT end_at FROM w), now()) - coalesce(\n           (SELECT max(h.changed_at) FROM bedrock.jobs_stage_history h\n             WHERE h.opportunity_id = s.id AND h.to_stage = s.stage), s.created_at)) AS days\n  FROM open_set s\n)\nSELECT CASE WHEN days < 14 THEN '< 2 weeks' WHEN days < 28 THEN '2–4 weeks'\n            WHEN days < 42 THEN '4–6 weeks' WHEN days < 56 THEN '6–8 weeks' ELSE '8+ weeks' END AS bucket,\n       count(*) AS opportunities\nFROM aged GROUP BY 1 ORDER BY min(days)",
+          "mappings": [],
+          "time_anchors": [
+            {
+              "kind": "state",
+              "label": "as of the end of the window",
+              "default": true,
+              "meaning": "open at New York midnight after dd.window_to"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "bedrock_key": "employer_conversion",
+      "metric_id": null,
+      "name": "Employer conversion",
+      "stage": "Jobs",
+      "subdomain": "Employer conversion",
+      "status": "draft",
+      "owner_team": "Jobs",
+      "is_north_star": false,
+      "hidden": false,
+      "sort_order": 220,
+      "definition": "How employer work turns into jobs. Conversion runs between core milestones only, anchored on interviews: first stage → interview → hire. A rate counts only contacts that started at the earlier stage, so a contact added straight at Call Booked doesn't inflate it, and it uses the dates stages changed (D11).",
+      "base_population": "Jobs contacts and opportunities, by the dates they changed stage.",
+      "grain": "contact or opportunity",
+      "source_system": "Bedrock",
+      "refresh_cadence": "Live",
+      "time_of_measurement": "Calendar weeks, New York time (D8).",
+      "segments": [
+        "Owner",
+        "Campaign",
+        "Deal type"
+      ],
+      "caveats": "The milestone rates (D11) need interview history, which PRO-117 starts recording; until then the dashboards show the stage-to-stage rates below, and those can exceed 100% when a backlog clears. Whether outreach → call is also shown is open (Avni, PRO-94). One owner per conversion is PRO-101 (D6).",
+      "cuts": [
+        {
+          "key": "contacts_converted",
+          "label": "Converted to opportunity",
+          "status": "draft",
+          "definition": "Contacts converted to an opportunity in the week, by the membership's conversion date. With an owner selected, only conversions that belong to them: the contact's owner, else the account's, else whoever did the first outreach.",
+          "numerator": null,
+          "denominator": "n/a (count)",
+          "is_rate": false,
+          "sql_query": "WITH w AS (SELECT ((coalesce(nullif(current_setting('dd.window_from', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 7))::timestamp AT TIME ZONE 'America/New_York') AS start_at, (((coalesce(nullif(current_setting('dd.window_to', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 1) + 1))::timestamp AT TIME ZONE 'America/New_York') AS end_at)\nSELECT count(*) AS converted\nFROM bedrock.jobs_contact_membership m\n    JOIN public.contacts c ON c.contact_id = m.contact_id\n    LEFT JOIN bedrock.jobs_account ja\n      ON ja.account_key = nullif(lower(btrim(coalesce(c.current_company, ''))), '')\nWHERE m.converted_at >= (SELECT start_at FROM w) AND m.converted_at < (SELECT end_at FROM w)",
+          "mappings": [],
+          "time_anchors": [
+            {
+              "kind": "event",
+              "label": "in the week (Mon–Sun, New York)",
+              "default": true,
+              "meaning": "dd.window_from / dd.window_to, New York dates; default the last completed calendar week"
+            }
+          ]
+        },
+        {
+          "key": "contact_cohort_conversion",
+          "label": "Contact conversion, all time",
+          "status": "draft",
+          "definition": "Of every contact ever assigned, the share that reached Initial Outreach; of every contact ever in Initial Outreach, the share converted to an opportunity. From the membership's stage stamps.",
+          "numerator": "Contacts that reached the later stage",
+          "denominator": "Contacts that reached the earlier stage",
+          "is_rate": true,
+          "sql_query": "SELECT round(100.0 * count(*) FILTER (WHERE first_outreach_at IS NOT NULL)\n             / nullif(count(*) FILTER (WHERE assigned_at IS NOT NULL), 0)) AS assigned_to_outreach_pct,\n       round(100.0 * count(*) FILTER (WHERE converted_at IS NOT NULL)\n             / nullif(count(*) FILTER (WHERE first_outreach_at IS NOT NULL), 0)) AS outreach_to_converted_pct\nFROM bedrock.jobs_contact_membership",
+          "mappings": [],
+          "time_anchors": [
+            {
+              "kind": "state",
+              "label": "as of today",
+              "default": true
+            }
+          ]
+        },
+        {
+          "key": "stage_flow_conversion",
+          "label": "Stage-to-stage flow",
+          "status": "draft",
+          "definition": "In a week, entries into the next stage divided by entries into this one (Employer pipeline: contacts_entering_stage, opportunities_entering_stage). Reported as measured, so over 100% means a backlog cleared.",
+          "numerator": "Entries into the next stage in the week",
+          "denominator": "Entries into this stage in the week",
+          "is_rate": true,
+          "sql_query": "",
+          "mappings": [],
+          "time_anchors": [
+            {
+              "kind": "event",
+              "label": "in the week (Mon–Sun, New York)",
+              "default": true,
+              "meaning": "dd.window_from / dd.window_to, New York dates; default the last completed calendar week"
+            }
+          ],
+          "caveat": "Computed from the two *_entering_stage measures; D11 replaces it with milestone conversion."
+        },
+        {
+          "key": "campaign_conversion",
+          "label": "Campaign conversion",
+          "status": "draft",
+          "definition": "Of a campaign's contacts that were contacted or converted, the share converted. Shown once at least 5 contacts are in it.",
+          "numerator": "Campaign contacts converted",
+          "denominator": "Campaign contacts contacted or converted",
+          "is_rate": true,
+          "sql_query": "",
+          "mappings": [],
+          "time_anchors": [
+            {
+              "kind": "state",
+              "label": "as of today",
+              "default": true
+            }
+          ],
+          "caveat": "PRO-100 makes this a real rate with one meaning of \"contacted\"; reference query with it."
+        },
+        {
+          "key": "milestone_to_interview",
+          "label": "First stage → interview",
+          "status": "blocked",
+          "definition": "Of contacts that started at the first stage in a period, the share whose opportunity reached a builder interview (D11).",
+          "numerator": "Of those, contacts whose opportunity reached a builder interview",
+          "denominator": "Contacts that started at the first stage in the period",
+          "is_rate": true,
+          "sql_query": "",
+          "mappings": [],
+          "time_anchors": [
+            {
+              "kind": "event",
+              "label": "in the week (Mon–Sun, New York)",
+              "default": true,
+              "meaning": "dd.window_from / dd.window_to, New York dates; default the last completed calendar week"
+            }
+          ],
+          "caveat": "Needs interview history (PRO-117) and contacts linked to opportunities (PRO-101)."
+        },
+        {
+          "key": "interview_to_hire",
+          "label": "Interview → hire",
+          "status": "blocked",
+          "definition": "Of opportunities that reached a builder interview, the share that closed won with a hire (D11).",
+          "numerator": "Of those, opportunities closed won with a hire",
+          "denominator": "Opportunities that reached a builder interview",
+          "is_rate": true,
+          "sql_query": "",
+          "mappings": [],
+          "time_anchors": [
+            {
+              "kind": "event",
+              "label": "in the week (Mon–Sun, New York)",
+              "default": true,
+              "meaning": "dd.window_from / dd.window_to, New York dates; default the last completed calendar week"
+            }
+          ],
+          "caveat": "Needs interview history (PRO-117)."
+        }
+      ]
+    },
+    {
+      "bedrock_key": "jobs_targets",
+      "metric_id": null,
+      "name": "Jobs targets",
+      "stage": "Jobs",
+      "subdomain": "Targets",
+      "status": "draft",
+      "owner_team": "Jobs",
+      "is_north_star": false,
+      "hidden": false,
+      "sort_order": 230,
+      "definition": "Whether the team is on track. Each number with a goal shows the goal, what was done, and the gap (done minus goal, so a shortfall is negative). Goals are set in Settings › Targets › Jobs: weekly activity goals per person and for the team, and a jobs goal per quarter.",
+      "base_population": "bedrock.jobs_target",
+      "source_system": "Bedrock (Settings › Targets › Jobs)",
+      "refresh_cadence": "Live",
+      "caveats": "Activity goals are weekly; a day is a fifth of the week (no daily goal when it doesn't divide to a whole number) and a month is four weeks. A team goal is either set directly or the sum of the team's personal goals. No goal reads as a dash, not zero. Opportunities converted carries a team goal only. D7 (10/3): team outreach goal 140 a week (Avni 45, Damon 45, Devika 50).",
+      "cuts": [
+        {
+          "key": "activity_vs_target",
+          "label": "Activity vs. goal",
+          "status": "draft",
+          "definition": "For outreach, calls, discovery calls, accounts activated and opportunities converted: the goal for the period, what was done (Employer outreach, Employer conversion), and the gap.",
+          "numerator": "Done in the period",
+          "denominator": "Goal for the period",
+          "is_rate": false,
+          "sql_query": "SELECT t.metric, coalesce(t.owner_email, 'team') AS owner, t.team_mode,\n       CASE WHEN t.owner_email IS NULL AND t.team_mode = 'sum'\n            THEN (SELECT sum(p.value) FROM bedrock.jobs_target p\n                   JOIN bedrock.jobs_team_member tm ON lower(tm.email) = lower(p.owner_email) AND tm.active\n                  WHERE p.section = 'outreach' AND p.metric = t.metric)\n            ELSE t.value END AS weekly_goal\nFROM bedrock.jobs_target t\nWHERE t.section = 'outreach'\nORDER BY t.metric, t.owner_email NULLS FIRST",
+          "mappings": [],
+          "time_anchors": [
+            {
+              "kind": "event",
+              "label": "in the week (Mon–Sun, New York)",
+              "default": true,
+              "meaning": "dd.window_from / dd.window_to, New York dates; default the last completed calendar week"
+            }
+          ]
+        },
+        {
+          "key": "jobs_vs_target",
+          "label": "Jobs vs. quarterly goal",
+          "status": "draft",
+          "definition": "Jobs per quarter against the quarterly goal: won (roles on Closed Won opportunities, or their estimate when no roles were logged, in the quarter they closed), confirmed (roles on open opportunities, by target close date) and estimated (an open opportunity's estimate minus its roles). Open opportunities past their close date, or with none, are listed apart.",
+          "numerator": "Won + confirmed + estimated jobs in the quarter",
+          "denominator": "Quarterly jobs goal",
+          "is_rate": false,
+          "sql_query": "SELECT period_start AS quarter, value AS jobs_goal\nFROM bedrock.jobs_target WHERE section = 'pipeline' ORDER BY period_start",
+          "mappings": [],
+          "time_anchors": [
+            {
+              "kind": "event",
+              "label": "quarter (New York)",
+              "default": true
+            }
+          ],
+          "caveat": "Estimated jobs are unweighted; likelihood is shown beside them (open call, default)."
+        }
+      ]
+    },
+    {
+      "bedrock_key": "jobs_conventions",
+      "metric_id": null,
+      "name": "Jobs conventions",
+      "stage": "Jobs",
+      "subdomain": "Conventions",
+      "status": "draft",
+      "owner_team": "Jobs",
+      "is_north_star": false,
+      "hidden": true,
+      "sort_order": 240,
+      "definition": "Rules every Jobs number shares.\n\nWeek (D8): a calendar week, Monday to Sunday, New York time. The Monday meeting looks at the week just ended; the Thursday meeting at the current week. Any range can be picked.\n\nActivity (D17): an external touch the team sent: email, call, meeting, LinkedIn, text. Synced and hand-logged both count. Comments don't. \"Touches\" is retired.\n\nJobs team (D7): whoever is active in Settings › Targets › Jobs.\n\nStalled (D3): no jobs-related activity for 2 weeks on a contact, 4 on an opportunity, 6 on an account.\n\nStages: retired stage names are read as the stage they were migrated to.\n\nOwner: who did an activity is its sender, never the mailbox. A conversion belongs to the contact's owner, else the account's, else whoever did the first outreach. D6 (intros through Nick) is open (PRO-101).\n\nReference queries: a query with a date window reads `dd.window_from` and `dd.window_to` (New York dates, both inclusive), e.g. SET dd.window_from = '2026-09-21'; SET dd.window_to = '2026-09-27'. With neither set it covers the last completed calendar week.",
+      "source_system": "Bedrock (services/jobs_metrics.py)"
+    }
+  ]
+}
