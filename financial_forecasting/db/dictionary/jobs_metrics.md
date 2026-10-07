@@ -2361,19 +2361,48 @@ FROM aged GROUP BY 1 ORDER BY min(days)
 
 </details>
 
+### Builder interviews (`interviews`, draft)
+
+The Jobs team's builder applications (Pursuit referred or staff sourced) that moved into interview in the week, by the first interview entry in the application's stage history. Counted once per application, and still counted after it moves on to accepted or rejected. With an owner or deal type selected, only applications on an opportunity with that owner or deal type.
+
+- Divided by: n/a (count)
+- Date: in the week (Mon–Sun, New York)
+- Caveat: Dated by the application's stage history, which Bedrock records for every change since 9/29/2026 (and for the stage an application is created at since PRO-117). An application at interview with no dated entry is reported as interviewing with no recorded date, not placed in a week. A date is the day the move was recorded in Bedrock, which can be after the interview when it is logged late.
+
+<details><summary>Reference query</summary>
+
+```sql
+WITH w AS (SELECT coalesce(nullif(current_setting('dd.window_from', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 7) AS d_from, (coalesce(nullif(current_setting('dd.window_to', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 1) + 1) AS d_to),
+iv AS (
+  SELECT ja.job_application_id, ja.stage,
+         (SELECT min(left(e->>'date', 10)::date)
+            FROM jsonb_array_elements(coalesce(ja.stage_history, '[]'::jsonb)) e
+           WHERE e->>'stage' = 'interview' AND e->>'date' ~ '^\d{4}-\d{2}-\d{2}') AS entered
+  FROM public.job_applications ja
+  WHERE ja.source_type IN ('Pursuit_referred', 'staff_sourced')
+)
+SELECT count(*) AS interviews,
+       count(*) FILTER (WHERE stage = 'accepted') AS hired,
+       round(100.0 * count(*) FILTER (WHERE stage = 'accepted') / nullif(count(*), 0)) AS rate_pct
+FROM iv
+WHERE entered >= (SELECT d_from FROM w) AND entered < (SELECT d_to FROM w)
+```
+
+</details>
+
 ## Employer conversion (new)
 
 **Stage / area:** Employer conversion
 
 **Definition:** How employer work turns into jobs. Conversion runs between core milestones only, anchored on interviews: first stage → interview → hire. A rate counts only contacts that started at the earlier stage, so a contact added straight at Call Booked doesn't inflate it, and it uses the dates stages changed (D11).
 
-**Base population:** Jobs contacts and opportunities, by the dates they changed stage.
+**Base population:** Jobs contacts and opportunities, by the dates they changed stage; for interview → hire, the Jobs team's builder applications, by their stage history.
 
 **When measured:** Calendar weeks, New York time (D8).
 
 **Segments:** Owner, Campaign, Deal type
 
-**Caveats:** The milestone rates (D11) need interview history, which PRO-117 starts recording; until then the dashboards show the stage-to-stage rates below, and those can exceed 100% when a backlog clears. Whether outreach → call is also shown is open (Avni, PRO-94). One owner per conversion is PRO-101 (D6).
+**Caveats:** Interview history is recorded since 9/29/2026 (PRO-117): interview → hire reads it; first stage → interview still needs contacts linked to opportunities (PRO-101), so the dashboards show the stage-to-stage rates below until then, and those can exceed 100% when a backlog clears. Whether outreach → call is also shown is open (Avni, PRO-94). One owner per conversion is PRO-101 (D6).
 
 ### Converted to opportunity (`contacts_converted`, draft)
 
@@ -2471,16 +2500,37 @@ Of contacts that started at the first stage in a period, the share whose opportu
 - Counts: Of those, contacts whose opportunity reached a builder interview
 - Divided by: Contacts that started at the first stage in the period
 - Date: in the week (Mon–Sun, New York)
-- Caveat: Needs interview history (PRO-117) and contacts linked to opportunities (PRO-101).
+- Caveat: Needs contacts linked to opportunities (PRO-101). Interview history is recorded since 9/29/2026 (PRO-117).
 
-### Interview → hire (`interview_to_hire`, blocked)
+### Interview → hire (`interview_to_hire`, draft)
 
-Of opportunities that reached a builder interview, the share that closed won with a hire (D11).
+Of the Jobs team's builder interviews in the period (Builder interviews), the share whose application is accepted now (D11: only applications that reached interview count; Nina 10/7: applications, not opportunities). An application logged straight at accepted had no recorded interview and isn't counted.
 
-- Counts: Of those, opportunities closed won with a hire
-- Divided by: Opportunities that reached a builder interview
+- Counts: Of those, applications accepted now
+- Divided by: Builder interviews in the period
 - Date: in the week (Mon–Sun, New York)
-- Caveat: Needs interview history (PRO-117).
+- Caveat: A recent week's rate rises as its interviews reach an outcome. Dated by the application's stage history, which Bedrock records for every change since 9/29/2026 (and for the stage an application is created at since PRO-117). An application at interview with no dated entry is reported as interviewing with no recorded date, not placed in a week. A date is the day the move was recorded in Bedrock, which can be after the interview when it is logged late.
+
+<details><summary>Reference query</summary>
+
+```sql
+WITH w AS (SELECT coalesce(nullif(current_setting('dd.window_from', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 7) AS d_from, (coalesce(nullif(current_setting('dd.window_to', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 1) + 1) AS d_to),
+iv AS (
+  SELECT ja.job_application_id, ja.stage,
+         (SELECT min(left(e->>'date', 10)::date)
+            FROM jsonb_array_elements(coalesce(ja.stage_history, '[]'::jsonb)) e
+           WHERE e->>'stage' = 'interview' AND e->>'date' ~ '^\d{4}-\d{2}-\d{2}') AS entered
+  FROM public.job_applications ja
+  WHERE ja.source_type IN ('Pursuit_referred', 'staff_sourced')
+)
+SELECT count(*) AS interviews,
+       count(*) FILTER (WHERE stage = 'accepted') AS hired,
+       round(100.0 * count(*) FILTER (WHERE stage = 'accepted') / nullif(count(*), 0)) AS rate_pct
+FROM iv
+WHERE entered >= (SELECT d_from FROM w) AND entered < (SELECT d_to FROM w)
+```
+
+</details>
 
 ## Jobs targets (new)
 

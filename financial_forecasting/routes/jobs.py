@@ -2005,11 +2005,96 @@ async def interview_pipeline(
     return {"success": True, "data": out}
 
 
+@router.get("/interviews")
+async def interviews_over_time(
+    date_from: Optional[str] = Query(None, description="First New York day, inclusive. Defaults to this week's Monday."),
+    date_to: Optional[str] = Query(None, description="Last New York day, inclusive. Defaults to this week's Sunday."),
+    owner: Optional[str] = Query(None),
+    deal_type: Optional[str] = Query(None),
+    weeks: int = Query(12, ge=1, le=52, description="Calendar weeks in the series, ending with the week holding date_to."),
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Builder interviews over time (PRO-117): the Jobs team's applications
+    that moved into interview in the window, by the day their stage history
+    records it, and how many of those are hired now (interview → hire, D11).
+    The rule is jobs_metrics.interviews().
+
+    Also returns a weekly series (Mon–Sun, New York) and the applications at
+    interview whose move has no dated entry, so the page can say how many it
+    can't place rather than show a drop. `owner` / `deal_type` are the
+    opportunity's, as everywhere on the Pipeline tab."""
+    try:
+        if date_from or date_to:
+            d_from = jobs_metrics.parse_date(date_from or date_to)
+            d_to = jobs_metrics.parse_date(date_to or date_from)
+        else:
+            d_from, d_to = jobs_metrics.meeting_week("thursday")
+        window = jobs_metrics.date_window(d_from, d_to)
+    except ValueError as e:
+        raise HTTPException(400, f"Invalid date range: {e}")
+    owner_f = owner if owner and owner != "all" else None
+    dt_f = _parse_deal_types(deal_type)
+
+    rows = [dict(r) for r in await conn.fetch(jobs_metrics.INTERVIEW_APPLICATIONS_SQL)]
+    iv = jobs_metrics.interviews(rows, owner=owner_f, deal_types=dt_f)
+
+    def record(r, entered=None):
+        return {"job_application_id": r["job_application_id"],
+                "opportunity_id": str(r["jobs_opportunity_id"]) if r["jobs_opportunity_id"] else None,
+                "builder": r["builder"] or "—", "company": r["company_name"] or "—",
+                "role": r["role_title"] or "—", "stage": r["stage"],
+                "entered": entered.isoformat() if entered else None}
+
+    in_window = [(d, r) for d, r in iv.dated if d_from <= d <= d_to]
+    picked = [r for _d, r in in_window]
+    hired = iv.hired(picked)
+    rate = round(100 * len(hired) / len(picked)) if picked else None
+
+    last_monday, _ = jobs_metrics.calendar_week(d_to)
+    series = []
+    for i in range(weeks - 1, -1, -1):
+        mon = last_monday - timedelta(days=7 * i)
+        wk = iv.in_window(mon, mon + timedelta(days=6))
+        series.append({"week_start": mon.isoformat(), "interviews": len(wk),
+                       "hired": len(iv.hired(wk)),
+                       # Wholly before Bedrock recorded every move: a low count
+                       # here is missing history, not fewer interviews.
+                       "before_history": mon + timedelta(days=6) < jobs_metrics.INTERVIEW_HISTORY_FROM})
+
+    filters = {"owner": owner_f, "deal_type": ",".join(dt_f) if dt_f is not None else None}
+    records = {"endpoint": "/api/jobs/interviews",
+               "params": {"date_from": d_from.isoformat(), "date_to": d_to.isoformat(), **filters}}
+    return {"success": True, "data": {
+        "interviews": len(picked),
+        "hired": len(hired),
+        "rate_pct": rate,
+        "undated": len(iv.undated),
+        "history_from": jobs_metrics.INTERVIEW_HISTORY_FROM.isoformat(),
+        "weeks": series,
+        "rows": [record(r, d) for d, r in reversed(in_window)],
+        "undated_rows": [record(r) for r in iv.undated],
+        "definitions": {
+            "interviews": jobs_metrics.define(
+                "interviews", value=len(picked), window=window, filters=filters, records=records),
+            "interview_to_hire": jobs_metrics.define(
+                "interview_to_hire", value=rate, window=window, filters=filters, records=records),
+        },
+    }}
+
+
 # public.job_applications.stage vocabulary (builder-side submission funnel) —
 # must mirror the job_applications_stage_check DB constraint exactly. This set
 # used to omit screen/oa/offer, which are real, actively-used stage values
 # (10 existing rows) — a role's stage dropdown silently mislabeled them.
 VALID_APP_STAGES = {"prospect", "applied", "screen", "oa", "interview", "offer", "accepted", "rejected", "withdrawn"}
+
+
+# Every stage an application is created at or moved to is a dated entry in its
+# stage_history: the interview count reads it (PRO-117). Creation is $9 below,
+# the PATCH's mover $3.
+_APP_STAGE_ENTRY = jobs_metrics.stage_entry_sql("$4::varchar", "$9::text")
+_UPD_STAGE_ENTRY = jobs_metrics.stage_entry_sql("$1::varchar", "$3::text")
 
 
 class BuilderActivityCreate(BaseModel):
@@ -2051,12 +2136,12 @@ async def create_builder_activity(
     role_id = UUID(body.jobs_role_id) if body.jobs_role_id else None
     notes = f"{body.builder_name}: logged via Opportunities" if body.builder_name else None
     app_id = await conn.fetchval(
-        """
+        f"""
         INSERT INTO public.job_applications
             (builder_id, company_name, role_title, stage, date_applied,
-             source_type, jobs_opportunity_id, jobs_role_id, notes)
-        VALUES ($1, $2, $3, $4, COALESCE($5, CURRENT_DATE),
-                'Pursuit_referred', $6, $7, $8)
+             source_type, jobs_opportunity_id, jobs_role_id, notes, stage_history)
+        VALUES ($1, $2, $3, $4::varchar, COALESCE($5, CURRENT_DATE),
+                'Pursuit_referred', $6, $7, $8, jsonb_build_array({_APP_STAGE_ENTRY}))
         RETURNING job_application_id
         """,
         body.user_id,
@@ -2067,6 +2152,7 @@ async def create_builder_activity(
         opp_id,
         role_id,
         notes,
+        _user_email(user),
     )
     return {"success": True, "data": {"job_application_id": app_id, "stage": body.stage}}
 
@@ -2094,17 +2180,19 @@ async def update_builder_activity(
     carried: the array is append-only, so an entry's "from" is simply the
     previous entry's `stage` (verified: 636 of 647 rows have their last entry
     matching the row's current stage), and `date` is the platform's own
-    granularity for when."""
+    granularity for when: a New York day (PRO-117).
+
+    Saving the stage it already has appends nothing: a second entry would read
+    as a second move into that stage."""
     if body.stage not in VALID_APP_STAGES:
         raise HTTPException(400, f"Invalid stage: {body.stage}")
     result = await conn.execute(
-        """
+        f"""
         UPDATE public.job_applications
         SET stage = $1::varchar,
-            stage_history = COALESCE(stage_history, '[]'::jsonb) || jsonb_build_object(
-                'date', to_char(now(), 'YYYY-MM-DD'), 'stage', $1::varchar,
-                'notes', NULL, 'changed_by', $3::text
-            ),
+            stage_history = CASE WHEN stage IS DISTINCT FROM $1::varchar
+                THEN COALESCE(stage_history, '[]'::jsonb) || {_UPD_STAGE_ENTRY}
+                ELSE stage_history END,
             updated_at = now()
         WHERE job_application_id=$2 AND jobs_opportunity_id IS NOT NULL
         """,
@@ -2158,12 +2246,12 @@ async def create_role_application(
 
     notes = f"{body.builder_name}: logged via Placement Roles" if body.builder_name else None
     app_id = await conn.fetchval(
-        """
+        f"""
         INSERT INTO public.job_applications
             (builder_id, company_name, role_title, stage, date_applied,
-             source_type, jobs_opportunity_id, jobs_role_id, notes)
-        VALUES ($1, $2, $3, $4, COALESCE($5, CURRENT_DATE),
-                'Pursuit_referred', $6, $7, $8)
+             source_type, jobs_opportunity_id, jobs_role_id, notes, stage_history)
+        VALUES ($1, $2, $3, $4::varchar, COALESCE($5, CURRENT_DATE),
+                'Pursuit_referred', $6, $7, $8, jsonb_build_array({_APP_STAGE_ENTRY}))
         RETURNING job_application_id
         """,
         body.user_id,
@@ -2174,6 +2262,7 @@ async def create_role_application(
         role["opportunity_id"],
         role_id,
         notes,
+        _user_email(user),
     )
     return {"success": True, "data": {"job_application_id": app_id, "stage": body.stage}}
 

@@ -3233,6 +3233,56 @@ export function useOpportunitiesOverview(owner?: string, dealType?: string, week
   });
 }
 
+// ── Builder interviews over time (PRO-117) ──────────────────────────────────
+// The Jobs team's applications that moved into interview, dated by their stage
+// history, so an interview stays counted after the application is accepted or
+// rejected. `undated` are at interview now with no recorded move (before
+// history_from); the page says so rather than showing a drop.
+
+export interface InterviewRecord {
+  job_application_id: number;
+  opportunity_id: string | null;
+  builder: string;
+  company: string;
+  role: string;
+  stage: string;
+  entered: string | null;          // New York day it moved into interview
+}
+
+export interface InterviewWeek {
+  week_start: string;              // Monday, New York
+  interviews: number;
+  hired: number;
+  before_history: boolean;         // ends before history_from: missing, not zero
+}
+
+export interface InterviewsSummary {
+  interviews: number;
+  hired: number;
+  rate_pct: number | null;
+  undated: number;
+  history_from: string;
+  weeks: InterviewWeek[];
+  rows: InterviewRecord[];
+  undated_rows: InterviewRecord[];
+}
+
+export function useInterviews(from: string, to: string, owner?: string, dealType?: string, weeks = 12) {
+  const o = owner && owner !== "all" ? owner : undefined;
+  const dt = dealType && dealType !== "all" ? dealType : undefined;
+  return useQuery<InterviewsSummary>({
+    queryKey: ["jobs", "interviews", from, to, o ?? "all", dt ?? "all", weeks],
+    queryFn: async () => {
+      const p = new URLSearchParams({ date_from: from, date_to: to, weeks: String(weeks) });
+      if (o) p.set("owner", o);
+      if (dt) p.set("deal_type", dt);
+      const { data } = await api.get<ApiResponse<InterviewsSummary>>(`/api/jobs/interviews?${p}`);
+      return data.data;
+    },
+    staleTime: 30_000,
+  });
+}
+
 // ── Daily digest (the morning Slack, computed) ───────────────────────────────
 /** Contacts with N+ touches in initial outreach and no reply — the cue to work
  *  a different contact at that account. */

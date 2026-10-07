@@ -51,6 +51,7 @@ import { parseEstimatedJobs } from "@/lib/estimatedJobs";
 import { Drawer } from "@/components/ui/Drawer";
 import { JobsFunnels } from "@/components/jobs/JobsFunnels";
 import { JobsProjectionChart } from "@/components/jobs/JobsProjectionChart";
+import { InterviewsPanel } from "@/components/jobs/InterviewsPanel";
 import { PeriodBar, defaultPeriod } from "@/components/jobs/PeriodBar";
 import { CommittedRolesModal } from "@/components/jobs/CommittedRolesModal";
 import { DealExpandPanel, PlacementsModal, ClosedLostModal, useOppStageOptions, displayPriority } from "./JobsTeam";
@@ -321,6 +322,11 @@ export function JobsOpportunitiesOverview() {
         dealType={dealType}
         owner={owner}
       />
+
+      {/* ── Builder interviews (PRO-117): roles → interviews → hires, until the
+          Placement tab (PRO-111) takes it. Same period and filters as above. */}
+      <InterviewsPanel from={fmtDateInput(weekStart)} to={fmtDateInput(weekEnd)} rangeLabel={rangeLabel}
+        owner={owner} dealType={dealType} />
 
       {/* ── Aging + Breakdown ─────────────────────────────────────────── */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">

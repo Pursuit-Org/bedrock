@@ -818,6 +818,26 @@
               "meaning": "open at New York midnight after dd.window_to"
             }
           ]
+        },
+        {
+          "key": "interviews",
+          "label": "Builder interviews",
+          "status": "draft",
+          "definition": "The Jobs team's builder applications (Pursuit referred or staff sourced) that moved into interview in the week, by the first interview entry in the application's stage history. Counted once per application, and still counted after it moves on to accepted or rejected. With an owner or deal type selected, only applications on an opportunity with that owner or deal type.",
+          "numerator": null,
+          "denominator": "n/a (count)",
+          "is_rate": false,
+          "sql_query": "WITH w AS (SELECT coalesce(nullif(current_setting('dd.window_from', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 7) AS d_from, (coalesce(nullif(current_setting('dd.window_to', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 1) + 1) AS d_to),\niv AS (\n  SELECT ja.job_application_id, ja.stage,\n         (SELECT min(left(e->>'date', 10)::date)\n            FROM jsonb_array_elements(coalesce(ja.stage_history, '[]'::jsonb)) e\n           WHERE e->>'stage' = 'interview' AND e->>'date' ~ '^\\d{4}-\\d{2}-\\d{2}') AS entered\n  FROM public.job_applications ja\n  WHERE ja.source_type IN ('Pursuit_referred', 'staff_sourced')\n)\nSELECT count(*) AS interviews,\n       count(*) FILTER (WHERE stage = 'accepted') AS hired,\n       round(100.0 * count(*) FILTER (WHERE stage = 'accepted') / nullif(count(*), 0)) AS rate_pct\nFROM iv\nWHERE entered >= (SELECT d_from FROM w) AND entered < (SELECT d_to FROM w)",
+          "mappings": [],
+          "time_anchors": [
+            {
+              "kind": "event",
+              "label": "in the week (Mon–Sun, New York)",
+              "default": true,
+              "meaning": "dd.window_from / dd.window_to, New York dates; default the last completed calendar week"
+            }
+          ],
+          "caveat": "Dated by the application's stage history, which Bedrock records for every change since 9/29/2026 (and for the stage an application is created at since PRO-117). An application at interview with no dated entry is reported as interviewing with no recorded date, not placed in a week. A date is the day the move was recorded in Bedrock, which can be after the interview when it is logged late."
         }
       ]
     },
@@ -833,8 +853,8 @@
       "hidden": false,
       "sort_order": 220,
       "definition": "How employer work turns into jobs. Conversion runs between core milestones only, anchored on interviews: first stage → interview → hire. A rate counts only contacts that started at the earlier stage, so a contact added straight at Call Booked doesn't inflate it, and it uses the dates stages changed (D11).",
-      "base_population": "Jobs contacts and opportunities, by the dates they changed stage.",
-      "grain": "contact or opportunity",
+      "base_population": "Jobs contacts and opportunities, by the dates they changed stage; for interview → hire, the Jobs team's builder applications, by their stage history.",
+      "grain": "contact, opportunity or builder application",
       "source_system": "Bedrock",
       "refresh_cadence": "Live",
       "time_of_measurement": "Calendar weeks, New York time (D8).",
@@ -843,7 +863,7 @@
         "Campaign",
         "Deal type"
       ],
-      "caveats": "The milestone rates (D11) need interview history, which PRO-117 starts recording; until then the dashboards show the stage-to-stage rates below, and those can exceed 100% when a backlog clears. Whether outreach → call is also shown is open (Avni, PRO-94). One owner per conversion is PRO-101 (D6).",
+      "caveats": "Interview history is recorded since 9/29/2026 (PRO-117): interview → hire reads it; first stage → interview still needs contacts linked to opportunities (PRO-101), so the dashboards show the stage-to-stage rates below until then, and those can exceed 100% when a backlog clears. Whether outreach → call is also shown is open (Avni, PRO-94). One owner per conversion is PRO-101 (D6).",
       "cuts": [
         {
           "key": "contacts_converted",
@@ -958,17 +978,17 @@
               "meaning": "dd.window_from / dd.window_to, New York dates; default the last completed calendar week"
             }
           ],
-          "caveat": "Needs interview history (PRO-117) and contacts linked to opportunities (PRO-101)."
+          "caveat": "Needs contacts linked to opportunities (PRO-101). Interview history is recorded since 9/29/2026 (PRO-117)."
         },
         {
           "key": "interview_to_hire",
           "label": "Interview → hire",
-          "status": "blocked",
-          "definition": "Of opportunities that reached a builder interview, the share that closed won with a hire (D11).",
-          "numerator": "Of those, opportunities closed won with a hire",
-          "denominator": "Opportunities that reached a builder interview",
+          "status": "draft",
+          "definition": "Of the Jobs team's builder interviews in the period (Builder interviews), the share whose application is accepted now (D11: only applications that reached interview count; Nina 10/7: applications, not opportunities). An application logged straight at accepted had no recorded interview and isn't counted.",
+          "numerator": "Of those, applications accepted now",
+          "denominator": "Builder interviews in the period",
           "is_rate": true,
-          "sql_query": "",
+          "sql_query": "WITH w AS (SELECT coalesce(nullif(current_setting('dd.window_from', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 7) AS d_from, (coalesce(nullif(current_setting('dd.window_to', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 1) + 1) AS d_to),\niv AS (\n  SELECT ja.job_application_id, ja.stage,\n         (SELECT min(left(e->>'date', 10)::date)\n            FROM jsonb_array_elements(coalesce(ja.stage_history, '[]'::jsonb)) e\n           WHERE e->>'stage' = 'interview' AND e->>'date' ~ '^\\d{4}-\\d{2}-\\d{2}') AS entered\n  FROM public.job_applications ja\n  WHERE ja.source_type IN ('Pursuit_referred', 'staff_sourced')\n)\nSELECT count(*) AS interviews,\n       count(*) FILTER (WHERE stage = 'accepted') AS hired,\n       round(100.0 * count(*) FILTER (WHERE stage = 'accepted') / nullif(count(*), 0)) AS rate_pct\nFROM iv\nWHERE entered >= (SELECT d_from FROM w) AND entered < (SELECT d_to FROM w)",
           "mappings": [],
           "time_anchors": [
             {
@@ -978,7 +998,7 @@
               "meaning": "dd.window_from / dd.window_to, New York dates; default the last completed calendar week"
             }
           ],
-          "caveat": "Needs interview history (PRO-117)."
+          "caveat": "A recent week's rate rises as its interviews reach an outcome. Dated by the application's stage history, which Bedrock records for every change since 9/29/2026 (and for the stage an application is created at since PRO-117). An application at interview with no dated entry is reported as interviewing with no recorded date, not placed in a week. A date is the day the move was recorded in Bedrock, which can be after the interview when it is logged late."
         }
       ]
     },

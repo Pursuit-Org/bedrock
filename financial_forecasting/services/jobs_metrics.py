@@ -24,6 +24,8 @@ The shared rules live here too, so each is written once:
   * placed and paid work (D2, D4; Nina 10/7): who counts, from employment
     records;
   * committed roles: open, committed, not a trial, full-time;
+  * interviews: an application's first move into interview, from its stage
+    history (PRO-117);
   * the job-ready pool: builders ever enrolled in an L3+ course;
   * one stage map, old stage names folded into current ones on read;
   * who an outcome belongs to (the owner rules; D6 is still open, PRO-101).
@@ -122,12 +124,14 @@ MEASURES: dict[str, Measure] = {
     "closed_lost":            Measure("employer_pipeline", "closed_lost"),
     "won_open_tasks":         Measure("employer_pipeline", "won_open_tasks"),
     "time_in_stage":          Measure("employer_pipeline", "time_in_stage"),
+    "interviews":             Measure("employer_pipeline", "interviews", "interviews"),
     # Conversion
     "converted_opportunities": Measure("employer_conversion", "contacts_converted"),
     "contact_cohort_conversion": Measure("employer_conversion", "contact_cohort_conversion"),
     "stage_flow_conversion":  Measure("employer_conversion", "stage_flow_conversion"),
     "opportunity_stage_ratio": Measure("employer_conversion", "opportunity_stage_ratio"),
     "campaign_conversion":    Measure("employer_conversion", "campaign_conversion"),
+    "interview_to_hire":      Measure("employer_conversion", "interview_to_hire", "rate_pct"),
     # Targets
     "activity_target":        Measure("jobs_targets", "activity_vs_target"),
     "jobs_projection":        Measure("jobs_targets", "jobs_vs_target"),
@@ -139,7 +143,6 @@ UNSHOWN_MEASURES: dict[str, Measure] = {
     "stalled_contacts":       Measure("employer_pipeline", "stalled_contacts"),
     "stalled_accounts":       Measure("employer_pipeline", "stalled_accounts"),
     "milestone_to_interview": Measure("employer_conversion", "milestone_to_interview"),
-    "interview_to_hire":      Measure("employer_conversion", "interview_to_hire"),
 }
 
 TTL_SECONDS = 60
@@ -660,6 +663,138 @@ def committed_roles_sql(cols: str = "r.*", order: str = "") -> str:
     return (f"SELECT {cols} FROM bedrock.jobs_role r "
             f"JOIN bedrock.jobs_opportunity o ON o.id = r.opportunity_id "
             f"WHERE {COMMITTED_ROLE_SQL}" + (f" ORDER BY {order}" if order else ""))
+
+
+# ── Interviews (PRO-117) ─────────────────────────────────────────────────────
+# An interview is a builder application's first move into the interview stage,
+# dated by its entry in public.job_applications.stage_history. That array is the
+# platform's record, one entry per stage change: {date, stage, notes,
+# changed_by}, `date` a New York day. Counting the history rather than the
+# current stage keeps an interview counted once the application moves on to
+# accepted or rejected. A second entry into interview is the same interview.
+#
+# Only the Jobs team's applications count (Nina 10/7): the ones Pursuit
+# referred or staff sourced. Interview → hire (D11) counts only applications
+# that reached interview: of the interviews in a period, those whose
+# application is accepted now. An application logged straight at accepted had
+# no recorded interview and isn't in it.
+#
+# Bedrock has recorded every stage change it makes since 2026-09-29 (the first
+# entry it wrote; creating an application at a stage too, since PRO-117). An
+# application at interview with no dated entry got there earlier or through
+# another writer. It is reported as interviewing with no recorded date, never
+# placed in a week it can't be placed in.
+
+STAFF_SOURCED = ("Pursuit_referred", "staff_sourced")
+INTERVIEW_HISTORY_FROM = date(2026, 9, 29)
+
+
+def stage_entry_sql(stage: str, changed_by: str) -> str:
+    """SQL: one stage_history entry in the platform's shape, dated today in
+    New York (the database runs in UTC, so its own date is tomorrow after 8pm).
+    `stage` and `changed_by` are SQL expressions, normally parameters."""
+    return ("jsonb_build_object('date', to_char(now() AT TIME ZONE 'America/New_York', 'YYYY-MM-DD'), "
+            f"'stage', {stage}, 'notes', NULL, 'changed_by', {changed_by})")
+
+
+# The Jobs team's applications, with what the count and its records need. The
+# opportunity's owner and deal type are the Pipeline tab's filters.
+INTERVIEW_APPLICATIONS_SQL = """
+    SELECT ja.job_application_id, ja.builder_id, ja.stage, ja.stage_history::text AS stage_history,
+           coalesce(nullif(trim(bb.full_name), ''), nullif(trim(split_part(ja.notes, ':', 1)), '')) AS builder,
+           ja.company_name, ja.role_title, ja.jobs_opportunity_id,
+           o.owner_email, o.deal_type
+    FROM public.job_applications ja
+    LEFT JOIN bedrock.jobs_opportunity o ON o.id = ja.jobs_opportunity_id AND o.deleted_at IS NULL
+    LEFT JOIN LATERAL bedrock.builder_by_id(ja.builder_id) bb ON true
+    WHERE ja.source_type IN ('Pursuit_referred', 'staff_sourced')
+"""
+
+
+def _history(raw) -> list:
+    if raw is None:
+        return []
+    if isinstance(raw, (str, bytes)):
+        raw = json.loads(raw)
+    return raw if isinstance(raw, list) else []
+
+
+def entered_interview(history) -> Optional[date]:
+    """The day an application first moved into interview, from its stage
+    history, or None if the history has no dated interview entry."""
+    days = []
+    for e in _history(history):
+        if not isinstance(e, Mapping) or e.get("stage") != "interview":
+            continue
+        try:
+            days.append(date.fromisoformat(str(e.get("date"))[:10]))
+        except ValueError:
+            continue
+    return min(days) if days else None
+
+
+@dataclass(frozen=True)
+class Interviews:
+    dated: list          # (day entered interview, application row), earliest first
+    undated: list        # application rows at interview now with no dated entry
+
+    def in_window(self, d_from: date, d_to: date) -> list:
+        """Applications that entered interview on New York days d_from..d_to,
+        both inclusive."""
+        return [r for d, r in self.dated if d_from <= d <= d_to]
+
+    @staticmethod
+    def hired(rows: Iterable[Mapping]) -> list:
+        """Of these interviews, the ones whose application is accepted now."""
+        return [r for r in rows if r["stage"] == "accepted"]
+
+
+def interviews(rows: Iterable[Mapping], *, owner: Optional[str] = None,
+               deal_types: Optional[list] = None) -> Interviews:
+    """The interviews among these application rows (INTERVIEW_APPLICATIONS_SQL).
+
+    `owner` and `deal_types` narrow to applications on an opportunity with that
+    owner / deal type ("unset" for none), so an application on no opportunity
+    counts only when neither is set."""
+    dated, undated = [], []
+    for r in rows:
+        if owner and (r.get("owner_email") or "").lower() != owner.lower():
+            continue
+        if deal_types is not None:
+            if r.get("jobs_opportunity_id") is None:
+                continue
+            dt = r.get("deal_type")
+            if not (dt in deal_types or (dt is None and "unset" in deal_types)):
+                continue
+        d = entered_interview(r.get("stage_history"))
+        if d is not None:
+            dated.append((d, r))
+        elif r["stage"] == "interview":
+            undated.append(r)
+    dated.sort(key=lambda x: (x[0], x[1]["job_application_id"]))
+    return Interviews(dated=dated, undated=undated)
+
+
+def interviews_reference_sql() -> str:
+    """The reference query for Interviews and Interview → hire: the Jobs team's
+    applications whose first interview entry falls in the dictionary window,
+    and how many of them are accepted now. The SQL twin of interviews()."""
+    return (
+        f"WITH w AS (SELECT {DD_FROM} AS d_from, {DD_TO} AS d_to),\n"
+        "iv AS (\n"
+        "  SELECT ja.job_application_id, ja.stage,\n"
+        "         (SELECT min(left(e->>'date', 10)::date)\n"
+        "            FROM jsonb_array_elements(coalesce(ja.stage_history, '[]'::jsonb)) e\n"
+        "           WHERE e->>'stage' = 'interview' AND e->>'date' ~ '^\\d{4}-\\d{2}-\\d{2}') AS entered\n"
+        "  FROM public.job_applications ja\n"
+        "  WHERE ja.source_type IN ('Pursuit_referred', 'staff_sourced')\n"
+        ")\n"
+        "SELECT count(*) AS interviews,\n"
+        "       count(*) FILTER (WHERE stage = 'accepted') AS hired,\n"
+        "       round(100.0 * count(*) FILTER (WHERE stage = 'accepted') / nullif(count(*), 0)) AS rate_pct\n"
+        "FROM iv\n"
+        "WHERE entered >= (SELECT d_from FROM w) AND entered < (SELECT d_to FROM w)"
+    )
 
 
 # ── The job-ready pool ───────────────────────────────────────────────────────

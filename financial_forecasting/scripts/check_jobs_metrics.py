@@ -76,6 +76,13 @@ async def _overview(ctx):
         user=None, conn=ctx.conn))
 
 
+async def _interviews(ctx):
+    from routes import jobs
+    return await ctx.once("interviews", lambda: jobs.interviews_over_time(
+        date_from=ctx.d_from.isoformat(), date_to=ctx.d_to.isoformat(), owner=None, deal_type=None,
+        weeks=1, user=None, conn=ctx.conn))
+
+
 async def _segments(ctx):
     from routes import jobs
     return await ctx.once("segments", lambda: jobs.builder_segments(user=None, conn=ctx.conn))
@@ -128,6 +135,8 @@ CHECKS = [
     Check("stalled_opportunities", "stalled_opportunities", _data(_overview, "summary", "stalled")),
     Check("closed_won", "closed_won", _data(_overview, "summary", "moved_committed")),
     Check("closed_lost", "closed_lost", _data(_overview, "summary", "closed_lost")),
+    Check("interviews", "interviews", _data(_interviews, "interviews")),
+    Check("interview_to_hire", "rate_pct", _data(_interviews, "rate_pct")),
 ]
 
 
