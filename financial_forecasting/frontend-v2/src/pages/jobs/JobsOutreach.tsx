@@ -18,6 +18,7 @@ import {
   type OutreachScopeKind,
   type OutreachSummary,
   type OutreachDateRange,
+  type CallDate,
   type ScorecardRow,
   type OutreachDrillContact,
   scorecardCount,
@@ -32,6 +33,7 @@ import { Panel } from "./JobsOpportunitiesOverview";
 import { ActivityTrends } from "@/components/jobs/ActivityTrends";
 import { ActivityFeed } from "@/components/jobs/ActivityFeed";
 import { DrillList } from "@/components/jobs/DrillList";
+import { CallKindChip } from "@/components/jobs/CallKindPicker";
 import { PeriodBar, ScopeButtons, defaultPeriod } from "@/components/jobs/PeriodBar";
 import { relDay } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -1278,13 +1280,25 @@ const SUMMARY_CARDS: {
   { key: "converted", label: "Converted to oppty", tone: "green", empty: "No conversions in this period." },
 ];
 
+/** What Calls booked counts, said on screen (PRO-102: Kwame asked whether it
+ *  was hand-logged calls only, or calendar meetings too). */
+const CALLS_COUNTED: Record<CallDate, string> = {
+  booked: "Calls logged by hand and meetings on the team's calendars, each call once: a meeting someone also "
+    + "logged as a call counts as that call. Counted on the day booked; calendar meetings, and calls logged "
+    + "without a booking date, on the day held.",
+  held: "Calls logged by hand and meetings on the team's calendars, each call once: a meeting someone also "
+    + "logged as a call counts as that call. Counted on the day held.",
+};
+
 function OutreachSummaryCards({ granularity, scope, owner, range }: {
   granularity: OutreachGranularity;
   scope: OutreachScopeKind;
   owner?: string;
   range?: OutreachDateRange;
 }) {
-  const { data, isLoading } = useOutreachSummary(granularity, scope, owner, range);
+  // Calls count by the day booked (Nick's ask), or held (PRO-102).
+  const [callDate, setCallDate] = useState<CallDate>("booked");
+  const { data, isLoading } = useOutreachSummary(granularity, scope, owner, range, callDate);
   const [open, setOpen] = useState<keyof OutreachSummary["drills"] | null>(null);
   const openCard = SUMMARY_CARDS.find((c) => c.key === open);
 
@@ -1323,6 +1337,11 @@ function OutreachSummaryCards({ granularity, scope, owner, range }: {
                   {data?.[c.key] ?? 0}
                 </div>
               )}
+              {c.key === "calls_booked" && !isLoading ? (
+                <div className="mt-1.5 text-[11px] text-ink-4">
+                  {data?.calls_discovery ?? 0} discovery · by day {callDate}
+                </div>
+              ) : null}
             </button>
           );
         })}
@@ -1330,8 +1349,30 @@ function OutreachSummaryCards({ granularity, scope, owner, range }: {
       {openCard ? (
         <section className="rounded-2xl border border-border-strong bg-surface px-5 py-4">
           <h3 className="mb-3 text-[13px] font-semibold text-ink">{openCard.label}</h3>
+          {openCard.key === "calls_booked" ? (
+            <div className="mb-3 flex flex-wrap items-start gap-x-4 gap-y-2">
+              <p className="min-w-[260px] flex-1 text-[11.5px] leading-relaxed text-ink-3">{CALLS_COUNTED[callDate]}</p>
+              <div className="flex shrink-0 items-center gap-1 text-[11px]" role="group" aria-label="Count calls by">
+                <span className="mr-1 text-ink-4">Count by day</span>
+                {(["booked", "held"] as const).map((d) => (
+                  <button key={d} type="button" aria-pressed={callDate === d} onClick={() => setCallDate(d)}
+                    className={cn("rounded border px-2 py-0.5 font-medium transition-colors",
+                      callDate === d
+                        ? "border-accent bg-accent/5 text-accent"
+                        : "border-border-strong bg-surface text-ink-3 hover:text-ink-2")}>
+                    {d}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null}
           <DrillList rows={data?.drills?.[openCard.key] ?? []} total={data?.drill_totals?.[openCard.key]}
-            emptyLabel={openCard.empty} />
+            emptyLabel={openCard.empty}
+            // Each call's type, changeable here: the quickest place to tag the
+            // week's calendar meetings (PRO-102).
+            detailPrefix={openCard.key === "calls_booked"
+              ? (r) => (r.activity_id ? <CallKindChip activityId={r.activity_id} value={r.call_kind} /> : null)
+              : undefined} />
         </section>
       ) : null}
     </div>

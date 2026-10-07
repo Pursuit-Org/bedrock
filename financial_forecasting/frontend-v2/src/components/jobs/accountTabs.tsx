@@ -18,7 +18,8 @@ import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { Briefcase, CheckSquare, ExternalLink, MessageSquare, Plus, Trash2, User, X } from "lucide-react";
 
-import { CallKindPicker } from "@/components/jobs/CallKindPicker";
+import { CallDetailsFields, useCallTypesAvailable } from "@/components/jobs/CallKindPicker";
+import { callNotReady, callRequestFields, localTodayIso, newCallDetails } from "@/components/jobs/callLog";
 import {
   useIntroConnectors, useLogFacilitatedIntro, INTRO_ASKS,
 } from "@/services/jobsAccounts";
@@ -46,7 +47,6 @@ import {
   useDeleteOpportunity,
   useJobsStaff,
   useLogActivity,
-  type CallKind,
   useUpdateOpportunity,
   type AccountBuilderRow,
   type AccountComment,
@@ -269,13 +269,15 @@ export function AccountActivityTab({ account, scope = "engaged" }: { account: Jo
   // contact, and the account view is where people already are.
   const [type, setType] = useState<ActivityLogType>("call");
   const [target, setTarget] = useState("");          // "opp:<id>" | "contact:<id>"
-  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [date, setDate] = useState(() => localTodayIso());
   const [note, setNote] = useState("");
-  const [callKind, setCallKind] = useState<CallKind | null>(null);
+  const [call, setCall] = useState(() => newCallDetails());
+  const typesAvailable = useCallTypesAvailable();
   const [connectorId, setConnectorId] = useState("");
   const [ask, setAsk] = useState("hiring_intro");
 
   const isIntro = type === "intro";
+  const isCall = type === "call";
   const [targetKind, targetId] = target.split(":");
   // An intro lives in bedrock.intro_request, whose contact_id is NOT NULL and
   // which has no opportunity variant — so it can only be tagged to a person.
@@ -283,11 +285,13 @@ export function AccountActivityTab({ account, scope = "engaged" }: { account: Jo
   // The note is optional on every type, matching the contact form (Kwame
   // 2026-09-24): "I texted Jane on the 14th" is a complete record, and
   // demanding prose to log it loses touches. What it is tagged to is not.
+  // A call needs its type and the day it was booked (PRO-102).
+  const callBlocker = isCall ? callNotReady(call, typesAvailable) : null;
   const canSubmit = isIntro
     ? targetKind === "contact" && !!connectorId
-    : !!target;
+    : !!target && !callBlocker;
 
-  const reset = () => { setNote(""); setCallKind(null); setConnectorId(""); setOpen(false); };
+  const reset = () => { setNote(""); setCall(newCallDetails()); setConnectorId(""); setOpen(false); };
 
   const submit = () => {
     if (isIntro) {
@@ -301,8 +305,9 @@ export function AccountActivityTab({ account, scope = "engaged" }: { account: Jo
       return;
     }
     const body = targetKind === "opp" ? { jobs_opportunity_id: targetId } : { contact_id: Number(targetId) };
-    log.mutate({ ...body, type, description: note.trim() || undefined, activity_date: date || undefined,
-                 call_kind: type === "call" ? callKind : null } as Parameters<typeof log.mutate>[0],
+    log.mutate({ ...body, type, description: note.trim() || undefined,
+                 ...(isCall ? callRequestFields(call) : { activity_date: date || undefined, call_kind: null }),
+               } as Parameters<typeof log.mutate>[0],
       { onSuccess: reset });
   };
 
@@ -349,13 +354,16 @@ export function AccountActivityTab({ account, scope = "engaged" }: { account: Jo
               </select>
             </>
           )}
-          <input type="date" value={date} max={new Date().toISOString().slice(0, 10)} onChange={(e) => setDate(e.target.value)} className={inputCls} />
+          {!isCall && (
+            <input type="date" value={date} max={localTodayIso()} onChange={(e) => setDate(e.target.value)} className={inputCls} />
+          )}
           <input value={note} onChange={(e) => setNote(e.target.value)}
             placeholder={isIntro ? "Context (optional)" : "Note (optional)"} className={cn(inputCls, "min-w-[200px] flex-1")} />
-          <button type="button" disabled={!canSubmit || log.isPending || introPending} onClick={submit} className="h-7 rounded bg-accent px-3 text-[12px] font-medium text-white hover:opacity-90 disabled:opacity-50">Log</button>
-          {/* Full-width so the picker keeps its label instead of being squeezed
-              between the note field and the Log button. */}
-          {type === "call" && <CallKindPicker value={callKind} onChange={setCallKind} className="basis-full" />}
+          <button type="button" disabled={!canSubmit || log.isPending || introPending} onClick={submit}
+            title={callBlocker ?? undefined} className="h-7 rounded bg-accent px-3 text-[12px] font-medium text-white hover:opacity-90 disabled:opacity-50">Log</button>
+          {/* Full-width so the call's fields keep their labels instead of being
+              squeezed between the note field and the Log button. */}
+          {isCall && <CallDetailsFields value={call} onChange={setCall} className="basis-full" />}
         </div>
       )}
       {isLoading ? <Loading /> : <JobsActivityList entries={data?.entries ?? []} total={data?.total} emptyMessage="No activity across this account's opportunities or contacts yet." />}

@@ -21,7 +21,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from auth import require_auth
 from db import get_db, get_pool
@@ -1231,6 +1231,34 @@ async def set_activity_relevance(
     if result == "UPDATE 0":
         raise HTTPException(404, "Activity not found")
     return {"success": True, "data": {"id": activity_id, "override": body.override}}
+
+
+class CallKindSet(BaseModel):
+    call_kind: Optional[str] = None  # 'discovery' | 'general' | None (untyped → reads as general)
+
+
+@router.patch("/activity/{activity_id}/call-kind")
+async def set_activity_call_kind(
+    activity_id: UUID,
+    body: CallKindSet,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Re-tag a call or a calendar meeting as discovery or check-in / other
+    (PRO-102). A synced meeting has nobody to ask when it lands, so this is how
+    a meeting with a pipeline contact gets a type after the fact. Open to all
+    staff, like the relevance override: whoever was on the call knows."""
+    if body.call_kind is not None and body.call_kind not in CALL_KIND_VALUES:
+        raise HTTPException(400, f"Invalid call_kind: {body.call_kind}")
+    if not await _has_column("bedrock", "activity", "call_kind"):
+        raise HTTPException(503, "Call types need the 2026-09-21 call-kind migration applied first.")
+    result = await conn.execute(
+        """UPDATE bedrock.activity SET call_kind = $1::text, updated_at = now()
+           WHERE id = $2 AND deleted_at IS NULL AND type IN ('call', 'meeting')""",
+        body.call_kind, activity_id)
+    if result == "UPDATE 0":
+        raise HTTPException(404, "No call or meeting with that id")
+    return {"success": True, "data": {"id": str(activity_id), "call_kind": body.call_kind}}
 
 
 # ── Roles (jobs_role) — open roles on an opportunity ──────────────────────────
@@ -4333,18 +4361,22 @@ async def _scope_senders(conn, scope: str, owner: Optional[str]) -> outreach_cou
     return outreach_counting.Scope(everyone)
 
 
-async def _events_sql(restrict_companies: bool = False) -> str:
+async def _events_sql(restrict_companies: bool = False, restrict_contacts: bool = False,
+                      call_date: str = "booked") -> str:
     return outreach_counting.events_sql(
         has_call_kind=await _has_column("bedrock", "activity", "call_kind"),
-        restrict_companies=restrict_companies)
+        has_booked_at=await _has_column("bedrock", "activity", "booked_at"),
+        call_date=call_date,
+        restrict_companies=restrict_companies, restrict_contacts=restrict_contacts)
 
 
-async def _outreach_events(conn, start, end, senders) -> list:
-    """Counted activity by `senders` in [start, end). Either bound may be None."""
+async def _outreach_events(conn, start, end, senders, call_date: str = "booked") -> list:
+    """Counted activity by `senders` in [start, end). Either bound may be None.
+    Calls fall in the window by when they were booked, or held (`call_date`)."""
     scope = outreach_counting.as_scope(senders)
     if not scope:
         return []
-    rows = await conn.fetch(await _events_sql(), start, end, list(scope.emails))
+    rows = await conn.fetch(await _events_sql(call_date=call_date), start, end, list(scope.emails))
     return outreach_counting.attribute(rows, scope)
 
 
@@ -4647,7 +4679,7 @@ _OUTREACH_ACTIVITY_META = [
     ("facilitated_intro_sent",  "Facilitated Intro",       1),
     ("total_calls",             "Total Calls",             0),
     ("call_discovery",          "Discovery Calls",         1),
-    ("call_general",            "General Calls",           1),
+    ("call_general",            "Check-in / Other Calls",  1),
     ("converted_opportunities", "Total Converted Opportunities", 0),
 ]
 # Metrics that are NOT counted from the leaf-event union: each has its own
@@ -4660,9 +4692,12 @@ _ACTIVITY_OUTCOME_METRICS = ("accounts_activated", "converted_opportunities")
 # Two kinds, not three. Solution was dropped on 2026-09-21 (Kwame): the line
 # between "learning the need" and "working the need" was a judgement call at log
 # time, and a picker that makes people hesitate is a picker that gets skipped.
+# PRO-102 asked for discovery / check-in / other; Nina kept the two stored values
+# (2026-10-07) and named the second for what it holds, since Nick's KPI only
+# needs discovery against everything else.
 CALL_KINDS = [
-    ("discovery", "Discovery", "First real conversation — learning what they need."),
-    ("general",   "General",   "Check-in, relationship or anything else."),
+    ("discovery", "Discovery",         "First real conversation — learning what they need."),
+    ("general",   "Check-in / other",  "Check-in, relationship or anything else."),
 ]
 CALL_KIND_VALUES = {v for v, _, _ in CALL_KINDS}
 # metric name → the call_kind it counts.
@@ -4689,10 +4724,13 @@ _ACTIVITY_MEASURE = {
 
 
 def _scorecard_records(key: str, granularity: str, scope: Optional[str], owner: Optional[str],
-                       date_from: Optional[str], date_to: Optional[str]) -> dict:
-    """Where the rows behind an Activity Pipeline number come from."""
+                       date_from: Optional[str], date_to: Optional[str],
+                       call_date: str = "booked") -> dict:
+    """Where the rows behind an Activity Pipeline number come from. Booked is
+    the default call date, so it is only named when the number used held."""
     params = {"key": key, "granularity": granularity, "scope": scope, "owner": owner,
-              "date_from": date_from, "date_to": date_to}
+              "date_from": date_from, "date_to": date_to,
+              "call_date": call_date if call_date != "booked" else None}
     return {"endpoint": "/api/jobs/outreach/scorecard/detail",
             "params": {k: v for k, v in params.items() if v is not None}}
 # Funnel tier per activity metric — the frontend draws a stronger rule where the
@@ -5163,6 +5201,7 @@ async def outreach_scorecard_detail(
     owner: Optional[str] = Query(None),
     date_from: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
     date_to: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    call_date: str = Query("booked", pattern="^(booked|held)$"),
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
@@ -5220,7 +5259,7 @@ async def outreach_scorecard_detail(
     else:
         from routes.jobs_intro import ASK_LABELS   # local: keeps the import one-way
         senders = await _scope_senders(conn, scope, owner)
-        events = await _outreach_events(conn, start, end, senders)
+        events = await _outreach_events(conn, start, end, senders, call_date=call_date)
         if key == "accounts_activated":
             # The accounts the window activated, and the activity on them in
             # it, each listed under the contact it reached there.
@@ -5276,12 +5315,20 @@ async def outreach_summary(
     owner: Optional[str] = Query(None, description="Scope to one staff sender (overrides scope)"),
     date_from: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
     date_to: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    call_date: str = Query("booked", pattern="^(booked|held)$"),
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
     """Four headline numbers for the Outreach tab: accounts activated, outreach
     activity, calls booked, and conversions — over the same window and sender
     scope the rest of the page uses.
+
+    Calls booked (PRO-102) is hand-logged calls and calendar meetings, each
+    call once: a meeting someone also logged as a call counts as that call.
+    Calls fall in the window by the day they were booked (Nick's ask), or held
+    with `call_date=held`; a call with no booking date, and every calendar
+    meeting, counts on the day it was held either way. `calls_discovery` is how
+    many of them were discovery calls.
 
     "Activated" is the first activity ever on an account (D17, decided
     2026-10-02). It replaced "touched after 90 quiet days", which re-counted
@@ -5297,9 +5344,9 @@ async def outreach_summary(
     """
     this_start, this_end, _last_start, _last_end = _outreach_windows(granularity, date_from, date_to)
     senders = await _scope_senders(conn, scope, owner)
-    events = await _outreach_events(conn, this_start, this_end, senders)
+    events = await _outreach_events(conn, this_start, this_end, senders, call_date=call_date)
     (activated,) = await _activated_by_window(conn, events, [(this_start, this_end)], senders)
-    c = outreach_counting.count(events)
+    c = outreach_counting.count(events, CALL_KIND_DEFAULT)
 
     # Conversions come off the membership stamp rather than the activity table —
     # converting is a pipeline decision someone records, not a touch.
@@ -5341,6 +5388,9 @@ async def outreach_summary(
             "detail": outreach_counting.display_subject(e.subject, e.description),
             "subkind": e.kind,
             "contact_id": ct["contact_id"] if ct else None,
+            # The calls list re-tags a call or meeting in place (PRO-102).
+            "activity_id": e.activity_id if e.is_call else None,
+            "call_kind": e.call_kind if e.is_call else None,
         }
 
     newest = lambda evs: sorted(evs, key=lambda e: e.ts, reverse=True)
@@ -5366,8 +5416,10 @@ async def outreach_summary(
     email_index = await index_health(conn)
 
     win = (this_start, this_end)
-    flt = {"scope": None if owner else scope, "owner": owner}
-    rec = lambda key: _scorecard_records(key, granularity, scope, owner, date_from, date_to)
+    # Held is named among the filters: the dictionary's measure counts booked.
+    flt = {"scope": None if owner else scope, "owner": owner,
+           "call_date": call_date if call_date != "booked" else None}
+    rec = lambda key: _scorecard_records(key, granularity, scope, owner, date_from, date_to, call_date)
     return {"success": True, "data": {
         "period": {"from": this_start.date().isoformat(), "to": this_end.date().isoformat()},
         # What each card means (PRO-97).
@@ -5388,6 +5440,8 @@ async def outreach_summary(
         "accounts_reached": len(outreach_counting.touched_accounts(events)),
         "outreach_activity": c.outreach,
         "calls_booked": c.calls,
+        "calls_discovery": c.by_metric.get("call_discovery", 0),
+        "call_date": call_date,
         "converted": len(converted_rows),
         "drills": {
             "accounts_activated": act_rows[:DRILL_CAP],
@@ -6003,6 +6057,16 @@ async def _has_column(schema: str, table: str, column: str) -> bool:
         schema, table, column))
     _COLUMN_CACHE[key] = found
     return found
+
+
+async def _call_columns(alias: str = "a") -> str:
+    """An activity list's call type and booking date (PRO-102), or NULLs while
+    their migrations are pending, so a list never names a missing column."""
+    kind = (f"{alias}.call_kind" if await _has_column("bedrock", "activity", "call_kind")
+            else "NULL::text")
+    booked = (f"{alias}.booked_at" if await _has_column("bedrock", "activity", "booked_at")
+              else "NULL::timestamptz")
+    return f"{kind} AS call_kind, {booked} AS booked_at,"
 
 
 # ── Stage vocabulary probe ────────────────────────────────────────────────────
@@ -7096,12 +7160,13 @@ async def account_activity(
             k,
         )
     ]
+    call_cols = await _call_columns()
     rows = await conn.fetch(
         """
         SELECT a.id, a.type, a.subject, a.description, a.activity_date, a.source, a.logged_by,
                a.synced_at, a.email_from, a.email_to, a.email_snippet,
                left(a.email_body_text, 2000) AS email_body_text,  -- cap body: the rollup of 250 rows was ~1.9MB
-               a.meeting_duration_minutes,
+               a.meeting_duration_minutes, """ + call_cols + """
                a.jobs_relevance, a.jobs_relevance_override,
                a.jobs_relevance, a.jobs_relevance_override,
             a.jobs_relevance, a.jobs_relevance_override,
@@ -7765,11 +7830,12 @@ async def get_contact(
     # activity: a contact at a company must not inherit calls/emails they
     # weren't part of (that previously showed e.g. every Adonis call on one
     # Adonis contact). first_name fuzzy-matching is dropped for the same reason.
+    call_cols = await _call_columns()
     rows_act = await conn.fetch(
         """
         SELECT a.id, a.type, a.subject, a.description, a.activity_date,
                a.logged_by, a.source, a.email_from, a.email_snippet,
-               a.meeting_duration_minutes, a.deleted_at,
+               a.meeting_duration_minutes, a.deleted_at, """ + call_cols + """
                a.jobs_relevance, a.jobs_relevance_override,
                """ + _jobs_activity_flag("a") + """ AS is_jobs,
                count(*) OVER () AS total_rows
@@ -7970,6 +8036,7 @@ async def _intro_activity_rows(conn, contact_ids: list[int], limit: int = 50) ->
             "source": "manual",
             "email_from": None, "email_snippet": None,
             "meeting_duration_minutes": None, "deleted_at": None,
+            "call_kind": None, "booked_at": None,
             # An intro is a jobs touch by definition — it is only ever created
             # from the jobs tools — so it never goes through the classifier.
             "jobs_relevance": "jobs", "jobs_relevance_override": "jobs",
@@ -8307,13 +8374,14 @@ async def get_opportunity(
     account_id = row["account_id"]
 
     # All activity for this account (Gmail, Calendar, SF, manual) + jobs-tagged
+    call_cols = await _call_columns()
     activity = await conn.fetch(
         """
         SELECT
             a.id, a.type, a.subject, a.description, a.activity_date,
             a.source, a.logged_by, a.synced_at, a.email_from, a.email_to,
             a.email_snippet, a.email_body_text,
-            a.meeting_duration_minutes, a.meeting_attendees, a.deleted_at,
+            a.meeting_duration_minutes, a.meeting_attendees, a.deleted_at, """ + call_cols + """
             """ + _jobs_activity_flag("a") + """ AS is_jobs,
             count(*) OVER () AS total_rows
         FROM bedrock.activity a
@@ -8843,9 +8911,7 @@ async def _campaign_activity(conn, pipe: dict) -> list[tuple]:
     if not pipe:
         return []
     senders = await _scope_senders(conn, "pursuit", None)
-    sql = outreach_counting.events_sql(
-        has_call_kind=await _has_column("bedrock", "activity", "call_kind"),
-        restrict_contacts=True)
+    sql = await _events_sql(restrict_contacts=True)
     events = outreach_counting.attribute(
         await conn.fetch(sql, None, None, list(senders.emails), sorted(pipe)), senders)
     return [(e, cid, pipe[cid]) for e in events if e.kind != "call_booked"
@@ -8933,7 +8999,9 @@ async def tag_campaign_stats(
     p_start = datetime(d_from.year, d_from.month, d_from.day, tzinfo=_NY)
     p_end = datetime(d_to.year, d_to.month, d_to.day, tzinfo=_NY) + timedelta(days=1)
     win = [(e, cid, co) for e, cid, co in linked if p_start <= e.ts < p_end]
-    win_events = {e for e, _, _ in win}
+    # Volume leaves out a meeting someone also logged as a call: the call is
+    # that conversation (PRO-102). It still counts for who and what was reached.
+    win_events = {e for e, _, _ in win if not e.logged_as}
     # One "calls booked" channel. A calendar meeting and a hand-logged call are
     # the same event to the team — a live conversation that got booked — and
     # splitting them only made the smaller number look like a failure.
@@ -10502,9 +10570,37 @@ class ActivityCreate(BaseModel):
     # demanding prose before the touch will save is how touches go unlogged.
     # The column is nullable, and synced rows already carry NULL here.
     description:         Optional[str] = None
+    # When it happened. For a call, the day it was HELD, which may be ahead of
+    # today for a call booked for later; left empty, it is the day booked.
     activity_date:       Optional[datetime] = None
+    # Calls only (PRO-102): the day the call was booked, which is the date
+    # Calls booked counts it on.
+    booked_at:           Optional[datetime] = None
     subject:             Optional[str] = None
-    call_kind:           Optional[str] = None    # discovery | solution | general (calls only)
+    call_kind:           Optional[str] = None    # discovery | general; required on a call
+
+    @field_validator("activity_date", "booked_at", mode="before")
+    @classmethod
+    def _bare_date_is_a_new_york_day(cls, v):
+        # The forms send a bare date. Read as UTC it lands at 8pm the day
+        # before in New York, so a call logged for Monday counted in the
+        # previous week (PRO-102; migrations/2026-10-07-activity-manual-dates-ny.sql
+        # moves the rows already written that way).
+        if isinstance(v, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", v.strip()):
+            return jobs_metrics.ny_midnight(date.fromisoformat(v.strip()))
+        return v
+
+    @field_validator("activity_date", "booked_at")
+    @classmethod
+    def _naive_is_utc(cls, v):
+        # A timestamp with no offset is UTC, which is how Postgres stores it;
+        # saying so here lets the two be compared without a TypeError.
+        return v.replace(tzinfo=timezone.utc) if v is not None and v.tzinfo is None else v
+
+
+def _params(first: int, extra: dict) -> str:
+    """', $9, $10' for the optional columns in `extra`, numbered from `first`."""
+    return "".join(f", ${first + i}" for i in range(len(extra)))
 
 
 @router.post("/activity")
@@ -10520,14 +10616,31 @@ async def log_activity(
         raise HTTPException(400, "Provide jobs_opportunity_id or contact_id")
     if body.call_kind is not None and body.call_kind not in CALL_KIND_VALUES:
         raise HTTPException(400, f"Invalid call_kind: {body.call_kind}")
+    is_call = body.type == "call"
     # A kind only means something on a call. Silently dropping it on an email is
     # kinder than a 400 the UI can't explain, and nothing downstream reads it.
-    call_kind = body.call_kind if body.type == "call" else None
+    call_kind = body.call_kind if is_call else None
     # The column arrives with the 2026-09-21 migration, applied separately. Until
     # it exists the kind is simply not stored — the call still logs, which is the
-    # part that matters, and the picker is disabled in the UI anyway.
-    store_kind = call_kind is not None and await _has_column("bedrock", "activity", "call_kind")
-    kind_col = ", call_kind" if store_kind else ""
+    # part that matters, and the picker is disabled in the UI anyway. Once it
+    # exists a call needs one (PRO-102): 2 of 176 calls carried a type while it
+    # was optional, and Nick's discovery-call KPI can't be counted from the rest.
+    has_kind = await _has_column("bedrock", "activity", "call_kind")
+    if is_call and has_kind and call_kind is None:
+        raise HTTPException(400, "Pick a call type: discovery, or check-in / other")
+    booked_at = body.booked_at if is_call else None
+    if booked_at is not None and booked_at > datetime.now(timezone.utc):
+        raise HTTPException(400, "A call can't be booked in the future")
+    if booked_at is not None and body.activity_date is not None and body.activity_date < booked_at:
+        raise HTTPException(400, "A call can't be held before it was booked")
+    # Held left empty: the call counts on the day it was booked either way.
+    held_at = body.activity_date or booked_at
+    extra = {}
+    if call_kind is not None and has_kind:
+        extra["call_kind"] = call_kind
+    if booked_at is not None and await _has_column("bedrock", "activity", "booked_at"):
+        extra["booked_at"] = booked_at
+    kind_col = "".join(f", {k}" for k in extra)
 
     import uuid as _uuid
 
@@ -10552,18 +10665,18 @@ async def log_activity(
             INSERT INTO bedrock.activity
                 (type, subject, description, activity_date, source, jobs_opportunity_id, logged_by,
                  email_from, jobs_relevance_override{kind_col})
-            VALUES ($1, $2, $3, COALESCE($4, now()), 'manual', $5, $6, $7, $8{', $9' if store_kind else ''})
+            VALUES ($1, $2, $3, COALESCE($4, now()), 'manual', $5, $6, $7, $8{_params(9, extra)})
             RETURNING id
             """,
             body.type,
             body.subject or f"{body.type.capitalize()} — {user_email}",
             description,
-            body.activity_date,
+            held_at,
             opp_id,
             user_email,
             user_email if is_email else None,
             relevance,
-            *([call_kind] if store_kind else []),
+            *extra.values(),
         )
     else:
         # Prospect-scoped log: tie to the public.contacts row, leave the deal null.
@@ -10579,19 +10692,19 @@ async def log_activity(
                 (type, subject, description, activity_date, source,
                  participant_public_contact_id, logged_by,
                  email_from, email_to, jobs_relevance_override{kind_col})
-            VALUES ($1, $2, $3, COALESCE($4, now()), 'manual', $5, $6, $7, $8, $9{', $10' if store_kind else ''})
+            VALUES ($1, $2, $3, COALESCE($4, now()), 'manual', $5, $6, $7, $8, $9{_params(10, extra)})
             RETURNING id
             """,
             body.type,
             body.subject or f"{body.type.capitalize()} — {user_email}",
             description,
-            body.activity_date,
+            held_at,
             body.contact_id,
             user_email,
             user_email if is_email else None,
             [contact_email] if contact_email else None,
             relevance,
-            *([call_kind] if store_kind else []),
+            *extra.values(),
         )
         # A logged touch IS outreach — a still-flagged contact advances to
         # initial_outreach immediately (the nightly pass covers synced email).
@@ -10604,8 +10717,23 @@ async def log_activity(
                 updated_at = now()
             WHERE contact_id = $1 AND stage = 'assigned'
             """,
-            body.contact_id, body.activity_date or datetime.now(timezone.utc), user_email,
+            # A call booked for next week was outreach the day it was booked.
+            body.contact_id, booked_at or held_at or datetime.now(timezone.utc), user_email,
         )
+        # A logged call is a call that was booked. A contact already at Call
+        # Booked, or converted past it, with no date for that keeps this one:
+        # 23 of 153 had a date when PRO-102 was written, so the Pipeline's
+        # booked-to-converted timing had almost nothing to read.
+        if is_call and await _has_column("bedrock", "jobs_contact_membership", "call_booked_at"):
+            await conn.execute(
+                """
+                UPDATE bedrock.jobs_contact_membership
+                SET call_booked_at = $2, updated_at = now()
+                WHERE contact_id = $1 AND call_booked_at IS NULL
+                  AND stage IN ('call_booked', 'converted_to_opportunity')
+                """,
+                body.contact_id, booked_at or held_at or datetime.now(timezone.utc),
+            )
 
     row = await conn.fetchrow("SELECT * FROM bedrock.activity WHERE id=$1", row_id)
     return {"success": True, "data": dict(row)}

@@ -450,13 +450,21 @@ Everything the team sent: direct email, LinkedIn messages, texts and facilitated
 WITH w AS (SELECT ((coalesce(nullif(current_setting('dd.window_from', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 7))::timestamp AT TIME ZONE 'America/New_York') AS start_at, (((coalesce(nullif(current_setting('dd.window_to', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 1) + 1))::timestamp AT TIME ZONE 'America/New_York') AS end_at, (SELECT coalesce(array_agg(DISTINCT lower(email)), '{}') FROM (SELECT email FROM bedrock.jobs_team_member UNION SELECT email FROM bedrock.jobs_team_change) t) AS team)
 SELECT outreach FROM (
     WITH e AS (
-    WITH raw AS (
+    WITH logged_calls AS MATERIALIZED (
+      -- Every hand-logged call, with what a calendar meeting matches it on.
+      SELECT c.id, ((c.activity_date AT TIME ZONE 'America/New_York')::date) AS day, c.participant_public_contact_id AS contact_id,
+             nullif(lower(btrim(coalesce(o.account_name, ''))), '') AS account
+      FROM bedrock.activity c
+      LEFT JOIN bedrock.jobs_opportunity o ON o.id = c.jobs_opportunity_id
+      WHERE c.type = 'call' AND c.source = 'manual' AND c.deleted_at IS NULL
+    ),
+    raw AS (
       -- Synced email, one row per message, by the message's own sender.
       SELECT 'email'::text AS kind, aem.sent_at AS ts, lower(aem.from_email) AS sender,
              a.id AS activity_id, NULL::uuid AS intro_id,
              a.participant_public_contact_id AS contact_id, coalesce(a.email_to, '{}'::text[]) || coalesce(a.email_cc, '{}'::text[]) AS recips,
              a.subject, a.description, a.email_snippet AS snippet, a.email_from, a.source,
-             NULL::text AS call_kind
+             NULL::text AS call_kind, NULL::uuid AS logged_as
       FROM bedrock.activity_email_message aem
       JOIN bedrock.activity a ON a.id = aem.activity_id
       WHERE aem.from_email = ANY(((SELECT team FROM w))::text[]) AND ((NULL)::timestamptz IS NULL OR aem.sent_at >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR aem.sent_at < ((SELECT end_at FROM w))::timestamptz)
@@ -467,28 +475,39 @@ SELECT outreach FROM (
       -- own sender (never the mailbox it was synced from).
       SELECT 'email', a.activity_date, lower(btrim(coalesce(substring(a.email_from from '<([^>]+)>'), nullif(a.email_from, ''), CASE WHEN a.source = 'manual' THEN a.logged_by END))),
              a.id, NULL::uuid, a.participant_public_contact_id, coalesce(a.email_to, '{}'::text[]) || coalesce(a.email_cc, '{}'::text[]),
-             a.subject, a.description, a.email_snippet, a.email_from, a.source, NULL::text
+             a.subject, a.description, a.email_snippet, a.email_from, a.source, NULL::text, NULL::uuid
       FROM bedrock.activity a
       WHERE a.deleted_at IS NULL AND a.type = 'email' AND ((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz)
         AND lower(btrim(coalesce(substring(a.email_from from '<([^>]+)>'), nullif(a.email_from, ''), CASE WHEN a.source = 'manual' THEN a.logged_by END))) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))
         AND NOT EXISTS (SELECT 1 FROM bedrock.activity_email_message m WHERE m.activity_id = a.id)
       UNION ALL
       -- Hand-logged LinkedIn, text and calls, and meetings: whoever logged
-      -- it, or whose calendar it is on.
-      SELECT a.type, a.activity_date, lower(btrim(a.logged_by)),
+      -- it, or whose calendar it is on. A meeting can be re-tagged with a
+      -- call type; `logged_as` is the hand-logged call it is, if any.
+      SELECT a.type, CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END, lower(btrim(a.logged_by)),
              a.id, NULL::uuid, a.participant_public_contact_id,
              CASE WHEN a.type = 'meeting' THEN ARRAY(SELECT att->>'email' FROM jsonb_array_elements(coalesce(a.meeting_attendees, '[]'::jsonb)) att) ELSE '{}'::text[] END,
              a.subject, a.description, NULL::text, a.email_from, a.source,
-             CASE WHEN a.type = 'call' THEN a.call_kind END
+             CASE WHEN a.type IN ('call', 'meeting') THEN a.call_kind END,
+             CASE WHEN a.type = 'meeting' THEN (
+               SELECT lc.id FROM logged_calls lc
+               WHERE lc.day = ((a.activity_date AT TIME ZONE 'America/New_York')::date)
+                 AND (lc.contact_id = a.participant_public_contact_id
+                      OR EXISTS (
+                        SELECT 1 FROM public.contacts pc
+                        WHERE lower(pc.email) = ANY(ARRAY(SELECT lower(x) FROM unnest(ARRAY(SELECT att->>'email' FROM jsonb_array_elements(coalesce(a.meeting_attendees, '[]'::jsonb)) att)) x))
+                          AND (pc.contact_id = lc.contact_id
+                               OR lower(btrim(coalesce(pc.current_company, ''))) = lc.account)))
+               ORDER BY lc.id LIMIT 1) END
       FROM bedrock.activity a
       WHERE a.deleted_at IS NULL AND a.type IN ('linkedin', 'text', 'call', 'meeting')
-        AND ((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz) AND lower(btrim(a.logged_by)) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))
+        AND (((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz) OR (a.type = 'call' AND ((NULL)::timestamptz IS NULL OR a.booked_at >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.booked_at < ((SELECT end_at FROM w))::timestamptz))) AND ((NULL)::timestamptz IS NULL OR CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END < ((SELECT end_at FROM w))::timestamptz) AND lower(btrim(a.logged_by)) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))
       UNION ALL
       -- A facilitated intro that was acted on, by who asked for it. Its
       -- subject is the ask (routes.jobs_intro.ASK_LABELS names it).
       SELECT 'intro', coalesce(ir.responded_at, ir.created_at), lower(ir.requested_by_email),
              NULL::uuid, ir.id, ir.contact_id, '{}'::text[],
-             ir.specific_ask, ir.context, NULL::text, NULL::text, 'intro', NULL::text
+             ir.specific_ask, ir.context, NULL::text, NULL::text, 'intro', NULL::text, NULL::uuid
       FROM bedrock.intro_request ir
       WHERE ir.status IN ('accepted', 'completed')
         AND lower(ir.requested_by_email) = ANY(((SELECT team FROM w))::text[])
@@ -498,7 +517,7 @@ SELECT outreach FROM (
       -- else set up (Nick) enters here with no outreach behind it.
       SELECT 'call_booked', h.changed_at, lower(h.changed_by),
              NULL::uuid, NULL::uuid, h.contact_id, '{}'::text[],
-             NULL::text, NULL::text, NULL::text, NULL::text, 'stage', NULL::text
+             NULL::text, NULL::text, NULL::text, NULL::text, 'stage', NULL::text, NULL::uuid
       FROM (SELECT DISTINCT ON (contact_id) contact_id, changed_at, changed_by
               FROM bedrock.jobs_membership_stage_history
              WHERE to_stage = 'call_booked' ORDER BY contact_id, changed_at) h
@@ -518,7 +537,7 @@ SELECT outreach FROM (
     )
     SELECT ev.kind, ev.ts, ev.sender, ev.activity_id, ev.intro_id, ev.contact_id,
            ev.contact_ids, ev.companies, ev.subject, ev.description, ev.snippet,
-           ev.email_from, ev.source, ev.call_kind, ev.recips AS recipients
+           ev.email_from, ev.source, ev.call_kind, ev.logged_as, ev.recips AS recipients
     FROM ev 
     ),
     counted AS (               -- automatic mail is not activity
@@ -544,16 +563,16 @@ SELECT outreach FROM (
     first_activity AS (        -- D17: the first activity ever on each account
       SELECT co, min(ts) AS first_ts FROM once, unnest(once.companies) co GROUP BY co
     )
-    SELECT
+    SELECT                     -- a meeting someone logged as a call isn't a call: the call is
       count(*) FILTER (WHERE kind IN ('email', 'linkedin', 'text', 'intro') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS outreach,
       count(*) FILTER (WHERE kind = 'email' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS direct_email,
       count(*) FILTER (WHERE kind = 'linkedin' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS linkedin,
       count(*) FILTER (WHERE kind = 'text' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS text,
       count(*) FILTER (WHERE kind = 'intro' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS intro,
-      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS calls,
-      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz
+      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND logged_as IS NULL AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS calls,
+      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND logged_as IS NULL AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz
                          AND coalesce(call_kind, 'general') = 'discovery') AS call_discovery,
-      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz
+      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND logged_as IS NULL AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz
                          AND coalesce(call_kind, 'general') = 'general') AS call_general,
       (SELECT count(*) FROM first_activity
         WHERE first_ts >= ((SELECT start_at FROM w))::timestamptz AND first_ts < ((SELECT end_at FROM w))::timestamptz) AS accounts_activated
@@ -576,13 +595,21 @@ Emails the team sent, one per message (a follow-up counts on the day it went out
 WITH w AS (SELECT ((coalesce(nullif(current_setting('dd.window_from', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 7))::timestamp AT TIME ZONE 'America/New_York') AS start_at, (((coalesce(nullif(current_setting('dd.window_to', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 1) + 1))::timestamp AT TIME ZONE 'America/New_York') AS end_at, (SELECT coalesce(array_agg(DISTINCT lower(email)), '{}') FROM (SELECT email FROM bedrock.jobs_team_member UNION SELECT email FROM bedrock.jobs_team_change) t) AS team)
 SELECT direct_email FROM (
     WITH e AS (
-    WITH raw AS (
+    WITH logged_calls AS MATERIALIZED (
+      -- Every hand-logged call, with what a calendar meeting matches it on.
+      SELECT c.id, ((c.activity_date AT TIME ZONE 'America/New_York')::date) AS day, c.participant_public_contact_id AS contact_id,
+             nullif(lower(btrim(coalesce(o.account_name, ''))), '') AS account
+      FROM bedrock.activity c
+      LEFT JOIN bedrock.jobs_opportunity o ON o.id = c.jobs_opportunity_id
+      WHERE c.type = 'call' AND c.source = 'manual' AND c.deleted_at IS NULL
+    ),
+    raw AS (
       -- Synced email, one row per message, by the message's own sender.
       SELECT 'email'::text AS kind, aem.sent_at AS ts, lower(aem.from_email) AS sender,
              a.id AS activity_id, NULL::uuid AS intro_id,
              a.participant_public_contact_id AS contact_id, coalesce(a.email_to, '{}'::text[]) || coalesce(a.email_cc, '{}'::text[]) AS recips,
              a.subject, a.description, a.email_snippet AS snippet, a.email_from, a.source,
-             NULL::text AS call_kind
+             NULL::text AS call_kind, NULL::uuid AS logged_as
       FROM bedrock.activity_email_message aem
       JOIN bedrock.activity a ON a.id = aem.activity_id
       WHERE aem.from_email = ANY(((SELECT team FROM w))::text[]) AND ((NULL)::timestamptz IS NULL OR aem.sent_at >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR aem.sent_at < ((SELECT end_at FROM w))::timestamptz)
@@ -593,28 +620,39 @@ SELECT direct_email FROM (
       -- own sender (never the mailbox it was synced from).
       SELECT 'email', a.activity_date, lower(btrim(coalesce(substring(a.email_from from '<([^>]+)>'), nullif(a.email_from, ''), CASE WHEN a.source = 'manual' THEN a.logged_by END))),
              a.id, NULL::uuid, a.participant_public_contact_id, coalesce(a.email_to, '{}'::text[]) || coalesce(a.email_cc, '{}'::text[]),
-             a.subject, a.description, a.email_snippet, a.email_from, a.source, NULL::text
+             a.subject, a.description, a.email_snippet, a.email_from, a.source, NULL::text, NULL::uuid
       FROM bedrock.activity a
       WHERE a.deleted_at IS NULL AND a.type = 'email' AND ((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz)
         AND lower(btrim(coalesce(substring(a.email_from from '<([^>]+)>'), nullif(a.email_from, ''), CASE WHEN a.source = 'manual' THEN a.logged_by END))) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))
         AND NOT EXISTS (SELECT 1 FROM bedrock.activity_email_message m WHERE m.activity_id = a.id)
       UNION ALL
       -- Hand-logged LinkedIn, text and calls, and meetings: whoever logged
-      -- it, or whose calendar it is on.
-      SELECT a.type, a.activity_date, lower(btrim(a.logged_by)),
+      -- it, or whose calendar it is on. A meeting can be re-tagged with a
+      -- call type; `logged_as` is the hand-logged call it is, if any.
+      SELECT a.type, CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END, lower(btrim(a.logged_by)),
              a.id, NULL::uuid, a.participant_public_contact_id,
              CASE WHEN a.type = 'meeting' THEN ARRAY(SELECT att->>'email' FROM jsonb_array_elements(coalesce(a.meeting_attendees, '[]'::jsonb)) att) ELSE '{}'::text[] END,
              a.subject, a.description, NULL::text, a.email_from, a.source,
-             CASE WHEN a.type = 'call' THEN a.call_kind END
+             CASE WHEN a.type IN ('call', 'meeting') THEN a.call_kind END,
+             CASE WHEN a.type = 'meeting' THEN (
+               SELECT lc.id FROM logged_calls lc
+               WHERE lc.day = ((a.activity_date AT TIME ZONE 'America/New_York')::date)
+                 AND (lc.contact_id = a.participant_public_contact_id
+                      OR EXISTS (
+                        SELECT 1 FROM public.contacts pc
+                        WHERE lower(pc.email) = ANY(ARRAY(SELECT lower(x) FROM unnest(ARRAY(SELECT att->>'email' FROM jsonb_array_elements(coalesce(a.meeting_attendees, '[]'::jsonb)) att)) x))
+                          AND (pc.contact_id = lc.contact_id
+                               OR lower(btrim(coalesce(pc.current_company, ''))) = lc.account)))
+               ORDER BY lc.id LIMIT 1) END
       FROM bedrock.activity a
       WHERE a.deleted_at IS NULL AND a.type IN ('linkedin', 'text', 'call', 'meeting')
-        AND ((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz) AND lower(btrim(a.logged_by)) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))
+        AND (((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz) OR (a.type = 'call' AND ((NULL)::timestamptz IS NULL OR a.booked_at >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.booked_at < ((SELECT end_at FROM w))::timestamptz))) AND ((NULL)::timestamptz IS NULL OR CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END < ((SELECT end_at FROM w))::timestamptz) AND lower(btrim(a.logged_by)) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))
       UNION ALL
       -- A facilitated intro that was acted on, by who asked for it. Its
       -- subject is the ask (routes.jobs_intro.ASK_LABELS names it).
       SELECT 'intro', coalesce(ir.responded_at, ir.created_at), lower(ir.requested_by_email),
              NULL::uuid, ir.id, ir.contact_id, '{}'::text[],
-             ir.specific_ask, ir.context, NULL::text, NULL::text, 'intro', NULL::text
+             ir.specific_ask, ir.context, NULL::text, NULL::text, 'intro', NULL::text, NULL::uuid
       FROM bedrock.intro_request ir
       WHERE ir.status IN ('accepted', 'completed')
         AND lower(ir.requested_by_email) = ANY(((SELECT team FROM w))::text[])
@@ -624,7 +662,7 @@ SELECT direct_email FROM (
       -- else set up (Nick) enters here with no outreach behind it.
       SELECT 'call_booked', h.changed_at, lower(h.changed_by),
              NULL::uuid, NULL::uuid, h.contact_id, '{}'::text[],
-             NULL::text, NULL::text, NULL::text, NULL::text, 'stage', NULL::text
+             NULL::text, NULL::text, NULL::text, NULL::text, 'stage', NULL::text, NULL::uuid
       FROM (SELECT DISTINCT ON (contact_id) contact_id, changed_at, changed_by
               FROM bedrock.jobs_membership_stage_history
              WHERE to_stage = 'call_booked' ORDER BY contact_id, changed_at) h
@@ -644,7 +682,7 @@ SELECT direct_email FROM (
     )
     SELECT ev.kind, ev.ts, ev.sender, ev.activity_id, ev.intro_id, ev.contact_id,
            ev.contact_ids, ev.companies, ev.subject, ev.description, ev.snippet,
-           ev.email_from, ev.source, ev.call_kind, ev.recips AS recipients
+           ev.email_from, ev.source, ev.call_kind, ev.logged_as, ev.recips AS recipients
     FROM ev 
     ),
     counted AS (               -- automatic mail is not activity
@@ -670,16 +708,16 @@ SELECT direct_email FROM (
     first_activity AS (        -- D17: the first activity ever on each account
       SELECT co, min(ts) AS first_ts FROM once, unnest(once.companies) co GROUP BY co
     )
-    SELECT
+    SELECT                     -- a meeting someone logged as a call isn't a call: the call is
       count(*) FILTER (WHERE kind IN ('email', 'linkedin', 'text', 'intro') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS outreach,
       count(*) FILTER (WHERE kind = 'email' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS direct_email,
       count(*) FILTER (WHERE kind = 'linkedin' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS linkedin,
       count(*) FILTER (WHERE kind = 'text' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS text,
       count(*) FILTER (WHERE kind = 'intro' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS intro,
-      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS calls,
-      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz
+      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND logged_as IS NULL AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS calls,
+      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND logged_as IS NULL AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz
                          AND coalesce(call_kind, 'general') = 'discovery') AS call_discovery,
-      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz
+      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND logged_as IS NULL AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz
                          AND coalesce(call_kind, 'general') = 'general') AS call_general,
       (SELECT count(*) FROM first_activity
         WHERE first_ts >= ((SELECT start_at FROM w))::timestamptz AND first_ts < ((SELECT end_at FROM w))::timestamptz) AS accounts_activated
@@ -702,13 +740,21 @@ LinkedIn messages the team logged.
 WITH w AS (SELECT ((coalesce(nullif(current_setting('dd.window_from', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 7))::timestamp AT TIME ZONE 'America/New_York') AS start_at, (((coalesce(nullif(current_setting('dd.window_to', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 1) + 1))::timestamp AT TIME ZONE 'America/New_York') AS end_at, (SELECT coalesce(array_agg(DISTINCT lower(email)), '{}') FROM (SELECT email FROM bedrock.jobs_team_member UNION SELECT email FROM bedrock.jobs_team_change) t) AS team)
 SELECT linkedin FROM (
     WITH e AS (
-    WITH raw AS (
+    WITH logged_calls AS MATERIALIZED (
+      -- Every hand-logged call, with what a calendar meeting matches it on.
+      SELECT c.id, ((c.activity_date AT TIME ZONE 'America/New_York')::date) AS day, c.participant_public_contact_id AS contact_id,
+             nullif(lower(btrim(coalesce(o.account_name, ''))), '') AS account
+      FROM bedrock.activity c
+      LEFT JOIN bedrock.jobs_opportunity o ON o.id = c.jobs_opportunity_id
+      WHERE c.type = 'call' AND c.source = 'manual' AND c.deleted_at IS NULL
+    ),
+    raw AS (
       -- Synced email, one row per message, by the message's own sender.
       SELECT 'email'::text AS kind, aem.sent_at AS ts, lower(aem.from_email) AS sender,
              a.id AS activity_id, NULL::uuid AS intro_id,
              a.participant_public_contact_id AS contact_id, coalesce(a.email_to, '{}'::text[]) || coalesce(a.email_cc, '{}'::text[]) AS recips,
              a.subject, a.description, a.email_snippet AS snippet, a.email_from, a.source,
-             NULL::text AS call_kind
+             NULL::text AS call_kind, NULL::uuid AS logged_as
       FROM bedrock.activity_email_message aem
       JOIN bedrock.activity a ON a.id = aem.activity_id
       WHERE aem.from_email = ANY(((SELECT team FROM w))::text[]) AND ((NULL)::timestamptz IS NULL OR aem.sent_at >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR aem.sent_at < ((SELECT end_at FROM w))::timestamptz)
@@ -719,28 +765,39 @@ SELECT linkedin FROM (
       -- own sender (never the mailbox it was synced from).
       SELECT 'email', a.activity_date, lower(btrim(coalesce(substring(a.email_from from '<([^>]+)>'), nullif(a.email_from, ''), CASE WHEN a.source = 'manual' THEN a.logged_by END))),
              a.id, NULL::uuid, a.participant_public_contact_id, coalesce(a.email_to, '{}'::text[]) || coalesce(a.email_cc, '{}'::text[]),
-             a.subject, a.description, a.email_snippet, a.email_from, a.source, NULL::text
+             a.subject, a.description, a.email_snippet, a.email_from, a.source, NULL::text, NULL::uuid
       FROM bedrock.activity a
       WHERE a.deleted_at IS NULL AND a.type = 'email' AND ((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz)
         AND lower(btrim(coalesce(substring(a.email_from from '<([^>]+)>'), nullif(a.email_from, ''), CASE WHEN a.source = 'manual' THEN a.logged_by END))) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))
         AND NOT EXISTS (SELECT 1 FROM bedrock.activity_email_message m WHERE m.activity_id = a.id)
       UNION ALL
       -- Hand-logged LinkedIn, text and calls, and meetings: whoever logged
-      -- it, or whose calendar it is on.
-      SELECT a.type, a.activity_date, lower(btrim(a.logged_by)),
+      -- it, or whose calendar it is on. A meeting can be re-tagged with a
+      -- call type; `logged_as` is the hand-logged call it is, if any.
+      SELECT a.type, CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END, lower(btrim(a.logged_by)),
              a.id, NULL::uuid, a.participant_public_contact_id,
              CASE WHEN a.type = 'meeting' THEN ARRAY(SELECT att->>'email' FROM jsonb_array_elements(coalesce(a.meeting_attendees, '[]'::jsonb)) att) ELSE '{}'::text[] END,
              a.subject, a.description, NULL::text, a.email_from, a.source,
-             CASE WHEN a.type = 'call' THEN a.call_kind END
+             CASE WHEN a.type IN ('call', 'meeting') THEN a.call_kind END,
+             CASE WHEN a.type = 'meeting' THEN (
+               SELECT lc.id FROM logged_calls lc
+               WHERE lc.day = ((a.activity_date AT TIME ZONE 'America/New_York')::date)
+                 AND (lc.contact_id = a.participant_public_contact_id
+                      OR EXISTS (
+                        SELECT 1 FROM public.contacts pc
+                        WHERE lower(pc.email) = ANY(ARRAY(SELECT lower(x) FROM unnest(ARRAY(SELECT att->>'email' FROM jsonb_array_elements(coalesce(a.meeting_attendees, '[]'::jsonb)) att)) x))
+                          AND (pc.contact_id = lc.contact_id
+                               OR lower(btrim(coalesce(pc.current_company, ''))) = lc.account)))
+               ORDER BY lc.id LIMIT 1) END
       FROM bedrock.activity a
       WHERE a.deleted_at IS NULL AND a.type IN ('linkedin', 'text', 'call', 'meeting')
-        AND ((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz) AND lower(btrim(a.logged_by)) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))
+        AND (((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz) OR (a.type = 'call' AND ((NULL)::timestamptz IS NULL OR a.booked_at >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.booked_at < ((SELECT end_at FROM w))::timestamptz))) AND ((NULL)::timestamptz IS NULL OR CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END < ((SELECT end_at FROM w))::timestamptz) AND lower(btrim(a.logged_by)) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))
       UNION ALL
       -- A facilitated intro that was acted on, by who asked for it. Its
       -- subject is the ask (routes.jobs_intro.ASK_LABELS names it).
       SELECT 'intro', coalesce(ir.responded_at, ir.created_at), lower(ir.requested_by_email),
              NULL::uuid, ir.id, ir.contact_id, '{}'::text[],
-             ir.specific_ask, ir.context, NULL::text, NULL::text, 'intro', NULL::text
+             ir.specific_ask, ir.context, NULL::text, NULL::text, 'intro', NULL::text, NULL::uuid
       FROM bedrock.intro_request ir
       WHERE ir.status IN ('accepted', 'completed')
         AND lower(ir.requested_by_email) = ANY(((SELECT team FROM w))::text[])
@@ -750,7 +807,7 @@ SELECT linkedin FROM (
       -- else set up (Nick) enters here with no outreach behind it.
       SELECT 'call_booked', h.changed_at, lower(h.changed_by),
              NULL::uuid, NULL::uuid, h.contact_id, '{}'::text[],
-             NULL::text, NULL::text, NULL::text, NULL::text, 'stage', NULL::text
+             NULL::text, NULL::text, NULL::text, NULL::text, 'stage', NULL::text, NULL::uuid
       FROM (SELECT DISTINCT ON (contact_id) contact_id, changed_at, changed_by
               FROM bedrock.jobs_membership_stage_history
              WHERE to_stage = 'call_booked' ORDER BY contact_id, changed_at) h
@@ -770,7 +827,7 @@ SELECT linkedin FROM (
     )
     SELECT ev.kind, ev.ts, ev.sender, ev.activity_id, ev.intro_id, ev.contact_id,
            ev.contact_ids, ev.companies, ev.subject, ev.description, ev.snippet,
-           ev.email_from, ev.source, ev.call_kind, ev.recips AS recipients
+           ev.email_from, ev.source, ev.call_kind, ev.logged_as, ev.recips AS recipients
     FROM ev 
     ),
     counted AS (               -- automatic mail is not activity
@@ -796,16 +853,16 @@ SELECT linkedin FROM (
     first_activity AS (        -- D17: the first activity ever on each account
       SELECT co, min(ts) AS first_ts FROM once, unnest(once.companies) co GROUP BY co
     )
-    SELECT
+    SELECT                     -- a meeting someone logged as a call isn't a call: the call is
       count(*) FILTER (WHERE kind IN ('email', 'linkedin', 'text', 'intro') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS outreach,
       count(*) FILTER (WHERE kind = 'email' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS direct_email,
       count(*) FILTER (WHERE kind = 'linkedin' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS linkedin,
       count(*) FILTER (WHERE kind = 'text' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS text,
       count(*) FILTER (WHERE kind = 'intro' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS intro,
-      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS calls,
-      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz
+      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND logged_as IS NULL AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS calls,
+      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND logged_as IS NULL AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz
                          AND coalesce(call_kind, 'general') = 'discovery') AS call_discovery,
-      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz
+      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND logged_as IS NULL AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz
                          AND coalesce(call_kind, 'general') = 'general') AS call_general,
       (SELECT count(*) FROM first_activity
         WHERE first_ts >= ((SELECT start_at FROM w))::timestamptz AND first_ts < ((SELECT end_at FROM w))::timestamptz) AS accounts_activated
@@ -828,13 +885,21 @@ Texts the team logged.
 WITH w AS (SELECT ((coalesce(nullif(current_setting('dd.window_from', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 7))::timestamp AT TIME ZONE 'America/New_York') AS start_at, (((coalesce(nullif(current_setting('dd.window_to', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 1) + 1))::timestamp AT TIME ZONE 'America/New_York') AS end_at, (SELECT coalesce(array_agg(DISTINCT lower(email)), '{}') FROM (SELECT email FROM bedrock.jobs_team_member UNION SELECT email FROM bedrock.jobs_team_change) t) AS team)
 SELECT text FROM (
     WITH e AS (
-    WITH raw AS (
+    WITH logged_calls AS MATERIALIZED (
+      -- Every hand-logged call, with what a calendar meeting matches it on.
+      SELECT c.id, ((c.activity_date AT TIME ZONE 'America/New_York')::date) AS day, c.participant_public_contact_id AS contact_id,
+             nullif(lower(btrim(coalesce(o.account_name, ''))), '') AS account
+      FROM bedrock.activity c
+      LEFT JOIN bedrock.jobs_opportunity o ON o.id = c.jobs_opportunity_id
+      WHERE c.type = 'call' AND c.source = 'manual' AND c.deleted_at IS NULL
+    ),
+    raw AS (
       -- Synced email, one row per message, by the message's own sender.
       SELECT 'email'::text AS kind, aem.sent_at AS ts, lower(aem.from_email) AS sender,
              a.id AS activity_id, NULL::uuid AS intro_id,
              a.participant_public_contact_id AS contact_id, coalesce(a.email_to, '{}'::text[]) || coalesce(a.email_cc, '{}'::text[]) AS recips,
              a.subject, a.description, a.email_snippet AS snippet, a.email_from, a.source,
-             NULL::text AS call_kind
+             NULL::text AS call_kind, NULL::uuid AS logged_as
       FROM bedrock.activity_email_message aem
       JOIN bedrock.activity a ON a.id = aem.activity_id
       WHERE aem.from_email = ANY(((SELECT team FROM w))::text[]) AND ((NULL)::timestamptz IS NULL OR aem.sent_at >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR aem.sent_at < ((SELECT end_at FROM w))::timestamptz)
@@ -845,28 +910,39 @@ SELECT text FROM (
       -- own sender (never the mailbox it was synced from).
       SELECT 'email', a.activity_date, lower(btrim(coalesce(substring(a.email_from from '<([^>]+)>'), nullif(a.email_from, ''), CASE WHEN a.source = 'manual' THEN a.logged_by END))),
              a.id, NULL::uuid, a.participant_public_contact_id, coalesce(a.email_to, '{}'::text[]) || coalesce(a.email_cc, '{}'::text[]),
-             a.subject, a.description, a.email_snippet, a.email_from, a.source, NULL::text
+             a.subject, a.description, a.email_snippet, a.email_from, a.source, NULL::text, NULL::uuid
       FROM bedrock.activity a
       WHERE a.deleted_at IS NULL AND a.type = 'email' AND ((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz)
         AND lower(btrim(coalesce(substring(a.email_from from '<([^>]+)>'), nullif(a.email_from, ''), CASE WHEN a.source = 'manual' THEN a.logged_by END))) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))
         AND NOT EXISTS (SELECT 1 FROM bedrock.activity_email_message m WHERE m.activity_id = a.id)
       UNION ALL
       -- Hand-logged LinkedIn, text and calls, and meetings: whoever logged
-      -- it, or whose calendar it is on.
-      SELECT a.type, a.activity_date, lower(btrim(a.logged_by)),
+      -- it, or whose calendar it is on. A meeting can be re-tagged with a
+      -- call type; `logged_as` is the hand-logged call it is, if any.
+      SELECT a.type, CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END, lower(btrim(a.logged_by)),
              a.id, NULL::uuid, a.participant_public_contact_id,
              CASE WHEN a.type = 'meeting' THEN ARRAY(SELECT att->>'email' FROM jsonb_array_elements(coalesce(a.meeting_attendees, '[]'::jsonb)) att) ELSE '{}'::text[] END,
              a.subject, a.description, NULL::text, a.email_from, a.source,
-             CASE WHEN a.type = 'call' THEN a.call_kind END
+             CASE WHEN a.type IN ('call', 'meeting') THEN a.call_kind END,
+             CASE WHEN a.type = 'meeting' THEN (
+               SELECT lc.id FROM logged_calls lc
+               WHERE lc.day = ((a.activity_date AT TIME ZONE 'America/New_York')::date)
+                 AND (lc.contact_id = a.participant_public_contact_id
+                      OR EXISTS (
+                        SELECT 1 FROM public.contacts pc
+                        WHERE lower(pc.email) = ANY(ARRAY(SELECT lower(x) FROM unnest(ARRAY(SELECT att->>'email' FROM jsonb_array_elements(coalesce(a.meeting_attendees, '[]'::jsonb)) att)) x))
+                          AND (pc.contact_id = lc.contact_id
+                               OR lower(btrim(coalesce(pc.current_company, ''))) = lc.account)))
+               ORDER BY lc.id LIMIT 1) END
       FROM bedrock.activity a
       WHERE a.deleted_at IS NULL AND a.type IN ('linkedin', 'text', 'call', 'meeting')
-        AND ((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz) AND lower(btrim(a.logged_by)) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))
+        AND (((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz) OR (a.type = 'call' AND ((NULL)::timestamptz IS NULL OR a.booked_at >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.booked_at < ((SELECT end_at FROM w))::timestamptz))) AND ((NULL)::timestamptz IS NULL OR CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END < ((SELECT end_at FROM w))::timestamptz) AND lower(btrim(a.logged_by)) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))
       UNION ALL
       -- A facilitated intro that was acted on, by who asked for it. Its
       -- subject is the ask (routes.jobs_intro.ASK_LABELS names it).
       SELECT 'intro', coalesce(ir.responded_at, ir.created_at), lower(ir.requested_by_email),
              NULL::uuid, ir.id, ir.contact_id, '{}'::text[],
-             ir.specific_ask, ir.context, NULL::text, NULL::text, 'intro', NULL::text
+             ir.specific_ask, ir.context, NULL::text, NULL::text, 'intro', NULL::text, NULL::uuid
       FROM bedrock.intro_request ir
       WHERE ir.status IN ('accepted', 'completed')
         AND lower(ir.requested_by_email) = ANY(((SELECT team FROM w))::text[])
@@ -876,7 +952,7 @@ SELECT text FROM (
       -- else set up (Nick) enters here with no outreach behind it.
       SELECT 'call_booked', h.changed_at, lower(h.changed_by),
              NULL::uuid, NULL::uuid, h.contact_id, '{}'::text[],
-             NULL::text, NULL::text, NULL::text, NULL::text, 'stage', NULL::text
+             NULL::text, NULL::text, NULL::text, NULL::text, 'stage', NULL::text, NULL::uuid
       FROM (SELECT DISTINCT ON (contact_id) contact_id, changed_at, changed_by
               FROM bedrock.jobs_membership_stage_history
              WHERE to_stage = 'call_booked' ORDER BY contact_id, changed_at) h
@@ -896,7 +972,7 @@ SELECT text FROM (
     )
     SELECT ev.kind, ev.ts, ev.sender, ev.activity_id, ev.intro_id, ev.contact_id,
            ev.contact_ids, ev.companies, ev.subject, ev.description, ev.snippet,
-           ev.email_from, ev.source, ev.call_kind, ev.recips AS recipients
+           ev.email_from, ev.source, ev.call_kind, ev.logged_as, ev.recips AS recipients
     FROM ev 
     ),
     counted AS (               -- automatic mail is not activity
@@ -922,16 +998,16 @@ SELECT text FROM (
     first_activity AS (        -- D17: the first activity ever on each account
       SELECT co, min(ts) AS first_ts FROM once, unnest(once.companies) co GROUP BY co
     )
-    SELECT
+    SELECT                     -- a meeting someone logged as a call isn't a call: the call is
       count(*) FILTER (WHERE kind IN ('email', 'linkedin', 'text', 'intro') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS outreach,
       count(*) FILTER (WHERE kind = 'email' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS direct_email,
       count(*) FILTER (WHERE kind = 'linkedin' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS linkedin,
       count(*) FILTER (WHERE kind = 'text' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS text,
       count(*) FILTER (WHERE kind = 'intro' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS intro,
-      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS calls,
-      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz
+      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND logged_as IS NULL AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS calls,
+      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND logged_as IS NULL AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz
                          AND coalesce(call_kind, 'general') = 'discovery') AS call_discovery,
-      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz
+      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND logged_as IS NULL AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz
                          AND coalesce(call_kind, 'general') = 'general') AS call_general,
       (SELECT count(*) FROM first_activity
         WHERE first_ts >= ((SELECT start_at FROM w))::timestamptz AND first_ts < ((SELECT end_at FROM w))::timestamptz) AS accounts_activated
@@ -954,13 +1030,21 @@ Intro requests the team made that were accepted or completed, on the day they we
 WITH w AS (SELECT ((coalesce(nullif(current_setting('dd.window_from', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 7))::timestamp AT TIME ZONE 'America/New_York') AS start_at, (((coalesce(nullif(current_setting('dd.window_to', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 1) + 1))::timestamp AT TIME ZONE 'America/New_York') AS end_at, (SELECT coalesce(array_agg(DISTINCT lower(email)), '{}') FROM (SELECT email FROM bedrock.jobs_team_member UNION SELECT email FROM bedrock.jobs_team_change) t) AS team)
 SELECT intro FROM (
     WITH e AS (
-    WITH raw AS (
+    WITH logged_calls AS MATERIALIZED (
+      -- Every hand-logged call, with what a calendar meeting matches it on.
+      SELECT c.id, ((c.activity_date AT TIME ZONE 'America/New_York')::date) AS day, c.participant_public_contact_id AS contact_id,
+             nullif(lower(btrim(coalesce(o.account_name, ''))), '') AS account
+      FROM bedrock.activity c
+      LEFT JOIN bedrock.jobs_opportunity o ON o.id = c.jobs_opportunity_id
+      WHERE c.type = 'call' AND c.source = 'manual' AND c.deleted_at IS NULL
+    ),
+    raw AS (
       -- Synced email, one row per message, by the message's own sender.
       SELECT 'email'::text AS kind, aem.sent_at AS ts, lower(aem.from_email) AS sender,
              a.id AS activity_id, NULL::uuid AS intro_id,
              a.participant_public_contact_id AS contact_id, coalesce(a.email_to, '{}'::text[]) || coalesce(a.email_cc, '{}'::text[]) AS recips,
              a.subject, a.description, a.email_snippet AS snippet, a.email_from, a.source,
-             NULL::text AS call_kind
+             NULL::text AS call_kind, NULL::uuid AS logged_as
       FROM bedrock.activity_email_message aem
       JOIN bedrock.activity a ON a.id = aem.activity_id
       WHERE aem.from_email = ANY(((SELECT team FROM w))::text[]) AND ((NULL)::timestamptz IS NULL OR aem.sent_at >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR aem.sent_at < ((SELECT end_at FROM w))::timestamptz)
@@ -971,28 +1055,39 @@ SELECT intro FROM (
       -- own sender (never the mailbox it was synced from).
       SELECT 'email', a.activity_date, lower(btrim(coalesce(substring(a.email_from from '<([^>]+)>'), nullif(a.email_from, ''), CASE WHEN a.source = 'manual' THEN a.logged_by END))),
              a.id, NULL::uuid, a.participant_public_contact_id, coalesce(a.email_to, '{}'::text[]) || coalesce(a.email_cc, '{}'::text[]),
-             a.subject, a.description, a.email_snippet, a.email_from, a.source, NULL::text
+             a.subject, a.description, a.email_snippet, a.email_from, a.source, NULL::text, NULL::uuid
       FROM bedrock.activity a
       WHERE a.deleted_at IS NULL AND a.type = 'email' AND ((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz)
         AND lower(btrim(coalesce(substring(a.email_from from '<([^>]+)>'), nullif(a.email_from, ''), CASE WHEN a.source = 'manual' THEN a.logged_by END))) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))
         AND NOT EXISTS (SELECT 1 FROM bedrock.activity_email_message m WHERE m.activity_id = a.id)
       UNION ALL
       -- Hand-logged LinkedIn, text and calls, and meetings: whoever logged
-      -- it, or whose calendar it is on.
-      SELECT a.type, a.activity_date, lower(btrim(a.logged_by)),
+      -- it, or whose calendar it is on. A meeting can be re-tagged with a
+      -- call type; `logged_as` is the hand-logged call it is, if any.
+      SELECT a.type, CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END, lower(btrim(a.logged_by)),
              a.id, NULL::uuid, a.participant_public_contact_id,
              CASE WHEN a.type = 'meeting' THEN ARRAY(SELECT att->>'email' FROM jsonb_array_elements(coalesce(a.meeting_attendees, '[]'::jsonb)) att) ELSE '{}'::text[] END,
              a.subject, a.description, NULL::text, a.email_from, a.source,
-             CASE WHEN a.type = 'call' THEN a.call_kind END
+             CASE WHEN a.type IN ('call', 'meeting') THEN a.call_kind END,
+             CASE WHEN a.type = 'meeting' THEN (
+               SELECT lc.id FROM logged_calls lc
+               WHERE lc.day = ((a.activity_date AT TIME ZONE 'America/New_York')::date)
+                 AND (lc.contact_id = a.participant_public_contact_id
+                      OR EXISTS (
+                        SELECT 1 FROM public.contacts pc
+                        WHERE lower(pc.email) = ANY(ARRAY(SELECT lower(x) FROM unnest(ARRAY(SELECT att->>'email' FROM jsonb_array_elements(coalesce(a.meeting_attendees, '[]'::jsonb)) att)) x))
+                          AND (pc.contact_id = lc.contact_id
+                               OR lower(btrim(coalesce(pc.current_company, ''))) = lc.account)))
+               ORDER BY lc.id LIMIT 1) END
       FROM bedrock.activity a
       WHERE a.deleted_at IS NULL AND a.type IN ('linkedin', 'text', 'call', 'meeting')
-        AND ((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz) AND lower(btrim(a.logged_by)) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))
+        AND (((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz) OR (a.type = 'call' AND ((NULL)::timestamptz IS NULL OR a.booked_at >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.booked_at < ((SELECT end_at FROM w))::timestamptz))) AND ((NULL)::timestamptz IS NULL OR CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END < ((SELECT end_at FROM w))::timestamptz) AND lower(btrim(a.logged_by)) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))
       UNION ALL
       -- A facilitated intro that was acted on, by who asked for it. Its
       -- subject is the ask (routes.jobs_intro.ASK_LABELS names it).
       SELECT 'intro', coalesce(ir.responded_at, ir.created_at), lower(ir.requested_by_email),
              NULL::uuid, ir.id, ir.contact_id, '{}'::text[],
-             ir.specific_ask, ir.context, NULL::text, NULL::text, 'intro', NULL::text
+             ir.specific_ask, ir.context, NULL::text, NULL::text, 'intro', NULL::text, NULL::uuid
       FROM bedrock.intro_request ir
       WHERE ir.status IN ('accepted', 'completed')
         AND lower(ir.requested_by_email) = ANY(((SELECT team FROM w))::text[])
@@ -1002,7 +1097,7 @@ SELECT intro FROM (
       -- else set up (Nick) enters here with no outreach behind it.
       SELECT 'call_booked', h.changed_at, lower(h.changed_by),
              NULL::uuid, NULL::uuid, h.contact_id, '{}'::text[],
-             NULL::text, NULL::text, NULL::text, NULL::text, 'stage', NULL::text
+             NULL::text, NULL::text, NULL::text, NULL::text, 'stage', NULL::text, NULL::uuid
       FROM (SELECT DISTINCT ON (contact_id) contact_id, changed_at, changed_by
               FROM bedrock.jobs_membership_stage_history
              WHERE to_stage = 'call_booked' ORDER BY contact_id, changed_at) h
@@ -1022,7 +1117,7 @@ SELECT intro FROM (
     )
     SELECT ev.kind, ev.ts, ev.sender, ev.activity_id, ev.intro_id, ev.contact_id,
            ev.contact_ids, ev.companies, ev.subject, ev.description, ev.snippet,
-           ev.email_from, ev.source, ev.call_kind, ev.recips AS recipients
+           ev.email_from, ev.source, ev.call_kind, ev.logged_as, ev.recips AS recipients
     FROM ev 
     ),
     counted AS (               -- automatic mail is not activity
@@ -1048,16 +1143,16 @@ SELECT intro FROM (
     first_activity AS (        -- D17: the first activity ever on each account
       SELECT co, min(ts) AS first_ts FROM once, unnest(once.companies) co GROUP BY co
     )
-    SELECT
+    SELECT                     -- a meeting someone logged as a call isn't a call: the call is
       count(*) FILTER (WHERE kind IN ('email', 'linkedin', 'text', 'intro') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS outreach,
       count(*) FILTER (WHERE kind = 'email' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS direct_email,
       count(*) FILTER (WHERE kind = 'linkedin' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS linkedin,
       count(*) FILTER (WHERE kind = 'text' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS text,
       count(*) FILTER (WHERE kind = 'intro' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS intro,
-      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS calls,
-      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz
+      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND logged_as IS NULL AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS calls,
+      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND logged_as IS NULL AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz
                          AND coalesce(call_kind, 'general') = 'discovery') AS call_discovery,
-      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz
+      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND logged_as IS NULL AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz
                          AND coalesce(call_kind, 'general') = 'general') AS call_general,
       (SELECT count(*) FROM first_activity
         WHERE first_ts >= ((SELECT start_at FROM w))::timestamptz AND first_ts < ((SELECT end_at FROM w))::timestamptz) AS accounts_activated
@@ -1069,10 +1164,10 @@ SELECT intro FROM (
 
 ### Calls (`calls`, draft)
 
-Calls the team logged and meetings on the team's calendars.
+Calls the team booked: calls logged by hand and meetings on the team's calendars, each call once. A calendar meeting that someone also logged as a call (held the same New York day, with that call's contact on it, or an attendee from the account of the opportunity the call was logged on) counts once, as the logged call, credited to whoever logged it.
 
 - Divided by: n/a (count)
-- Date: in the week (Mon–Sun, New York)
+- Date: booked in the week (Mon–Sun, New York)
 
 <details><summary>Reference query</summary>
 
@@ -1080,13 +1175,21 @@ Calls the team logged and meetings on the team's calendars.
 WITH w AS (SELECT ((coalesce(nullif(current_setting('dd.window_from', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 7))::timestamp AT TIME ZONE 'America/New_York') AS start_at, (((coalesce(nullif(current_setting('dd.window_to', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 1) + 1))::timestamp AT TIME ZONE 'America/New_York') AS end_at, (SELECT coalesce(array_agg(DISTINCT lower(email)), '{}') FROM (SELECT email FROM bedrock.jobs_team_member UNION SELECT email FROM bedrock.jobs_team_change) t) AS team)
 SELECT calls FROM (
     WITH e AS (
-    WITH raw AS (
+    WITH logged_calls AS MATERIALIZED (
+      -- Every hand-logged call, with what a calendar meeting matches it on.
+      SELECT c.id, ((c.activity_date AT TIME ZONE 'America/New_York')::date) AS day, c.participant_public_contact_id AS contact_id,
+             nullif(lower(btrim(coalesce(o.account_name, ''))), '') AS account
+      FROM bedrock.activity c
+      LEFT JOIN bedrock.jobs_opportunity o ON o.id = c.jobs_opportunity_id
+      WHERE c.type = 'call' AND c.source = 'manual' AND c.deleted_at IS NULL
+    ),
+    raw AS (
       -- Synced email, one row per message, by the message's own sender.
       SELECT 'email'::text AS kind, aem.sent_at AS ts, lower(aem.from_email) AS sender,
              a.id AS activity_id, NULL::uuid AS intro_id,
              a.participant_public_contact_id AS contact_id, coalesce(a.email_to, '{}'::text[]) || coalesce(a.email_cc, '{}'::text[]) AS recips,
              a.subject, a.description, a.email_snippet AS snippet, a.email_from, a.source,
-             NULL::text AS call_kind
+             NULL::text AS call_kind, NULL::uuid AS logged_as
       FROM bedrock.activity_email_message aem
       JOIN bedrock.activity a ON a.id = aem.activity_id
       WHERE aem.from_email = ANY(((SELECT team FROM w))::text[]) AND ((NULL)::timestamptz IS NULL OR aem.sent_at >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR aem.sent_at < ((SELECT end_at FROM w))::timestamptz)
@@ -1097,28 +1200,39 @@ SELECT calls FROM (
       -- own sender (never the mailbox it was synced from).
       SELECT 'email', a.activity_date, lower(btrim(coalesce(substring(a.email_from from '<([^>]+)>'), nullif(a.email_from, ''), CASE WHEN a.source = 'manual' THEN a.logged_by END))),
              a.id, NULL::uuid, a.participant_public_contact_id, coalesce(a.email_to, '{}'::text[]) || coalesce(a.email_cc, '{}'::text[]),
-             a.subject, a.description, a.email_snippet, a.email_from, a.source, NULL::text
+             a.subject, a.description, a.email_snippet, a.email_from, a.source, NULL::text, NULL::uuid
       FROM bedrock.activity a
       WHERE a.deleted_at IS NULL AND a.type = 'email' AND ((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz)
         AND lower(btrim(coalesce(substring(a.email_from from '<([^>]+)>'), nullif(a.email_from, ''), CASE WHEN a.source = 'manual' THEN a.logged_by END))) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))
         AND NOT EXISTS (SELECT 1 FROM bedrock.activity_email_message m WHERE m.activity_id = a.id)
       UNION ALL
       -- Hand-logged LinkedIn, text and calls, and meetings: whoever logged
-      -- it, or whose calendar it is on.
-      SELECT a.type, a.activity_date, lower(btrim(a.logged_by)),
+      -- it, or whose calendar it is on. A meeting can be re-tagged with a
+      -- call type; `logged_as` is the hand-logged call it is, if any.
+      SELECT a.type, CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END, lower(btrim(a.logged_by)),
              a.id, NULL::uuid, a.participant_public_contact_id,
              CASE WHEN a.type = 'meeting' THEN ARRAY(SELECT att->>'email' FROM jsonb_array_elements(coalesce(a.meeting_attendees, '[]'::jsonb)) att) ELSE '{}'::text[] END,
              a.subject, a.description, NULL::text, a.email_from, a.source,
-             CASE WHEN a.type = 'call' THEN a.call_kind END
+             CASE WHEN a.type IN ('call', 'meeting') THEN a.call_kind END,
+             CASE WHEN a.type = 'meeting' THEN (
+               SELECT lc.id FROM logged_calls lc
+               WHERE lc.day = ((a.activity_date AT TIME ZONE 'America/New_York')::date)
+                 AND (lc.contact_id = a.participant_public_contact_id
+                      OR EXISTS (
+                        SELECT 1 FROM public.contacts pc
+                        WHERE lower(pc.email) = ANY(ARRAY(SELECT lower(x) FROM unnest(ARRAY(SELECT att->>'email' FROM jsonb_array_elements(coalesce(a.meeting_attendees, '[]'::jsonb)) att)) x))
+                          AND (pc.contact_id = lc.contact_id
+                               OR lower(btrim(coalesce(pc.current_company, ''))) = lc.account)))
+               ORDER BY lc.id LIMIT 1) END
       FROM bedrock.activity a
       WHERE a.deleted_at IS NULL AND a.type IN ('linkedin', 'text', 'call', 'meeting')
-        AND ((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz) AND lower(btrim(a.logged_by)) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))
+        AND (((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz) OR (a.type = 'call' AND ((NULL)::timestamptz IS NULL OR a.booked_at >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.booked_at < ((SELECT end_at FROM w))::timestamptz))) AND ((NULL)::timestamptz IS NULL OR CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END < ((SELECT end_at FROM w))::timestamptz) AND lower(btrim(a.logged_by)) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))
       UNION ALL
       -- A facilitated intro that was acted on, by who asked for it. Its
       -- subject is the ask (routes.jobs_intro.ASK_LABELS names it).
       SELECT 'intro', coalesce(ir.responded_at, ir.created_at), lower(ir.requested_by_email),
              NULL::uuid, ir.id, ir.contact_id, '{}'::text[],
-             ir.specific_ask, ir.context, NULL::text, NULL::text, 'intro', NULL::text
+             ir.specific_ask, ir.context, NULL::text, NULL::text, 'intro', NULL::text, NULL::uuid
       FROM bedrock.intro_request ir
       WHERE ir.status IN ('accepted', 'completed')
         AND lower(ir.requested_by_email) = ANY(((SELECT team FROM w))::text[])
@@ -1128,7 +1242,7 @@ SELECT calls FROM (
       -- else set up (Nick) enters here with no outreach behind it.
       SELECT 'call_booked', h.changed_at, lower(h.changed_by),
              NULL::uuid, NULL::uuid, h.contact_id, '{}'::text[],
-             NULL::text, NULL::text, NULL::text, NULL::text, 'stage', NULL::text
+             NULL::text, NULL::text, NULL::text, NULL::text, 'stage', NULL::text, NULL::uuid
       FROM (SELECT DISTINCT ON (contact_id) contact_id, changed_at, changed_by
               FROM bedrock.jobs_membership_stage_history
              WHERE to_stage = 'call_booked' ORDER BY contact_id, changed_at) h
@@ -1148,7 +1262,7 @@ SELECT calls FROM (
     )
     SELECT ev.kind, ev.ts, ev.sender, ev.activity_id, ev.intro_id, ev.contact_id,
            ev.contact_ids, ev.companies, ev.subject, ev.description, ev.snippet,
-           ev.email_from, ev.source, ev.call_kind, ev.recips AS recipients
+           ev.email_from, ev.source, ev.call_kind, ev.logged_as, ev.recips AS recipients
     FROM ev 
     ),
     counted AS (               -- automatic mail is not activity
@@ -1174,16 +1288,16 @@ SELECT calls FROM (
     first_activity AS (        -- D17: the first activity ever on each account
       SELECT co, min(ts) AS first_ts FROM once, unnest(once.companies) co GROUP BY co
     )
-    SELECT
+    SELECT                     -- a meeting someone logged as a call isn't a call: the call is
       count(*) FILTER (WHERE kind IN ('email', 'linkedin', 'text', 'intro') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS outreach,
       count(*) FILTER (WHERE kind = 'email' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS direct_email,
       count(*) FILTER (WHERE kind = 'linkedin' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS linkedin,
       count(*) FILTER (WHERE kind = 'text' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS text,
       count(*) FILTER (WHERE kind = 'intro' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS intro,
-      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS calls,
-      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz
+      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND logged_as IS NULL AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS calls,
+      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND logged_as IS NULL AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz
                          AND coalesce(call_kind, 'general') = 'discovery') AS call_discovery,
-      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz
+      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND logged_as IS NULL AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz
                          AND coalesce(call_kind, 'general') = 'general') AS call_general,
       (SELECT count(*) FROM first_activity
         WHERE first_ts >= ((SELECT start_at FROM w))::timestamptz AND first_ts < ((SELECT end_at FROM w))::timestamptz) AS accounts_activated
@@ -1195,11 +1309,11 @@ SELECT calls FROM (
 
 ### Discovery calls (`call_discovery`, draft)
 
-Calls logged as discovery calls: a first real conversation with an employer. The Owner cut's "Calls" column.
+Calls typed as discovery: a first real conversation with an employer, learning what they need. Nick's weekly KPI (10-12). The Owner cut's "Calls" column.
 
 - Divided by: n/a (count)
-- Date: in the week (Mon–Sun, New York)
-- Caveat: Call type is optional today, so most calls read as general (PRO-102 makes it required).
+- Date: booked in the week (Mon–Sun, New York)
+- Caveat: Call type is required when a call is logged from 2026-10-07 (PRO-102); before that 2 of 176 calls had one, so earlier weeks read low. Calendar meetings read as check-in / other until someone re-tags them.
 
 <details><summary>Reference query</summary>
 
@@ -1207,13 +1321,21 @@ Calls logged as discovery calls: a first real conversation with an employer. The
 WITH w AS (SELECT ((coalesce(nullif(current_setting('dd.window_from', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 7))::timestamp AT TIME ZONE 'America/New_York') AS start_at, (((coalesce(nullif(current_setting('dd.window_to', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 1) + 1))::timestamp AT TIME ZONE 'America/New_York') AS end_at, (SELECT coalesce(array_agg(DISTINCT lower(email)), '{}') FROM (SELECT email FROM bedrock.jobs_team_member UNION SELECT email FROM bedrock.jobs_team_change) t) AS team)
 SELECT call_discovery FROM (
     WITH e AS (
-    WITH raw AS (
+    WITH logged_calls AS MATERIALIZED (
+      -- Every hand-logged call, with what a calendar meeting matches it on.
+      SELECT c.id, ((c.activity_date AT TIME ZONE 'America/New_York')::date) AS day, c.participant_public_contact_id AS contact_id,
+             nullif(lower(btrim(coalesce(o.account_name, ''))), '') AS account
+      FROM bedrock.activity c
+      LEFT JOIN bedrock.jobs_opportunity o ON o.id = c.jobs_opportunity_id
+      WHERE c.type = 'call' AND c.source = 'manual' AND c.deleted_at IS NULL
+    ),
+    raw AS (
       -- Synced email, one row per message, by the message's own sender.
       SELECT 'email'::text AS kind, aem.sent_at AS ts, lower(aem.from_email) AS sender,
              a.id AS activity_id, NULL::uuid AS intro_id,
              a.participant_public_contact_id AS contact_id, coalesce(a.email_to, '{}'::text[]) || coalesce(a.email_cc, '{}'::text[]) AS recips,
              a.subject, a.description, a.email_snippet AS snippet, a.email_from, a.source,
-             NULL::text AS call_kind
+             NULL::text AS call_kind, NULL::uuid AS logged_as
       FROM bedrock.activity_email_message aem
       JOIN bedrock.activity a ON a.id = aem.activity_id
       WHERE aem.from_email = ANY(((SELECT team FROM w))::text[]) AND ((NULL)::timestamptz IS NULL OR aem.sent_at >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR aem.sent_at < ((SELECT end_at FROM w))::timestamptz)
@@ -1224,28 +1346,39 @@ SELECT call_discovery FROM (
       -- own sender (never the mailbox it was synced from).
       SELECT 'email', a.activity_date, lower(btrim(coalesce(substring(a.email_from from '<([^>]+)>'), nullif(a.email_from, ''), CASE WHEN a.source = 'manual' THEN a.logged_by END))),
              a.id, NULL::uuid, a.participant_public_contact_id, coalesce(a.email_to, '{}'::text[]) || coalesce(a.email_cc, '{}'::text[]),
-             a.subject, a.description, a.email_snippet, a.email_from, a.source, NULL::text
+             a.subject, a.description, a.email_snippet, a.email_from, a.source, NULL::text, NULL::uuid
       FROM bedrock.activity a
       WHERE a.deleted_at IS NULL AND a.type = 'email' AND ((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz)
         AND lower(btrim(coalesce(substring(a.email_from from '<([^>]+)>'), nullif(a.email_from, ''), CASE WHEN a.source = 'manual' THEN a.logged_by END))) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))
         AND NOT EXISTS (SELECT 1 FROM bedrock.activity_email_message m WHERE m.activity_id = a.id)
       UNION ALL
       -- Hand-logged LinkedIn, text and calls, and meetings: whoever logged
-      -- it, or whose calendar it is on.
-      SELECT a.type, a.activity_date, lower(btrim(a.logged_by)),
+      -- it, or whose calendar it is on. A meeting can be re-tagged with a
+      -- call type; `logged_as` is the hand-logged call it is, if any.
+      SELECT a.type, CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END, lower(btrim(a.logged_by)),
              a.id, NULL::uuid, a.participant_public_contact_id,
              CASE WHEN a.type = 'meeting' THEN ARRAY(SELECT att->>'email' FROM jsonb_array_elements(coalesce(a.meeting_attendees, '[]'::jsonb)) att) ELSE '{}'::text[] END,
              a.subject, a.description, NULL::text, a.email_from, a.source,
-             CASE WHEN a.type = 'call' THEN a.call_kind END
+             CASE WHEN a.type IN ('call', 'meeting') THEN a.call_kind END,
+             CASE WHEN a.type = 'meeting' THEN (
+               SELECT lc.id FROM logged_calls lc
+               WHERE lc.day = ((a.activity_date AT TIME ZONE 'America/New_York')::date)
+                 AND (lc.contact_id = a.participant_public_contact_id
+                      OR EXISTS (
+                        SELECT 1 FROM public.contacts pc
+                        WHERE lower(pc.email) = ANY(ARRAY(SELECT lower(x) FROM unnest(ARRAY(SELECT att->>'email' FROM jsonb_array_elements(coalesce(a.meeting_attendees, '[]'::jsonb)) att)) x))
+                          AND (pc.contact_id = lc.contact_id
+                               OR lower(btrim(coalesce(pc.current_company, ''))) = lc.account)))
+               ORDER BY lc.id LIMIT 1) END
       FROM bedrock.activity a
       WHERE a.deleted_at IS NULL AND a.type IN ('linkedin', 'text', 'call', 'meeting')
-        AND ((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz) AND lower(btrim(a.logged_by)) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))
+        AND (((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz) OR (a.type = 'call' AND ((NULL)::timestamptz IS NULL OR a.booked_at >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.booked_at < ((SELECT end_at FROM w))::timestamptz))) AND ((NULL)::timestamptz IS NULL OR CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END < ((SELECT end_at FROM w))::timestamptz) AND lower(btrim(a.logged_by)) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))
       UNION ALL
       -- A facilitated intro that was acted on, by who asked for it. Its
       -- subject is the ask (routes.jobs_intro.ASK_LABELS names it).
       SELECT 'intro', coalesce(ir.responded_at, ir.created_at), lower(ir.requested_by_email),
              NULL::uuid, ir.id, ir.contact_id, '{}'::text[],
-             ir.specific_ask, ir.context, NULL::text, NULL::text, 'intro', NULL::text
+             ir.specific_ask, ir.context, NULL::text, NULL::text, 'intro', NULL::text, NULL::uuid
       FROM bedrock.intro_request ir
       WHERE ir.status IN ('accepted', 'completed')
         AND lower(ir.requested_by_email) = ANY(((SELECT team FROM w))::text[])
@@ -1255,7 +1388,7 @@ SELECT call_discovery FROM (
       -- else set up (Nick) enters here with no outreach behind it.
       SELECT 'call_booked', h.changed_at, lower(h.changed_by),
              NULL::uuid, NULL::uuid, h.contact_id, '{}'::text[],
-             NULL::text, NULL::text, NULL::text, NULL::text, 'stage', NULL::text
+             NULL::text, NULL::text, NULL::text, NULL::text, 'stage', NULL::text, NULL::uuid
       FROM (SELECT DISTINCT ON (contact_id) contact_id, changed_at, changed_by
               FROM bedrock.jobs_membership_stage_history
              WHERE to_stage = 'call_booked' ORDER BY contact_id, changed_at) h
@@ -1275,7 +1408,7 @@ SELECT call_discovery FROM (
     )
     SELECT ev.kind, ev.ts, ev.sender, ev.activity_id, ev.intro_id, ev.contact_id,
            ev.contact_ids, ev.companies, ev.subject, ev.description, ev.snippet,
-           ev.email_from, ev.source, ev.call_kind, ev.recips AS recipients
+           ev.email_from, ev.source, ev.call_kind, ev.logged_as, ev.recips AS recipients
     FROM ev 
     ),
     counted AS (               -- automatic mail is not activity
@@ -1301,16 +1434,16 @@ SELECT call_discovery FROM (
     first_activity AS (        -- D17: the first activity ever on each account
       SELECT co, min(ts) AS first_ts FROM once, unnest(once.companies) co GROUP BY co
     )
-    SELECT
+    SELECT                     -- a meeting someone logged as a call isn't a call: the call is
       count(*) FILTER (WHERE kind IN ('email', 'linkedin', 'text', 'intro') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS outreach,
       count(*) FILTER (WHERE kind = 'email' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS direct_email,
       count(*) FILTER (WHERE kind = 'linkedin' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS linkedin,
       count(*) FILTER (WHERE kind = 'text' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS text,
       count(*) FILTER (WHERE kind = 'intro' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS intro,
-      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS calls,
-      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz
+      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND logged_as IS NULL AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS calls,
+      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND logged_as IS NULL AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz
                          AND coalesce(call_kind, 'general') = 'discovery') AS call_discovery,
-      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz
+      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND logged_as IS NULL AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz
                          AND coalesce(call_kind, 'general') = 'general') AS call_general,
       (SELECT count(*) FROM first_activity
         WHERE first_ts >= ((SELECT start_at FROM w))::timestamptz AND first_ts < ((SELECT end_at FROM w))::timestamptz) AS accounts_activated
@@ -1320,12 +1453,13 @@ SELECT call_discovery FROM (
 
 </details>
 
-### General calls (`call_general`, draft)
+### Check-in / other calls (`call_general`, draft)
 
-Every other call and meeting, including calls with no type.
+Every other call and meeting: check-ins, relationship calls, anything else, and any with no type.
 
 - Divided by: n/a (count)
-- Date: in the week (Mon–Sun, New York)
+- Date: booked in the week (Mon–Sun, New York)
+- Caveat: Calls logged before 2026-10-07 mostly have no type and read as check-in / other.
 
 <details><summary>Reference query</summary>
 
@@ -1333,13 +1467,21 @@ Every other call and meeting, including calls with no type.
 WITH w AS (SELECT ((coalesce(nullif(current_setting('dd.window_from', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 7))::timestamp AT TIME ZONE 'America/New_York') AS start_at, (((coalesce(nullif(current_setting('dd.window_to', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 1) + 1))::timestamp AT TIME ZONE 'America/New_York') AS end_at, (SELECT coalesce(array_agg(DISTINCT lower(email)), '{}') FROM (SELECT email FROM bedrock.jobs_team_member UNION SELECT email FROM bedrock.jobs_team_change) t) AS team)
 SELECT call_general FROM (
     WITH e AS (
-    WITH raw AS (
+    WITH logged_calls AS MATERIALIZED (
+      -- Every hand-logged call, with what a calendar meeting matches it on.
+      SELECT c.id, ((c.activity_date AT TIME ZONE 'America/New_York')::date) AS day, c.participant_public_contact_id AS contact_id,
+             nullif(lower(btrim(coalesce(o.account_name, ''))), '') AS account
+      FROM bedrock.activity c
+      LEFT JOIN bedrock.jobs_opportunity o ON o.id = c.jobs_opportunity_id
+      WHERE c.type = 'call' AND c.source = 'manual' AND c.deleted_at IS NULL
+    ),
+    raw AS (
       -- Synced email, one row per message, by the message's own sender.
       SELECT 'email'::text AS kind, aem.sent_at AS ts, lower(aem.from_email) AS sender,
              a.id AS activity_id, NULL::uuid AS intro_id,
              a.participant_public_contact_id AS contact_id, coalesce(a.email_to, '{}'::text[]) || coalesce(a.email_cc, '{}'::text[]) AS recips,
              a.subject, a.description, a.email_snippet AS snippet, a.email_from, a.source,
-             NULL::text AS call_kind
+             NULL::text AS call_kind, NULL::uuid AS logged_as
       FROM bedrock.activity_email_message aem
       JOIN bedrock.activity a ON a.id = aem.activity_id
       WHERE aem.from_email = ANY(((SELECT team FROM w))::text[]) AND ((NULL)::timestamptz IS NULL OR aem.sent_at >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR aem.sent_at < ((SELECT end_at FROM w))::timestamptz)
@@ -1350,28 +1492,39 @@ SELECT call_general FROM (
       -- own sender (never the mailbox it was synced from).
       SELECT 'email', a.activity_date, lower(btrim(coalesce(substring(a.email_from from '<([^>]+)>'), nullif(a.email_from, ''), CASE WHEN a.source = 'manual' THEN a.logged_by END))),
              a.id, NULL::uuid, a.participant_public_contact_id, coalesce(a.email_to, '{}'::text[]) || coalesce(a.email_cc, '{}'::text[]),
-             a.subject, a.description, a.email_snippet, a.email_from, a.source, NULL::text
+             a.subject, a.description, a.email_snippet, a.email_from, a.source, NULL::text, NULL::uuid
       FROM bedrock.activity a
       WHERE a.deleted_at IS NULL AND a.type = 'email' AND ((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz)
         AND lower(btrim(coalesce(substring(a.email_from from '<([^>]+)>'), nullif(a.email_from, ''), CASE WHEN a.source = 'manual' THEN a.logged_by END))) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))
         AND NOT EXISTS (SELECT 1 FROM bedrock.activity_email_message m WHERE m.activity_id = a.id)
       UNION ALL
       -- Hand-logged LinkedIn, text and calls, and meetings: whoever logged
-      -- it, or whose calendar it is on.
-      SELECT a.type, a.activity_date, lower(btrim(a.logged_by)),
+      -- it, or whose calendar it is on. A meeting can be re-tagged with a
+      -- call type; `logged_as` is the hand-logged call it is, if any.
+      SELECT a.type, CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END, lower(btrim(a.logged_by)),
              a.id, NULL::uuid, a.participant_public_contact_id,
              CASE WHEN a.type = 'meeting' THEN ARRAY(SELECT att->>'email' FROM jsonb_array_elements(coalesce(a.meeting_attendees, '[]'::jsonb)) att) ELSE '{}'::text[] END,
              a.subject, a.description, NULL::text, a.email_from, a.source,
-             CASE WHEN a.type = 'call' THEN a.call_kind END
+             CASE WHEN a.type IN ('call', 'meeting') THEN a.call_kind END,
+             CASE WHEN a.type = 'meeting' THEN (
+               SELECT lc.id FROM logged_calls lc
+               WHERE lc.day = ((a.activity_date AT TIME ZONE 'America/New_York')::date)
+                 AND (lc.contact_id = a.participant_public_contact_id
+                      OR EXISTS (
+                        SELECT 1 FROM public.contacts pc
+                        WHERE lower(pc.email) = ANY(ARRAY(SELECT lower(x) FROM unnest(ARRAY(SELECT att->>'email' FROM jsonb_array_elements(coalesce(a.meeting_attendees, '[]'::jsonb)) att)) x))
+                          AND (pc.contact_id = lc.contact_id
+                               OR lower(btrim(coalesce(pc.current_company, ''))) = lc.account)))
+               ORDER BY lc.id LIMIT 1) END
       FROM bedrock.activity a
       WHERE a.deleted_at IS NULL AND a.type IN ('linkedin', 'text', 'call', 'meeting')
-        AND ((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz) AND lower(btrim(a.logged_by)) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))
+        AND (((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz) OR (a.type = 'call' AND ((NULL)::timestamptz IS NULL OR a.booked_at >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.booked_at < ((SELECT end_at FROM w))::timestamptz))) AND ((NULL)::timestamptz IS NULL OR CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END < ((SELECT end_at FROM w))::timestamptz) AND lower(btrim(a.logged_by)) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))
       UNION ALL
       -- A facilitated intro that was acted on, by who asked for it. Its
       -- subject is the ask (routes.jobs_intro.ASK_LABELS names it).
       SELECT 'intro', coalesce(ir.responded_at, ir.created_at), lower(ir.requested_by_email),
              NULL::uuid, ir.id, ir.contact_id, '{}'::text[],
-             ir.specific_ask, ir.context, NULL::text, NULL::text, 'intro', NULL::text
+             ir.specific_ask, ir.context, NULL::text, NULL::text, 'intro', NULL::text, NULL::uuid
       FROM bedrock.intro_request ir
       WHERE ir.status IN ('accepted', 'completed')
         AND lower(ir.requested_by_email) = ANY(((SELECT team FROM w))::text[])
@@ -1381,7 +1534,7 @@ SELECT call_general FROM (
       -- else set up (Nick) enters here with no outreach behind it.
       SELECT 'call_booked', h.changed_at, lower(h.changed_by),
              NULL::uuid, NULL::uuid, h.contact_id, '{}'::text[],
-             NULL::text, NULL::text, NULL::text, NULL::text, 'stage', NULL::text
+             NULL::text, NULL::text, NULL::text, NULL::text, 'stage', NULL::text, NULL::uuid
       FROM (SELECT DISTINCT ON (contact_id) contact_id, changed_at, changed_by
               FROM bedrock.jobs_membership_stage_history
              WHERE to_stage = 'call_booked' ORDER BY contact_id, changed_at) h
@@ -1401,7 +1554,7 @@ SELECT call_general FROM (
     )
     SELECT ev.kind, ev.ts, ev.sender, ev.activity_id, ev.intro_id, ev.contact_id,
            ev.contact_ids, ev.companies, ev.subject, ev.description, ev.snippet,
-           ev.email_from, ev.source, ev.call_kind, ev.recips AS recipients
+           ev.email_from, ev.source, ev.call_kind, ev.logged_as, ev.recips AS recipients
     FROM ev 
     ),
     counted AS (               -- automatic mail is not activity
@@ -1427,16 +1580,16 @@ SELECT call_general FROM (
     first_activity AS (        -- D17: the first activity ever on each account
       SELECT co, min(ts) AS first_ts FROM once, unnest(once.companies) co GROUP BY co
     )
-    SELECT
+    SELECT                     -- a meeting someone logged as a call isn't a call: the call is
       count(*) FILTER (WHERE kind IN ('email', 'linkedin', 'text', 'intro') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS outreach,
       count(*) FILTER (WHERE kind = 'email' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS direct_email,
       count(*) FILTER (WHERE kind = 'linkedin' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS linkedin,
       count(*) FILTER (WHERE kind = 'text' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS text,
       count(*) FILTER (WHERE kind = 'intro' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS intro,
-      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS calls,
-      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz
+      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND logged_as IS NULL AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS calls,
+      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND logged_as IS NULL AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz
                          AND coalesce(call_kind, 'general') = 'discovery') AS call_discovery,
-      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz
+      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND logged_as IS NULL AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz
                          AND coalesce(call_kind, 'general') = 'general') AS call_general,
       (SELECT count(*) FROM first_activity
         WHERE first_ts >= ((SELECT start_at FROM w))::timestamptz AND first_ts < ((SELECT end_at FROM w))::timestamptz) AS accounts_activated
@@ -1460,13 +1613,21 @@ Accounts whose first activity ever by the team falls in the week (D17). An intro
 WITH w AS (SELECT ((coalesce(nullif(current_setting('dd.window_from', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 7))::timestamp AT TIME ZONE 'America/New_York') AS start_at, (((coalesce(nullif(current_setting('dd.window_to', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 1) + 1))::timestamp AT TIME ZONE 'America/New_York') AS end_at, (SELECT coalesce(array_agg(DISTINCT lower(email)), '{}') FROM (SELECT email FROM bedrock.jobs_team_member UNION SELECT email FROM bedrock.jobs_team_change) t) AS team)
 SELECT accounts_activated FROM (
     WITH e AS (
-    WITH raw AS (
+    WITH logged_calls AS MATERIALIZED (
+      -- Every hand-logged call, with what a calendar meeting matches it on.
+      SELECT c.id, ((c.activity_date AT TIME ZONE 'America/New_York')::date) AS day, c.participant_public_contact_id AS contact_id,
+             nullif(lower(btrim(coalesce(o.account_name, ''))), '') AS account
+      FROM bedrock.activity c
+      LEFT JOIN bedrock.jobs_opportunity o ON o.id = c.jobs_opportunity_id
+      WHERE c.type = 'call' AND c.source = 'manual' AND c.deleted_at IS NULL
+    ),
+    raw AS (
       -- Synced email, one row per message, by the message's own sender.
       SELECT 'email'::text AS kind, aem.sent_at AS ts, lower(aem.from_email) AS sender,
              a.id AS activity_id, NULL::uuid AS intro_id,
              a.participant_public_contact_id AS contact_id, coalesce(a.email_to, '{}'::text[]) || coalesce(a.email_cc, '{}'::text[]) AS recips,
              a.subject, a.description, a.email_snippet AS snippet, a.email_from, a.source,
-             NULL::text AS call_kind
+             NULL::text AS call_kind, NULL::uuid AS logged_as
       FROM bedrock.activity_email_message aem
       JOIN bedrock.activity a ON a.id = aem.activity_id
       WHERE aem.from_email = ANY(((SELECT team FROM w))::text[]) AND ((NULL)::timestamptz IS NULL OR aem.sent_at >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR aem.sent_at < ((SELECT end_at FROM w))::timestamptz)
@@ -1477,28 +1638,39 @@ SELECT accounts_activated FROM (
       -- own sender (never the mailbox it was synced from).
       SELECT 'email', a.activity_date, lower(btrim(coalesce(substring(a.email_from from '<([^>]+)>'), nullif(a.email_from, ''), CASE WHEN a.source = 'manual' THEN a.logged_by END))),
              a.id, NULL::uuid, a.participant_public_contact_id, coalesce(a.email_to, '{}'::text[]) || coalesce(a.email_cc, '{}'::text[]),
-             a.subject, a.description, a.email_snippet, a.email_from, a.source, NULL::text
+             a.subject, a.description, a.email_snippet, a.email_from, a.source, NULL::text, NULL::uuid
       FROM bedrock.activity a
       WHERE a.deleted_at IS NULL AND a.type = 'email' AND ((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz)
         AND lower(btrim(coalesce(substring(a.email_from from '<([^>]+)>'), nullif(a.email_from, ''), CASE WHEN a.source = 'manual' THEN a.logged_by END))) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))
         AND NOT EXISTS (SELECT 1 FROM bedrock.activity_email_message m WHERE m.activity_id = a.id)
       UNION ALL
       -- Hand-logged LinkedIn, text and calls, and meetings: whoever logged
-      -- it, or whose calendar it is on.
-      SELECT a.type, a.activity_date, lower(btrim(a.logged_by)),
+      -- it, or whose calendar it is on. A meeting can be re-tagged with a
+      -- call type; `logged_as` is the hand-logged call it is, if any.
+      SELECT a.type, CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END, lower(btrim(a.logged_by)),
              a.id, NULL::uuid, a.participant_public_contact_id,
              CASE WHEN a.type = 'meeting' THEN ARRAY(SELECT att->>'email' FROM jsonb_array_elements(coalesce(a.meeting_attendees, '[]'::jsonb)) att) ELSE '{}'::text[] END,
              a.subject, a.description, NULL::text, a.email_from, a.source,
-             CASE WHEN a.type = 'call' THEN a.call_kind END
+             CASE WHEN a.type IN ('call', 'meeting') THEN a.call_kind END,
+             CASE WHEN a.type = 'meeting' THEN (
+               SELECT lc.id FROM logged_calls lc
+               WHERE lc.day = ((a.activity_date AT TIME ZONE 'America/New_York')::date)
+                 AND (lc.contact_id = a.participant_public_contact_id
+                      OR EXISTS (
+                        SELECT 1 FROM public.contacts pc
+                        WHERE lower(pc.email) = ANY(ARRAY(SELECT lower(x) FROM unnest(ARRAY(SELECT att->>'email' FROM jsonb_array_elements(coalesce(a.meeting_attendees, '[]'::jsonb)) att)) x))
+                          AND (pc.contact_id = lc.contact_id
+                               OR lower(btrim(coalesce(pc.current_company, ''))) = lc.account)))
+               ORDER BY lc.id LIMIT 1) END
       FROM bedrock.activity a
       WHERE a.deleted_at IS NULL AND a.type IN ('linkedin', 'text', 'call', 'meeting')
-        AND ((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz) AND lower(btrim(a.logged_by)) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))
+        AND (((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz) OR (a.type = 'call' AND ((NULL)::timestamptz IS NULL OR a.booked_at >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.booked_at < ((SELECT end_at FROM w))::timestamptz))) AND ((NULL)::timestamptz IS NULL OR CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END < ((SELECT end_at FROM w))::timestamptz) AND lower(btrim(a.logged_by)) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))
       UNION ALL
       -- A facilitated intro that was acted on, by who asked for it. Its
       -- subject is the ask (routes.jobs_intro.ASK_LABELS names it).
       SELECT 'intro', coalesce(ir.responded_at, ir.created_at), lower(ir.requested_by_email),
              NULL::uuid, ir.id, ir.contact_id, '{}'::text[],
-             ir.specific_ask, ir.context, NULL::text, NULL::text, 'intro', NULL::text
+             ir.specific_ask, ir.context, NULL::text, NULL::text, 'intro', NULL::text, NULL::uuid
       FROM bedrock.intro_request ir
       WHERE ir.status IN ('accepted', 'completed')
         AND lower(ir.requested_by_email) = ANY(((SELECT team FROM w))::text[])
@@ -1508,7 +1680,7 @@ SELECT accounts_activated FROM (
       -- else set up (Nick) enters here with no outreach behind it.
       SELECT 'call_booked', h.changed_at, lower(h.changed_by),
              NULL::uuid, NULL::uuid, h.contact_id, '{}'::text[],
-             NULL::text, NULL::text, NULL::text, NULL::text, 'stage', NULL::text
+             NULL::text, NULL::text, NULL::text, NULL::text, 'stage', NULL::text, NULL::uuid
       FROM (SELECT DISTINCT ON (contact_id) contact_id, changed_at, changed_by
               FROM bedrock.jobs_membership_stage_history
              WHERE to_stage = 'call_booked' ORDER BY contact_id, changed_at) h
@@ -1528,7 +1700,7 @@ SELECT accounts_activated FROM (
     )
     SELECT ev.kind, ev.ts, ev.sender, ev.activity_id, ev.intro_id, ev.contact_id,
            ev.contact_ids, ev.companies, ev.subject, ev.description, ev.snippet,
-           ev.email_from, ev.source, ev.call_kind, ev.recips AS recipients
+           ev.email_from, ev.source, ev.call_kind, ev.logged_as, ev.recips AS recipients
     FROM ev 
     ),
     counted AS (               -- automatic mail is not activity
@@ -1554,16 +1726,16 @@ SELECT accounts_activated FROM (
     first_activity AS (        -- D17: the first activity ever on each account
       SELECT co, min(ts) AS first_ts FROM once, unnest(once.companies) co GROUP BY co
     )
-    SELECT
+    SELECT                     -- a meeting someone logged as a call isn't a call: the call is
       count(*) FILTER (WHERE kind IN ('email', 'linkedin', 'text', 'intro') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS outreach,
       count(*) FILTER (WHERE kind = 'email' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS direct_email,
       count(*) FILTER (WHERE kind = 'linkedin' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS linkedin,
       count(*) FILTER (WHERE kind = 'text' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS text,
       count(*) FILTER (WHERE kind = 'intro' AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS intro,
-      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS calls,
-      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz
+      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND logged_as IS NULL AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz) AS calls,
+      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND logged_as IS NULL AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz
                          AND coalesce(call_kind, 'general') = 'discovery') AS call_discovery,
-      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz
+      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND logged_as IS NULL AND ts >= ((SELECT start_at FROM w))::timestamptz AND ts < ((SELECT end_at FROM w))::timestamptz
                          AND coalesce(call_kind, 'general') = 'general') AS call_general,
       (SELECT count(*) FROM first_activity
         WHERE first_ts >= ((SELECT start_at FROM w))::timestamptz AND first_ts < ((SELECT end_at FROM w))::timestamptz) AS accounts_activated
@@ -1616,13 +1788,21 @@ For every contact sitting in Initial Outreach now, how much activity anyone at P
 WITH w AS (SELECT now() - interval '4 weeks' AS since, (SELECT coalesce(array_agg(DISTINCT lower(email)), '{}') FROM public.org_users WHERE is_active AND email IS NOT NULL) AS senders)
 SELECT CASE WHEN activity >= 4 THEN '4+' ELSE activity::text END AS bucket, count(*) AS contacts FROM (
     WITH e AS (
-    WITH raw AS (
+    WITH logged_calls AS MATERIALIZED (
+      -- Every hand-logged call, with what a calendar meeting matches it on.
+      SELECT c.id, ((c.activity_date AT TIME ZONE 'America/New_York')::date) AS day, c.participant_public_contact_id AS contact_id,
+             nullif(lower(btrim(coalesce(o.account_name, ''))), '') AS account
+      FROM bedrock.activity c
+      LEFT JOIN bedrock.jobs_opportunity o ON o.id = c.jobs_opportunity_id
+      WHERE c.type = 'call' AND c.source = 'manual' AND c.deleted_at IS NULL
+    ),
+    raw AS (
       -- Synced email, one row per message, by the message's own sender.
       SELECT 'email'::text AS kind, aem.sent_at AS ts, lower(aem.from_email) AS sender,
              a.id AS activity_id, NULL::uuid AS intro_id,
              a.participant_public_contact_id AS contact_id, coalesce(a.email_to, '{}'::text[]) || coalesce(a.email_cc, '{}'::text[]) AS recips,
              a.subject, a.description, a.email_snippet AS snippet, a.email_from, a.source,
-             NULL::text AS call_kind
+             NULL::text AS call_kind, NULL::uuid AS logged_as
       FROM bedrock.activity_email_message aem
       JOIN bedrock.activity a ON a.id = aem.activity_id
       WHERE aem.from_email = ANY(((SELECT senders FROM w))::text[]) AND (((SELECT since FROM w))::timestamptz IS NULL OR aem.sent_at >= ((SELECT since FROM w))::timestamptz) AND ((NULL)::timestamptz IS NULL OR aem.sent_at < (NULL)::timestamptz)
@@ -1633,28 +1813,39 @@ SELECT CASE WHEN activity >= 4 THEN '4+' ELSE activity::text END AS bucket, coun
       -- own sender (never the mailbox it was synced from).
       SELECT 'email', a.activity_date, lower(btrim(coalesce(substring(a.email_from from '<([^>]+)>'), nullif(a.email_from, ''), CASE WHEN a.source = 'manual' THEN a.logged_by END))),
              a.id, NULL::uuid, a.participant_public_contact_id, coalesce(a.email_to, '{}'::text[]) || coalesce(a.email_cc, '{}'::text[]),
-             a.subject, a.description, a.email_snippet, a.email_from, a.source, NULL::text
+             a.subject, a.description, a.email_snippet, a.email_from, a.source, NULL::text, NULL::uuid
       FROM bedrock.activity a
       WHERE a.deleted_at IS NULL AND a.type = 'email' AND (((SELECT since FROM w))::timestamptz IS NULL OR a.activity_date >= ((SELECT since FROM w))::timestamptz) AND ((NULL)::timestamptz IS NULL OR a.activity_date < (NULL)::timestamptz)
         AND lower(btrim(coalesce(substring(a.email_from from '<([^>]+)>'), nullif(a.email_from, ''), CASE WHEN a.source = 'manual' THEN a.logged_by END))) = ANY(((SELECT senders FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))
         AND NOT EXISTS (SELECT 1 FROM bedrock.activity_email_message m WHERE m.activity_id = a.id)
       UNION ALL
       -- Hand-logged LinkedIn, text and calls, and meetings: whoever logged
-      -- it, or whose calendar it is on.
-      SELECT a.type, a.activity_date, lower(btrim(a.logged_by)),
+      -- it, or whose calendar it is on. A meeting can be re-tagged with a
+      -- call type; `logged_as` is the hand-logged call it is, if any.
+      SELECT a.type, CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END, lower(btrim(a.logged_by)),
              a.id, NULL::uuid, a.participant_public_contact_id,
              CASE WHEN a.type = 'meeting' THEN ARRAY(SELECT att->>'email' FROM jsonb_array_elements(coalesce(a.meeting_attendees, '[]'::jsonb)) att) ELSE '{}'::text[] END,
              a.subject, a.description, NULL::text, a.email_from, a.source,
-             CASE WHEN a.type = 'call' THEN a.call_kind END
+             CASE WHEN a.type IN ('call', 'meeting') THEN a.call_kind END,
+             CASE WHEN a.type = 'meeting' THEN (
+               SELECT lc.id FROM logged_calls lc
+               WHERE lc.day = ((a.activity_date AT TIME ZONE 'America/New_York')::date)
+                 AND (lc.contact_id = a.participant_public_contact_id
+                      OR EXISTS (
+                        SELECT 1 FROM public.contacts pc
+                        WHERE lower(pc.email) = ANY(ARRAY(SELECT lower(x) FROM unnest(ARRAY(SELECT att->>'email' FROM jsonb_array_elements(coalesce(a.meeting_attendees, '[]'::jsonb)) att)) x))
+                          AND (pc.contact_id = lc.contact_id
+                               OR lower(btrim(coalesce(pc.current_company, ''))) = lc.account)))
+               ORDER BY lc.id LIMIT 1) END
       FROM bedrock.activity a
       WHERE a.deleted_at IS NULL AND a.type IN ('linkedin', 'text', 'call', 'meeting')
-        AND (((SELECT since FROM w))::timestamptz IS NULL OR a.activity_date >= ((SELECT since FROM w))::timestamptz) AND ((NULL)::timestamptz IS NULL OR a.activity_date < (NULL)::timestamptz) AND lower(btrim(a.logged_by)) = ANY(((SELECT senders FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))
+        AND ((((SELECT since FROM w))::timestamptz IS NULL OR a.activity_date >= ((SELECT since FROM w))::timestamptz) AND ((NULL)::timestamptz IS NULL OR a.activity_date < (NULL)::timestamptz) OR (a.type = 'call' AND (((SELECT since FROM w))::timestamptz IS NULL OR a.booked_at >= ((SELECT since FROM w))::timestamptz) AND ((NULL)::timestamptz IS NULL OR a.booked_at < (NULL)::timestamptz))) AND (((SELECT since FROM w))::timestamptz IS NULL OR CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END >= ((SELECT since FROM w))::timestamptz) AND ((NULL)::timestamptz IS NULL OR CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END < (NULL)::timestamptz) AND lower(btrim(a.logged_by)) = ANY(((SELECT senders FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))
       UNION ALL
       -- A facilitated intro that was acted on, by who asked for it. Its
       -- subject is the ask (routes.jobs_intro.ASK_LABELS names it).
       SELECT 'intro', coalesce(ir.responded_at, ir.created_at), lower(ir.requested_by_email),
              NULL::uuid, ir.id, ir.contact_id, '{}'::text[],
-             ir.specific_ask, ir.context, NULL::text, NULL::text, 'intro', NULL::text
+             ir.specific_ask, ir.context, NULL::text, NULL::text, 'intro', NULL::text, NULL::uuid
       FROM bedrock.intro_request ir
       WHERE ir.status IN ('accepted', 'completed')
         AND lower(ir.requested_by_email) = ANY(((SELECT senders FROM w))::text[])
@@ -1664,7 +1855,7 @@ SELECT CASE WHEN activity >= 4 THEN '4+' ELSE activity::text END AS bucket, coun
       -- else set up (Nick) enters here with no outreach behind it.
       SELECT 'call_booked', h.changed_at, lower(h.changed_by),
              NULL::uuid, NULL::uuid, h.contact_id, '{}'::text[],
-             NULL::text, NULL::text, NULL::text, NULL::text, 'stage', NULL::text
+             NULL::text, NULL::text, NULL::text, NULL::text, 'stage', NULL::text, NULL::uuid
       FROM (SELECT DISTINCT ON (contact_id) contact_id, changed_at, changed_by
               FROM bedrock.jobs_membership_stage_history
              WHERE to_stage = 'call_booked' ORDER BY contact_id, changed_at) h
@@ -1684,7 +1875,7 @@ SELECT CASE WHEN activity >= 4 THEN '4+' ELSE activity::text END AS bucket, coun
     )
     SELECT ev.kind, ev.ts, ev.sender, ev.activity_id, ev.intro_id, ev.contact_id,
            ev.contact_ids, ev.companies, ev.subject, ev.description, ev.snippet,
-           ev.email_from, ev.source, ev.call_kind, ev.recips AS recipients
+           ev.email_from, ev.source, ev.call_kind, ev.logged_as, ev.recips AS recipients
     FROM ev 
     ),
     counted AS (               -- automatic mail is not activity

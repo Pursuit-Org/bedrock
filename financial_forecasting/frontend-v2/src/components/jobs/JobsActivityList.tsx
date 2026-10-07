@@ -14,6 +14,7 @@ import { useMemo, useState } from "react";
 import { ChevronDown, ChevronRight, Search } from "lucide-react";
 
 import { ActivitySourceIcon } from "@/components/ActivitySourceIcon";
+import { CallKindChip } from "@/components/jobs/CallKindPicker";
 import { cn } from "@/lib/utils";
 import { useSetActivityRelevance, type ActivityEntry } from "@/services/jobs";
 
@@ -90,6 +91,14 @@ function RelevanceChip({ a }: { a: ActivityEntry }) {
   );
 }
 
+/** A call or a jobs meeting, from an endpoint that reports its type (PRO-102).
+ *  A meeting marked not jobs isn't a call anyone counts, so it gets no type. */
+function isTaggableCall(a: ActivityEntry): boolean {
+  if (a.type !== "call" && a.type !== "meeting") return false;
+  if (a.call_kind === undefined) return false;
+  return (a.jobs_relevance_override ?? a.jobs_relevance) !== "not_jobs";
+}
+
 /** One activity row — every row expands (uniform) to show From / To / When / body. */
 function Row({ a, depth = 0 }: { a: ActivityEntry; depth?: number }) {
   const [open, setOpen] = useState(false);
@@ -111,6 +120,7 @@ function Row({ a, depth = 0 }: { a: ActivityEntry; depth?: number }) {
           <span className="flex items-baseline gap-2">
             <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-ink">{decode(a.subject) || a.type || "Activity"}</span>
             <RelevanceChip a={a} />
+            {isTaggableCall(a) && <CallKindChip activityId={a.id} value={a.call_kind} />}
             <span className="shrink-0 whitespace-nowrap text-[11px] text-ink-4">{fmtDate(a.activity_date)}</span>
           </span>
           {a.email_from && !open && <span className="block truncate text-[11px] text-ink-4">{decode(a.email_from)}</span>}

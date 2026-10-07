@@ -30,6 +30,15 @@ Who did it is read from the activity itself, never from the mailbox:
   * calendar meetings: whose calendar it is on;
   * intros: who asked for the intro;
   * Call Booked: who moved the contact there.
+
+Calls (PRO-102, Nina 2026-10-07) are dated by when they were BOOKED, which is
+how Nick's discovery-call KPI is counted; a call with no booking date, and
+every calendar meeting, falls back to the day it was held. A calendar meeting
+that someone also logged by hand is one call, not two: the logged call is the
+call, because it carries the call type and who logged it. The meeting stays as
+activity for the accounts it reached (a call logged on an opportunity has no
+contact, so without the meeting its account would lose the touch), but it is
+not counted as a call or as volume.
 """
 
 from __future__ import annotations
@@ -148,6 +157,8 @@ class Event:
     email_from: Optional[str] = None
     source: Optional[str] = None
     call_kind: Optional[str] = None
+    # A calendar meeting that is a hand-logged call: that call's activity id.
+    logged_as: Optional[str] = None
     # For display only; no rule reads these.
     recipients: tuple = ()
     snippet: Optional[str] = None
@@ -167,6 +178,7 @@ class Event:
             companies=tuple(g("companies") or ()),
             subject=g("subject"), email_from=g("email_from"),
             source=g("source"), call_kind=g("call_kind"),
+            logged_as=str(g("logged_as")) if g("logged_as") is not None else None,
             recipients=tuple(g("recipients") or ()),
             snippet=g("snippet"), description=g("description"),
         )
@@ -177,7 +189,9 @@ class Event:
 
     @property
     def is_call(self) -> bool:
-        return self.kind in CALL_KINDS
+        """A call or meeting that counts as a call: not a meeting someone
+        also logged by hand, which the logged call already counts."""
+        return self.kind in CALL_KINDS and not self.logged_as
 
     def is_automatic(self) -> bool:
         """Mail a machine sent in the person's name: an out-of-office, a
@@ -220,7 +234,7 @@ class Event:
         """The Activity Pipeline row this event counts in, or None."""
         if self.kind in SEND_METRIC:
             return SEND_METRIC[self.kind]
-        if self.kind in CALL_KINDS:
+        if self.is_call:
             return f"call_{self.call_kind or default_call_kind}"
         return None
 
@@ -275,7 +289,8 @@ def attribute(rows: Iterable, senders) -> list[Event]:
 def distinct(events: Iterable[Event]) -> list[Event]:
     """Each real event once: a synced message is dropped when an earlier copy
     of it (by activity id, same sender and second) exists; any other row when
-    it repeats an earlier row exactly."""
+    it repeats an earlier row exactly. (A meeting someone logged as a call is
+    kept, for its reach, and simply isn't a call: see Event.is_call.)"""
     seen: set = set()
     by_second: dict = {}
     out: list[Event] = []
@@ -302,7 +317,7 @@ class Counts:
     """Outreach volume for one window."""
     by_metric: dict = field(default_factory=dict)
     outreach: int = 0           # every send: email + LinkedIn + text + intro
-    calls: int = 0              # every call and meeting
+    calls: int = 0              # every call and meeting, each call once
 
     @property
     def direct_email(self) -> int:
@@ -361,7 +376,19 @@ def split_new(events: Iterable[Event], activated: Iterable[str]) -> dict:
 
 # ── SQL ──────────────────────────────────────────────────────────────────────
 
-def events_sql(*, has_call_kind: bool = True, restrict_companies: bool = False,
+CALL_DATES = ("booked", "held")
+
+# A calendar meeting is a call someone also logged by hand (PRO-102) when the
+# call was held the same New York day and the two share a person: the call's
+# contact is on the meeting, or the call was logged on an opportunity whose
+# account is an attendee's employer (20 of 33 logged calls since August sit on
+# an opportunity with no contact). Example: Devika logged the 9/18 Mastercard
+# call, and the meeting synced from Avni's calendar.
+_SAME_DAY = "(({a}.activity_date AT TIME ZONE 'America/New_York')::date)"
+
+
+def events_sql(*, has_call_kind: bool = True, has_booked_at: bool = True,
+               call_date: str = "booked", restrict_companies: bool = False,
                restrict_contacts: bool = False,
                p_start: str = "$1", p_end: str = "$2", p_senders: str = "$3",
                p_companies: str = "$4", p_contacts: str = "$4") -> str:
@@ -378,7 +405,12 @@ def events_sql(*, has_call_kind: bool = True, restrict_companies: bool = False,
 
     Rows: kind, ts, sender, activity_id, intro_id, contact_id, contact_ids,
     companies, subject, description, snippet, email_from, source, call_kind,
-    recipients.
+    logged_as, recipients.
+
+    A call's `ts` is when it was booked (`call_date="booked"`, the default,
+    falling back to the day held when no booking date was recorded) or when it
+    was held (`call_date="held"`). Every other event's `ts` is when it happened.
+    `has_booked_at` / `has_call_kind` say whether those columns exist yet.
 
     Sender matches are exact on a bare address, which is what keeps this cheap:
     the per-message index has (from_email, sent_at), and nothing here is a
@@ -391,20 +423,41 @@ def events_sql(*, has_call_kind: bool = True, restrict_companies: bool = False,
     rng = lambda col: f"({s} IS NULL OR {col} >= {s}) AND ({e} IS NULL OR {col} < {e})"
     thread_sender = ("lower(btrim(coalesce(substring(a.email_from from '<([^>]+)>'), "
                      "nullif(a.email_from, ''), CASE WHEN a.source = 'manual' THEN a.logged_by END)))")
+    if call_date not in CALL_DATES:
+        raise ValueError(f"call_date must be one of {CALL_DATES}")
     kind_col = "a.call_kind" if has_call_kind else "NULL::text"
+    # When a hand-logged call counts: booked, or held when nobody recorded a
+    # booking date (and for every call logged before booked_at existed).
+    # The range test keeps a plain activity_date arm so the date index still
+    # serves it; booked calls are found by type, a few hundred rows.
+    if call_date == "booked" and has_booked_at:
+        touch_ts = "CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END"
+        touch_rng = (f"({rng('a.activity_date')} OR (a.type = 'call' AND {rng('a.booked_at')})) "
+                     f"AND {rng(touch_ts)}")
+    else:
+        touch_ts, touch_rng = "a.activity_date", rng("a.activity_date")
     recips_email = "coalesce(a.email_to, '{}'::text[]) || coalesce(a.email_cc, '{}'::text[])"
     recips_meeting = ("ARRAY(SELECT att->>'email' FROM jsonb_array_elements("
                       "coalesce(a.meeting_attendees, '[]'::jsonb)) att)")
     restrict = (f"WHERE ev.companies && ({p_companies})::text[]" if restrict_companies
                 else f"WHERE ev.contact_ids && ({p_contacts})::int[]" if restrict_contacts else "")
+    meeting_day, call_day = _SAME_DAY.format(a="a"), _SAME_DAY.format(a="c")
     return f"""
-    WITH raw AS (
+    WITH logged_calls AS MATERIALIZED (
+      -- Every hand-logged call, with what a calendar meeting matches it on.
+      SELECT c.id, {call_day} AS day, c.participant_public_contact_id AS contact_id,
+             nullif(lower(btrim(coalesce(o.account_name, ''))), '') AS account
+      FROM bedrock.activity c
+      LEFT JOIN bedrock.jobs_opportunity o ON o.id = c.jobs_opportunity_id
+      WHERE c.type = 'call' AND c.source = 'manual' AND c.deleted_at IS NULL
+    ),
+    raw AS (
       -- Synced email, one row per message, by the message's own sender.
       SELECT 'email'::text AS kind, aem.sent_at AS ts, lower(aem.from_email) AS sender,
              a.id AS activity_id, NULL::uuid AS intro_id,
              a.participant_public_contact_id AS contact_id, {recips_email} AS recips,
              a.subject, a.description, a.email_snippet AS snippet, a.email_from, a.source,
-             NULL::text AS call_kind
+             NULL::text AS call_kind, NULL::uuid AS logged_as
       FROM bedrock.activity_email_message aem
       JOIN bedrock.activity a ON a.id = aem.activity_id
       WHERE aem.from_email = ANY({senders}) AND {rng('aem.sent_at')}
@@ -415,28 +468,39 @@ def events_sql(*, has_call_kind: bool = True, restrict_companies: bool = False,
       -- own sender (never the mailbox it was synced from).
       SELECT 'email', a.activity_date, {thread_sender},
              a.id, NULL::uuid, a.participant_public_contact_id, {recips_email},
-             a.subject, a.description, a.email_snippet, a.email_from, a.source, NULL::text
+             a.subject, a.description, a.email_snippet, a.email_from, a.source, NULL::text, NULL::uuid
       FROM bedrock.activity a
       WHERE a.deleted_at IS NULL AND a.type = 'email' AND {rng('a.activity_date')}
         AND {thread_sender} = ANY({senders}) AND {jobs}
         AND NOT EXISTS (SELECT 1 FROM bedrock.activity_email_message m WHERE m.activity_id = a.id)
       UNION ALL
       -- Hand-logged LinkedIn, text and calls, and meetings: whoever logged
-      -- it, or whose calendar it is on.
-      SELECT a.type, a.activity_date, lower(btrim(a.logged_by)),
+      -- it, or whose calendar it is on. A meeting can be re-tagged with a
+      -- call type; `logged_as` is the hand-logged call it is, if any.
+      SELECT a.type, {touch_ts}, lower(btrim(a.logged_by)),
              a.id, NULL::uuid, a.participant_public_contact_id,
              CASE WHEN a.type = 'meeting' THEN {recips_meeting} ELSE '{{}}'::text[] END,
              a.subject, a.description, NULL::text, a.email_from, a.source,
-             CASE WHEN a.type = 'call' THEN {kind_col} END
+             CASE WHEN a.type IN ('call', 'meeting') THEN {kind_col} END,
+             CASE WHEN a.type = 'meeting' THEN (
+               SELECT lc.id FROM logged_calls lc
+               WHERE lc.day = {meeting_day}
+                 AND (lc.contact_id = a.participant_public_contact_id
+                      OR EXISTS (
+                        SELECT 1 FROM public.contacts pc
+                        WHERE lower(pc.email) = ANY(ARRAY(SELECT lower(x) FROM unnest({recips_meeting}) x))
+                          AND (pc.contact_id = lc.contact_id
+                               OR lower(btrim(coalesce(pc.current_company, ''))) = lc.account)))
+               ORDER BY lc.id LIMIT 1) END
       FROM bedrock.activity a
       WHERE a.deleted_at IS NULL AND a.type IN ('linkedin', 'text', 'call', 'meeting')
-        AND {rng('a.activity_date')} AND lower(btrim(a.logged_by)) = ANY({senders}) AND {jobs}
+        AND {touch_rng} AND lower(btrim(a.logged_by)) = ANY({senders}) AND {jobs}
       UNION ALL
       -- A facilitated intro that was acted on, by who asked for it. Its
       -- subject is the ask (routes.jobs_intro.ASK_LABELS names it).
       SELECT 'intro', coalesce(ir.responded_at, ir.created_at), lower(ir.requested_by_email),
              NULL::uuid, ir.id, ir.contact_id, '{{}}'::text[],
-             ir.specific_ask, ir.context, NULL::text, NULL::text, 'intro', NULL::text
+             ir.specific_ask, ir.context, NULL::text, NULL::text, 'intro', NULL::text, NULL::uuid
       FROM bedrock.intro_request ir
       WHERE ir.status IN ('accepted', 'completed')
         AND lower(ir.requested_by_email) = ANY({senders})
@@ -446,7 +510,7 @@ def events_sql(*, has_call_kind: bool = True, restrict_companies: bool = False,
       -- else set up (Nick) enters here with no outreach behind it.
       SELECT 'call_booked', h.changed_at, lower(h.changed_by),
              NULL::uuid, NULL::uuid, h.contact_id, '{{}}'::text[],
-             NULL::text, NULL::text, NULL::text, NULL::text, 'stage', NULL::text
+             NULL::text, NULL::text, NULL::text, NULL::text, 'stage', NULL::text, NULL::uuid
       FROM (SELECT DISTINCT ON (contact_id) contact_id, changed_at, changed_by
               FROM bedrock.jobs_membership_stage_history
              WHERE to_stage = 'call_booked' ORDER BY contact_id, changed_at) h
@@ -466,7 +530,7 @@ def events_sql(*, has_call_kind: bool = True, restrict_companies: bool = False,
     )
     SELECT ev.kind, ev.ts, ev.sender, ev.activity_id, ev.intro_id, ev.contact_id,
            ev.contact_ids, ev.companies, ev.subject, ev.description, ev.snippet,
-           ev.email_from, ev.source, ev.call_kind, ev.recips AS recipients
+           ev.email_from, ev.source, ev.call_kind, ev.logged_as, ev.recips AS recipients
     FROM ev {restrict}
     """
 
@@ -495,16 +559,16 @@ def reference_sql(p_start: str = "$1", p_end: str = "$2", p_senders: str = "$3",
     first_activity AS (        -- D17: the first activity ever on each account
       SELECT co, min(ts) AS first_ts FROM once, unnest(once.companies) co GROUP BY co
     )
-    SELECT
+    SELECT                     -- a meeting someone logged as a call isn't a call: the call is
       count(*) FILTER (WHERE kind IN ('email', 'linkedin', 'text', 'intro') AND {in_win}) AS outreach,
       count(*) FILTER (WHERE kind = 'email' AND {in_win}) AS direct_email,
       count(*) FILTER (WHERE kind = 'linkedin' AND {in_win}) AS linkedin,
       count(*) FILTER (WHERE kind = 'text' AND {in_win}) AS text,
       count(*) FILTER (WHERE kind = 'intro' AND {in_win}) AS intro,
-      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND {in_win}) AS calls,
-      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND {in_win}
+      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND logged_as IS NULL AND {in_win}) AS calls,
+      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND logged_as IS NULL AND {in_win}
                          AND coalesce(call_kind, '{default_call_kind}') = 'discovery') AS call_discovery,
-      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND {in_win}
+      count(*) FILTER (WHERE kind IN ('call', 'meeting') AND logged_as IS NULL AND {in_win}
                          AND coalesce(call_kind, '{default_call_kind}') = 'general') AS call_general,
       (SELECT count(*) FROM first_activity
         WHERE first_ts >= {s} AND first_ts < {e}) AS accounts_activated

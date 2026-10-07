@@ -55,13 +55,16 @@ export interface ProspectActivityBody {
   /** Optional on every type — the server stores NULL when it is blank. */
   description?: string;
   /** ISO date — lets a call/text from a few days ago be logged retroactively
-   *  (TKT-126). Omitted → the server stamps now(). */
+   *  (TKT-126), read as a New York day. Omitted → the server stamps now(). On a
+   *  call, the day it was held. */
   activity_date?: string;
-  /** Discovery or general — only meaningful on a call, and dropped server-side
-   *  on anything else. The Activity Pipeline's Discovery Calls row is only as
+  /** Discovery or general — required on a call, and dropped server-side on
+   *  anything else. The Activity Pipeline's Discovery Calls row is only as
    *  good as this answer, and the person who just had the call is the only one
    *  who can give it. */
   call_kind?: CallKind | null;
+  /** Calls only: the day it was booked, which Calls booked counts it on. */
+  booked_at?: string;
 }
 
 /**
@@ -83,6 +86,9 @@ export function useLogProspectActivity() {
     onSuccess: (_d, vars) => {
       qc.invalidateQueries({ queryKey: ["jobs", "contact", vars.contact_id] });
       qc.invalidateQueries({ queryKey: ["jobs", "contacts-by-account"] });
+      // A logged touch moves the Outreach numbers too; without this the Calls
+      // booked card stayed stale for a call logged from a contact.
+      invalidateOutreachReports(qc);
       toast.success("Activity logged");
     },
     onError: () => toast.error("Failed to log activity"),

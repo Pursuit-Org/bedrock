@@ -39,7 +39,6 @@ import {
   useContactDetail,
   useDeleteActivity,
   useUpdateContact,
-  type CallKind,
   type JobStage,
 } from "@/services/jobs";
 import {
@@ -50,7 +49,8 @@ import {
   type AccountGroup,
   type AccountGroupContact,
 } from "@/services/jobsAccounts";
-import { CallKindPicker } from "@/components/jobs/CallKindPicker";
+import { CallDetailsFields, useCallTypesAvailable } from "@/components/jobs/CallKindPicker";
+import { callNotReady, callRequestFields, localTodayIso, newCallDetails } from "@/components/jobs/callLog";
 import { ActivityCapNote } from "@/components/jobs/JobsActivityList";
 import { ContactJobsFields } from "@/components/jobs/ContactJobsFields";
 
@@ -141,9 +141,10 @@ export function LogActivityForm({
 }) {
   const [type, setType] = useState<ActivityType>("call");
   const [description, setDescription] = useState("");
-  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [date, setDate] = useState(() => localTodayIso());
   const [submitting, setSubmitting] = useState(false);
-  const [callKind, setCallKind] = useState<CallKind | null>(null);
+  const [call, setCall] = useState(() => newCallDetails());
+  const typesAvailable = useCallTypesAvailable();
   // Intro-only fields. Kept local rather than in a separate component so the
   // date and the note stay shared — they mean the same thing either way.
   const [connectorId, setConnectorId] = useState("");
@@ -153,10 +154,13 @@ export function LogActivityForm({
   const { data: connectors = [] } = useIntroConnectors();
 
   const isIntro = type === "intro";
+  const isCall = type === "call";
   // An intro is defined by who made it, so that is what gates the button. The
   // note is optional on every type (Kwame 2026-09-24): "I texted her on the
   // 14th" is a complete record, and demanding prose to log it loses touches.
-  const canSubmit = isIntro ? !!connectorId : true;
+  // A call needs its type and the day it was booked (PRO-102).
+  const callBlocker = isCall ? callNotReady(call, typesAvailable) : null;
+  const canSubmit = isIntro ? !!connectorId : !callBlocker;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -176,10 +180,9 @@ export function LogActivityForm({
           contact_id: contactId,
           type,
           description: description.trim() || undefined,
-          activity_date: date || undefined,
-          // Only a call carries a kind; the API drops it on anything else, but
-          // not sending it keeps the request honest about what was asked.
-          call_kind: type === "call" ? callKind : null,
+          // Only a call carries a type and a booking date; the API drops them
+          // on anything else, but not sending them keeps the request honest.
+          ...(isCall ? callRequestFields(call) : { activity_date: date || undefined, call_kind: null }),
         });
       }
       onClose();
@@ -208,8 +211,8 @@ export function LogActivityForm({
         ))}
       </div>
 
-      {/* Call type — only a call has one. */}
-      {type === "call" && <CallKindPicker value={callKind} onChange={setCallKind} />}
+      {/* Call type and its days — only a call has them. */}
+      {isCall && <CallDetailsFields value={call} onChange={setCall} />}
 
       {/* Who made the intro, and what it was for. Credit for the intro goes to
           you, the person logging it, the same way the scorecard reads it. */}
@@ -249,18 +252,20 @@ export function LogActivityForm({
         </div>
       )}
 
-      <div>
-        <label className="mb-0.5 block text-[10px] font-semibold uppercase tracking-wide text-ink-4">
-          {isIntro ? "Date of the intro" : "Date"}
-        </label>
-        <input
-          type="date"
-          value={date}
-          max={new Date().toISOString().slice(0, 10)}
-          onChange={(e) => setDate(e.target.value)}
-          className="rounded border border-border-strong bg-surface px-2 py-1.5 text-[12px] text-ink focus:outline-none focus:ring-1 focus:ring-accent"
-        />
-      </div>
+      {!isCall && (
+        <div>
+          <label className="mb-0.5 block text-[10px] font-semibold uppercase tracking-wide text-ink-4">
+            {isIntro ? "Date of the intro" : "Date"}
+          </label>
+          <input
+            type="date"
+            value={date}
+            max={localTodayIso()}
+            onChange={(e) => setDate(e.target.value)}
+            className="rounded border border-border-strong bg-surface px-2 py-1.5 text-[12px] text-ink focus:outline-none focus:ring-1 focus:ring-accent"
+          />
+        </div>
+      )}
 
       <div>
         <label className="mb-0.5 block text-[10px] font-semibold uppercase tracking-wide text-ink-4">
@@ -279,6 +284,7 @@ export function LogActivityForm({
         <button
           type="submit"
           disabled={submitting || !canSubmit}
+          title={callBlocker ?? undefined}
           className="rounded-md bg-accent px-3 py-1.5 text-[12px] font-medium text-white transition-colors hover:bg-accent/90 disabled:opacity-50"
         >
           {submitting ? "Logging…" : "Log"}

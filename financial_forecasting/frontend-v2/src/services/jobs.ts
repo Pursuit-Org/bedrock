@@ -191,6 +191,10 @@ export interface ActivityEntry {
   is_jobs: boolean;
   jobs_relevance?: string | null;           // AI verdict: jobs | not_jobs | unclear
   jobs_relevance_override?: string | null;  // human override: jobs | not_jobs
+  /** Calls and meetings: discovery | general, or null when nobody said. */
+  call_kind?: CallKind | null;
+  /** Calls: the day it was booked (PRO-102). */
+  booked_at?: string | null;
   deleted_at: string | null;
 }
 
@@ -370,7 +374,8 @@ export interface StageOption {
 /** discovery | general — what kind of call was logged. Solution was specced and
  *  cut on 2026-09-21: the line between learning a need and working it was a
  *  judgement call at log time, and a picker that makes people hesitate gets
- *  skipped. The live list comes from /stage-vocabulary either way. */
+ *  skipped. `general` shows as "Check-in / other" (PRO-102). The live list and
+ *  its labels come from /stage-vocabulary either way. */
 export type CallKind = "discovery" | "general";
 
 export interface StageVocabulary {
@@ -1234,6 +1239,21 @@ export function useSetActivityRelevance() {
   });
 }
 
+/** Re-tag a call or a calendar meeting's type (PRO-102). */
+export function useSetCallKind() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, call_kind }: { id: string; call_kind: CallKind | null }) => {
+      await api.patch(`/api/jobs/activity/${id}/call-kind`, { call_kind });
+    },
+    onSuccess: () => {
+      // The timelines and every outreach number that splits calls by type.
+      qc.invalidateQueries({ queryKey: ["jobs"] });
+    },
+    onError: () => toast.error("Couldn't change the call type"),
+  });
+}
+
 export function useUpdatePlacementTitle() {
   const qc = useQueryClient();
   return useMutation({
@@ -1567,6 +1587,9 @@ export interface DrillRow {
   detail: string | null;
   subkind: string | null;
   contact_id: number | null;
+  /** Calls booked rows: the call or meeting, so its type can be changed in place. */
+  activity_id?: string | null;
+  call_kind?: CallKind | null;
 }
 
 /** Whether the nightly per-message email index is keeping up with the sync.
@@ -1589,7 +1612,12 @@ export interface OutreachSummary {
   /** What the scope sent: emails (one per message), LinkedIn messages, texts
    *  and facilitated intros. Meetings and calls are `calls_booked`. */
   outreach_activity: number;
+  /** Hand-logged calls and calendar meetings, each call once (PRO-102). */
   calls_booked: number;
+  /** How many of them were discovery calls: Nick's weekly KPI. */
+  calls_discovery?: number;
+  /** Which day put a call in the window: booked (default) or held. */
+  call_date?: CallDate;
   converted: number;
   /** What each headline counted, newest first, at most 60 shown. */
   drills: Record<"accounts_activated" | "outreach_activity" | "calls_booked" | "converted", DrillRow[]>;
@@ -1599,16 +1627,20 @@ export interface OutreachSummary {
 
 /** The three headline numbers on the Outreach tab, over the page's own window
  *  and sender scope. */
+/** A call counts on the day it was booked, or the day it was held. */
+export type CallDate = "booked" | "held";
+
 export function useOutreachSummary(
   granularity: OutreachGranularity, scope: OutreachScopeKind,
-  owner?: string, range?: OutreachDateRange,
+  owner?: string, range?: OutreachDateRange, callDate: CallDate = "booked",
 ) {
   const rangeKey = range ? `${range.from}..${range.to}` : "";
   return useQuery<OutreachSummary>({
-    queryKey: ["jobs", "outreach-summary", granularity, scope, owner ?? "", rangeKey],
+    queryKey: ["jobs", "outreach-summary", granularity, scope, owner ?? "", rangeKey, callDate],
     queryFn: async () => {
-      const { data } = await api.get<ApiResponse<OutreachSummary>>(
-        `/api/jobs/outreach/summary?${outreachParams(granularity, scope, owner, range)}`);
+      const p = outreachParams(granularity, scope, owner, range);
+      p.set("call_date", callDate);
+      const { data } = await api.get<ApiResponse<OutreachSummary>>(`/api/jobs/outreach/summary?${p}`);
       return data.data;
     },
     staleTime: 60_000,
@@ -2865,10 +2897,13 @@ export interface ActivityCreateBody {
   type: "call" | "email" | "text" | "linkedin";
   /** Optional on every type — the server stores NULL when it is blank. */
   description?: string;
+  /** A bare date is read as a New York day. On a call, the day it was held. */
   activity_date?: string;
   subject?: string;
-  /** Only meaningful on a call; the API drops it on any other type. */
+  /** Only meaningful on a call, where it is required; the API drops it on any other type. */
   call_kind?: CallKind | null;
+  /** Calls only: the day it was booked, which Calls booked counts it on. */
+  booked_at?: string;
 }
 
 export function useLogActivity() {

@@ -16,9 +16,10 @@
 import { useState } from "react";
 import { Plus } from "lucide-react";
 
-import { CallKindPicker } from "@/components/jobs/CallKindPicker";
+import { CallDetailsFields, useCallTypesAvailable } from "@/components/jobs/CallKindPicker";
+import { callNotReady, callRequestFields, localTodayIso, newCallDetails } from "@/components/jobs/callLog";
 import { cn } from "@/lib/utils";
-import { useLogActivity, type CallKind, type JobContact } from "@/services/jobs";
+import { useLogActivity, type JobContact } from "@/services/jobs";
 import { INTRO_ASKS, useIntroConnectors, useLogFacilitatedIntro } from "@/services/jobsAccounts";
 
 const TYPES = [
@@ -33,10 +34,6 @@ type LogType = (typeof TYPES)[number]["value"];
 const fieldCls = "w-full rounded border border-border-strong bg-surface px-2 py-1 text-[12px] text-ink-2 placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40";
 const labelCls = "mb-0.5 block text-[10px] font-semibold uppercase tracking-wide text-ink-4";
 
-function todayIso(): string {
-  return new Date().toISOString().slice(0, 10);
-}
-
 export function OppLogActivityForm({ dealId, contacts, className }: {
   dealId: string;
   /** The deal's linked contacts — who an intro can name. */
@@ -45,9 +42,10 @@ export function OppLogActivityForm({ dealId, contacts, className }: {
 }) {
   const [open, setOpen] = useState(false);
   const [type, setType] = useState<LogType>("call");
-  const [date, setDate] = useState(todayIso);
+  const [date, setDate] = useState(() => localTodayIso());
   const [desc, setDesc] = useState("");
-  const [callKind, setCallKind] = useState<CallKind | null>(null);
+  const [call, setCall] = useState(() => newCallDetails());
+  const typesAvailable = useCallTypesAvailable();
   const [introContact, setIntroContact] = useState("");
   const [connectorId, setConnectorId] = useState("");
   const [ask, setAsk] = useState("hiring_intro");
@@ -57,16 +55,19 @@ export function OppLogActivityForm({ dealId, contacts, className }: {
   const { data: connectors = [] } = useIntroConnectors();
 
   const isIntro = type === "intro";
+  const isCall = type === "call";
   // The note is optional on every type (Kwame 2026-09-24): "I texted her on
   // the 14th" is a complete record, and demanding prose to log it loses touches.
-  const canSubmit = isIntro ? !!introContact && !!connectorId : true;
+  // A call needs its type and the day it was booked (PRO-102).
+  const callBlocker = isCall ? callNotReady(call, typesAvailable) : null;
+  const canSubmit = isIntro ? !!introContact && !!connectorId : !callBlocker;
   const pending = logActivity.isPending || introPending;
 
   function reset() {
     setType("call");
-    setDate(todayIso());
+    setDate(localTodayIso());
     setDesc("");
-    setCallKind(null);
+    setCall(newCallDetails());
     setIntroContact("");
     setConnectorId("");
     setOpen(false);
@@ -88,10 +89,9 @@ export function OppLogActivityForm({ dealId, contacts, className }: {
         jobs_opportunity_id: dealId,
         type,
         description: desc.trim() || undefined,
-        activity_date: date || todayIso(),
-        // Only a call carries a kind; the API drops it on anything else, but
-        // not sending it keeps the request honest about what was asked.
-        call_kind: type === "call" ? callKind : null,
+        // Only a call carries a type and a booking date; the API drops them on
+        // anything else, but not sending them keeps the request honest.
+        ...(isCall ? callRequestFields(call) : { activity_date: date || localTodayIso(), call_kind: null }),
       });
     }
     reset();
@@ -128,7 +128,7 @@ export function OppLogActivityForm({ dealId, contacts, className }: {
         ))}
       </div>
 
-      {type === "call" && <CallKindPicker value={callKind} onChange={setCallKind} />}
+      {isCall && <CallDetailsFields value={call} onChange={setCall} />}
 
       {isIntro && (
         contacts.length === 0 ? (
@@ -167,14 +167,16 @@ export function OppLogActivityForm({ dealId, contacts, className }: {
         )
       )}
 
-      <input type="date" value={date} max={todayIso()} onChange={(e) => setDate(e.target.value)} className={fieldCls} />
+      {!isCall && (
+        <input type="date" value={date} max={localTodayIso()} onChange={(e) => setDate(e.target.value)} className={fieldCls} />
+      )}
 
       <textarea rows={3} value={desc} onChange={(e) => setDesc(e.target.value)}
         placeholder={isIntro ? "Context (optional)" : "What happened? (optional)"}
         className={cn(fieldCls, "resize-none")} />
 
       <div className="flex items-center gap-3">
-        <button type="submit" disabled={pending || !canSubmit}
+        <button type="submit" disabled={pending || !canSubmit} title={callBlocker ?? undefined}
           className="rounded bg-accent px-3 py-1 text-[12px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50">
           {pending ? "Logging…" : "Log"}
         </button>

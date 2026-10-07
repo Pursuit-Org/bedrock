@@ -9,7 +9,7 @@
  * Owner and Editor are always both shown. They routinely differ (Avni moving a
  * contact Kwame owns), and that difference is the point of opening the list.
  */
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { format } from "date-fns";
 
@@ -27,11 +27,14 @@ export interface DrillRow {
   detail: string | null;
   subkind?: string | null;
   contact_id?: number | null;
+  /** Calls booked rows: the call or meeting behind the row (PRO-102). */
+  activity_id?: string | null;
+  call_kind?: "discovery" | "general" | null;
 }
 
 const DRILL_PAGE = 5;
 
-export function DrillList({ rows, total, incompleteNote, emptyLabel = "Nothing in this period.", className }: {
+export function DrillList({ rows, total, incompleteNote, emptyLabel = "Nothing in this period.", detailPrefix, className }: {
   rows: DrillRow[];
   /** How many rows exist when the server capped `rows` (PRO-96). When it is
    *  more than `rows.length` the list says so rather than stopping silently. */
@@ -40,6 +43,8 @@ export function DrillList({ rows, total, incompleteNote, emptyLabel = "Nothing i
    *  count isn't known: says what the list was built from. */
   incompleteNote?: string;
   emptyLabel?: string;
+  /** Something to show at the start of a row's Detail, such as a control. */
+  detailPrefix?: (row: DrillRow) => ReactNode;
   className?: string;
 }) {
   const [showAll, setShowAll] = useState(false);
@@ -80,8 +85,11 @@ export function DrillList({ rows, total, incompleteNote, emptyLabel = "Nothing i
           <span className="w-[140px] shrink-0 truncate text-[12px] text-ink-3" title={r.account ?? undefined}>
             {r.account ?? "—"}
           </span>
-          <span className="min-w-0 flex-1 truncate text-[12px] text-ink-3" title={r.detail ?? undefined}>
-            {r.detail ?? "—"}
+          <span className="flex min-w-0 flex-1 items-center gap-2">
+            {detailPrefix?.(r)}
+            <span className="min-w-0 flex-1 truncate text-[12px] text-ink-3" title={r.detail ?? undefined}>
+              {r.detail ?? "—"}
+            </span>
           </span>
           <span className="w-[88px] shrink-0 truncate text-[11px] text-ink-4" title={r.owner ?? "Nobody assigned"}>
             {r.owner ? nameOf(r.owner) : "—"}
