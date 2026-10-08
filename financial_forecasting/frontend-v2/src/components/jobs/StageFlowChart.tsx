@@ -125,12 +125,18 @@ export function StageFlowChart() {
           <div className="m-4 rounded-lg border border-dashed border-border-strong px-4 py-8 text-center text-[12.5px] text-ink-4">
             Couldn't load the stage flow. Refresh to try again.
           </div>
+        ) : !data.prev_period || !data.stage_labels ? (
+          // An API older than this page (the backend doesn't hot-reload after
+          // a pull) returns the earlier shape. Say so instead of crashing.
+          <div className="m-4 rounded-lg border border-dashed border-border-strong px-4 py-8 text-center text-[12.5px] text-ink-3">
+            The backend is older than this page. Restart it (Ctrl+C, then <code>python main.py</code>) and refresh.
+          </div>
         ) : (
           <StageFlowTable data={data} cut={cut} nameOf={nameOf} onDrill={setDrill} />
         )}
       </div>
 
-      {drill && data && (
+      {drill && data?.stage_labels && (
         <StageFlowDrill drill={drill} data={data} nameOf={nameOf} onClose={() => setDrill(null)} />
       )}
     </div>

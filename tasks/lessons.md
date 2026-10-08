@@ -3,6 +3,10 @@
 > Updated after every correction or mistake. Patterns to avoid repeating.
 > Review at session start.
 
+## 2026-10-08 — Stage Flow v3 crashed on Kwame's Mac (1 lesson)
+
+1. **A response-shape change must not crash the page when the old shape arrives.** Stage Flow v3 read `data.prev_period.from`, a field only the new backend sends. On Kwame's Mac the page threw `Cannot read properties of undefined (reading 'from')`: the frontend hot-reloads on `git pull`, while the backend (or TanStack Query's cache, which survives Vite HMR) can still hand over the previous shape. Headless tests with fresh mocks never hit this. **Rule**: when a change adds required fields to an existing endpoint's response, guard the component for the old shape and render a plain "the backend is older than this page, restart it" state instead of dereferencing. Test it by rendering against the previous shape's mock, not only the new one.
+
 ## 2026-04-16 — F1 buckets + Intacct kill switch (2 lessons)
 
 1. **Prefer env vars + `os.getenv` over a `config.py` indirection module.** When adding a feature flag (e.g., `INTACCT_AUTO_INVOICE_ENABLED`) in PR #135, my first draft added it to `financial_forecasting/config.py`. Turned out: (a) `config.py` is intentionally gitignored (legacy credentials file), (b) the only real consumer was `routes/auth.py` for Salesforce OAuth app creds — 8 call sites easily swapped to `os.getenv`. JP's call: retire `config.py` entirely, don't perpetuate the indirection. **Rule**: for any new backend config value, read env directly via a call-time helper (`def _flag_enabled() -> bool: return os.getenv(...).strip().lower() == "true"`). Tests flip with `monkeypatch.setenv` — standard pytest, no module-attr monkeypatching. Keep `.gitignore`'s `config.py` line as a safety net with a comment explaining the retirement, so a future contributor with old muscle memory can't accidentally re-introduce secrets-in-source.
