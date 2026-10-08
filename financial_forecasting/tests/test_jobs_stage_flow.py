@@ -159,6 +159,11 @@ def test_deals_moved_in_folds_retired_stages_and_closes_are_sticky():
     rows = _rows(r.json()["data"])
     assert rows[("pipeline", "builder_submitted")]["moved_in"] == 1
     assert rows[("pipeline", "closed_won")]["moved_in"] == 1
+    # Closed sums Won and Lost, each indented beneath it; none carries a Pool.
+    closed = rows[("pipeline", "closed")]
+    assert closed["children"] == ["closed_won", "closed_lost"] and closed["moved_in"] == 1
+    assert closed["in_now"] is None and closed["targetable"] is False
+    assert rows[("pipeline", "closed_won")]["depth"] == 1 and rows[("pipeline", "closed_won")]["targetable"] is True
 
 
 def test_filters_reach_every_query():

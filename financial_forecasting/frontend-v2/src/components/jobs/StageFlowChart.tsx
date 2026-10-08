@@ -7,16 +7,17 @@
  * bands, each in its own unit: Outreach counts contacts, Pipeline counts
  * opportunities.
  *
- * Stage tab: Pool (in the stage now) and Moved in (entered this period) carry
- * the meeting and are highlighted; then Target, Δ to Target and Trend (Moved in
- * vs the period before). "Time in stage" adds the Pool split by how long it has
- * sat there.
+ * Stage tab: Pool (in the stage now) and Net New (entered this period) carry
+ * the meeting and are highlighted; then Target, Δ to Target and Trend (Net New
+ * vs the period before). "Pool by time in stage" adds the Pool split by how
+ * long it has sat there.
  *
- * Owner tab: the same stages, with Pool and Moved in per Jobs team member, and
+ * Owner tab: the same stages, with Pool and Net New per Jobs team member, and
  * Others (anyone off the team, or nobody) so each row still adds up.
  *
  * A booked call ends one of three ways, so Contact closed sums Converted to
- * opportunity, Revisit and Not a fit, each indented beneath it.
+ * opportunity, Revisit and Not a fit, each indented beneath it. Closed does the
+ * same for Closed Won and Closed Lost.
  *
  * Every number opens the records behind it. The drawer filters the same
  * `members` / `moved` arrays the counts were made from, so a list can never
@@ -133,12 +134,12 @@ export function StageFlowChart() {
           {tabs}
           <span className="hidden text-[11.5px] text-ink-4 md:inline">Outreach to Closed Won · click any number for the list</span>
           {tab === "stage" && (
-            <button type="button" onClick={() => setByTime(!byTime)} aria-pressed={byTime}
+            <select value={byTime ? "time" : "off"} onChange={(e) => setByTime(e.target.value === "time")}
               title="Split the Pool by how long it has sat in the stage"
-              className={cn("ml-auto h-7 rounded-md border px-2.5 text-[12px] font-medium transition-colors",
-                byTime ? "border-accent/40 bg-accent-soft text-accent" : "border-border-strong bg-surface text-ink-2 hover:border-ink-3")}>
-              Time in stage
-            </button>
+              className="ml-auto h-7 rounded-md border border-border-strong bg-surface px-2 text-[12px] text-ink outline-none focus:border-accent">
+              <option value="off">No breakdown</option>
+              <option value="time">Pool by time in stage</option>
+            </select>
           )}
         </div>
         {isLoading && !data ? (
@@ -160,7 +161,7 @@ export function StageFlowChart() {
         )}
         {current && (
           <p className="border-t border-border px-4 py-2.5 text-[11px] leading-relaxed text-ink-4">
-            Pool is what sits in each stage today. Moved in counts each contact or opportunity once per stage it entered
+            Pool is what sits in each stage today. Net New counts each contact or opportunity once per stage it entered
             during the period. Closed Won and Closed Lost count closes that stuck. Targets are weekly, prorated to the
             period, and follow the Owner filter
             {current.targets_available ? "" : "; per-stage targets arrive with the stage-targets migration, and Converted to opportunity uses the Settings outreach target until then"}.
@@ -196,7 +197,9 @@ function BandHeader({ band, colSpan, pool }: {
         <div className="flex items-center gap-2">
           <span className="h-3.5 w-1 rounded-full" style={{ background: BAND_ACCENT[band.key] }} />
           <span className="text-[11px] font-bold uppercase tracking-wider text-ink-2">{band.label}</span>
-          <span className="rounded-full bg-surface-2 px-2 py-0.5 text-[10.5px] font-medium text-ink-3">{band.unit}</span>
+          <span className="rounded-full bg-surface-2 px-2 py-0.5 text-[10.5px] font-medium text-ink-3">
+            {band.unit.charAt(0).toUpperCase() + band.unit.slice(1)}
+          </span>
           <span className="ml-auto text-[11px] tabular-nums text-ink-4">{pool.toLocaleString()} in the pool</span>
         </div>
       </td>
@@ -210,7 +213,7 @@ function StageLabel({ row }: { row: StageFlowRow }) {
   return (
     <td className={cn("whitespace-nowrap py-2.5 pr-4 text-left",
       depth === 0 ? "font-semibold" : "font-normal",
-      pending ? "text-ink-4" : depth === 0 ? "text-ink" : "text-ink-2")}
+      pending ? "text-ink-4" : "text-ink")}
       style={{ paddingLeft: `${14 + depth * 20}px` }}>
       {depth > 0 && <span className="mr-1.5 text-ink-4">↳</span>}
       {row.label}
@@ -229,31 +232,14 @@ function NumButton({ n, onClick, title, className }: { n: number; onClick: () =>
   );
 }
 
-/** Pool number with a thin bar under it, scaled to the band's largest pool, so
- *  where the contacts or deals pile up reads before any number does. */
-function PoolCell({ n, max, color, onClick, title, bold }: {
-  n: number; max: number; color: string; onClick: () => void; title: string; bold: boolean;
-}) {
-  return (
-    <div className="mx-auto flex w-full max-w-[96px] flex-col items-center gap-1">
-      <span className={cn(bold && "font-semibold")}><NumButton n={n} onClick={onClick} title={title} /></span>
-      <span className="h-1 w-full overflow-hidden rounded-full bg-surface-2">
-        {n > 0 && (
-          <span className="block h-full rounded-full"
-            style={{ width: `${Math.max(4, (100 * n) / Math.max(1, max))}%`, background: color, opacity: 0.55 }} />
-        )}
-      </span>
-    </div>
-  );
-}
-
 // ── Stage tab ────────────────────────────────────────────────────────────────
 
 function StageTable({ data, byTime, nameOf, onDrill }: {
   data: StageFlow; byTime: boolean; nameOf: (e: string | null) => string; onDrill: (d: Drill) => void;
 }) {
   const cols = byTime ? data.buckets : [];
-  const scopeLabel = data.target_scope === "team" ? "Team" : nameOf(data.target_scope);
+  // Blank for the team (the default); a person's name when the Owner filter picks one.
+  const scopeLabel = data.target_scope === "team" ? "" : nameOf(data.target_scope);
   const colCount = 6 + cols.length;
   return (
     <div className="overflow-x-auto">
@@ -264,26 +250,33 @@ function StageTable({ data, byTime, nameOf, onDrill }: {
           {cols.map((c) => <col key={c.key} style={{ width: "6.8%" }} />)}
         </colgroup>
         <thead>
+          {cols.length > 0 && (
+            <tr className="bg-surface-2 text-[10.5px] uppercase tracking-wide text-ink-3">
+              <th colSpan={6} />
+              <th colSpan={cols.length} className="border-l border-border-strong px-2 pt-2 text-center font-bold">
+                <span className="block border-b border-border pb-1">Pool by time in stage</span>
+              </th>
+            </tr>
+          )}
           <tr className="bg-surface-2 text-[10.5px] uppercase tracking-wide text-ink-3">
             <th className="py-2 pl-3.5 pr-2 text-left font-bold align-bottom">Stage</th>
             <th className={cn(TH, HL)} title="Sitting in this stage today">
-              <span className="block">Pool</span><span className={SUB}>in stage now</span>
+              <span className="block">Pool</span><span className={SUB} />
             </th>
             <th className={cn(TH, HL)} title="Entered this stage during the period">
-              <span className="block">Moved in</span><span className={SUB}>{shortRange(data.period.from, data.period.to)}</span>
+              <span className="block">Net New</span><span className={SUB}>{shortRange(data.period.from, data.period.to)}</span>
             </th>
             <th className={TH} title="Weekly target, prorated to the period; follows the Owner filter">
               <span className="block">Target</span><span className={SUB}>{scopeLabel}</span>
             </th>
             <th className={TH}><span className="block">Δ to Target</span><span className={SUB} /></th>
-            <th className={TH} title="Moved in against the period before, same length">
+            <th className={TH} title="Net New against the period before, same length">
               <span className="block">Trend</span>
               <span className={SUB}>vs {shortRange(data.prev_period.from, data.prev_period.to)}</span>
             </th>
             {cols.map((c, i) => (
               <th key={c.key} className={cn("whitespace-nowrap px-2 py-2 text-center font-semibold align-bottom text-ink-4",
                 i === 0 && "border-l border-border-strong")}>
-                {i === 0 && <span className="mb-0.5 block text-left text-[9.5px] text-ink-3">Pool by time in stage</span>}
                 {c.label}
               </th>
             ))}
@@ -292,7 +285,6 @@ function StageTable({ data, byTime, nameOf, onDrill }: {
         <tbody>
           {data.bands.map((band) => {
             const bandMembers = data.members.filter((m) => m.band === band.key);
-            const max = Math.max(1, ...band.rows.filter((r) => !r.children).map((r) => r.in_now?.total ?? 0));
             const pool = band.rows.filter((r) => (r.depth ?? 0) === 0).reduce((s, r) => s + (r.in_now?.total ?? 0), 0);
             return (
               <Fragment key={band.key}>
@@ -313,14 +305,15 @@ function StageTable({ data, byTime, nameOf, onDrill }: {
                       <StageLabel row={row} />
                       <td className={cn(TD, HL)}>
                         {pending || !row.in_now ? <span className="text-ink-4">—</span> : (
-                          <PoolCell n={row.in_now.total} max={max} color={BAND_ACCENT[band.key]}
-                            bold={(row.depth ?? 0) === 0} onClick={() => drillRow("now")}
-                            title={`${row.in_now.total} in ${row.label} now`} />
+                          <span className={cn((row.depth ?? 0) === 0 && "font-semibold")}>
+                            <NumButton n={row.in_now.total} onClick={() => drillRow("now")}
+                              title={`${row.in_now.total} in ${row.label} now`} />
+                          </span>
                         )}
                       </td>
                       <td className={cn(TD, HL, (row.depth ?? 0) === 0 && "font-semibold")}>
                         {pending ? <span className="text-ink-4">—</span>
-                          : <NumButton n={row.moved_in} onClick={() => drillRow("moved")} title={`${row.moved_in} moved into ${row.label}`} />}
+                          : <NumButton n={row.moved_in} onClick={() => drillRow("moved")} title={`${row.moved_in} net new in ${row.label}`} />}
                       </td>
                       <td className={cn(TD, "text-ink-3")} title={targetTitle}>
                         {pending || !row.targetable ? "—" : row.target != null ? fmtTarget(row.target) : (
@@ -417,7 +410,7 @@ function OwnerTable({ data, team, nameOf, onDrill }: {
             {[{ key: "all" }, ...groups].map((g, gi) => (
               <Fragment key={g.key}>
                 <th className={cn("whitespace-nowrap px-3 pb-2 text-center font-semibold", gi === 0 ? HL : "border-l border-border")}>Pool</th>
-                <th className={cn("whitespace-nowrap px-3 pb-2 text-center font-semibold", gi === 0 && HL)}>Moved in</th>
+                <th className={cn("whitespace-nowrap px-3 pb-2 text-center font-semibold", gi === 0 && HL)}>Net New</th>
               </Fragment>
             ))}
           </tr>
@@ -488,7 +481,7 @@ function StageFlowDrill({ drill, data, nameOf, onClose }: {
   const where = drill.col ? ` · ${drill.col.label}` : "";
   const note = drill.kind === "now"
     ? `In ${drill.label} now${where}`
-    : `Moved into ${drill.label} · ${shortRange(data.period.from, data.period.to)}${where}`;
+    : `Net new in ${drill.label} · ${shortRange(data.period.from, data.period.to)}${where}`;
 
   return (
     <Drawer open onClose={onClose} title={drill.label} subtitle={`${rows.length} ${noun} · ${note}`} width={760}>

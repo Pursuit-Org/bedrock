@@ -4126,7 +4126,10 @@ async def get_stage_flow(
                  + [_row("outreach", k, lbl, True, depth=1) for k, lbl in _FLOW_CONTACT_CLOSED]},
         {"key": "pipeline", "label": "Pipeline", "unit": "opportunities",
          "rows": [_row("pipeline", k, STAGE_LABELS.get(k, k), True) for k in OPPORTUNITY_STAGES_ACTIVE]
-                 + [_row("pipeline", k, lbl, False) for k, lbl in _FLOW_DEAL_TERMINAL]},
+                 # Closed sums the two outcomes, each indented beneath it, the
+                 # same shape as Contact closed (Kwame 2026-10-08).
+                 + [_row("pipeline", "closed", "Closed", False, children=[k for k, _ in _FLOW_DEAL_TERMINAL])]
+                 + [_row("pipeline", k, lbl, False, depth=1) for k, lbl in _FLOW_DEAL_TERMINAL]},
     ]
     return {"success": True, "data": {
         "period": {"from": p_from.date().isoformat(),
