@@ -3780,6 +3780,287 @@ async def opportunities_overview(
 
 
 
+# ── Stage flow (Overview): outreach + pipeline in one stage table ────────────
+#
+# One row per stage from first outreach to Closed Won, for the weekly pipeline
+# meeting (Kwame 2026-10-08). Two bands, each counted in its own unit:
+#   Outreach · contacts  — the membership stage the team sets on the Contacts page
+#   Pipeline · deals     — the opportunity stage
+# Each working row carries what sits in it NOW, split by time in the current
+# stage (the Stage × Time in Pipeline buckets), and what MOVED INTO it during
+# the period. The off-ramps and Closed Won carry movement only: "how many are
+# in Closed Won now" is the all-time tally, not a pile-up anyone works.
+#
+# "Moved in" follows the funnels' period-flow rules so this table and the
+# Outreach / Pipeline funnels agree for the same window; Closed Won and Closed
+# Lost use the sticky-close rule the Closed won / lost cards use, so a close
+# reverted seconds later doesn't count here either.
+_FLOW_CONTACT_STAGES = [
+    ("assigned", "Assigned"),
+    ("initial_outreach", "Initial outreach"),
+    ("scheduling", "Scheduling"),
+    ("call_booked", "Call booked"),
+]
+# Movement-only rows at the end of the contacts band. Converted is the hand-off
+# into the deal band; Revisit and Not a fit are where outreach parks or stops.
+_FLOW_CONTACT_TERMINAL = [
+    ("converted_to_opportunity", "Converted to deal"),
+    ("revisit", "Revisit"),
+    ("not_a_fit", "Not a fit"),
+]
+_FLOW_DEAL_TERMINAL = [("closed_won", "Closed Won"), ("closed_lost", "Closed Lost")]
+# Stage keys that may carry a weekly stage target (migration 2026-10-08-jobs-stage-targets).
+STAGE_FLOW_TARGET_KEYS = (
+    [k for k, _ in _FLOW_CONTACT_STAGES] + ["converted_to_opportunity"]
+    + list(OPPORTUNITY_STAGES_ACTIVE) + ["closed_won"]
+)
+
+
+def _flow_period(period_from: Optional[str], period_to: Optional[str]) -> tuple:
+    """[from, to) in UTC from inclusive YYYY-MM-DD bounds; defaults to the 7
+    days ending yesterday. UTC midnights, the same boundaries the funnels use."""
+    try:
+        if period_from and period_to:
+            p_from = datetime.strptime(period_from, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            p_to = datetime.strptime(period_to, "%Y-%m-%d").replace(tzinfo=timezone.utc) + timedelta(days=1)
+        else:
+            today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+            p_from, p_to = today - timedelta(days=7), today
+    except ValueError:
+        raise HTTPException(400, "period_from / period_to must be YYYY-MM-DD")
+    if p_to <= p_from:
+        raise HTTPException(400, "period_to must not precede period_from")
+    return p_from, p_to
+
+
+@router.get("/stage-flow")
+async def get_stage_flow(
+    period_from: Optional[str] = Query(None, description="YYYY-MM-DD, inclusive"),
+    period_to: Optional[str] = Query(None, description="YYYY-MM-DD, inclusive"),
+    owner: Optional[str] = Query(None),
+    deal_type: Optional[str] = Query(None, description="Deal band only: contacts carry no deal type"),
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Every stage from first outreach to Closed Won: in now (by time in stage),
+    moved in during the period, and the weekly stage target prorated to it.
+
+    `members` and `moved` are flat lists keyed by (band, stage); every count in
+    `bands` is the length of a slice of one of them, so a drill list can never
+    disagree with the number it opened from."""
+    p_from, p_to = _flow_period(period_from, period_to)
+    owner_f = owner.strip().lower() if owner and owner != "all" else None
+    dt_f = _parse_deal_types(deal_type)
+    now = datetime.now(timezone.utc)
+    span_days = (p_to - p_from).days
+
+    def _days(ts) -> int:
+        return 0 if ts is None else max(0, (now - ts).days)
+
+    members: list = []
+    moved: list = []
+
+    # ── Contacts in now ──────────────────────────────────────────────────────
+    # Time in stage = the latest history entry into the current stage, else the
+    # stage's own stamp, else the last update. The history read needs the
+    # 2026-08-03 grant; without it the stamps carry the three stamped stages.
+    contact_in = ", ".join(f"'{k}'" for k, _ in _FLOW_CONTACT_STAGES)
+    stamp_case = ("CASE m.stage WHEN 'assigned' THEN m.assigned_at "
+                  "WHEN 'initial_outreach' THEN m.first_outreach_at "
+                  "WHEN 'call_booked' THEN m.call_booked_at END")
+    contact_sql = """
+        SELECT m.contact_id, c.full_name AS name, c.current_company AS company,
+               m.owner_email AS owner, m.stage,
+               COALESCE({hist}{stamp}, m.updated_at) AS entered_stage
+        FROM bedrock.jobs_contact_membership m
+        JOIN public.contacts c ON c.contact_id = m.contact_id
+        WHERE m.stage IN ({stages})
+          AND ($1::text IS NULL OR lower(m.owner_email) = $1)
+    """
+    hist_sub = ("(SELECT max(h.changed_at) FROM bedrock.jobs_membership_stage_history h "
+                "WHERE h.contact_id = m.contact_id AND h.to_stage = m.stage), ")
+    have_history = True
+    try:
+        crows = await conn.fetch(contact_sql.format(hist=hist_sub, stamp=stamp_case, stages=contact_in), owner_f)
+    except (asyncpg.exceptions.InsufficientPrivilegeError, asyncpg.exceptions.UndefinedTableError):
+        have_history = False
+        logger.warning("stage-flow: no read on jobs_membership_stage_history — using stage stamps only")
+        crows = await conn.fetch(contact_sql.format(hist="", stamp=stamp_case, stages=contact_in), owner_f)
+    for r in crows:
+        d = _days(r["entered_stage"])
+        members.append({
+            "band": "outreach", "stage": r["stage"], "id": str(r["contact_id"]),
+            "name": r["name"], "detail": r["company"], "owner": r["owner"],
+            "days": d, "bucket": _opp_age_bucket(d),
+        })
+
+    # ── Contacts moved in ────────────────────────────────────────────────────
+    # Same rules as the Contacts funnel's period mode: the stage stamps, then
+    # membership history, one entry per (contact, stage).
+    contact_moved_keys = {k for k, _ in _FLOW_CONTACT_STAGES + _FLOW_CONTACT_TERMINAL}
+    seen: dict = {}
+    srows = await conn.fetch("""
+        SELECT m.contact_id, c.full_name AS name, c.current_company AS company,
+               m.owner_email AS owner, m.assigned_at, m.first_outreach_at, m.converted_at
+        FROM bedrock.jobs_contact_membership m
+        JOIN public.contacts c ON c.contact_id = m.contact_id
+        WHERE m.stage <> 'not_a_fit'
+          AND ($1::text IS NULL OR lower(m.owner_email) = $1)
+          AND (m.assigned_at >= $2 AND m.assigned_at < $3
+               OR m.first_outreach_at >= $2 AND m.first_outreach_at < $3
+               OR m.converted_at >= $2 AND m.converted_at < $3)
+    """, owner_f, p_from, p_to)
+    for r in srows:
+        for stage_key, col in (("assigned", "assigned_at"), ("initial_outreach", "first_outreach_at"),
+                               ("converted_to_opportunity", "converted_at")):
+            ts = r[col]
+            if ts is not None and p_from <= ts < p_to:
+                seen[(r["contact_id"], stage_key)] = (r, ts)
+    if have_history:
+        try:
+            hrows = await conn.fetch("""
+                SELECT DISTINCT ON (h.contact_id, h.to_stage)
+                       h.contact_id, h.to_stage, h.changed_at,
+                       c.full_name AS name, c.current_company AS company, m.owner_email AS owner
+                FROM bedrock.jobs_membership_stage_history h
+                JOIN public.contacts c ON c.contact_id = h.contact_id
+                LEFT JOIN bedrock.jobs_contact_membership m ON m.contact_id = h.contact_id
+                WHERE h.changed_at >= $2 AND h.changed_at < $3
+                  AND ($1::text IS NULL OR lower(m.owner_email) = $1)
+                ORDER BY h.contact_id, h.to_stage, h.changed_at
+            """, owner_f, p_from, p_to)
+        except (asyncpg.exceptions.InsufficientPrivilegeError, asyncpg.exceptions.UndefinedTableError):
+            hrows = []
+        for r in hrows:
+            key = (r["contact_id"], canon_membership_stage(r["to_stage"]))
+            if key[1] in contact_moved_keys and key not in seen:
+                seen[key] = (r, r["changed_at"])
+    for (cid, stage_key), (r, ts) in seen.items():
+        moved.append({
+            "band": "outreach", "stage": stage_key, "id": str(cid), "name": r["name"],
+            "detail": r["company"], "owner": r["owner"], "at": ts.isoformat(),
+        })
+
+    # ── Deals in now ─────────────────────────────────────────────────────────
+    # Time in stage exactly as Stage × Time in Pipeline measures it.
+    drows = await conn.fetch(f"""
+        SELECT o.id, o.account_name, o.title, o.stage, o.owner_email,
+               COALESCE((SELECT max(h.changed_at) FROM bedrock.jobs_stage_history h
+                         WHERE h.opportunity_id = o.id AND h.to_stage = o.stage),
+                        o.created_at) AS entered_stage
+        FROM bedrock.jobs_opportunity o
+        WHERE o.deleted_at IS NULL AND {_OPP_INSET}
+          AND ($1::text IS NULL OR lower(o.owner_email) = $1)
+          AND {_deal_type_sql('o.deal_type', 2)}
+    """, owner_f, dt_f)
+    for r in drows:
+        d = _days(r["entered_stage"])
+        members.append({
+            "band": "pipeline", "stage": canon_stage(r["stage"]), "id": str(r["id"]),
+            "name": r["account_name"], "detail": r["title"], "owner": r["owner_email"],
+            "days": d, "bucket": _opp_age_bucket(d),
+        })
+
+    # ── Deals moved in ───────────────────────────────────────────────────────
+    # Working stages: every entry in the window, one per (deal, stage), plus
+    # deals created straight into a stage (they never get a history row).
+    erows = await conn.fetch(f"""
+        WITH hist AS (
+            SELECT DISTINCT ON (h.opportunity_id, h.to_stage)
+                   h.opportunity_id AS oid, h.to_stage AS stage, h.changed_at AS at
+            FROM bedrock.jobs_stage_history h
+            WHERE h.changed_at >= $3 AND h.changed_at < $4
+            ORDER BY h.opportunity_id, h.to_stage, h.changed_at
+        ), created AS (
+            SELECT o.id AS oid, o.stage, o.created_at AS at
+            FROM bedrock.jobs_opportunity o
+            WHERE o.created_at >= $3 AND o.created_at < $4
+              AND NOT EXISTS (SELECT 1 FROM bedrock.jobs_stage_history h2 WHERE h2.opportunity_id = o.id)
+        )
+        SELECT e.oid, e.stage, e.at, o.account_name, o.title, o.owner_email
+        FROM (SELECT * FROM hist UNION ALL SELECT * FROM created) e
+        JOIN bedrock.jobs_opportunity o ON o.id = e.oid
+        WHERE o.deleted_at IS NULL
+          AND ($1::text IS NULL OR lower(o.owner_email) = $1)
+          AND {_deal_type_sql('o.deal_type', 2)}
+    """, owner_f, dt_f, p_from, p_to)
+    working = set(OPPORTUNITY_STAGES_ACTIVE)
+    deal_seen: set = set()
+    for r in erows:
+        stage_key = canon_stage(r["stage"])
+        key = (r["oid"], stage_key)
+        if stage_key not in working or key in deal_seen:
+            continue
+        deal_seen.add(key)
+        moved.append({
+            "band": "pipeline", "stage": stage_key, "id": str(r["oid"]), "name": r["account_name"],
+            "detail": r["title"], "owner": r["owner_email"], "at": r["at"].isoformat(),
+        })
+    # Closes: the deal's LATEST stage change before the period end moved it
+    # into the close, inside the period (the Closed won / lost card rule).
+    crows2 = await conn.fetch(f"""
+        SELECT oid, to_stage, at, account_name, title, owner_email FROM (
+            SELECT DISTINCT ON (h.opportunity_id)
+                   h.opportunity_id AS oid, h.to_stage, h.changed_at AS at,
+                   o.account_name, o.title, o.owner_email
+            FROM bedrock.jobs_stage_history h
+            JOIN bedrock.jobs_opportunity o ON o.id = h.opportunity_id
+            WHERE h.changed_at < $4 AND o.deleted_at IS NULL
+              AND ($1::text IS NULL OR lower(o.owner_email) = $1)
+              AND {_deal_type_sql('o.deal_type', 2)}
+            ORDER BY h.opportunity_id, h.changed_at DESC
+        ) last_change
+        WHERE to_stage IN ('closed_won', 'closed_lost') AND at >= $3
+    """, owner_f, dt_f, p_from, p_to)
+    for r in crows2:
+        moved.append({
+            "band": "pipeline", "stage": r["to_stage"], "id": str(r["oid"]), "name": r["account_name"],
+            "detail": r["title"], "owner": r["owner_email"], "at": r["at"].isoformat(),
+        })
+
+    moved.sort(key=lambda m: m["at"], reverse=True)
+    members.sort(key=lambda m: -m["days"])
+
+    # ── Rows ─────────────────────────────────────────────────────────────────
+    targets_on = jobs_targets_store.stage_targets_available()
+
+    def _row(band: str, key: str, label: str, with_now: bool) -> dict:
+        cells = [0, 0, 0, 0, 0]
+        if with_now:
+            for m in members:
+                if m["band"] == band and m["stage"] == key:
+                    cells[m["bucket"]] += 1
+        weekly = jobs_targets_store.stage_weekly(key) if targets_on and key in STAGE_FLOW_TARGET_KEYS else None
+        return {
+            "key": key, "label": label,
+            "in_now": {"total": sum(cells), "cells": cells} if with_now else None,
+            "moved_in": sum(1 for m in moved if m["band"] == band and m["stage"] == key),
+            "targetable": key in STAGE_FLOW_TARGET_KEYS,
+            "target_weekly": weekly,
+            # Prorated to the period: a weekly 5 over a 14-day window is 10.
+            "target": round(weekly * span_days / 7, 1) if weekly is not None else None,
+        }
+
+    bands = [
+        {"key": "outreach", "label": "Outreach", "unit": "contacts",
+         "rows": [_row("outreach", k, lbl, True) for k, lbl in _FLOW_CONTACT_STAGES]
+                 + [_row("outreach", k, lbl, False) for k, lbl in _FLOW_CONTACT_TERMINAL]},
+        {"key": "pipeline", "label": "Pipeline", "unit": "deals",
+         "rows": [_row("pipeline", k, STAGE_LABELS.get(k, k), True) for k in OPPORTUNITY_STAGES_ACTIVE]
+                 + [_row("pipeline", k, lbl, False) for k, lbl in _FLOW_DEAL_TERMINAL]},
+    ]
+    return {"success": True, "data": {
+        "period": {"from": p_from.date().isoformat(),
+                   "to": (p_to - timedelta(days=1)).date().isoformat(), "days": span_days},
+        "filters": {"owner": owner_f, "deal_type": ",".join(dt_f) if dt_f is not None else None},
+        "buckets": [{"key": k, "label": lbl} for k, lbl in _OPP_AGE_BUCKETS],
+        "bands": bands,
+        "targets_available": targets_on,
+        "members": members,
+        "moved": moved,
+    }}
+
+
 @router.get("/roles")
 async def get_roles(user=Depends(require_auth), conn=Depends(get_db)):
     """Jobs / roles view — hired counts (from placements) + pipeline rows.

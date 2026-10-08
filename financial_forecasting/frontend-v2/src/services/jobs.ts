@@ -3138,6 +3138,71 @@ export function useOpportunitiesOverview(owner?: string, dealType?: string, week
   });
 }
 
+// ── Stage flow (Overview): outreach + pipeline in one stage table ────────────
+export type StageFlowBand = "outreach" | "pipeline";
+
+export interface StageFlowRow {
+  key: string;
+  label: string;
+  /** Null on movement-only rows (Closed Won, the off-ramps). */
+  in_now: { total: number; cells: number[] } | null;
+  moved_in: number;
+  /** False for rows that never carry a target (off-ramps). */
+  targetable: boolean;
+  target_weekly: number | null;
+  /** The weekly target prorated to the period's length. */
+  target: number | null;
+}
+
+export interface StageFlowMember {
+  band: StageFlowBand;
+  stage: string;
+  id: string;
+  name: string | null;
+  /** Company for a contact, opportunity title for a deal. */
+  detail: string | null;
+  owner: string | null;
+  days: number;
+  bucket: number;
+}
+
+export interface StageFlowMove {
+  band: StageFlowBand;
+  stage: string;
+  id: string;
+  name: string | null;
+  detail: string | null;
+  owner: string | null;
+  at: string;
+}
+
+export interface StageFlow {
+  period: { from: string; to: string; days: number };
+  buckets: { key: string; label: string }[];
+  bands: { key: StageFlowBand; label: string; unit: "contacts" | "deals"; rows: StageFlowRow[] }[];
+  /** False until the stage-targets migration runs. */
+  targets_available: boolean;
+  members: StageFlowMember[];
+  moved: StageFlowMove[];
+}
+
+export function useStageFlow(from: string, to: string, owner?: string, dealType?: string) {
+  const o = owner && owner !== "all" ? owner : undefined;
+  const dt = dealType && dealType !== "all" ? dealType : undefined;
+  return useQuery<StageFlow>({
+    queryKey: ["jobs", "stage-flow", from, to, o ?? "all", dt ?? "all"],
+    queryFn: async () => {
+      const p = new URLSearchParams({ period_from: from, period_to: to });
+      if (o) p.set("owner", o);
+      if (dt) p.set("deal_type", dt);
+      const { data } = await api.get<ApiResponse<StageFlow>>(`/api/jobs/stage-flow?${p}`);
+      return data.data;
+    },
+    staleTime: 30_000,
+    placeholderData: keepPreviousData,
+  });
+}
+
 // ── Daily digest (the morning Slack, computed) ───────────────────────────────
 /** Contacts with N+ touches in initial outreach and no reply — the cue to work
  *  a different contact at that account. */

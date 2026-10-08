@@ -76,7 +76,7 @@ const ALL_DEAL_TYPES = DEAL_TYPE_OPTIONS.map((o) => o.value);
 
 /** Selection → the `deal_type` query value: "all" when every box is ticked,
  *  otherwise a comma-separated list the API reads as OR. */
-function dealTypeParam(selected: string[]): string {
+export function dealTypeParam(selected: string[]): string {
   return selected.length === ALL_DEAL_TYPES.length
     ? "all"
     : ALL_DEAL_TYPES.filter((v) => selected.includes(v)).join(",");
@@ -91,7 +91,7 @@ function dealTypeSummary(selected: string[]): string {
 /** Checkbox popover for deal type. At least one box stays ticked: an empty
  *  selection would either show nothing or quietly mean "all", and both read
  *  as a bug. "All" ticks every box, Untagged included. */
-function DealTypeFilter({ selected, onChange }: { selected: string[]; onChange: (next: string[]) => void }) {
+export function DealTypeFilter({ selected, onChange }: { selected: string[]; onChange: (next: string[]) => void }) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -1460,7 +1460,7 @@ const ACTIVITY_META: Record<OppActivityEvent["type"], { label: string; color: st
 // "concern" shading: the gradient is the single signal, so a dark cell in an
 // older column is the whole story without a second visual language on top.
 
-function heatBlue(n: number, max: number): { background: string; color: string } {
+export function heatBlue(n: number, max: number): { background: string; color: string } {
   if (n <= 0) return { background: "var(--surface-2)", color: "var(--ink-4)" };
   const t = max > 0 ? n / max : 0;
   const alpha = 0.16 + 0.84 * t;

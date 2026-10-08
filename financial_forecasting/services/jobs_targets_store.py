@@ -2,8 +2,10 @@
 
 Settings > Targets > Jobs edits two tables (migration 2026-09-29-jobs-targets):
   bedrock.jobs_team_member  who is "the Jobs team"
-  bedrock.jobs_target       weekly outreach targets (per person + team rows)
-                            and quarterly jobs targets (pipeline)
+  bedrock.jobs_target       weekly outreach targets (per person + team rows),
+                            quarterly jobs targets (pipeline), and weekly
+                            team targets per funnel stage (stage; migration
+                            2026-10-08-jobs-stage-targets widens the CHECKs)
 
 Many Jobs query builders are synchronous and interpolate the team's addresses
 into SQL, so this module keeps a process-wide snapshot that those builders read
@@ -66,6 +68,12 @@ class _Snapshot:
         self.team_cfg: dict[str, dict] = {}
         # quarter start -> jobs target
         self.pipeline: dict[date, int] = {}
+        # Stage targets need the 2026-10-08 migration, which widens the
+        # section CHECK to admit 'stage'. Until then the Overview's Stage Flow
+        # target column reads "pending migration".
+        self.stage_available = False
+        # stage key -> weekly team target
+        self.stage: dict[str, int] = {}
 
 
 _snap = _Snapshot()
@@ -106,16 +114,30 @@ async def refresh(pool, force: bool = False) -> None:
         logger.warning(f"jobs targets refresh failed, keeping previous snapshot: {e}")
         _snap.loaded_at = time.monotonic()
         return
+    # Separate from the reads above: a failed probe only means "no stage
+    # targets yet", never a lost team or outreach snapshot.
+    try:
+        section_check = await pool.fetchval(
+            "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+            "WHERE conrelid = 'bedrock.jobs_target'::regclass "
+            "AND conname = 'jobs_target_section_check'")
+    except Exception as e:
+        logger.warning(f"jobs targets: stage-target probe failed, treating as pending: {e}")
+        section_check = None
 
     fresh = _Snapshot()
     fresh.available = True
     fresh.loaded_at = time.monotonic()
     team = [m["email"] for m in members if valid_email(m["email"])]
     fresh.team = team or list(DEFAULT_TEAM)
+    fresh.stage_available = isinstance(section_check, str) and "'stage'" in section_check
     for t in targets:
         if t["section"] == "pipeline":
             if t["period_start"] is not None and t["value"] is not None:
                 fresh.pipeline[t["period_start"]] = int(t["value"])
+        elif t["section"] == "stage":
+            if t["value"] is not None:
+                fresh.stage[t["metric"]] = int(t["value"])
         elif t["owner_email"]:
             if valid_email(t["owner_email"]):
                 fresh.owner.setdefault(t["owner_email"], {})[t["metric"]] = t["value"]
@@ -170,6 +192,16 @@ def team_mode(metric: str) -> Optional[str]:
 def pipeline_targets() -> dict[date, int]:
     """Quarter start → jobs target."""
     return dict(_snap.pipeline)
+
+
+def stage_targets_available() -> bool:
+    """True once the stage-targets migration has run."""
+    return _snap.available and _snap.stage_available
+
+
+def stage_weekly(stage: str) -> Optional[int]:
+    """The team's weekly target for entries into `stage`, or None."""
+    return _snap.stage.get(stage)
 
 
 def snapshot_for_api() -> dict:
