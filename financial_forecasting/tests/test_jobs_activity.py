@@ -47,11 +47,12 @@ def test_funnel_opportunities_starts_with_in_discussions():
     r = c.get("/api/jobs/funnel/opportunities")
     assert r.status_code == 200, r.text
     stages = r.json()["data"]["stages"]
-    assert stages[0]["key"] == "active_in_discussions" and stages[0]["label"] == "In Discussions"
+    # Labelled Initial Opportunity since 2026-10-08; the stored key is unchanged.
+    assert stages[0]["key"] == "active_in_discussions" and stages[0]["label"] == "Initial Opportunity"
     assert stages[0]["count"] == 2   # legacy initial_outreach folded in
-    # full ordered pipeline present
+    # full ordered pipeline present, Engaging (2026-10-08) after Initial Opportunity
     assert [s["key"] for s in stages] == [
-        "active_in_discussions", "ask_submitted", "active_opportunity_confirmed",
+        "active_in_discussions", "engaging", "ask_submitted", "active_opportunity_confirmed",
         "builder_submitted", "builder_interviewing", "offer_contracting",
         "closed_won", "closed_lost"]
 

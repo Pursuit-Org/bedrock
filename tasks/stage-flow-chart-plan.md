@@ -66,6 +66,31 @@ Rules:
   outreach shape: per-person rows plus a team row that is "Sum of owners" or "Set total".
   PR 2's migration and editor must support both.
 
+## Revision 3 (Kwame, 2026-10-08): Activity Pipeline style, Contact closed, Engaging
+
+- Styled as Outreach's Activity Pipeline (header bar, rules, indent, Δ chip, Trend).
+  Columns: **Pool** and **Moved in** (highlighted), Target, Δ to Target, **Trend**
+  (Moved in vs the prior period of the same length).
+- Breakdown is picked from the card header (none | Pool by time in stage | Pool by
+  owner) and adds plain-number columns. No coloured blocks, no expanding rows.
+- Bands: Outreach (contacts) and Pipeline (**opportunities**).
+- **Contact closed** sums the three ways a booked call ends: Converted to
+  opportunity, Revisit, Not a fit, each indented beneath it with its own Pool
+  (today's data) and Moved in. Move drills show a **From** column (history's
+  `from_stage`) so the paths are visible.
+- **In Discussions is labelled "Initial Opportunity"** app-wide. The key
+  (`active_in_discussions`) is unchanged, so no rows move.
+- **New stage: Engaging**, after Initial Opportunity: "Follow-up set. Working the
+  relationship toward a specific ask." Migration
+  `2026-10-08-opportunity-engaging-stage.sql` widens `jobs_opportunity_stage_check`.
+  Until it runs, pickers show Engaging as not selectable (existing probe), the API
+  rejects writes, and Stage Flow shows "pending migration". The probe settles on
+  `engaging` (`OPPORTUNITY_STAGE_SETTLES_WHEN`).
+- **Targets:** per-stage activity targets (PR 2). Until then Converted to
+  opportunity borrows Settings › Outreach "Opportunities converted" (same
+  measure: the conversion stamp). Sends and calls are not borrowed: they count
+  events, not contacts changing stage.
+
 ## Endpoint
 
 `GET /api/jobs/stage-flow?period_from&period_to&owner&deal_type` returns

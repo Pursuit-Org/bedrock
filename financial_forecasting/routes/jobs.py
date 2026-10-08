@@ -63,6 +63,8 @@ VALID_STAGES = {
     # one is rejected here with "Invalid stage" — the feature would be dead on
     # arrival, and only after the migration, which is the worst time to find out.
     "ask_submitted", "builder_submitted", "builder_interviewing", "offer_contracting",
+    # 2026-10-08: Engaging, between Initial Opportunity and Ask Submitted.
+    "engaging",
     # legacy, pre-2026-08-05
     "initial_outreach", "active_builder_interview",
     "on_hold_not_selected", "on_hold_not_interested", "on_hold_not_responsive",
@@ -82,6 +84,7 @@ VALID_STAGES = {
 # list so they are never offered again.
 OPPORTUNITY_STAGES_NEW = [
     "active_in_discussions",
+    "engaging",
     "ask_submitted",
     "active_opportunity_confirmed",
     "builder_submitted",
@@ -90,6 +93,11 @@ OPPORTUNITY_STAGES_NEW = [
     "closed_won",
     "closed_lost",
 ]
+
+# The value only the newest jobs_opportunity_stage_check contains. Every probe of
+# that constraint passes it, so none caches a pre-migration answer (the probe
+# cache is per table, so they must agree). Engaging: migration 2026-10-08.
+OPPORTUNITY_STAGE_SETTLES_WHEN = "engaging"
 
 # Belt to the braces above: every stage the UI can offer post-migration must also
 # pass VALID_STAGES, the 400-guard on the opportunity write endpoints. Fails at
@@ -103,6 +111,7 @@ assert set(OPPORTUNITY_STAGES_NEW) <= VALID_STAGES, (
 # so the definition lives next to the choice rather than in a doc nobody opens.
 STAGE_DESCRIPTIONS = {
     "active_in_discussions":        "Confirmed hiring appetite and a named decision maker.",
+    "engaging":                     "Follow-up set. Working the relationship toward a specific ask.",
     "ask_submitted":                "A specific ask is with the employer — role, scope or option set. Awaiting yes or no.",
     "active_opportunity_confirmed": "They said yes. A real role or engagement exists.",
     "builder_submitted":            "Named builder profiles sent to the employer.",
@@ -283,7 +292,10 @@ STAGE_LABELS = {
     # Retired 2026-09-21; kept so history and un-migrated rows still read as words.
     "lead_submitted":               "Lead Submitted",
     "initial_outreach":             "Initial Outreach",
-    "active_in_discussions":        "In Discussions",
+    # Renamed 2026-10-08 (Kwame): the label changed, the stored key did not, so
+    # no row moves and nothing downstream that reads the key changes.
+    "active_in_discussions":        "Initial Opportunity",
+    "engaging":                     "Engaging",
     "active_opportunity_confirmed": "Opportunity Confirmed",
     "active_builder_interview":     "Builder Interview",
     "closed_won":                   "Closed — Won",
@@ -711,7 +723,7 @@ async def metric_drilldown(
         "calls_week":           ("New Contacts Met — Last 7 Days",     lambda: first_touch("meeting", "ext.first_touch >= now() - interval '7 days'")),
         "active_orgs":          ("Active Orgs",              lambda: deals(_sql_in("stage", OPPORTUNITY_STAGES_ACTIVE_ANY))),
         "active_companies":     ("Active Companies",         lambda: deals(_sql_in("stage", OPPORTUNITY_STAGES_ACTIVE_ANY))),
-        "in_discussion":        ("In Discussion",            lambda: deals("stage='active_in_discussions'")),
+        "in_discussion":        ("Initial Opportunity",      lambda: deals("stage='active_in_discussions'")),
         "builder_interviews":   ("Builders Submitted / Interviewing", lambda: deals(_sql_in("stage", ["builder_submitted", "builder_interviewing", "reviewing_builders", "active_builder_interview"]))),
         "placements":           ("FT Roles Secured", lambda: placements("true")),
         "ft_salaries":          ("FT Salaries", lambda: salaries("true")),
@@ -3784,11 +3796,15 @@ async def opportunities_overview(
 #
 # One row per stage from first outreach to Closed Won, for the weekly pipeline
 # meeting (Kwame 2026-10-08). Two bands, each counted in its own unit:
-#   Outreach · contacts  — the membership stage the team sets on the Contacts page
-#   Pipeline · deals     — the opportunity stage
-# Each working row carries what sits in it NOW, split by time in the current
-# stage (the Stage × Time in Pipeline buckets), and what MOVED INTO it during
-# the period. The off-ramps and Closed Won carry movement only: "how many are
+#   Outreach · contacts         the membership stage the team sets on Contacts
+#   Pipeline · opportunities    the opportunity stage
+# Each row carries its Pool (what sits in it NOW, splittable by time in stage or
+# owner), what MOVED INTO it during the period, the same count for the period
+# before (the Trend), and a weekly target prorated to the period.
+#
+# A booked call ends one of three ways, so the contacts band closes with a
+# "Contact closed" row summing Converted to opportunity, Revisit and Not a fit,
+# each beneath it. Closed Won and Closed Lost carry movement only: "how many are
 # in Closed Won now" is the all-time tally, not a pile-up anyone works.
 #
 # "Moved in" follows the funnels' period-flow rules so this table and the
@@ -3801,19 +3817,25 @@ _FLOW_CONTACT_STAGES = [
     ("scheduling", "Scheduling"),
     ("call_booked", "Call booked"),
 ]
-# Movement-only rows at the end of the contacts band. Converted is the hand-off
-# into the deal band; Revisit and Not a fit are where outreach parks or stops.
-_FLOW_CONTACT_TERMINAL = [
-    ("converted_to_opportunity", "Converted to deal"),
+# The three ways a contact leaves outreach. Summed on the Contact closed row.
+_FLOW_CONTACT_CLOSED = [
+    ("converted_to_opportunity", "Converted to opportunity"),
     ("revisit", "Revisit"),
     ("not_a_fit", "Not a fit"),
 ]
 _FLOW_DEAL_TERMINAL = [("closed_won", "Closed Won"), ("closed_lost", "Closed Lost")]
-# Stage keys that may carry a weekly stage target (migration 2026-10-08-jobs-stage-targets).
+# Stage keys that may carry a weekly stage target (stage-targets migration).
+# Revisit, Not a fit and Closed Lost are outcomes nobody aims for.
 STAGE_FLOW_TARGET_KEYS = (
     [k for k, _ in _FLOW_CONTACT_STAGES] + ["converted_to_opportunity"]
     + list(OPPORTUNITY_STAGES_ACTIVE) + ["closed_won"]
 )
+# Until a stage target is set, a stage that measures exactly what an existing
+# Settings › Targets › Jobs › Outreach metric measures borrows that target.
+# Converted Opportunities counts the membership conversion stamp, which is what
+# "moved into Converted to opportunity" counts here. The send and call targets
+# count activity events, not contacts changing stage, so they are not borrowed.
+_FLOW_OUTREACH_TARGET = {"converted_to_opportunity": "converted_opportunities"}
 
 
 def _flow_period(period_from: Optional[str], period_to: Optional[str]) -> tuple:
@@ -3833,18 +3855,133 @@ def _flow_period(period_from: Optional[str], period_to: Optional[str]) -> tuple:
     return p_from, p_to
 
 
+async def _flow_moved(conn, owner_f, dt_f, p_from, p_to, have_history: bool) -> list:
+    """Every (record, stage) entry inside [p_from, p_to), both bands, each with
+    the stage it came from where history records one."""
+    moved: list = []
+    contact_keys = {k for k, _ in _FLOW_CONTACT_STAGES + _FLOW_CONTACT_CLOSED}
+
+    # Contacts: the Contacts funnel's period rules. The stage stamps, then
+    # membership history, one entry per (contact, stage).
+    seen: dict = {}
+    srows = await conn.fetch("""
+        SELECT m.contact_id, c.full_name AS name, c.current_company AS company,
+               m.owner_email AS owner, m.assigned_at, m.first_outreach_at, m.converted_at
+        FROM bedrock.jobs_contact_membership m
+        JOIN public.contacts c ON c.contact_id = m.contact_id
+        WHERE m.stage <> 'not_a_fit'
+          AND ($1::text IS NULL OR lower(m.owner_email) = $1)
+          AND (m.assigned_at >= $2 AND m.assigned_at < $3
+               OR m.first_outreach_at >= $2 AND m.first_outreach_at < $3
+               OR m.converted_at >= $2 AND m.converted_at < $3)
+    """, owner_f, p_from, p_to)
+    for r in srows:
+        for stage_key, col in (("assigned", "assigned_at"), ("initial_outreach", "first_outreach_at"),
+                               ("converted_to_opportunity", "converted_at")):
+            ts = r[col]
+            if ts is not None and p_from <= ts < p_to:
+                seen[(r["contact_id"], stage_key)] = (r, ts)
+    from_of: dict = {}
+    if have_history:
+        try:
+            hrows = await conn.fetch("""
+                SELECT DISTINCT ON (h.contact_id, h.to_stage)
+                       h.contact_id, h.from_stage, h.to_stage, h.changed_at,
+                       c.full_name AS name, c.current_company AS company, m.owner_email AS owner
+                FROM bedrock.jobs_membership_stage_history h
+                JOIN public.contacts c ON c.contact_id = h.contact_id
+                LEFT JOIN bedrock.jobs_contact_membership m ON m.contact_id = h.contact_id
+                WHERE h.changed_at >= $2 AND h.changed_at < $3
+                  AND ($1::text IS NULL OR lower(m.owner_email) = $1)
+                ORDER BY h.contact_id, h.to_stage, h.changed_at
+            """, owner_f, p_from, p_to)
+        except (asyncpg.exceptions.InsufficientPrivilegeError, asyncpg.exceptions.UndefinedTableError):
+            hrows = []
+        for r in hrows:
+            key = (r["contact_id"], canon_membership_stage(r["to_stage"]))
+            from_of.setdefault(key, canon_membership_stage(r["from_stage"]))
+            if key[1] in contact_keys and key not in seen:
+                seen[key] = (r, r["changed_at"])
+    for (cid, stage_key), (r, ts) in seen.items():
+        moved.append({
+            "band": "outreach", "stage": stage_key, "id": str(cid), "name": r["name"],
+            "detail": r["company"], "owner": r["owner"], "at": ts.isoformat(),
+            "from": from_of.get((cid, stage_key)),
+        })
+
+    # Opportunities, working stages: every entry in the window, one per (deal,
+    # stage), plus deals created straight into a stage (no history row).
+    erows = await conn.fetch(f"""
+        WITH hist AS (
+            SELECT DISTINCT ON (h.opportunity_id, h.to_stage)
+                   h.opportunity_id AS oid, h.from_stage, h.to_stage AS stage, h.changed_at AS at
+            FROM bedrock.jobs_stage_history h
+            WHERE h.changed_at >= $3 AND h.changed_at < $4
+            ORDER BY h.opportunity_id, h.to_stage, h.changed_at
+        ), created AS (
+            SELECT o.id AS oid, NULL::text AS from_stage, o.stage, o.created_at AS at
+            FROM bedrock.jobs_opportunity o
+            WHERE o.created_at >= $3 AND o.created_at < $4
+              AND NOT EXISTS (SELECT 1 FROM bedrock.jobs_stage_history h2 WHERE h2.opportunity_id = o.id)
+        )
+        SELECT e.oid, e.from_stage, e.stage, e.at, o.account_name, o.title, o.owner_email
+        FROM (SELECT * FROM hist UNION ALL SELECT * FROM created) e
+        JOIN bedrock.jobs_opportunity o ON o.id = e.oid
+        WHERE o.deleted_at IS NULL
+          AND ($1::text IS NULL OR lower(o.owner_email) = $1)
+          AND {_deal_type_sql('o.deal_type', 2)}
+    """, owner_f, dt_f, p_from, p_to)
+    working = set(OPPORTUNITY_STAGES_ACTIVE)
+    deal_seen: set = set()
+    for r in erows:
+        stage_key = canon_stage(r["stage"])
+        key = (r["oid"], stage_key)
+        if stage_key not in working or key in deal_seen:
+            continue
+        deal_seen.add(key)
+        moved.append({
+            "band": "pipeline", "stage": stage_key, "id": str(r["oid"]), "name": r["account_name"],
+            "detail": r["title"], "owner": r["owner_email"], "at": r["at"].isoformat(),
+            "from": canon_stage(r["from_stage"]),
+        })
+    # Closes: the deal's LATEST stage change before the period end moved it
+    # into the close, inside the period (the Closed won / lost card rule).
+    crows = await conn.fetch(f"""
+        SELECT oid, from_stage, to_stage, at, account_name, title, owner_email FROM (
+            SELECT DISTINCT ON (h.opportunity_id)
+                   h.opportunity_id AS oid, h.from_stage, h.to_stage, h.changed_at AS at,
+                   o.account_name, o.title, o.owner_email
+            FROM bedrock.jobs_stage_history h
+            JOIN bedrock.jobs_opportunity o ON o.id = h.opportunity_id
+            WHERE h.changed_at < $4 AND o.deleted_at IS NULL
+              AND ($1::text IS NULL OR lower(o.owner_email) = $1)
+              AND {_deal_type_sql('o.deal_type', 2)}
+            ORDER BY h.opportunity_id, h.changed_at DESC
+        ) last_change
+        WHERE to_stage IN ('closed_won', 'closed_lost') AND at >= $3
+    """, owner_f, dt_f, p_from, p_to)
+    for r in crows:
+        moved.append({
+            "band": "pipeline", "stage": r["to_stage"], "id": str(r["oid"]), "name": r["account_name"],
+            "detail": r["title"], "owner": r["owner_email"], "at": r["at"].isoformat(),
+            "from": canon_stage(r["from_stage"]),
+        })
+    return moved
+
+
 @router.get("/stage-flow")
 async def get_stage_flow(
     period_from: Optional[str] = Query(None, description="YYYY-MM-DD, inclusive"),
     period_to: Optional[str] = Query(None, description="YYYY-MM-DD, inclusive"),
     owner: Optional[str] = Query(None),
-    deal_type: Optional[str] = Query(None, description="Deal band only: contacts carry no deal type"),
+    deal_type: Optional[str] = Query(None, description="Opportunities band only: contacts carry no deal type"),
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
-    """Every stage from first outreach to Closed Won: in now (by time in stage),
-    moved in during the period, and the weekly stage target prorated to it.
-    With `owner` set, the target is that person's; otherwise the team's.
+    """Every stage from first outreach to Closed Won: the Pool (in stage now, by
+    time in stage), moved in during the period and the period before, and the
+    weekly target prorated to the period. With `owner` set the target is that
+    person's; otherwise the team's.
 
     `members` and `moved` are flat lists keyed by (band, stage); every count in
     `bands` is the length of a slice of one of them, so a drill list can never
@@ -3853,25 +3990,27 @@ async def get_stage_flow(
     owner_f = owner.strip().lower() if owner and owner != "all" else None
     dt_f = _parse_deal_types(deal_type)
     now = datetime.now(timezone.utc)
-    span_days = (p_to - p_from).days
+    span = p_to - p_from
+    span_days = span.days
 
     def _days(ts) -> int:
         return 0 if ts is None else max(0, (now - ts).days)
 
     members: list = []
-    moved: list = []
 
     # ── Contacts in now ──────────────────────────────────────────────────────
-    # Time in stage = the latest history entry into the current stage, else the
-    # stage's own stamp, else the last update. The history read needs the
-    # 2026-08-03 grant; without it the stamps carry the three stamped stages.
-    contact_in = ", ".join(f"'{k}'" for k, _ in _FLOW_CONTACT_STAGES)
+    # Every outreach stage, the three closed ones included. Time in stage = the
+    # latest history entry into the current stage, else the stage's own stamp,
+    # else the last update. The history read needs the 2026-08-03 grant.
+    pool_stages = [k for k, _ in _FLOW_CONTACT_STAGES + _FLOW_CONTACT_CLOSED] + ["on_hold"]
+    contact_in = ", ".join(f"'{k}'" for k in pool_stages)
     # call_booked_at arrived with the 2026-08-05 migration; probe it like the
     # membership PATCH does rather than 500 on an environment without it.
     call_booked_stamp = ("WHEN 'call_booked' THEN m.call_booked_at "
                          if await _has_column("bedrock", "jobs_contact_membership", "call_booked_at") else "")
     stamp_case = ("CASE m.stage WHEN 'assigned' THEN m.assigned_at "
                   "WHEN 'initial_outreach' THEN m.first_outreach_at "
+                  "WHEN 'converted_to_opportunity' THEN m.converted_at "
                   f"{call_booked_stamp}END")
     contact_sql = """
         SELECT m.contact_id, c.full_name AS name, c.current_company AS company,
@@ -3894,59 +4033,12 @@ async def get_stage_flow(
     for r in crows:
         d = _days(r["entered_stage"])
         members.append({
-            "band": "outreach", "stage": r["stage"], "id": str(r["contact_id"]),
+            "band": "outreach", "stage": canon_membership_stage(r["stage"]), "id": str(r["contact_id"]),
             "name": r["name"], "detail": r["company"], "owner": r["owner"],
             "days": d, "bucket": _opp_age_bucket(d),
         })
 
-    # ── Contacts moved in ────────────────────────────────────────────────────
-    # Same rules as the Contacts funnel's period mode: the stage stamps, then
-    # membership history, one entry per (contact, stage).
-    contact_moved_keys = {k for k, _ in _FLOW_CONTACT_STAGES + _FLOW_CONTACT_TERMINAL}
-    seen: dict = {}
-    srows = await conn.fetch("""
-        SELECT m.contact_id, c.full_name AS name, c.current_company AS company,
-               m.owner_email AS owner, m.assigned_at, m.first_outreach_at, m.converted_at
-        FROM bedrock.jobs_contact_membership m
-        JOIN public.contacts c ON c.contact_id = m.contact_id
-        WHERE m.stage <> 'not_a_fit'
-          AND ($1::text IS NULL OR lower(m.owner_email) = $1)
-          AND (m.assigned_at >= $2 AND m.assigned_at < $3
-               OR m.first_outreach_at >= $2 AND m.first_outreach_at < $3
-               OR m.converted_at >= $2 AND m.converted_at < $3)
-    """, owner_f, p_from, p_to)
-    for r in srows:
-        for stage_key, col in (("assigned", "assigned_at"), ("initial_outreach", "first_outreach_at"),
-                               ("converted_to_opportunity", "converted_at")):
-            ts = r[col]
-            if ts is not None and p_from <= ts < p_to:
-                seen[(r["contact_id"], stage_key)] = (r, ts)
-    if have_history:
-        try:
-            hrows = await conn.fetch("""
-                SELECT DISTINCT ON (h.contact_id, h.to_stage)
-                       h.contact_id, h.to_stage, h.changed_at,
-                       c.full_name AS name, c.current_company AS company, m.owner_email AS owner
-                FROM bedrock.jobs_membership_stage_history h
-                JOIN public.contacts c ON c.contact_id = h.contact_id
-                LEFT JOIN bedrock.jobs_contact_membership m ON m.contact_id = h.contact_id
-                WHERE h.changed_at >= $2 AND h.changed_at < $3
-                  AND ($1::text IS NULL OR lower(m.owner_email) = $1)
-                ORDER BY h.contact_id, h.to_stage, h.changed_at
-            """, owner_f, p_from, p_to)
-        except (asyncpg.exceptions.InsufficientPrivilegeError, asyncpg.exceptions.UndefinedTableError):
-            hrows = []
-        for r in hrows:
-            key = (r["contact_id"], canon_membership_stage(r["to_stage"]))
-            if key[1] in contact_moved_keys and key not in seen:
-                seen[key] = (r, r["changed_at"])
-    for (cid, stage_key), (r, ts) in seen.items():
-        moved.append({
-            "band": "outreach", "stage": stage_key, "id": str(cid), "name": r["name"],
-            "detail": r["company"], "owner": r["owner"], "at": ts.isoformat(),
-        })
-
-    # ── Deals in now ─────────────────────────────────────────────────────────
+    # ── Opportunities in now ─────────────────────────────────────────────────
     # Time in stage exactly as Stage × Time in Pipeline measures it.
     drows = await conn.fetch(f"""
         SELECT o.id, o.account_name, o.title, o.stage, o.owner_email,
@@ -3966,108 +4058,88 @@ async def get_stage_flow(
             "days": d, "bucket": _opp_age_bucket(d),
         })
 
-    # ── Deals moved in ───────────────────────────────────────────────────────
-    # Working stages: every entry in the window, one per (deal, stage), plus
-    # deals created straight into a stage (they never get a history row).
-    erows = await conn.fetch(f"""
-        WITH hist AS (
-            SELECT DISTINCT ON (h.opportunity_id, h.to_stage)
-                   h.opportunity_id AS oid, h.to_stage AS stage, h.changed_at AS at
-            FROM bedrock.jobs_stage_history h
-            WHERE h.changed_at >= $3 AND h.changed_at < $4
-            ORDER BY h.opportunity_id, h.to_stage, h.changed_at
-        ), created AS (
-            SELECT o.id AS oid, o.stage, o.created_at AS at
-            FROM bedrock.jobs_opportunity o
-            WHERE o.created_at >= $3 AND o.created_at < $4
-              AND NOT EXISTS (SELECT 1 FROM bedrock.jobs_stage_history h2 WHERE h2.opportunity_id = o.id)
-        )
-        SELECT e.oid, e.stage, e.at, o.account_name, o.title, o.owner_email
-        FROM (SELECT * FROM hist UNION ALL SELECT * FROM created) e
-        JOIN bedrock.jobs_opportunity o ON o.id = e.oid
-        WHERE o.deleted_at IS NULL
-          AND ($1::text IS NULL OR lower(o.owner_email) = $1)
-          AND {_deal_type_sql('o.deal_type', 2)}
-    """, owner_f, dt_f, p_from, p_to)
-    working = set(OPPORTUNITY_STAGES_ACTIVE)
-    deal_seen: set = set()
-    for r in erows:
-        stage_key = canon_stage(r["stage"])
-        key = (r["oid"], stage_key)
-        if stage_key not in working or key in deal_seen:
-            continue
-        deal_seen.add(key)
-        moved.append({
-            "band": "pipeline", "stage": stage_key, "id": str(r["oid"]), "name": r["account_name"],
-            "detail": r["title"], "owner": r["owner_email"], "at": r["at"].isoformat(),
-        })
-    # Closes: the deal's LATEST stage change before the period end moved it
-    # into the close, inside the period (the Closed won / lost card rule).
-    crows2 = await conn.fetch(f"""
-        SELECT oid, to_stage, at, account_name, title, owner_email FROM (
-            SELECT DISTINCT ON (h.opportunity_id)
-                   h.opportunity_id AS oid, h.to_stage, h.changed_at AS at,
-                   o.account_name, o.title, o.owner_email
-            FROM bedrock.jobs_stage_history h
-            JOIN bedrock.jobs_opportunity o ON o.id = h.opportunity_id
-            WHERE h.changed_at < $4 AND o.deleted_at IS NULL
-              AND ($1::text IS NULL OR lower(o.owner_email) = $1)
-              AND {_deal_type_sql('o.deal_type', 2)}
-            ORDER BY h.opportunity_id, h.changed_at DESC
-        ) last_change
-        WHERE to_stage IN ('closed_won', 'closed_lost') AND at >= $3
-    """, owner_f, dt_f, p_from, p_to)
-    for r in crows2:
-        moved.append({
-            "band": "pipeline", "stage": r["to_stage"], "id": str(r["oid"]), "name": r["account_name"],
-            "detail": r["title"], "owner": r["owner_email"], "at": r["at"].isoformat(),
-        })
-
+    # ── Moved in: this period, and the one before for the Trend ──────────────
+    moved = await _flow_moved(conn, owner_f, dt_f, p_from, p_to, have_history)
+    prev = await _flow_moved(conn, owner_f, dt_f, p_from - span, p_from, have_history)
     moved.sort(key=lambda m: m["at"], reverse=True)
     members.sort(key=lambda m: -m["days"])
 
-    # ── Rows ─────────────────────────────────────────────────────────────────
-    targets_on = jobs_targets_store.stage_targets_available()
+    # Stages the database doesn't accept yet (Engaging, until its migration
+    # runs) read "pending migration" rather than a zero that looks measured.
+    opp_writable = await _writable_stages(
+        "jobs_opportunity", "jobs_opportunity_stage_check", OPPORTUNITY_STAGES_NEW,
+        settles_when=OPPORTUNITY_STAGE_SETTLES_WHEN)
 
-    def _row(band: str, key: str, label: str, with_now: bool) -> dict:
+    # ── Rows ─────────────────────────────────────────────────────────────────
+    stage_targets_on = jobs_targets_store.stage_targets_available()
+
+    def _target(key: str) -> tuple:
+        """(weekly, source): the stage target, else a borrowed outreach one."""
+        if key not in STAGE_FLOW_TARGET_KEYS:
+            return None, None
+        if stage_targets_on:
+            w = jobs_targets_store.stage_weekly(key, owner_f)
+            if w is not None:
+                return w, "stage"
+        metric = _FLOW_OUTREACH_TARGET.get(key)
+        if metric and jobs_targets_store.available():
+            w = (jobs_targets_store.owner_weekly(owner_f, metric) if owner_f
+                 else jobs_targets_store.team_weekly(metric))
+            if w is not None:
+                return w, "outreach"
+        return None, None
+
+    def _count(rows: list, band: str, keys: set) -> int:
+        return sum(1 for m in rows if m["band"] == band and m["stage"] in keys)
+
+    def _row(band: str, key: str, label: str, with_pool: bool, depth: int = 0,
+             children: Optional[list] = None) -> dict:
+        keys = set(children or [key])
         cells = [0, 0, 0, 0, 0]
-        if with_now:
+        if with_pool:
             for m in members:
-                if m["band"] == band and m["stage"] == key:
+                if m["band"] == band and m["stage"] in keys:
                     cells[m["bucket"]] += 1
-        weekly = (jobs_targets_store.stage_weekly(key, owner_f)
-                  if targets_on and key in STAGE_FLOW_TARGET_KEYS else None)
+        weekly, source = (None, None) if children else _target(key)
         target = round(weekly * span_days / 7, 1) if weekly is not None else None
-        moved_in = sum(1 for m in moved if m["band"] == band and m["stage"] == key)
+        moved_in = _count(moved, band, keys)
         return {
-            "key": key, "label": label,
-            "in_now": {"total": sum(cells), "cells": cells} if with_now else None,
+            "key": key, "label": label, "depth": depth, "children": children,
+            "available": band != "pipeline" or key in opp_writable or key in ("closed_won", "closed_lost"),
+            "in_now": {"total": sum(cells), "cells": cells} if with_pool else None,
             "moved_in": moved_in,
-            "targetable": key in STAGE_FLOW_TARGET_KEYS,
+            "prev_moved_in": _count(prev, band, keys),
+            "targetable": not children and key in STAGE_FLOW_TARGET_KEYS,
             "target_weekly": weekly,
+            "target_source": source,
             # Prorated to the period: a weekly 5 over a 14-day window is 10.
             "target": target,
             # Moved in minus target: positive is ahead.
             "delta": round(moved_in - target, 1) if target is not None else None,
         }
 
+    closed_keys = [k for k, _ in _FLOW_CONTACT_CLOSED]
     bands = [
         {"key": "outreach", "label": "Outreach", "unit": "contacts",
          "rows": [_row("outreach", k, lbl, True) for k, lbl in _FLOW_CONTACT_STAGES]
-                 + [_row("outreach", k, lbl, False) for k, lbl in _FLOW_CONTACT_TERMINAL]},
-        {"key": "pipeline", "label": "Pipeline", "unit": "deals",
+                 + [_row("outreach", "contact_closed", "Contact closed", True, children=closed_keys)]
+                 + [_row("outreach", k, lbl, True, depth=1) for k, lbl in _FLOW_CONTACT_CLOSED]},
+        {"key": "pipeline", "label": "Pipeline", "unit": "opportunities",
          "rows": [_row("pipeline", k, STAGE_LABELS.get(k, k), True) for k in OPPORTUNITY_STAGES_ACTIVE]
                  + [_row("pipeline", k, lbl, False) for k, lbl in _FLOW_DEAL_TERMINAL]},
     ]
     return {"success": True, "data": {
         "period": {"from": p_from.date().isoformat(),
                    "to": (p_to - timedelta(days=1)).date().isoformat(), "days": span_days},
+        "prev_period": {"from": (p_from - span).date().isoformat(),
+                        "to": (p_from - timedelta(days=1)).date().isoformat()},
         "filters": {"owner": owner_f, "deal_type": ",".join(dt_f) if dt_f is not None else None},
         "buckets": [{"key": k, "label": lbl} for k, lbl in _OPP_AGE_BUCKETS],
         "bands": bands,
-        "targets_available": targets_on,
+        "targets_available": stage_targets_on,
         # Whose targets the Target column shows: the selected owner's, or the team's.
         "target_scope": owner_f or "team",
+        "stage_labels": {**STAGE_LABELS, **{k: lbl for k, lbl in _FLOW_CONTACT_STAGES + _FLOW_CONTACT_CLOSED}},
         "members": members,
         "moved": moved,
     }}
@@ -6859,10 +6931,10 @@ async def stage_vocabulary(user=Depends(require_auth)):
                                   "initial_outreach", "active_builder_interview",
                                   "on_hold_not_selected", "on_hold_not_interested",
                                   "on_hold_not_responsive"],
-        # Only the 2026-09-21 constraint contains this, so the vocabulary keeps
+        # Only the newest constraint contains this, so the vocabulary keeps
         # being re-probed until that migration lands rather than caching the
         # pre-migration answer for the life of the process.
-        settles_when="offer_contracting")
+        settles_when=OPPORTUNITY_STAGE_SETTLES_WHEN)
     mem = await _writable_stages(
         "jobs_contact_membership", "jobs_contact_membership_stage_vals",
         MEMBERSHIP_STAGES_NEW + ["on_hold"],

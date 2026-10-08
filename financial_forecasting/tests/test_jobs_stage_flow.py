@@ -67,19 +67,56 @@ def test_in_now_buckets_by_time_in_stage_and_bands_keep_their_units():
     assert r.status_code == 200, r.text
     d = r.json()["data"]
     rows = _rows(d)
-    assert [b["unit"] for b in d["bands"]] == ["contacts", "deals"]
+    assert [b["unit"] for b in d["bands"]] == ["contacts", "opportunities"]
     assert rows[("outreach", "call_booked")]["in_now"] == {"total": 2, "cells": [1, 1, 0, 0, 0]}
     assert rows[("outreach", "initial_outreach")]["in_now"]["cells"] == [0, 0, 0, 0, 1]
     assert rows[("pipeline", "builder_interviewing")]["in_now"]["cells"] == [0, 0, 0, 1, 0]
     assert rows[("pipeline", "builder_submitted")]["in_now"]["total"] == 1
     # Every stage gets a row, empty or not.
     assert rows[("pipeline", "offer_contracting")]["in_now"]["total"] == 0
-    # Closed Won and the off-ramps are movement-only.
+    # Closed Won and Lost are movement-only; the contact outcomes carry a Pool.
     assert rows[("pipeline", "closed_won")]["in_now"] is None
-    assert rows[("outreach", "not_a_fit")]["in_now"] is None
+    assert rows[("outreach", "not_a_fit")]["in_now"]["total"] == 0
+    # Engaging sits right after Initial Opportunity.
+    keys = [r["key"] for r in d["bands"][1]["rows"]]
+    assert keys[:3] == ["active_in_discussions", "engaging", "ask_submitted"]
+    assert d["bands"][1]["rows"][0]["label"] == "Initial Opportunity"
     # Each count is a slice of `members`, so the drill matches the number.
     cb = [m for m in d["members"] if m["band"] == "outreach" and m["stage"] == "call_booked"]
     assert len(cb) == 2 and {m["bucket"] for m in cb} == {0, 1}
+
+
+def test_contact_closed_sums_its_three_paths():
+    r, _ = _get({
+        CONTACTS_NOW: [_contact(1, "converted_to_opportunity", 3), _contact(2, "not_a_fit", 40),
+                       # legacy on_hold reads as Revisit
+                       _contact(3, "on_hold", 10)],
+        CONTACT_HISTORY: [
+            {"contact_id": 4, "from_stage": "call_booked", "to_stage": "not_a_fit", "changed_at": ago(1),
+             "name": "C4", "company": "Co4", "owner": "a@pursuit.org"},
+            {"contact_id": 5, "from_stage": "call_booked", "to_stage": "revisit", "changed_at": ago(1),
+             "name": "C5", "company": "Co5", "owner": "a@pursuit.org"},
+        ],
+    })
+    d = r.json()["data"]
+    rows = _rows(d)
+    closed = rows[("outreach", "contact_closed")]
+    assert closed["children"] == ["converted_to_opportunity", "revisit", "not_a_fit"]
+    assert closed["in_now"]["total"] == 3 and closed["moved_in"] == 2
+    assert closed["targetable"] is False
+    assert rows[("outreach", "revisit")]["in_now"]["total"] == 1 and rows[("outreach", "revisit")]["depth"] == 1
+    # Each move says where it came from, so the drawer can show the paths.
+    assert {m["from"] for m in d["moved"] if m["band"] == "outreach"} == {"call_booked"}
+
+
+def test_engaging_reads_pending_until_its_migration():
+    old = "CHECK ((stage = ANY (ARRAY['active_in_discussions'::text, 'ask_submitted'::text, 'closed_won'::text])))"
+    conn = FakeConn(vals={"pg_get_constraintdef": old})
+    c = make_jobs_client(conn)
+    r = c.get(f"/api/jobs/stage-flow?period_from={P_FROM}&period_to={P_TO}")
+    rows = _rows(r.json()["data"])
+    assert rows[("pipeline", "engaging")]["available"] is False
+    assert rows[("pipeline", "ask_submitted")]["available"] is True
 
 
 def test_contacts_moved_in_dedupes_stamp_and_history():
@@ -88,12 +125,12 @@ def test_contacts_moved_in_dedupes_stamp_and_history():
                           "assigned_at": ago(30), "first_outreach_at": ago(2), "converted_at": None}],
         CONTACT_HISTORY: [
             # same entry the stamp already counted
-            {"contact_id": 1, "to_stage": "initial_outreach", "changed_at": ago(2),
+            {"contact_id": 1, "from_stage": "assigned", "to_stage": "initial_outreach", "changed_at": ago(2),
              "name": "C1", "company": "Co1", "owner": "a@pursuit.org"},
-            {"contact_id": 1, "to_stage": "call_booked", "changed_at": ago(1),
+            {"contact_id": 1, "from_stage": "initial_outreach", "to_stage": "call_booked", "changed_at": ago(1),
              "name": "C1", "company": "Co1", "owner": "a@pursuit.org"},
             # legacy on_hold reads as Revisit
-            {"contact_id": 2, "to_stage": "on_hold", "changed_at": ago(1),
+            {"contact_id": 2, "from_stage": "call_booked", "to_stage": "on_hold", "changed_at": ago(1),
              "name": "C2", "company": "Co2", "owner": "a@pursuit.org"},
         ],
     })
@@ -108,13 +145,13 @@ def test_deals_moved_in_folds_retired_stages_and_closes_are_sticky():
     oid = "00000009-0000-0000-0000-000000000000"
     base = {"account_name": "A9", "title": "SWE", "owner_email": "a@pursuit.org"}
     r, _ = _get({
-        DEAL_CLOSES: [{"oid": oid, "to_stage": "closed_won", "at": ago(1), **base}],
+        DEAL_CLOSES: [{"oid": oid, "from_stage": "builder_submitted", "to_stage": "closed_won", "at": ago(1), **base}],
         DEAL_ENTRIES: [
-            {"oid": oid, "stage": "reviewing_builders", "at": ago(3), **base},
-            {"oid": oid, "stage": "builder_submitted", "at": ago(2), **base},
+            {"oid": oid, "from_stage": "active_in_discussions", "stage": "reviewing_builders", "at": ago(3), **base},
+            {"oid": oid, "from_stage": "reviewing_builders", "stage": "builder_submitted", "at": ago(2), **base},
             # a win in the entries list never counts on its own: closes come
             # only from the sticky-close query
-            {"oid": oid, "stage": "closed_won", "at": ago(1), **base},
+            {"oid": oid, "from_stage": "builder_submitted", "stage": "closed_won", "at": ago(1), **base},
         ],
     })
     rows = _rows(r.json()["data"])
@@ -160,7 +197,7 @@ def test_targets_pending_until_migration_then_prorated():
     asyncio.run(store.refresh(Pool(), force=True))
     from_14 = (NOW - timedelta(days=13)).date().isoformat()
     r, _ = _get({CONTACT_HISTORY: [
-        {"contact_id": 1, "to_stage": "call_booked", "changed_at": ago(1),
+        {"contact_id": 1, "from_stage": "initial_outreach", "to_stage": "call_booked", "changed_at": ago(1),
          "name": "C1", "company": "Co1", "owner": "a@pursuit.org"}]}, period_from=from_14)
     d = r.json()["data"]
     rows = _rows(d)
@@ -177,6 +214,9 @@ def test_targets_pending_until_migration_then_prorated():
     d = r.json()["data"]
     assert d["target_scope"] == "a@pursuit.org"
     assert _rows(d)[("outreach", "call_booked")]["target_weekly"] == 3
+    # Converted borrows the Settings outreach target while it has no stage target.
+    # (No outreach target is set in this fixture, so it stays empty.)
+    assert _rows(d)[("outreach", "converted_to_opportunity")]["target_source"] is None
     # Someone off the team carries no target rather than the team's.
     r, _ = _get({}, owner="someone@pursuit.org")
     assert _rows(r.json()["data"])[("outreach", "call_booked")]["target_weekly"] is None
@@ -202,3 +242,28 @@ def test_bad_period_is_a_400():
     assert r.status_code == 400
     r, _ = _get({}, period_from="nope")
     assert r.status_code == 400
+
+
+def test_converted_borrows_the_settings_outreach_target():
+    class Pool:
+        async def fetchval(self, q, *a):
+            return None if "pg_get_constraintdef" in q else True
+
+        async def fetch(self, q, *a):
+            if "jobs_team_member" in q:
+                return [{"email": "a@pursuit.org"}]
+            return [{"section": "outreach", "metric": "converted_opportunities", "owner_email": None,
+                     "period_start": None, "value": 4, "team_mode": "set"},
+                    {"section": "outreach", "metric": "converted_opportunities", "owner_email": "a@pursuit.org",
+                     "period_start": None, "value": 2, "team_mode": None}]
+    asyncio.run(store.refresh(Pool(), force=True))
+    r, _ = _get({})
+    d = r.json()["data"]
+    conv = _rows(d)[("outreach", "converted_to_opportunity")]
+    # Stage targets are still pending, but this one is live today.
+    assert d["targets_available"] is False
+    assert conv["target_weekly"] == 4 and conv["target_source"] == "outreach"
+    # Nothing else borrows: sends and calls measure events, not stage entries.
+    assert _rows(d)[("outreach", "call_booked")]["target"] is None
+    r, _ = _get({}, owner="a@pursuit.org")
+    assert _rows(r.json()["data"])[("outreach", "converted_to_opportunity")]["target_weekly"] == 2

@@ -57,6 +57,7 @@ function invalidateOppDependents(qc: QueryClient, extra: string[][] = []) {
 export type JobStage =
   | "lead_submitted"
   | "active_in_discussions"
+  | "engaging"
   | "ask_submitted"
   | "active_opportunity_confirmed"
   | "builder_submitted"
@@ -214,7 +215,9 @@ export interface OpportunityFilters {
 // ── Labels & metadata ────────────────────────────────────────────────────────
 
 export const STAGE_LABELS: Record<JobStage, string> = {
-  active_in_discussions:        "In Discussions",
+  // Renamed 2026-10-08: the label changed, the stored key did not.
+  active_in_discussions:        "Initial Opportunity",
+  engaging:                     "Engaging",
   ask_submitted:                "Ask Submitted",
   active_opportunity_confirmed: "Opportunity Confirmed",
   builder_submitted:            "Builder Submitted",
@@ -241,7 +244,8 @@ export const DEAL_TYPE_LABELS: Record<DealType, string> = {
   pilot:       "Pilot",
 };
 
-/** Board columns and pickers, in pipeline order. Eight stages as of 2026-09-21,
+/** Board columns and pickers, in pipeline order. Nine stages as of 2026-10-08
+ *  (Engaging added after Initial Opportunity); eight as of 2026-09-21,
  *  when the middle of the funnel split from one step into four and Lead
  *  Submitted was retired — it described a contact, not a deal, and that work
  *  lives in the membership pipeline.
@@ -250,6 +254,7 @@ export const DEAL_TYPE_LABELS: Record<DealType, string> = {
  *  and moves to a current stage on the next edit. */
 export const STAGES_ORDERED: JobStage[] = [
   "active_in_discussions",
+  "engaging",
   "ask_submitted",
   "active_opportunity_confirmed",
   "builder_submitted",
@@ -264,6 +269,7 @@ export const STAGES_ORDERED: JobStage[] = [
  *  routes/jobs.py. */
 export const STAGE_DESCRIPTIONS: Partial<Record<JobStage, string>> = {
   active_in_discussions:        "Confirmed hiring appetite and a named decision maker.",
+  engaging:                     "Follow-up set. Working the relationship toward a specific ask.",
   ask_submitted:                "A specific ask is with the employer — role, scope or option set. Awaiting yes or no.",
   active_opportunity_confirmed: "They said yes. A real role or engagement exists.",
   builder_submitted:            "Named builder profiles sent to the employer.",
@@ -286,6 +292,7 @@ export const LEGACY_STAGES: JobStage[] = [
 
 export const ACTIVE_STAGES: JobStage[] = [
   "active_in_discussions",
+  "engaging",
   "ask_submitted",
   "active_opportunity_confirmed",
   "builder_submitted",
@@ -3144,12 +3151,22 @@ export type StageFlowBand = "outreach" | "pipeline";
 export interface StageFlowRow {
   key: string;
   label: string;
+  /** 1 for a row indented under a summary row (the Contact closed paths). */
+  depth: number;
+  /** Set on a summary row: the stages it sums. */
+  children: string[] | null;
+  /** False while the database doesn't accept the stage yet (pending migration). */
+  available: boolean;
   /** Null on movement-only rows (Closed Won, the off-ramps). */
   in_now: { total: number; cells: number[] } | null;
   moved_in: number;
+  /** The same count for the period before, same length: the Trend. */
+  prev_moved_in: number;
   /** False for rows that never carry a target (off-ramps). */
   targetable: boolean;
   target_weekly: number | null;
+  /** "stage" = a stage target; "outreach" = borrowed from the Settings outreach target. */
+  target_source: "stage" | "outreach" | null;
   /** The weekly target prorated to the period's length. */
   target: number | null;
   /** Moved in minus target; positive is ahead. Null without a target. */
@@ -3176,12 +3193,17 @@ export interface StageFlowMove {
   detail: string | null;
   owner: string | null;
   at: string;
+  /** The stage it came from, where history records one. */
+  from: string | null;
 }
 
 export interface StageFlow {
   period: { from: string; to: string; days: number };
+  prev_period: { from: string; to: string };
   buckets: { key: string; label: string }[];
-  bands: { key: StageFlowBand; label: string; unit: "contacts" | "deals"; rows: StageFlowRow[] }[];
+  bands: { key: StageFlowBand; label: string; unit: "contacts" | "opportunities"; rows: StageFlowRow[] }[];
+  /** Stage key → label, both bands, for the drawer's Stage and From columns. */
+  stage_labels: Record<string, string>;
   /** False until the stage-targets migration runs. */
   targets_available: boolean;
   /** Whose targets the Target column carries: an owner's email, or "team". */
