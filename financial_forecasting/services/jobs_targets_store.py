@@ -72,8 +72,10 @@ class _Snapshot:
         # section CHECK to admit 'stage'. Until then the Overview's Stage Flow
         # target column reads "pending migration".
         self.stage_available = False
-        # stage key -> weekly team target
-        self.stage: dict[str, int] = {}
+        # Same shape as outreach: owner -> stage -> weekly value, and
+        # stage -> {"mode": "sum"|"set", "value"} for the team line.
+        self.stage_owner: dict[str, dict[str, Optional[int]]] = {}
+        self.stage_team: dict[str, dict] = {}
 
 
 _snap = _Snapshot()
@@ -136,8 +138,11 @@ async def refresh(pool, force: bool = False) -> None:
             if t["period_start"] is not None and t["value"] is not None:
                 fresh.pipeline[t["period_start"]] = int(t["value"])
         elif t["section"] == "stage":
-            if t["value"] is not None:
-                fresh.stage[t["metric"]] = int(t["value"])
+            if t["owner_email"]:
+                if valid_email(t["owner_email"]):
+                    fresh.stage_owner.setdefault(t["owner_email"], {})[t["metric"]] = t["value"]
+            else:
+                fresh.stage_team[t["metric"]] = {"mode": t["team_mode"] or "sum", "value": t["value"]}
         elif t["owner_email"]:
             if valid_email(t["owner_email"]):
                 fresh.owner.setdefault(t["owner_email"], {})[t["metric"]] = t["value"]
@@ -199,9 +204,22 @@ def stage_targets_available() -> bool:
     return _snap.available and _snap.stage_available
 
 
-def stage_weekly(stage: str) -> Optional[int]:
-    """The team's weekly target for entries into `stage`, or None."""
-    return _snap.stage.get(stage)
+def stage_weekly(stage: str, owner: Optional[str] = None) -> Optional[int]:
+    """Weekly target for entries into `stage`: one person's when `owner` is
+    given (None if they aren't on the team or carry no target), otherwise the
+    team's, set directly or summed from the team's people, exactly as
+    team_weekly() does for outreach."""
+    if owner:
+        e = owner.strip().lower()
+        return _snap.stage_owner.get(e, {}).get(stage) if e in _snap.team else None
+    cfg = _snap.stage_team.get(stage)
+    if cfg is None:
+        return None
+    if cfg["mode"] == "set":
+        return cfg["value"]
+    vals = [_snap.stage_owner.get(e, {}).get(stage) for e in _snap.team]
+    vals = [v for v in vals if v is not None]
+    return sum(vals) if vals else None
 
 
 def snapshot_for_api() -> dict:

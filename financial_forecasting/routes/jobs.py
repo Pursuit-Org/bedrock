@@ -3844,6 +3844,7 @@ async def get_stage_flow(
 ):
     """Every stage from first outreach to Closed Won: in now (by time in stage),
     moved in during the period, and the weekly stage target prorated to it.
+    With `owner` set, the target is that person's; otherwise the team's.
 
     `members` and `moved` are flat lists keyed by (band, stage); every count in
     `bands` is the length of a slice of one of them, so a drill list can never
@@ -4034,15 +4035,20 @@ async def get_stage_flow(
             for m in members:
                 if m["band"] == band and m["stage"] == key:
                     cells[m["bucket"]] += 1
-        weekly = jobs_targets_store.stage_weekly(key) if targets_on and key in STAGE_FLOW_TARGET_KEYS else None
+        weekly = (jobs_targets_store.stage_weekly(key, owner_f)
+                  if targets_on and key in STAGE_FLOW_TARGET_KEYS else None)
+        target = round(weekly * span_days / 7, 1) if weekly is not None else None
+        moved_in = sum(1 for m in moved if m["band"] == band and m["stage"] == key)
         return {
             "key": key, "label": label,
             "in_now": {"total": sum(cells), "cells": cells} if with_now else None,
-            "moved_in": sum(1 for m in moved if m["band"] == band and m["stage"] == key),
+            "moved_in": moved_in,
             "targetable": key in STAGE_FLOW_TARGET_KEYS,
             "target_weekly": weekly,
             # Prorated to the period: a weekly 5 over a 14-day window is 10.
-            "target": round(weekly * span_days / 7, 1) if weekly is not None else None,
+            "target": target,
+            # Moved in minus target: positive is ahead.
+            "delta": round(moved_in - target, 1) if target is not None else None,
         }
 
     bands = [
@@ -4060,6 +4066,8 @@ async def get_stage_flow(
         "buckets": [{"key": k, "label": lbl} for k, lbl in _OPP_AGE_BUCKETS],
         "bands": bands,
         "targets_available": targets_on,
+        # Whose targets the Target column shows: the selected owner's, or the team's.
+        "target_scope": owner_f or "team",
         "members": members,
         "moved": moved,
     }}

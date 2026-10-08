@@ -3152,6 +3152,8 @@ export interface StageFlowRow {
   target_weekly: number | null;
   /** The weekly target prorated to the period's length. */
   target: number | null;
+  /** Moved in minus target; positive is ahead. Null without a target. */
+  delta: number | null;
 }
 
 export interface StageFlowMember {
@@ -3182,6 +3184,8 @@ export interface StageFlow {
   bands: { key: StageFlowBand; label: string; unit: "contacts" | "deals"; rows: StageFlowRow[] }[];
   /** False until the stage-targets migration runs. */
   targets_available: boolean;
+  /** Whose targets the Target column carries: an owner's email, or "team". */
+  target_scope: string;
   members: StageFlowMember[];
   moved: StageFlowMove[];
 }

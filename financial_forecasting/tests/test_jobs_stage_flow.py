@@ -146,17 +146,40 @@ def test_targets_pending_until_migration_then_prorated():
         async def fetch(self, q, *a):
             if "jobs_team_member" in q:
                 return [{"email": "a@pursuit.org"}]
-            return [{"section": "stage", "metric": "call_booked", "owner_email": None,
-                     "period_start": None, "value": 5, "team_mode": None}]
+            return [
+                {"section": "stage", "metric": "call_booked", "owner_email": None,
+                 "period_start": None, "value": 5, "team_mode": "set"},
+                {"section": "stage", "metric": "call_booked", "owner_email": "a@pursuit.org",
+                 "period_start": None, "value": 3, "team_mode": None},
+                # summed team line: the team's people carry it
+                {"section": "stage", "metric": "closed_won", "owner_email": None,
+                 "period_start": None, "value": None, "team_mode": "sum"},
+                {"section": "stage", "metric": "closed_won", "owner_email": "a@pursuit.org",
+                 "period_start": None, "value": 1, "team_mode": None},
+            ]
     asyncio.run(store.refresh(Pool(), force=True))
     from_14 = (NOW - timedelta(days=13)).date().isoformat()
-    r, _ = _get({}, period_from=from_14)
+    r, _ = _get({CONTACT_HISTORY: [
+        {"contact_id": 1, "to_stage": "call_booked", "changed_at": ago(1),
+         "name": "C1", "company": "Co1", "owner": "a@pursuit.org"}]}, period_from=from_14)
     d = r.json()["data"]
     rows = _rows(d)
-    assert d["targets_available"] is True
-    assert rows[("outreach", "call_booked")]["target_weekly"] == 5
-    assert rows[("outreach", "call_booked")]["target"] == 10.0   # two weeks
+    assert d["targets_available"] is True and d["target_scope"] == "team"
+    cb = rows[("outreach", "call_booked")]
+    assert cb["target_weekly"] == 5 and cb["target"] == 10.0   # two weeks
+    assert cb["delta"] == -9.0                                  # 1 moved in vs 10
+    assert rows[("pipeline", "closed_won")]["target_weekly"] == 1
     assert rows[("outreach", "revisit")]["targetable"] is False
+    assert rows[("outreach", "revisit")]["delta"] is None
+
+    # An owner view shows that person's targets, not the team's.
+    r, _ = _get({}, owner="a@pursuit.org")
+    d = r.json()["data"]
+    assert d["target_scope"] == "a@pursuit.org"
+    assert _rows(d)[("outreach", "call_booked")]["target_weekly"] == 3
+    # Someone off the team carries no target rather than the team's.
+    r, _ = _get({}, owner="someone@pursuit.org")
+    assert _rows(r.json()["data"])[("outreach", "call_booked")]["target_weekly"] is None
 
 
 def test_stage_rows_do_not_leak_into_outreach_team_targets():

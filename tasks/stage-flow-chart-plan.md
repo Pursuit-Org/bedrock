@@ -54,6 +54,18 @@ Rules:
 - Period boundaries are UTC midnights, as in the funnels.
 - Owner filters both bands; deal type filters the deal band only.
 
+## Revision 2 (Kwame, 2026-10-08): Pool / Moved in layout
+
+- Headline columns, highlighted: **Pool** (in stage now) and **Moved in** (net new
+  this period), then **Target** and **Δ to target** (moved in minus target).
+- Time-in-stage buckets moved into a collapsible **Breakdown** group on the right,
+  closed by default, with a dropdown: Pool by time in stage | Pool by owner
+  (top 6 owners, then Other, then Unassigned). Open state and cut persist per tab session.
+- No separate owner view. The Owner filter switches the Target column to that
+  person's targets; All owners shows the team's. Stage targets therefore take the
+  outreach shape: per-person rows plus a team row that is "Sum of owners" or "Set total".
+  PR 2's migration and editor must support both.
+
 ## Endpoint
 
 `GET /api/jobs/stage-flow?period_from&period_to&owner&deal_type` returns
