@@ -3865,9 +3865,13 @@ async def get_stage_flow(
     # stage's own stamp, else the last update. The history read needs the
     # 2026-08-03 grant; without it the stamps carry the three stamped stages.
     contact_in = ", ".join(f"'{k}'" for k, _ in _FLOW_CONTACT_STAGES)
+    # call_booked_at arrived with the 2026-08-05 migration; probe it like the
+    # membership PATCH does rather than 500 on an environment without it.
+    call_booked_stamp = ("WHEN 'call_booked' THEN m.call_booked_at "
+                         if await _has_column("bedrock", "jobs_contact_membership", "call_booked_at") else "")
     stamp_case = ("CASE m.stage WHEN 'assigned' THEN m.assigned_at "
                   "WHEN 'initial_outreach' THEN m.first_outreach_at "
-                  "WHEN 'call_booked' THEN m.call_booked_at END")
+                  f"{call_booked_stamp}END")
     contact_sql = """
         SELECT m.contact_id, c.full_name AS name, c.current_company AS company,
                m.owner_email AS owner, m.stage,

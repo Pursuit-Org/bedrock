@@ -36,6 +36,10 @@ type Drill =
 const titleCaseEmail = (e: string) =>
   e.split("@")[0].replace(/[._-]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 
+/** "Oct 5" from an ISO instant, by its UTC day: the counts bucket by UTC
+ *  midnights, so a local-time date could land outside the period it counted in. */
+const utcDay = (iso: string) => format(new Date(`${iso.slice(0, 10)}T00:00:00`), "MMM d");
+
 /** "5" for whole numbers, "2.9" otherwise: a prorated target can be fractional. */
 const fmtTarget = (n: number) => (Number.isInteger(n) ? String(n) : n.toFixed(1));
 
@@ -136,12 +140,12 @@ function StageFlowTable({ data, onDrill }: { data: StageFlow; onDrill: (d: Drill
           </tr>
         </thead>
         <tbody>
-          {data.bands.map((band) => {
+          {data.bands.map((band, bi) => {
             // Shade per band: 700+ contacts would wash every deal cell out.
             const max = Math.max(1, ...band.rows.flatMap((r) => r.in_now?.cells ?? []));
             return [
               <tr key={`${band.key}-head`}>
-                <td colSpan={cols} className="pb-1.5 pt-3 first:pt-0">
+                <td colSpan={cols} className={cn("pb-1.5", bi > 0 && "pt-4")}>
                   <div className="flex items-center gap-2 border-b border-border-strong pb-1.5">
                     <span className="text-[11px] font-bold uppercase tracking-wider text-ink-2">{band.label}</span>
                     <span className="rounded-full bg-surface-2 px-2 py-0.5 text-[10.5px] font-medium text-ink-3">{band.unit}</span>
@@ -241,7 +245,7 @@ function StageFlowDrill({ drill, data, nameOf, onClose }: {
         .map((m) => ({ id: m.id, name: m.name, detail: m.detail, owner: m.owner, when: `${m.days}d` }))
     : data.moved
         .filter((m) => m.band === drill.band && m.stage === drill.stage)
-        .map((m) => ({ id: m.id, name: m.name, detail: m.detail, owner: m.owner, when: format(new Date(m.at), "MMM d") }));
+        .map((m) => ({ id: m.id, name: m.name, detail: m.detail, owner: m.owner, when: utcDay(m.at) }));
 
   const bucketLabel = drill.kind === "now" && drill.bucket != null ? data.buckets[drill.bucket]?.label : null;
   const periodLabel = `${format(new Date(`${data.period.from}T00:00:00`), "MMM d")} – ${format(new Date(`${data.period.to}T00:00:00`), "MMM d")}`;

@@ -71,7 +71,9 @@ a lost team or outreach snapshot.
 
 - **PR 1 (this branch):** the chart, endpoint, store read path, tests. Target column shows "pending migration".
 - **PR 2:** migration `2026-10-08-jobs-stage-targets.sql` (widen the section and
-  metric CHECKs, add the `stage` row shape) + Settings › Targets › Jobs › Stages editor.
+  metric CHECKs, add the `stage` row shape).
+  It must widen all three: the section CHECK, the metric CHECK, and the table-level
+  row-shape CHECK (section/metric/owner/period_start), or 'stage' rows are still rejected; + Settings › Targets › Jobs › Stages editor.
 
 ## Production sizing (2026-10-08)
 
