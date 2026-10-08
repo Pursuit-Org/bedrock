@@ -4139,6 +4139,9 @@ async def get_stage_flow(
         "targets_available": stage_targets_on,
         # Whose targets the Target column shows: the selected owner's, or the team's.
         "target_scope": owner_f or "team",
+        # The Jobs team (Settings › Targets › Jobs › Team), in its set order: the
+        # Owner filter and the Owner tab list these people and nobody else.
+        "team": jobs_targets_store.team_emails(),
         "stage_labels": {**STAGE_LABELS, **{k: lbl for k, lbl in _FLOW_CONTACT_STAGES + _FLOW_CONTACT_CLOSED}},
         "members": members,
         "moved": moved,

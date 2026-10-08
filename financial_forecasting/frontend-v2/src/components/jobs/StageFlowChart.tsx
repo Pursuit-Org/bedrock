@@ -3,13 +3,17 @@
  * table, for the weekly pipeline meeting (Kwame 2026-10-08).
  *
  * Styled as Outreach's Activity Pipeline (the same header bar, rules, indent,
- * Δ chip and Trend), so the two tables read as one system. Two bands, each in
- * its own unit: Outreach counts contacts, Pipeline counts opportunities.
+ * Δ chip, Trend and Activity / Owner tabs), so the two read as one system. Two
+ * bands, each in its own unit: Outreach counts contacts, Pipeline counts
+ * opportunities.
  *
- * Columns: Pool (in the stage now) and Moved in (entered this period) carry the
- * meeting and are highlighted; then Target, Δ to target and Trend (Moved in vs
- * the period before). Breakdown, picked in the card header, adds plain-number
- * columns splitting the Pool by time in stage or by owner.
+ * Stage tab: Pool (in the stage now) and Moved in (entered this period) carry
+ * the meeting and are highlighted; then Target, Δ to Target and Trend (Moved in
+ * vs the period before). "Time in stage" adds the Pool split by how long it has
+ * sat there.
+ *
+ * Owner tab: the same stages, with Pool and Moved in per Jobs team member, and
+ * Others (anyone off the team, or nobody) so each row still adds up.
  *
  * A booked call ends one of three ways, so Contact closed sums Converted to
  * opportunity, Revisit and Not a fit, each indented beneath it.
@@ -29,6 +33,7 @@ import {
   type StageFlow,
   type StageFlowBand,
   type StageFlowMember,
+  type StageFlowMove,
   type StageFlowRow,
 } from "@/services/jobs";
 import { Drawer } from "@/components/ui/Drawer";
@@ -39,26 +44,23 @@ import { Trend } from "@/pages/jobs/JobsOutreach";
 import { useSessionState } from "@/lib/useSessionState";
 import { cn } from "@/lib/utils";
 
-type Cut = "off" | "time" | "owner";
-const CUTS: { key: Cut; label: string }[] = [
-  { key: "off", label: "No breakdown" },
-  { key: "time", label: "Pool by time in stage" },
-  { key: "owner", label: "Pool by owner" },
-];
+type Tab = "stage" | "owner";
 
-type Drill =
-  | { kind: "now"; band: StageFlowBand; stages: string[]; label: string;
-      /** A breakdown cell: its label and exactly the members it counted. */
-      col: { label: string; ids: Set<string> } | null }
-  | { kind: "moved"; band: StageFlowBand; stages: string[]; label: string };
+type Drill = {
+  kind: "now" | "moved";
+  band: StageFlowBand;
+  stages: string[];
+  label: string;
+  /** A narrower cell (a time bucket or an owner): its label and exactly the
+   *  `${id}:${stage}` records it counted. Null = the whole row. */
+  col: { label: string; keys: Set<string> } | null;
+};
 
-const UNASSIGNED = "(unassigned)";
-const OTHER = "(other)";
-/** Owner columns past this many fold into "Other", so the table stays readable. */
-const MAX_OWNER_COLS = 6;
-type CutCol = { key: string; label: string };
+const OTHERS = "(others)";
+/** Band accents: a thin rule on the band header, so the two units read apart. */
+const BAND_ACCENT: Record<StageFlowBand, string> = { outreach: "#2F7FE0", pipeline: "#6d5efc" };
 
-const ownerKey = (e: string | null) => (e ? e.toLowerCase() : UNASSIGNED);
+const recKey = (r: { id: string; stage: string }) => `${r.id}:${r.stage}`;
 const titleCaseEmail = (e: string) =>
   e.split("@")[0].replace(/[._-]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 /** "Oct 5" from an ISO instant, by its UTC day: the counts bucket by UTC
@@ -74,7 +76,8 @@ export function StageFlowChart() {
   const [owner, setOwner] = useState("all");
   // Full time by default, as on the Pipeline tab. Applies to opportunities only.
   const [dealTypes, setDealTypes] = useState<string[]>(["ft"]);
-  const [cut, setCut] = useSessionState<Cut>("jobsOverview.stageFlow.cut", "off");
+  const [tab, setTab] = useSessionState<Tab>("jobsOverview.stageFlow.tab", "stage");
+  const [byTime, setByTime] = useSessionState<boolean>("jobsOverview.stageFlow.byTime", false);
   const [drill, setDrill] = useState<Drill | null>(null);
 
   const staffQ = useJobsStaff();
@@ -85,6 +88,22 @@ export function StageFlowChart() {
   }, [staffQ.data]);
 
   const { data, isLoading, isError } = useStageFlow(range[0], range[1], owner, dealTypeParam(dealTypes));
+  // The Jobs team only (Settings › Targets › Jobs › Team), in its set order.
+  const team = data?.team ?? [];
+  const current = data && data.prev_period && data.stage_labels ? data : null;
+
+  const tabs = (
+    <div className="inline-flex items-center rounded-md border border-border-strong bg-surface p-0.5">
+      {([["stage", "Stage"], ["owner", "Owner"]] as const).map(([k, label]) => (
+        <button key={k} type="button" onClick={() => setTab(k)}
+          title={k === "stage" ? "Each stage: pool, movement, target and trend" : "Each stage, by Jobs team member"}
+          className={cn("rounded px-2.5 py-0.5 text-[12px] font-medium transition-colors",
+            tab === k ? "bg-accent-soft text-accent" : "text-ink-2 hover:bg-surface-2")}>
+          {label}
+        </button>
+      ))}
+    </div>
+  );
 
   return (
     <div className="flex flex-col gap-3">
@@ -96,12 +115,10 @@ export function StageFlowChart() {
       >
         <div className="flex items-center gap-2">
           <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">Owner</span>
-          <select value={owner} onChange={(e) => setOwner(e.target.value)}
+          <select value={owner} onChange={(e) => setOwner(e.target.value)} title="The Jobs team, from Settings › Targets › Jobs"
             className="h-7 rounded-md border border-border-strong bg-surface px-2 text-[12.5px] text-ink outline-none focus:border-accent">
             <option value="all">All owners</option>
-            {(staffQ.data ?? []).map((st) => (
-              <option key={st.email} value={st.email}>{st.name || st.email.split("@")[0]}</option>
-            ))}
+            {team.map((email) => <option key={email} value={email}>{nameOf(email)}</option>)}
           </select>
         </div>
         <div className="flex items-center gap-2" title="Filters the Pipeline band only: contacts carry no deal type">
@@ -110,14 +127,19 @@ export function StageFlowChart() {
         </div>
       </PeriodBar>
 
-      <div className="flex flex-col overflow-hidden rounded-xl border border-border-strong bg-surface">
-        <div className="flex flex-wrap items-center gap-2 border-b border-border-strong bg-surface-2 px-4 py-2.5">
+      <div className="flex flex-col overflow-hidden rounded-xl border border-border-strong bg-surface shadow-sm">
+        <div className="flex flex-wrap items-center gap-2.5 border-b border-border-strong bg-surface-2 px-4 py-2.5">
           <span className="text-[13px] font-bold text-ink-2">Stage Flow</span>
-          <span className="text-[11.5px] text-ink-4">Outreach to Closed Won · click any number for the list</span>
-          <select value={cut} onChange={(e) => setCut(e.target.value as Cut)} title="Add breakdown columns"
-            className="ml-auto h-7 rounded-md border border-border-strong bg-surface px-2 text-[12px] text-ink outline-none focus:border-accent">
-            {CUTS.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
-          </select>
+          {tabs}
+          <span className="hidden text-[11.5px] text-ink-4 md:inline">Outreach to Closed Won · click any number for the list</span>
+          {tab === "stage" && (
+            <button type="button" onClick={() => setByTime(!byTime)} aria-pressed={byTime}
+              title="Split the Pool by how long it has sat in the stage"
+              className={cn("ml-auto h-7 rounded-md border px-2.5 text-[12px] font-medium transition-colors",
+                byTime ? "border-accent/40 bg-accent-soft text-accent" : "border-border-strong bg-surface text-ink-2 hover:border-ink-3")}>
+              Time in stage
+            </button>
+          )}
         </div>
         {isLoading && !data ? (
           <div className="m-4 h-72 animate-pulse rounded-lg bg-surface-2" />
@@ -125,84 +147,143 @@ export function StageFlowChart() {
           <div className="m-4 rounded-lg border border-dashed border-border-strong px-4 py-8 text-center text-[12.5px] text-ink-4">
             Couldn't load the stage flow. Refresh to try again.
           </div>
-        ) : !data.prev_period || !data.stage_labels ? (
+        ) : !current ? (
           // An API older than this page (the backend doesn't hot-reload after
           // a pull) returns the earlier shape. Say so instead of crashing.
           <div className="m-4 rounded-lg border border-dashed border-border-strong px-4 py-8 text-center text-[12.5px] text-ink-3">
             The backend is older than this page. Restart it (Ctrl+C, then <code>python main.py</code>) and refresh.
           </div>
+        ) : tab === "stage" ? (
+          <StageTable data={current} byTime={byTime} nameOf={nameOf} onDrill={setDrill} />
         ) : (
-          <StageFlowTable data={data} cut={cut} nameOf={nameOf} onDrill={setDrill} />
+          <OwnerTable data={current} team={team} nameOf={nameOf} onDrill={setDrill} />
+        )}
+        {current && (
+          <p className="border-t border-border px-4 py-2.5 text-[11px] leading-relaxed text-ink-4">
+            Pool is what sits in each stage today. Moved in counts each contact or opportunity once per stage it entered
+            during the period. Closed Won and Closed Lost count closes that stuck. Targets are weekly, prorated to the
+            period, and follow the Owner filter
+            {current.targets_available ? "" : "; per-stage targets arrive with the stage-targets migration, and Converted to opportunity uses the Settings outreach target until then"}.
+            Deal type filters the Pipeline band only.
+          </p>
         )}
       </div>
 
-      {drill && data?.stage_labels && (
-        <StageFlowDrill drill={drill} data={data} nameOf={nameOf} onClose={() => setDrill(null)} />
+      {drill && current && (
+        <StageFlowDrill drill={drill} data={current} nameOf={nameOf} onClose={() => setDrill(null)} />
       )}
     </div>
   );
 }
 
-// ── Table ────────────────────────────────────────────────────────────────────
+// ── Shared pieces ────────────────────────────────────────────────────────────
 
 // The two headline columns share one soft tint, header to last row.
 const HL = "bg-accent-soft";
+const TH = "whitespace-nowrap px-4 py-2 text-center font-bold align-bottom";
+const SUB = "mt-0.5 block h-3.5 text-[10px] font-normal normal-case tracking-normal text-ink-4";
+const TD = "px-4 py-2.5 text-center tabular-nums";
 
-function StageFlowTable({ data, cut, nameOf, onDrill }: {
-  data: StageFlow; cut: Cut; nameOf: (e: string | null) => string; onDrill: (d: Drill) => void;
+/** Records in a row (summary rows span their children's stages). */
+const stagesOf = (row: StageFlowRow) => row.children ?? [row.key];
+
+function BandHeader({ band, colSpan, pool }: {
+  band: StageFlow["bands"][number]; colSpan: number; pool: number;
 }) {
-  // Owner columns: whoever holds the most of the Pool, the long tail as Other.
-  const ownerCols = useMemo<CutCol[]>(() => {
-    const counts = new Map<string, number>();
-    data.members.forEach((m) => counts.set(ownerKey(m.owner), (counts.get(ownerKey(m.owner)) ?? 0) + 1));
-    const ranked = [...counts.entries()].filter(([k]) => k !== UNASSIGNED).sort((a, b) => b[1] - a[1]);
-    const cols: CutCol[] = ranked.slice(0, MAX_OWNER_COLS).map(([k]) => ({ key: k, label: nameOf(k).split(" ")[0] }));
-    if (ranked.length > MAX_OWNER_COLS) cols.push({ key: OTHER, label: "Other" });
-    if (counts.has(UNASSIGNED)) cols.push({ key: UNASSIGNED, label: "Unassigned" });
-    return cols;
-  }, [data.members, nameOf]);
-  const shownOwners = useMemo(() => new Set(ownerCols.map((c) => c.key)), [ownerCols]);
+  return (
+    <tr className="border-t-2 border-border bg-bg">
+      <td colSpan={colSpan} className="py-2 pl-3.5 pr-4">
+        <div className="flex items-center gap-2">
+          <span className="h-3.5 w-1 rounded-full" style={{ background: BAND_ACCENT[band.key] }} />
+          <span className="text-[11px] font-bold uppercase tracking-wider text-ink-2">{band.label}</span>
+          <span className="rounded-full bg-surface-2 px-2 py-0.5 text-[10.5px] font-medium text-ink-3">{band.unit}</span>
+          <span className="ml-auto text-[11px] tabular-nums text-ink-4">{pool.toLocaleString()} in the pool</span>
+        </div>
+      </td>
+    </tr>
+  );
+}
 
-  const cols: CutCol[] = cut === "time" ? data.buckets : cut === "owner" ? ownerCols : [];
-  /** Which breakdown column a member falls in. */
-  const colOf = (m: StageFlowMember): string =>
-    cut === "time" ? data.buckets[m.bucket]?.key ?? ""
-      : shownOwners.has(ownerKey(m.owner)) ? ownerKey(m.owner) : OTHER;
+function StageLabel({ row }: { row: StageFlowRow }) {
+  const depth = row.depth ?? 0;
+  const pending = !row.available;
+  return (
+    <td className={cn("whitespace-nowrap py-2.5 pr-4 text-left",
+      depth === 0 ? "font-semibold" : "font-normal",
+      pending ? "text-ink-4" : depth === 0 ? "text-ink" : "text-ink-2")}
+      style={{ paddingLeft: `${14 + depth * 20}px` }}>
+      {depth > 0 && <span className="mr-1.5 text-ink-4">↳</span>}
+      {row.label}
+      {pending && <span className="ml-2 text-[10.5px] uppercase tracking-wide text-ink-4">pending migration</span>}
+    </td>
+  );
+}
 
+function NumButton({ n, onClick, title, className }: { n: number; onClick: () => void; title: string; className?: string }) {
+  if (n === 0) return <span className="font-normal text-ink-4">0</span>;
+  return (
+    <button type="button" onClick={onClick} title={`${title}: click to list them`}
+      className={cn("tabular-nums underline-offset-2 hover:text-accent hover:underline", className)}>
+      {n.toLocaleString()}
+    </button>
+  );
+}
+
+/** Pool number with a thin bar under it, scaled to the band's largest pool, so
+ *  where the contacts or deals pile up reads before any number does. */
+function PoolCell({ n, max, color, onClick, title, bold }: {
+  n: number; max: number; color: string; onClick: () => void; title: string; bold: boolean;
+}) {
+  return (
+    <div className="mx-auto flex w-full max-w-[96px] flex-col items-center gap-1">
+      <span className={cn(bold && "font-semibold")}><NumButton n={n} onClick={onClick} title={title} /></span>
+      <span className="h-1 w-full overflow-hidden rounded-full bg-surface-2">
+        {n > 0 && (
+          <span className="block h-full rounded-full"
+            style={{ width: `${Math.max(4, (100 * n) / Math.max(1, max))}%`, background: color, opacity: 0.55 }} />
+        )}
+      </span>
+    </div>
+  );
+}
+
+// ── Stage tab ────────────────────────────────────────────────────────────────
+
+function StageTable({ data, byTime, nameOf, onDrill }: {
+  data: StageFlow; byTime: boolean; nameOf: (e: string | null) => string; onDrill: (d: Drill) => void;
+}) {
+  const cols = byTime ? data.buckets : [];
   const scopeLabel = data.target_scope === "team" ? "Team" : nameOf(data.target_scope);
   const colCount = 6 + cols.length;
-  const thBase = "whitespace-nowrap px-3 py-2 text-center font-bold align-bottom";
-  const sub = "mt-0.5 block h-3.5 text-[10px] font-normal normal-case tracking-normal text-ink-4";
-
   return (
     <div className="overflow-x-auto">
-      <table className="w-full border-collapse">
+      <table className={cn("w-full border-collapse", byTime ? "min-w-[1080px]" : "min-w-[860px]")}>
+        <colgroup>
+          <col style={{ width: byTime ? "21%" : "28%" }} />
+          {[0, 1, 2, 3, 4].map((i) => <col key={i} style={{ width: byTime ? "9%" : "14.4%" }} />)}
+          {cols.map((c) => <col key={c.key} style={{ width: "6.8%" }} />)}
+        </colgroup>
         <thead>
           <tr className="bg-surface-2 text-[10.5px] uppercase tracking-wide text-ink-3">
-            <th className="w-full py-2 pl-3.5 pr-2 text-left font-bold align-bottom">Stage</th>
-            <th className={cn(thBase, HL)} title="Sitting in this stage today">
-              <span className="block">Pool</span><span className={sub}>in stage now</span>
+            <th className="py-2 pl-3.5 pr-2 text-left font-bold align-bottom">Stage</th>
+            <th className={cn(TH, HL)} title="Sitting in this stage today">
+              <span className="block">Pool</span><span className={SUB}>in stage now</span>
             </th>
-            <th className={cn(thBase, HL)} title="Entered this stage during the period">
-              <span className="block">Moved in</span>
-              <span className={sub}>{shortRange(data.period.from, data.period.to)}</span>
+            <th className={cn(TH, HL)} title="Entered this stage during the period">
+              <span className="block">Moved in</span><span className={SUB}>{shortRange(data.period.from, data.period.to)}</span>
             </th>
-            <th className={thBase} title="Weekly target, prorated to the period; follows the Owner filter">
-              <span className="block">Target</span><span className={sub}>{scopeLabel}</span>
+            <th className={TH} title="Weekly target, prorated to the period; follows the Owner filter">
+              <span className="block">Target</span><span className={SUB}>{scopeLabel}</span>
             </th>
-            <th className={thBase}>
-              <span className="block">Δ to Target</span><span className={sub} />
-            </th>
-            <th className={thBase} title="Moved in against the period before, same length">
+            <th className={TH}><span className="block">Δ to Target</span><span className={SUB} /></th>
+            <th className={TH} title="Moved in against the period before, same length">
               <span className="block">Trend</span>
-              <span className={sub}>vs {shortRange(data.prev_period.from, data.prev_period.to)}</span>
+              <span className={SUB}>vs {shortRange(data.prev_period.from, data.prev_period.to)}</span>
             </th>
             {cols.map((c, i) => (
-              <th key={c.key}
-                className={cn("whitespace-nowrap px-2 py-2 text-center font-semibold align-bottom text-ink-4",
-                  i === 0 && "border-l border-border-strong")}
-                title={cut === "owner" && c.key !== OTHER && c.key !== UNASSIGNED ? nameOf(c.key) : undefined}>
-                {i === 0 && <span className="mb-0.5 block text-left text-[9.5px] text-ink-3">Pool by {cut === "time" ? "time in stage" : "owner"}</span>}
+              <th key={c.key} className={cn("whitespace-nowrap px-2 py-2 text-center font-semibold align-bottom text-ink-4",
+                i === 0 && "border-l border-border-strong")}>
+                {i === 0 && <span className="mb-0.5 block text-left text-[9.5px] text-ink-3">Pool by time in stage</span>}
                 {c.label}
               </th>
             ))}
@@ -211,26 +292,65 @@ function StageFlowTable({ data, cut, nameOf, onDrill }: {
         <tbody>
           {data.bands.map((band) => {
             const bandMembers = data.members.filter((m) => m.band === band.key);
+            const max = Math.max(1, ...band.rows.filter((r) => !r.children).map((r) => r.in_now?.total ?? 0));
+            const pool = band.rows.filter((r) => (r.depth ?? 0) === 0).reduce((s, r) => s + (r.in_now?.total ?? 0), 0);
             return (
               <Fragment key={band.key}>
-                <tr className="border-t-2 border-border bg-bg">
-                  <td colSpan={colCount} className="py-1.5 pl-3.5">
-                    <span className="text-[11px] font-bold uppercase tracking-wider text-ink-2">{band.label}</span>
-                    <span className="ml-2 rounded-full bg-surface-2 px-2 py-0.5 text-[10.5px] font-medium text-ink-3">{band.unit}</span>
-                  </td>
-                </tr>
+                <BandHeader band={band} colSpan={colCount} pool={pool} />
                 {band.rows.map((row) => {
-                  const stages = row.children ?? [row.key];
+                  const stages = stagesOf(row);
                   const inRow = bandMembers.filter((m) => stages.includes(m.stage));
-                  const cells = cols.map((c) => inRow.filter((m) => colOf(m) === c.key));
+                  const pending = !row.available;
+                  const drillRow = (kind: "now" | "moved") =>
+                    onDrill({ kind, band: band.key, stages, label: row.label, col: null });
+                  const targetTitle = row.target_source === "outreach"
+                    ? "From Settings › Targets › Jobs › Outreach: Opportunities converted"
+                    : row.target_weekly != null ? `${row.target_weekly} a week` : undefined;
                   return (
-                    <StageRow key={row.key} row={row} targetsOn={data.targets_available}
-                      cells={row.in_now ? cells : null} cols={cols}
-                      onPool={() => onDrill({ kind: "now", band: band.key, stages, label: row.label, col: null })}
-                      onMoved={() => onDrill({ kind: "moved", band: band.key, stages, label: row.label })}
-                      onCell={(i) => onDrill({ kind: "now", band: band.key, stages, label: row.label,
-                        col: { label: cut === "time" ? `${cols[i].label} in stage` : `owner: ${cols[i].label}`,
-                               ids: new Set(cells[i].map((m) => m.id)) } })} />
+                    <tr key={row.key}
+                      className={cn("border-b border-border text-[13.5px] transition-colors hover:bg-surface-2/40",
+                        row.children && "border-t border-border-strong")}>
+                      <StageLabel row={row} />
+                      <td className={cn(TD, HL)}>
+                        {pending || !row.in_now ? <span className="text-ink-4">—</span> : (
+                          <PoolCell n={row.in_now.total} max={max} color={BAND_ACCENT[band.key]}
+                            bold={(row.depth ?? 0) === 0} onClick={() => drillRow("now")}
+                            title={`${row.in_now.total} in ${row.label} now`} />
+                        )}
+                      </td>
+                      <td className={cn(TD, HL, (row.depth ?? 0) === 0 && "font-semibold")}>
+                        {pending ? <span className="text-ink-4">—</span>
+                          : <NumButton n={row.moved_in} onClick={() => drillRow("moved")} title={`${row.moved_in} moved into ${row.label}`} />}
+                      </td>
+                      <td className={cn(TD, "text-ink-3")} title={targetTitle}>
+                        {pending || !row.targetable ? "—" : row.target != null ? fmtTarget(row.target) : (
+                          <span className="text-[12px] text-ink-4"
+                            title={data.targets_available ? "No target set in Settings › Targets › Jobs" : "Stage targets arrive with the stage-targets migration"}>
+                            {data.targets_available ? "not set" : "—"}
+                          </span>
+                        )}
+                      </td>
+                      <td className={TD}>
+                        {pending || row.target == null ? <span className="text-ink-4">—</span>
+                          : <DeltaChip actual={row.moved_in} target={row.target} />}
+                      </td>
+                      <td className={cn(TD, "text-[12.5px]")}>
+                        {pending ? <span className="text-ink-4">—</span> : <Trend current={row.moved_in} prior={row.prev_moved_in} />}
+                      </td>
+                      {cols.map((c, i) => {
+                        const recs = inRow.filter((m) => data.buckets[m.bucket]?.key === c.key);
+                        return (
+                          <td key={c.key} className={cn("px-2 py-2.5 text-center text-[12.5px] tabular-nums text-ink-2",
+                            i === 0 && "border-l border-border-strong")}>
+                            {!row.in_now || pending ? null : recs.length === 0 ? <span className="text-ink-4">·</span> : (
+                              <NumButton n={recs.length} title={`${recs.length} in ${row.label} · ${c.label}`}
+                                onClick={() => onDrill({ kind: "now", band: band.key, stages, label: row.label,
+                                  col: { label: `${c.label} in stage`, keys: new Set(recs.map(recKey)) } })} />
+                            )}
+                          </td>
+                        );
+                      })}
+                    </tr>
                   );
                 })}
               </Fragment>
@@ -238,83 +358,107 @@ function StageFlowTable({ data, cut, nameOf, onDrill }: {
           })}
         </tbody>
       </table>
-      <p className="border-t border-border px-4 py-2.5 text-[11px] leading-relaxed text-ink-4">
-        Pool is what sits in each stage today. Moved in counts each contact or opportunity once per stage it entered
-        during the period. Closed Won and Closed Lost count closes that stuck. Targets are weekly, prorated to the
-        period, and follow the Owner filter
-        {data.targets_available ? "" : "; per-stage targets arrive with the stage-targets migration, and Converted to opportunity uses the Settings outreach target until then"}.
-        Deal type filters the Pipeline band only.
-      </p>
     </div>
   );
 }
 
-function StageRow({ row, targetsOn, cells, cols, onPool, onMoved, onCell }: {
-  row: StageFlowRow; targetsOn: boolean; cells: StageFlowMember[][] | null; cols: CutCol[];
-  onPool: () => void; onMoved: () => void; onCell: (i: number) => void;
-}) {
-  const pending = !row.available;
-  const isGroup = !!row.children;
-  const depth = row.depth ?? 0;
-  const td = "px-3 py-2.5 text-center tabular-nums";
-  const targetTitle = row.target_source === "outreach"
-    ? "From Settings › Targets › Jobs › Outreach: Opportunities converted"
-    : row.target_weekly != null ? `${row.target_weekly} a week` : undefined;
-  return (
-    <tr className={cn("border-b border-border text-[13.5px] last:border-b-0", isGroup && "border-t border-border-strong")}>
-      <td className={cn("py-2.5 pr-3.5 text-left",
-        depth === 0 ? "font-semibold" : "font-normal",
-        pending ? "text-ink-4" : depth === 0 ? "text-ink" : "text-ink-2")}
-        style={{ paddingLeft: `${14 + depth * 18}px` }}>
-        {row.label}
-        {pending && <span className="ml-2 text-[10.5px] uppercase tracking-wide text-ink-4">pending migration</span>}
-      </td>
-      <td className={cn(td, HL, depth === 0 && "font-semibold")}>
-        {pending || !row.in_now ? <span className="font-normal text-ink-4">—</span>
-          : <NumButton n={row.in_now.total} onClick={onPool} title={`${row.in_now.total} in ${row.label} now`} />}
-      </td>
-      <td className={cn(td, HL, depth === 0 && "font-semibold")}>
-        {pending ? <span className="font-normal text-ink-4">—</span>
-          : <NumButton n={row.moved_in} onClick={onMoved} title={`${row.moved_in} moved into ${row.label}`} />}
-      </td>
-      <td className={cn(td, "text-ink-3")} title={targetTitle}>
-        {pending || !row.targetable ? "—" : row.target != null ? fmtTarget(row.target) : (
-          <span className="text-[12px] text-ink-4"
-            title={targetsOn ? "No target set in Settings › Targets › Jobs" : "Stage targets arrive with the stage-targets migration"}>
-            {targetsOn ? "not set" : "—"}
-          </span>
-        )}
-      </td>
-      <td className={td}>
-        {pending || row.target == null ? <span className="text-ink-4">—</span>
-          : <DeltaChip actual={row.moved_in} target={row.target} />}
-      </td>
-      <td className={cn(td, "text-[12.5px]")}>
-        {pending ? <span className="text-ink-4">—</span> : <Trend current={row.moved_in} prior={row.prev_moved_in} />}
-      </td>
-      {cols.map((c, i) => {
-        const n = cells?.[i]?.length ?? 0;
-        return (
-          <td key={c.key} className={cn("px-2 py-2.5 text-center text-[12.5px] tabular-nums text-ink-2",
-            i === 0 && "border-l border-border-strong")}>
-            {!cells || pending ? null : n === 0 ? <span className="text-ink-4">·</span> : (
-              <button type="button" onClick={() => onCell(i)} title={`${n} in ${row.label} · ${c.label}: click to list them`}
-                className="underline-offset-2 hover:text-accent hover:underline">{n}</button>
-            )}
-          </td>
-        );
-      })}
-    </tr>
-  );
-}
+// ── Owner tab ────────────────────────────────────────────────────────────────
 
-function NumButton({ n, onClick, title }: { n: number; onClick: () => void; title: string }) {
-  if (n === 0) return <span className="font-normal text-ink-4">0</span>;
+function OwnerTable({ data, team, nameOf, onDrill }: {
+  data: StageFlow; team: string[]; nameOf: (e: string | null) => string; onDrill: (d: Drill) => void;
+}) {
+  const teamSet = useMemo(() => new Set(team.map((e) => e.toLowerCase())), [team]);
+  const groupOf = (owner: string | null) => {
+    const e = (owner ?? "").toLowerCase();
+    return teamSet.has(e) ? e : OTHERS;
+  };
+  // Others only earns a column when someone off the team actually holds records.
+  const hasOthers = data.members.some((m) => groupOf(m.owner) === OTHERS) || data.moved.some((m) => groupOf(m.owner) === OTHERS);
+  const groups = [...team.map((e) => ({ key: e.toLowerCase(), label: nameOf(e) })),
+                  ...(hasOthers ? [{ key: OTHERS, label: "Others" }] : [])];
+  const colCount = 3 + groups.length * 2;
+  const cap = "block border-b border-border pb-1 text-[10.5px] font-bold uppercase tracking-wide text-ink-2";
+
+  const cell = (band: StageFlowBand, row: StageFlowRow, kind: "now" | "moved", recs: (StageFlowMember | StageFlowMove)[], who: string) => {
+    const pending = !row.available;
+    if (pending || (kind === "now" && !row.in_now)) return <span className="text-ink-4">—</span>;
+    if (recs.length === 0) return <span className="text-ink-4">·</span>;
+    return (
+      <NumButton n={recs.length} title={`${recs.length} · ${row.label} · ${who}`}
+        onClick={() => onDrill({ kind, band, stages: stagesOf(row), label: row.label,
+          col: { label: `owner: ${who}`, keys: new Set(recs.map(recKey)) } })} />
+    );
+  };
+
   return (
-    <button type="button" onClick={onClick} title={`${title}: click to list them`}
-      className="tabular-nums underline-offset-2 hover:text-accent hover:underline">
-      {n}
-    </button>
+    <div className="overflow-x-auto">
+      <table className="w-full min-w-[980px] border-collapse">
+        <colgroup>
+          <col style={{ width: "20%" }} />
+          <col style={{ width: "8%" }} /><col style={{ width: "8%" }} />
+          {groups.map((g) => (
+            <Fragment key={g.key}>
+              <col style={{ width: `${64 / groups.length / 2}%` }} /><col style={{ width: `${64 / groups.length / 2}%` }} />
+            </Fragment>
+          ))}
+        </colgroup>
+        <thead>
+          <tr className="bg-surface-2 text-[10.5px] uppercase tracking-wide text-ink-3">
+            <th className="py-2 pl-3.5 pr-2 text-left font-bold align-bottom" rowSpan={2}>Stage</th>
+            <th className={cn("px-3 pt-2 pb-1", HL)} colSpan={2}><span className={cap}>All owners</span></th>
+            {groups.map((g) => (
+              <th key={g.key} className="border-l border-border px-3 pt-2 pb-1" colSpan={2}
+                title={g.key === OTHERS ? "Owned by someone off the Jobs team, or by nobody" : g.key}>
+                <span className={cap}>{g.label}</span>
+              </th>
+            ))}
+          </tr>
+          <tr className="bg-surface-2 text-[10px] uppercase tracking-wide text-ink-4">
+            {[{ key: "all" }, ...groups].map((g, gi) => (
+              <Fragment key={g.key}>
+                <th className={cn("whitespace-nowrap px-3 pb-2 text-center font-semibold", gi === 0 ? HL : "border-l border-border")}>Pool</th>
+                <th className={cn("whitespace-nowrap px-3 pb-2 text-center font-semibold", gi === 0 && HL)}>Moved in</th>
+              </Fragment>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {data.bands.map((band) => {
+            const pool = band.rows.filter((r) => (r.depth ?? 0) === 0).reduce((s, r) => s + (r.in_now?.total ?? 0), 0);
+            return (
+              <Fragment key={band.key}>
+                <BandHeader band={band} colSpan={colCount} pool={pool} />
+                {band.rows.map((row) => {
+                  const stages = stagesOf(row);
+                  const inRow = data.members.filter((m) => m.band === band.key && stages.includes(m.stage));
+                  const movedRow = data.moved.filter((m) => m.band === band.key && stages.includes(m.stage));
+                  const strong = (row.depth ?? 0) === 0;
+                  return (
+                    <tr key={row.key}
+                      className={cn("border-b border-border text-[13.5px] transition-colors hover:bg-surface-2/40",
+                        row.children && "border-t border-border-strong")}>
+                      <StageLabel row={row} />
+                      <td className={cn(TD, HL, strong && "font-semibold")}>{cell(band.key, row, "now", inRow, "all owners")}</td>
+                      <td className={cn(TD, HL, strong && "font-semibold")}>{cell(band.key, row, "moved", movedRow, "all owners")}</td>
+                      {groups.map((g) => (
+                        <Fragment key={g.key}>
+                          <td className={cn(TD, "border-l border-border px-3 text-ink-2")}>
+                            {cell(band.key, row, "now", inRow.filter((m) => groupOf(m.owner) === g.key), g.label)}
+                          </td>
+                          <td className={cn(TD, "px-3 text-ink-2")}>
+                            {cell(band.key, row, "moved", movedRow.filter((m) => groupOf(m.owner) === g.key), g.label)}
+                          </td>
+                        </Fragment>
+                      ))}
+                    </tr>
+                  );
+                })}
+              </Fragment>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
@@ -328,21 +472,23 @@ function StageFlowDrill({ drill, data, nameOf, onClose }: {
   const stageLabel = (s: string | null) => (s ? data.stage_labels[s] ?? s : "—");
   // Contact closed spans three stages, so its list says which one each landed in.
   const multi = drill.stages.length > 1;
+  const inCell = (r: { id: string; stage: string }) => drill.col == null || drill.col.keys.has(recKey(r));
 
   const rows = drill.kind === "now"
     ? data.members
-        .filter((m) => m.band === drill.band && drill.stages.includes(m.stage) && (drill.col == null || drill.col.ids.has(m.id)))
-        .map((m) => ({ key: `${m.id}:${m.stage}`, id: m.id, name: m.name, detail: m.detail, owner: m.owner,
+        .filter((m) => m.band === drill.band && drill.stages.includes(m.stage) && inCell(m))
+        .map((m) => ({ key: recKey(m), id: m.id, name: m.name, detail: m.detail, owner: m.owner,
                        stage: m.stage, from: null as string | null, when: `${m.days}d` }))
     : data.moved
-        .filter((m) => m.band === drill.band && drill.stages.includes(m.stage))
-        .map((m) => ({ key: `${m.id}:${m.stage}`, id: m.id, name: m.name, detail: m.detail, owner: m.owner,
+        .filter((m) => m.band === drill.band && drill.stages.includes(m.stage) && inCell(m))
+        .map((m) => ({ key: recKey(m), id: m.id, name: m.name, detail: m.detail, owner: m.owner,
                        stage: m.stage, from: m.from, when: utcDay(m.at) }));
 
   const noun = isContacts ? (rows.length === 1 ? "contact" : "contacts") : (rows.length === 1 ? "opportunity" : "opportunities");
+  const where = drill.col ? ` · ${drill.col.label}` : "";
   const note = drill.kind === "now"
-    ? `In ${drill.label} now${drill.col ? ` · ${drill.col.label}` : ""}`
-    : `Moved into ${drill.label} · ${shortRange(data.period.from, data.period.to)}`;
+    ? `In ${drill.label} now${where}`
+    : `Moved into ${drill.label} · ${shortRange(data.period.from, data.period.to)}${where}`;
 
   return (
     <Drawer open onClose={onClose} title={drill.label} subtitle={`${rows.length} ${noun} · ${note}`} width={760}>

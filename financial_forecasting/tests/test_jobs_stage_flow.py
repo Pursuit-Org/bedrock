@@ -81,6 +81,8 @@ def test_in_now_buckets_by_time_in_stage_and_bands_keep_their_units():
     keys = [r["key"] for r in d["bands"][1]["rows"]]
     assert keys[:3] == ["active_in_discussions", "engaging", "ask_submitted"]
     assert d["bands"][1]["rows"][0]["label"] == "Initial Opportunity"
+    # The Owner filter and tab list the Jobs team (the fallback team here).
+    assert d["team"] == store.team_emails() and len(d["team"]) > 0
     # Each count is a slice of `members`, so the drill matches the number.
     cb = [m for m in d["members"] if m["band"] == "outreach" and m["stage"] == "call_booked"]
     assert len(cb) == 2 and {m["bucket"] for m in cb} == {0, 1}

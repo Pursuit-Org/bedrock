@@ -3208,6 +3208,8 @@ export interface StageFlow {
   targets_available: boolean;
   /** Whose targets the Target column carries: an owner's email, or "team". */
   target_scope: string;
+  /** The Jobs team, in its set order: the Owner filter and Owner tab list only these. */
+  team: string[];
   members: StageFlowMember[];
   moved: StageFlowMove[];
 }
