@@ -3802,7 +3802,7 @@ async def opportunities_overview(
 # owner), what MOVED INTO it during the period, the same count for the period
 # before (the Trend), and a weekly target prorated to the period.
 #
-# A booked call ends one of three ways, so the contacts band closes with a
+# A discovery call ends one of three ways, so the contacts band closes with a
 # "Contact closed" row summing Converted to opportunity, Revisit and Not a fit,
 # each beneath it. Closed Won and Closed Lost carry movement only: "how many are
 # in Closed Won now" is the all-time tally, not a pile-up anyone works.
@@ -3815,7 +3815,11 @@ _FLOW_CONTACT_STAGES = [
     ("assigned", "Assigned"),
     ("initial_outreach", "Initial outreach"),
     ("scheduling", "Scheduling"),
-    ("call_booked", "Call booked"),
+    # Labelled "Discovery call" on this chart (Kwame 2026-10-09): the meeting
+    # tracks discovery calls. It still counts the call_booked membership stage,
+    # because calls are rarely tagged Discovery when logged (2 ever, as of
+    # 2026-10-09), so a count of logged discovery calls would read ~0.
+    ("call_booked", "Discovery call"),
 ]
 # The three ways a contact leaves outreach. Summed on the Contact closed row.
 _FLOW_CONTACT_CLOSED = [
