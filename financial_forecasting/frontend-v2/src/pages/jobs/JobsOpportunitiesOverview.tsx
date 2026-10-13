@@ -68,11 +68,11 @@ const DIMS: { key: OppBreakdownDim; label: string }[] = [
 // Deal-type filter options. "unset" is the API token for opportunities with no
 // deal type, shown as Untagged so they can be pulled into (or kept out of) a view.
 const DEAL_TYPE_UNSET = "unset";
-const DEAL_TYPE_OPTIONS: { value: string; label: string }[] = [
+export const DEAL_TYPE_OPTIONS: { value: string; label: string }[] = [
   ...(Object.entries(DEAL_TYPE_LABELS) as [DealType, string][]).map(([value, label]) => ({ value, label })),
   { value: DEAL_TYPE_UNSET, label: "Untagged" },
 ];
-const ALL_DEAL_TYPES = DEAL_TYPE_OPTIONS.map((o) => o.value);
+export const ALL_DEAL_TYPES = DEAL_TYPE_OPTIONS.map((o) => o.value);
 
 /** Selection → the `deal_type` query value: "all" when every box is ticked,
  *  otherwise a comma-separated list the API reads as OR. */
@@ -82,7 +82,7 @@ export function dealTypeParam(selected: string[]): string {
     : ALL_DEAL_TYPES.filter((v) => selected.includes(v)).join(",");
 }
 
-function dealTypeSummary(selected: string[]): string {
+export function dealTypeSummary(selected: string[]): string {
   if (selected.length === ALL_DEAL_TYPES.length) return "All deal types";
   const labels = DEAL_TYPE_OPTIONS.filter((o) => selected.includes(o.value)).map((o) => o.label);
   return labels.length <= 2 ? labels.join(" + ") : `${labels[0]} + ${labels.length - 1} more`;

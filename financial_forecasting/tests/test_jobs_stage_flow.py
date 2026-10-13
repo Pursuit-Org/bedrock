@@ -444,3 +444,19 @@ def test_opportunities_list_filters_to_ids():
     args = next(x[2] for x in conn.calls if "o.id = ANY(" in x[1])
     assert any(isinstance(a, list) and str(a[0]) == oid for a in args)
     assert c.get("/api/jobs/opportunities?ids=not-a-uuid").status_code == 400
+
+
+def test_role_type_filters_the_pipeline_band_by_its_live_roles():
+    _, conn = _get({}, role_type="committed,none")
+    for needle in (DEALS_NOW, DEAL_ENTRIES, DEAL_CLOSES):
+        q = next(c[1] for c in conn.calls if needle in c[1])
+        assert "r.commitment = 'committed'" in q and "NOT EXISTS (SELECT 1 FROM bedrock.jobs_role r" in q, needle
+        assert "IS DISTINCT FROM 'committed'" not in q
+    # Contacts carry no roles: untouched.
+    q = next(c[1] for c in conn.calls if CONTACTS_NOW in c[1])
+    assert "jobs_role" not in q
+    # No filter by default.
+    _, conn = _get({})
+    assert all("jobs_role r WHERE r.opportunity_id" not in c[1] for c in conn.calls)
+    r, _ = _get({}, role_type="bogus")
+    assert r.status_code == 400

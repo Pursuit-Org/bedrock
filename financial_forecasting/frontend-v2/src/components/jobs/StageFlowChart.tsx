@@ -23,9 +23,9 @@
  * `members` / `moved` arrays the counts were made from, so a list can never
  * disagree with its number.
  */
-import { Fragment, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { format } from "date-fns";
-import { Zap } from "lucide-react";
+import { ChevronDown, SlidersHorizontal, Zap } from "lucide-react";
 
 import {
   useJobsStaff,
@@ -38,7 +38,9 @@ import {
 import { StageFlowWorkbench, type WorkbenchRecord } from "@/components/jobs/StageFlowWorkbench";
 import { DeltaChip } from "@/components/jobs/DeltaChip";
 import { PeriodBar, defaultPeriod } from "@/components/jobs/PeriodBar";
-import { DealTypeFilter, dealTypeParam } from "@/pages/jobs/JobsOpportunitiesOverview";
+import {
+  ALL_DEAL_TYPES, DEAL_TYPE_OPTIONS, dealTypeParam, dealTypeSummary,
+} from "@/pages/jobs/JobsOpportunitiesOverview";
 import { Trend } from "@/pages/jobs/JobsOutreach";
 import { useSessionState } from "@/lib/useSessionState";
 import { useCurrentUser } from "@/services/auth";
@@ -80,6 +82,9 @@ export function StageFlowChart() {
   const [ownerPick, setOwnerPick] = useSessionState<string | null>("jobsOverview.stageFlow.owner", null);
   // Full time by default, as on the Pipeline tab. Applies to opportunities only.
   const [dealTypes, setDealTypes] = useState<string[]>(["ft"]);
+  // Role type: every kind by default. Commitment lives on each role.
+  const [roleTypes, setRoleTypes] = useState<string[]>(ALL_ROLE_TYPES);
+  const roleParam = roleTypes.length === ALL_ROLE_TYPES.length ? "all" : roleTypes.join(",");
   const [tab, setTab] = useSessionState<Tab>("jobsOverview.stageFlow.tab", "stage");
   const [byTime, setByTime] = useSessionState<boolean>("jobsOverview.stageFlow.byTime", false);
   const [drill, setDrill] = useState<Drill | null>(null);
@@ -94,14 +99,14 @@ export function StageFlowChart() {
   const me = useCurrentUser().data?.email?.toLowerCase() ?? null;
   // The team list rides on the team-scoped response, so it is there before a
   // person is picked; keepPreviousData holds it while a person's data loads.
-  const teamQ = useStageFlow(range[0], range[1], "all", dealTypeParam(dealTypes));
+  const teamQ = useStageFlow(range[0], range[1], "all", dealTypeParam(dealTypes), roleParam);
   // The Jobs team only (Settings › Targets › Jobs › Team), in its set order.
   const team = teamQ.data?.team ?? [];
   // Default to yourself when you're on the team, else the first member.
   const owner = tab === "owner"
     ? (ownerPick && team.includes(ownerPick) ? ownerPick : (me && team.includes(me) ? me : team[0] ?? "all"))
     : "all";
-  const personQ = useStageFlow(range[0], range[1], owner, dealTypeParam(dealTypes));
+  const personQ = useStageFlow(range[0], range[1], owner, dealTypeParam(dealTypes), roleParam);
   const { data, isLoading, isError } = owner === "all" ? teamQ : personQ;
   const current = data && data.prev_period && data.stage_labels ? data : null;
 
@@ -125,12 +130,7 @@ export function StageFlowChart() {
         onChange={(f, t) => setRange([f, t])}
         granularity={granularity} onGranularityChange={setGranularity}
         clampToToday
-      >
-        <div className="flex items-center gap-2" title="Filters the Pipeline band only: contacts carry no deal type">
-          <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">Deal type</span>
-          <DealTypeFilter selected={dealTypes} onChange={setDealTypes} />
-        </div>
-      </PeriodBar>
+      />
 
       <div className="flex flex-col overflow-hidden rounded-xl border border-border-strong bg-surface shadow-sm">
         <div className="flex flex-wrap items-center gap-2.5 border-b border-border-strong bg-surface-2 px-4 py-2.5">
@@ -166,7 +166,9 @@ export function StageFlowChart() {
             The backend is older than this page. Restart it (Ctrl+C, then <code>python main.py</code>) and refresh.
           </div>
         ) : (
-          <StageTable data={current} byTime={byTime} nameOf={nameOf} onDrill={setDrill} />
+          <StageTable data={current} byTime={byTime} nameOf={nameOf} onDrill={setDrill}
+            pipelineFilter={<PipelineFilter dealTypes={dealTypes} onDealTypes={setDealTypes}
+              roleTypes={roleTypes} onRoleTypes={setRoleTypes} />} />
         )}
         {current && (
           <p className="border-t border-border px-4 py-2.5 text-[11px] leading-relaxed text-ink-4">
@@ -176,7 +178,7 @@ export function StageFlowChart() {
             {current.targets_available ? "" : "; per-stage targets arrive with the stage-targets migration, and Converted to opportunity uses the Settings outreach target until then"}.
             Rows marked ⚡ count activity, not contacts: every send or call the team logged in the period, exactly as
             Outreach › Activity Pipeline counts it, against the Settings outreach targets.
-            Deal type filters the Pipeline band only.
+            The Pipeline band's Filter (deal type, role type) applies to opportunities only.
           </p>
         )}
       </div>
@@ -216,8 +218,8 @@ const TD = "px-4 py-2.5 text-center tabular-nums";
 /** Records in a row (summary rows span their children's stages). */
 const stagesOf = (row: StageFlowRow) => row.children ?? [row.key];
 
-function BandHeader({ band, colSpan, pool }: {
-  band: StageFlow["bands"][number]; colSpan: number; pool: number;
+function BandHeader({ band, colSpan, right }: {
+  band: StageFlow["bands"][number]; colSpan: number; right: React.ReactNode;
 }) {
   return (
     <tr className="border-t-2 border-border bg-bg">
@@ -228,7 +230,7 @@ function BandHeader({ band, colSpan, pool }: {
           <span className="rounded-full bg-surface-2 px-2 py-0.5 text-[10.5px] font-medium text-ink-3">
             {band.unit.charAt(0).toUpperCase() + band.unit.slice(1)}
           </span>
-          <span className="ml-auto text-[11px] tabular-nums text-ink-4">{pool.toLocaleString()} in the pool</span>
+          <span className="ml-auto">{right}</span>
         </div>
       </td>
     </tr>
@@ -262,8 +264,9 @@ function NumButton({ n, onClick, title, className }: { n: number; onClick: () =>
 
 // ── Stage tab ────────────────────────────────────────────────────────────────
 
-function StageTable({ data, byTime, nameOf, onDrill }: {
+function StageTable({ data, byTime, nameOf, onDrill, pipelineFilter }: {
   data: StageFlow; byTime: boolean; nameOf: (e: string | null) => string; onDrill: (d: Drill) => void;
+  pipelineFilter: React.ReactNode;
 }) {
   const cols = byTime ? data.buckets : [];
   // Blank for the team (the default); a person's name when the Owner filter picks one.
@@ -327,7 +330,9 @@ function StageTable({ data, byTime, nameOf, onDrill }: {
             const pool = band.rows.filter((r) => (r.depth ?? 0) === 0).reduce((s, r) => s + (r.in_now?.total ?? 0), 0);
             return (
               <Fragment key={band.key}>
-                <BandHeader band={band} colSpan={colCount} pool={pool} />
+                <BandHeader band={band} colSpan={colCount}
+                  right={band.key === "pipeline" ? pipelineFilter
+                    : <span className="text-[11px] tabular-nums text-ink-4">{pool.toLocaleString()} in the pool</span>} />
                 {band.rows.map((row) => {
                   if (row.kind === "activity") {
                     return <ActivityRow key={row.key} row={row} cols={cols.length}
@@ -463,6 +468,111 @@ function ActivityRow({ row, cols, onDrill }: { row: StageFlowRow; cols: number; 
         <td key={i} className={cn("px-2 py-2", i === 0 && "border-l border-border-strong")} />
       ))}
     </tr>
+  );
+}
+
+// ── Pipeline band filter ─────────────────────────────────────────────────────
+
+const ROLE_TYPE_OPTIONS = [
+  { value: "committed", label: "Committed" },
+  { value: "open_market", label: "Open market" },
+  { value: "none", label: "No roles yet" },
+];
+const ALL_ROLE_TYPES = ROLE_TYPE_OPTIONS.map((o) => o.value);
+
+function FilterGroup({ title, options, selected, onFlip, allOn, onAll }: {
+  title: string; options: { value: string; label: string }[]; selected: string[];
+  onFlip: (v: string) => void; allOn: boolean; onAll: () => void;
+}) {
+  return (
+    <div className="py-1">
+      <div className="flex items-center justify-between px-3 pb-1 pt-1.5">
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-ink-4">{title}</span>
+        {!allOn && <button type="button" onClick={onAll} className="text-[11px] text-accent hover:underline">All</button>}
+      </div>
+      {options.map((o) => {
+        const on = selected.includes(o.value);
+        const last = on && selected.length === 1;
+        return (
+          <label key={o.value} title={last ? "At least one stays selected" : undefined}
+            className={cn("flex items-center gap-2 px-3 py-1.5 text-[12px] normal-case tracking-normal text-ink hover:bg-surface-2",
+              last ? "cursor-not-allowed" : "cursor-pointer")}>
+            <input type="checkbox" className="accent-[var(--accent)]" checked={on} disabled={last} onChange={() => onFlip(o.value)} />
+            {o.label}
+          </label>
+        );
+      })}
+    </div>
+  );
+}
+
+/** One Filter button on the Pipeline band: deal type and role type. Both
+ *  apply to opportunities only; contacts carry neither. At least one value
+ *  stays checked in each group, so the band never filters to nothing. */
+function PipelineFilter({ dealTypes, onDealTypes, roleTypes, onRoleTypes }: {
+  dealTypes: string[]; onDealTypes: (v: string[]) => void;
+  roleTypes: string[]; onRoleTypes: (v: string[]) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  // Fixed to the viewport: the table scrolls sideways, and an absolute menu
+  // inside that scroller would be clipped by it.
+  const [pos, setPos] = useState<React.CSSProperties | null>(null);
+  const ref = useRef<HTMLDivElement>(null);
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const toggle = () => {
+    const r = btnRef.current?.getBoundingClientRect();
+    // Opens upward when the band sits low on the screen.
+    if (r) setPos(window.innerHeight - r.bottom < 440
+      ? { bottom: window.innerHeight - r.top + 4, right: window.innerWidth - r.right }
+      : { top: r.bottom + 4, right: window.innerWidth - r.right });
+    setOpen((o) => !o);
+  };
+  useEffect(() => {
+    if (!open) return;
+    // Page scroll moves the button, so close; scrolling the menu itself doesn't.
+    const close = (e: Event) => { if (!ref.current?.contains(e.target as Node)) setOpen(false); };
+    const onDoc = (e: MouseEvent) => { if (!ref.current?.contains(e.target as Node)) setOpen(false); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey);
+    window.addEventListener("scroll", close, true);
+    return () => {
+      document.removeEventListener("mousedown", onDoc); document.removeEventListener("keydown", onKey);
+      window.removeEventListener("scroll", close, true);
+    };
+  }, [open]);
+  const flip = (list: string[], v: string, set: (n: string[]) => void) => {
+    const next = list.includes(v) ? list.filter((x) => x !== v) : [...list, v];
+    if (next.length > 0) set(next);
+  };
+  const allRoles = roleTypes.length === ALL_ROLE_TYPES.length;
+  const roleSummary = allRoles ? null
+    : ROLE_TYPE_OPTIONS.filter((o) => roleTypes.includes(o.value)).map((o) => o.label).join(", ");
+  return (
+    <div ref={ref} className="relative">
+      <button ref={btnRef} type="button" onClick={toggle} aria-expanded={open} aria-haspopup="dialog"
+        title="Filter the Pipeline band by deal type and role type"
+        className={cn("flex h-7 items-center gap-1.5 rounded-md border bg-surface px-2.5 text-[12px] font-medium normal-case tracking-normal text-ink-2 hover:text-ink",
+          open ? "border-ink-3" : "border-border-strong")}>
+        <SlidersHorizontal size={12} />
+        <span>Filter</span>
+        <span className="text-ink-4">·</span>
+        <span className="max-w-[260px] truncate text-ink">{dealTypeSummary(dealTypes)}{roleSummary ? ` · ${roleSummary}` : ""}</span>
+        <ChevronDown size={12} className="text-ink-4" />
+      </button>
+      {open && (
+        <div style={pos ?? undefined} className="fixed z-50 max-h-[70vh] w-[230px] overflow-y-auto divide-y divide-border rounded-md border border-border-strong bg-surface shadow-lg">
+          <FilterGroup title="Deal type" options={DEAL_TYPE_OPTIONS} selected={dealTypes}
+            onFlip={(v) => flip(dealTypes, v, onDealTypes)}
+            allOn={dealTypes.length === ALL_DEAL_TYPES.length} onAll={() => onDealTypes([...ALL_DEAL_TYPES])} />
+          <FilterGroup title="Role type" options={ROLE_TYPE_OPTIONS} selected={roleTypes}
+            onFlip={(v) => flip(roleTypes, v, onRoleTypes)} allOn={allRoles} onAll={() => onRoleTypes([...ALL_ROLE_TYPES])} />
+          <p className="px-3 py-2 text-[10.5px] leading-snug text-ink-4">
+            Opportunities only. Role type matches a deal with any live role of that kind.
+          </p>
+        </div>
+      )}
+    </div>
   );
 }
 

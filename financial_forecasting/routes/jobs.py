@@ -3879,7 +3879,7 @@ def _flow_period(period_from: Optional[str], period_to: Optional[str]) -> tuple:
     return p_from, p_to
 
 
-async def _flow_moved(conn, owner_f, dt_f, p_from, p_to, have_history: bool) -> list:
+async def _flow_moved(conn, owner_f, dt_f, p_from, p_to, have_history: bool, rt_f=None) -> list:
     """Every (record, stage) entry inside [p_from, p_to), both bands, each with
     the stage it came from where history records one."""
     moved: list = []
@@ -3953,7 +3953,7 @@ async def _flow_moved(conn, owner_f, dt_f, p_from, p_to, have_history: bool) -> 
         JOIN bedrock.jobs_opportunity o ON o.id = e.oid
         WHERE o.deleted_at IS NULL
           AND ($1::text IS NULL OR lower(o.owner_email) = $1)
-          AND {_deal_type_sql('o.deal_type', 2)}
+          AND {_deal_type_sql('o.deal_type', 2)} AND {_role_type_sql(rt_f)}
     """, owner_f, dt_f, p_from, p_to)
     working = set(OPPORTUNITY_STAGES_ACTIVE)
     deal_seen: set = set()
@@ -3979,7 +3979,7 @@ async def _flow_moved(conn, owner_f, dt_f, p_from, p_to, have_history: bool) -> 
             JOIN bedrock.jobs_opportunity o ON o.id = h.opportunity_id
             WHERE h.changed_at < $4 AND o.deleted_at IS NULL
               AND ($1::text IS NULL OR lower(o.owner_email) = $1)
-              AND {_deal_type_sql('o.deal_type', 2)}
+              AND {_deal_type_sql('o.deal_type', 2)} AND {_role_type_sql(rt_f)}
             ORDER BY h.opportunity_id, h.changed_at DESC
         ) last_change
         WHERE to_stage IN ('closed_won', 'closed_lost') AND at >= $3
@@ -4005,6 +4005,37 @@ _FLOW_CONVERTS = {
     "outreach": [k for k, _ in _FLOW_CONTACT_STAGES],
     "pipeline": list(OPPORTUNITY_STAGES_ACTIVE),
 }
+
+
+# Role type filter on the Pipeline band (Kwame 2026-10-13). Commitment lives on
+# each role, not the deal, so a deal matches a type when it has a live (not
+# cancelled) role of that type; "none" is a deal with no live role yet. A deal
+# with both kinds matches either. Values are whitelisted, so the predicate is
+# safe to interpolate.
+_FLOW_ROLE_TYPES = {
+    "committed": "r.commitment = 'committed'",
+    "open_market": "r.commitment IS DISTINCT FROM 'committed'",
+}
+
+
+def _parse_role_types(raw: Optional[str]) -> Optional[list]:
+    if not raw or raw == "all":
+        return None
+    vals = [v.strip() for v in raw.split(",") if v.strip()]
+    bad = [v for v in vals if v not in (*_FLOW_ROLE_TYPES, "none")]
+    if bad or not vals:
+        raise HTTPException(400, f"role_type must be any of committed, open_market, none (got {raw})")
+    return vals
+
+
+def _role_type_sql(rt: Optional[list], alias: str = "o") -> str:
+    if not rt:
+        return "TRUE"
+    live = f"FROM bedrock.jobs_role r WHERE r.opportunity_id = {alias}.id AND r.status <> 'cancelled'"
+    parts = [f"EXISTS (SELECT 1 {live} AND {_FLOW_ROLE_TYPES[v]})" for v in rt if v in _FLOW_ROLE_TYPES]
+    if "none" in rt:
+        parts.append(f"NOT EXISTS (SELECT 1 {live})")
+    return "(" + " OR ".join(parts) + ")"
 
 
 async def _flow_mark_advanced(conn, moved: list) -> None:
@@ -4057,6 +4088,7 @@ async def get_stage_flow(
     period_to: Optional[str] = Query(None, description="YYYY-MM-DD, inclusive"),
     owner: Optional[str] = Query(None),
     deal_type: Optional[str] = Query(None, description="Opportunities band only: contacts carry no deal type"),
+    role_type: Optional[str] = Query(None, description="Opportunities band only: committed, open_market, none (comma list)"),
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
@@ -4071,6 +4103,7 @@ async def get_stage_flow(
     p_from, p_to = _flow_period(period_from, period_to)
     owner_f = owner.strip().lower() if owner and owner != "all" else None
     dt_f = _parse_deal_types(deal_type)
+    rt_f = _parse_role_types(role_type)
     now = datetime.now(timezone.utc)
     span = p_to - p_from
     span_days = span.days
@@ -4130,7 +4163,7 @@ async def get_stage_flow(
         FROM bedrock.jobs_opportunity o
         WHERE o.deleted_at IS NULL AND {_OPP_INSET}
           AND ($1::text IS NULL OR lower(o.owner_email) = $1)
-          AND {_deal_type_sql('o.deal_type', 2)}
+          AND {_deal_type_sql('o.deal_type', 2)} AND {_role_type_sql(rt_f)}
     """, owner_f, dt_f)
     for r in drows:
         d = _days(r["entered_stage"])
@@ -4141,8 +4174,8 @@ async def get_stage_flow(
         })
 
     # ── Moved in: this period, and the one before for the Trend ──────────────
-    moved = await _flow_moved(conn, owner_f, dt_f, p_from, p_to, have_history)
-    prev = await _flow_moved(conn, owner_f, dt_f, p_from - span, p_from, have_history)
+    moved = await _flow_moved(conn, owner_f, dt_f, p_from, p_to, have_history, rt_f)
+    prev = await _flow_moved(conn, owner_f, dt_f, p_from - span, p_from, have_history, rt_f)
     act_rows, has_call_kind = await _flow_activity(conn, owner_f, p_from, p_to, span)
     await _flow_mark_advanced(conn, moved)
     moved.sort(key=lambda m: m["at"], reverse=True)
@@ -4281,7 +4314,8 @@ async def get_stage_flow(
                    "to": (p_to - timedelta(days=1)).date().isoformat(), "days": span_days},
         "prev_period": {"from": (p_from - span).date().isoformat(),
                         "to": (p_from - timedelta(days=1)).date().isoformat()},
-        "filters": {"owner": owner_f, "deal_type": ",".join(dt_f) if dt_f is not None else None},
+        "filters": {"owner": owner_f, "deal_type": ",".join(dt_f) if dt_f is not None else None,
+                    "role_type": ",".join(rt_f) if rt_f else None},
         "buckets": [{"key": k, "label": lbl} for k, lbl in _OPP_AGE_BUCKETS],
         "bands": bands,
         "targets_available": stage_targets_on,
