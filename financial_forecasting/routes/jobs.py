@@ -3837,12 +3837,10 @@ _FLOW_CONTACT_OWNER = "COALESCE(c.owner_email, m.owner_email)"
 # The `from` a Discovery call entry carries when it came from a logged call
 # rather than a stage move; the drawer labels it.
 _FLOW_LOGGED_DISCOVERY = "logged_discovery_call"
-# Stage keys that may carry a weekly stage target (stage-targets migration).
-# Revisit, Not a fit and Closed Lost are outcomes nobody aims for.
-STAGE_FLOW_TARGET_KEYS = (
-    [k for k, _ in _FLOW_CONTACT_STAGES] + ["converted_to_opportunity"]
-    + list(OPPORTUNITY_STAGES_ACTIVE) + ["closed_won"]
-)
+# Stage keys that may carry a weekly stage target: every stage row (Kwame
+# 2026-10-13), from the one list Settings › Targets › Jobs › Stages edits.
+# Summary rows (Contact closed, Closed) are sums and carry none.
+STAGE_FLOW_TARGET_KEYS = list(jobs_targets_store.STAGE_METRIC_KEYS)
 # Until a stage target is set, a stage that measures exactly what an existing
 # Settings › Targets › Jobs › Outreach metric measures borrows that target.
 # Converted Opportunities counts the membership conversion stamp, which is what

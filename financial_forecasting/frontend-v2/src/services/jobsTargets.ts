@@ -20,6 +20,14 @@ export interface JobsTargets {
   team_targets: Record<OutreachMetric, { mode: TeamMode | null; value: number | null; effective: number | null }>;
   pipeline: { period_start: string; value: number }[];
   metrics: { key: OutreachMetric; label: string }[];
+  /** Every Overview Stage Flow stage that can carry a weekly Net New target. */
+  stage_metrics: { key: string; label: string; band: "outreach" | "pipeline" }[];
+  /** Stage targets: false until the 2026-10-13 stage-targets migration runs. */
+  stages: {
+    available: boolean;
+    owners: Record<string, Record<string, number | null>>;
+    team: Record<string, { mode: TeamMode | null; value: number | null; effective: number | null }>;
+  };
 }
 
 interface Resp<T> { success: boolean; data: T }
@@ -70,6 +78,17 @@ export function useSavePipelineTargets() {
   return useMutation({
     mutationFn: async (quarters: { period_start: string; value: number | null }[]) =>
       (await api.put<Resp<JobsTargets>>("/api/jobs/targets/pipeline", { quarters })).data.data,
+    onSuccess: invalidate,
+  });
+}
+
+export function useSaveStageTargets() {
+  const invalidate = useInvalidateJobs();
+  return useMutation({
+    mutationFn: async (body: {
+      owners: Record<string, Record<string, number | null>>;
+      team: Record<string, { mode: TeamMode; value?: number | null }>;
+    }) => (await api.put<Resp<JobsTargets>>("/api/jobs/targets/stages", body)).data.data,
     onSuccess: invalidate,
   });
 }

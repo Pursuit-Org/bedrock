@@ -213,7 +213,8 @@ def test_targets_pending_until_migration_then_prorated():
     assert cb["target_weekly"] == 5 and cb["target"] == 10.0   # two weeks
     assert cb["delta"] == -9.0                                  # 1 moved in vs 10
     assert rows[("pipeline", "closed_won")]["target_weekly"] == 1
-    assert rows[("outreach", "revisit")]["targetable"] is False
+    # Every stage can carry a target since 2026-10-13; this one has none set.
+    assert rows[("outreach", "revisit")]["targetable"] is True
     assert rows[("outreach", "revisit")]["delta"] is None
 
     # An owner view shows that person's targets, not the team's.

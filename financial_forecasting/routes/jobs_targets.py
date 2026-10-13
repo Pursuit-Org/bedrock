@@ -1,11 +1,14 @@
 """Jobs targets API — Settings > Targets > Jobs.
 
-Three things are edited here, each saved as a whole section:
+Four things are edited here, each saved as a whole section:
   * the Jobs team: who counts as "the Jobs team" in every team-scoped Jobs
     metric, the Owner cut, and the target grid;
   * outreach targets: weekly, per team member, plus a team row per metric that
     is either the SUM of the members or a number SET directly;
-  * pipeline targets: jobs per quarter, drawn on the Jobs projection chart.
+  * pipeline targets: jobs per quarter, drawn on the Jobs projection chart;
+  * stage targets: weekly Net New per Stage Flow stage (Overview), per team
+    member plus a team row, the same shape as outreach. Needs the 2026-10-13
+    stage-targets migration; until then PUT /stages returns 409.
 
 View: any signed-in user. Edit: manage_jobs_targets (Admin, Executive).
 Storage and fallback live in services/jobs_targets_store.py. Until the
@@ -58,6 +61,8 @@ async def get_jobs_targets(user=Depends(require_auth)):
     await store.refresh(get_pool(), force=True)
     data = store.snapshot_for_api() if store.available() else _fallback_view()
     data["metrics"] = [{"key": k, "label": lbl} for k, lbl in store.OUTREACH_METRICS]
+    data["stage_metrics"] = [{"key": k, "label": lbl, "band": band} for k, lbl, band in store.STAGE_METRICS]
+    data.setdefault("stages", {"available": False, "owners": {}, "team": {}})
     return {"success": True, "data": data}
 
 
@@ -208,4 +213,63 @@ async def put_pipeline_targets(body: PipelineBody,
                     q.period_start, q.value, editor)
     await store.refresh(get_pool(), force=True)
     logger.info(f"jobs pipeline targets saved ({len(body.quarters)} quarters) by {editor}")
+    return {"success": True, "data": store.snapshot_for_api()}
+
+
+# ── Stages (Overview › Stage Flow) ────────────────────────────────────────────
+
+_STAGES_PENDING = ("Stage targets are pending the 2026-10-13 stage-targets migration; "
+                   "nothing can be saved yet.")
+
+
+@router.put("/stages")
+async def put_stage_targets(body: OutreachBody,
+                            user=Depends(check_permission("manage_jobs_targets")),
+                            conn=Depends(get_db)):
+    """Weekly Net New targets per Stage Flow stage: per team member, plus a team
+    row per stage that is the sum of the members or a number set directly.
+    Same body shape and replace-the-grid semantics as PUT /outreach."""
+    await store.refresh(get_pool(), force=True)
+    _require_available()
+    if not store.stage_targets_available():
+        raise HTTPException(409, _STAGES_PENDING)
+    team = set(store.team_emails())
+    keys = set(store.STAGE_METRIC_KEYS)
+    rows: list[tuple] = []
+    seen: set[str] = set()
+    for raw_email, stages in body.owners.items():
+        e = raw_email.strip().lower()
+        if e not in team:
+            raise HTTPException(400, f"{raw_email} is not on the Jobs team")
+        if e in seen:
+            raise HTTPException(400, f"{raw_email} appears more than once")
+        seen.add(e)
+        for k, v in stages.items():
+            if k not in keys:
+                raise HTTPException(400, f"Unknown stage: {k}")
+            if v is None:
+                continue
+            if not 0 <= v <= 100_000:
+                raise HTTPException(400, f"Target out of range for {e} / {k}")
+            rows.append((k, e, v, None))
+    for k, t in body.team.items():
+        if k not in keys:
+            raise HTTPException(400, f"Unknown stage: {k}")
+        if t.mode == "set" and t.value is None:
+            raise HTTPException(400, f"Team target for {k} is set to a number but none was given")
+        rows.append((k, None, t.value if t.mode == "set" else None, t.mode))
+
+    editor = _editor(user)
+    async with conn.transaction():
+        await conn.execute(
+            "DELETE FROM bedrock.jobs_target WHERE section = 'stage' "
+            "AND (owner_email IS NULL OR owner_email = ANY($1::text[]))",
+            sorted(team))
+        for k, e, v, mode in rows:
+            await conn.execute(
+                """INSERT INTO bedrock.jobs_target (section, metric, owner_email, value, team_mode, updated_by)
+                   VALUES ('stage', $1, $2, $3, $4, $5)""",
+                k, e, v, mode, editor)
+    await store.refresh(get_pool(), force=True)
+    logger.info(f"jobs stage targets saved ({len(rows)} rows) by {editor}")
     return {"success": True, "data": store.snapshot_for_api()}

@@ -50,6 +50,30 @@ OUTREACH_METRICS = [
 ]
 OUTREACH_METRIC_KEYS = [k for k, _ in OUTREACH_METRICS]
 
+# Every Stage Flow row that can carry a weekly target, in chart order: the key,
+# its label, and which band it sits in. The Overview chart and Settings ›
+# Targets › Jobs › Stages both read this list, so they can't drift apart.
+# Summary rows (Contact closed, Closed) are sums of these and carry none.
+STAGE_METRICS = [
+    ("assigned",                     "Assigned",                 "outreach"),
+    ("initial_outreach",             "Initial outreach",         "outreach"),
+    ("scheduling",                   "Scheduling",               "outreach"),
+    ("call_booked",                  "Discovery call",           "outreach"),
+    ("converted_to_opportunity",     "Converted to opportunity", "outreach"),
+    ("revisit",                      "Revisit",                  "outreach"),
+    ("not_a_fit",                    "Not a fit",                "outreach"),
+    ("active_in_discussions",        "Initial Opportunity",      "pipeline"),
+    ("engaging",                     "Engaging",                 "pipeline"),
+    ("ask_submitted",                "Ask Submitted",            "pipeline"),
+    ("active_opportunity_confirmed", "Opportunity Confirmed",    "pipeline"),
+    ("builder_submitted",            "Builder Submitted",        "pipeline"),
+    ("builder_interviewing",         "Builder Interviewing",     "pipeline"),
+    ("offer_contracting",            "Offer Contracting",        "pipeline"),
+    ("closed_won",                   "Closed Won",               "pipeline"),
+    ("closed_lost",                  "Closed Lost",              "pipeline"),
+]
+STAGE_METRIC_KEYS = [k for k, _, _ in STAGE_METRICS]
+
 TTL_SECONDS = 60
 
 
@@ -222,9 +246,21 @@ def stage_weekly(stage: str, owner: Optional[str] = None) -> Optional[int]:
     return sum(vals) if vals else None
 
 
+def stage_team_mode(stage: str) -> Optional[str]:
+    cfg = _snap.stage_team.get(stage)
+    return cfg["mode"] if cfg else None
+
+
 def snapshot_for_api() -> dict:
     """Everything the Settings page needs to render, as plain JSON."""
     return {
+        "stages": {
+            "available": stage_targets_available(),
+            "owners": {e: {k: _snap.stage_owner.get(e, {}).get(k) for k in STAGE_METRIC_KEYS
+                           if k in _snap.stage_owner.get(e, {})} for e in _snap.team},
+            "team": {k: {"mode": stage_team_mode(k), "value": (_snap.stage_team.get(k) or {}).get("value"),
+                         "effective": stage_weekly(k)} for k in STAGE_METRIC_KEYS},
+        },
         "available": _snap.available,
         "team": team_emails(),
         "owners": {e: {m: _snap.owner.get(e, {}).get(m) for m in OUTREACH_METRIC_KEYS

@@ -5,7 +5,7 @@ import { apiErrorMessage } from "@/lib/estimatedJobs";
 import { cn } from "@/lib/utils";
 import { useJobsStaff } from "@/services/jobs";
 import {
-  useJobsTargets, useSaveJobsTeam, useSaveOutreachTargets, useSavePipelineTargets,
+  useJobsTargets, useSaveJobsTeam, useSaveOutreachTargets, useSavePipelineTargets, useSaveStageTargets,
   type JobsTargets, type OutreachMetric, type TeamMode,
 } from "@/services/jobsTargets";
 
@@ -19,6 +19,8 @@ import {
  *             either the sum of the people or a number set directly (a team
  *             target while everyone individually carries 0).
  *   Pipeline  jobs target per quarter, drawn on the Jobs Projection chart.
+ *   Stages    weekly Net New target per Overview Stage Flow stage, per person
+ *             plus a team column (sum or set), the same rules as Outreach.
  */
 export function JobsTargetsTab({ canEdit }: { canEdit: boolean }) {
   const { data, isLoading, isError } = useJobsTargets();
@@ -48,6 +50,9 @@ export function JobsTargetsTab({ canEdit }: { canEdit: boolean }) {
       <TeamSection data={data} editable={editable} nameOf={nameOf} staff={staffQ.data ?? []} />
       <OutreachSection data={data} editable={editable} nameOf={nameOf} />
       <PipelineSection data={data} editable={editable} />
+      {data.stage_metrics && data.stages && (
+        <StageSection data={data} editable={editable && data.stages.available} nameOf={nameOf} />
+      )}
     </div>
   );
 }
@@ -382,5 +387,158 @@ function PipelineSection({ data, editable }: { data: JobsTargets; editable: bool
         <span className="ml-auto text-[12px] tabular-nums text-ink-3">{total} jobs across these quarters</span>
       </div>
     </Section>
+  );
+}
+
+// ── Stages (Overview › Stage Flow) ───────────────────────────────────────────
+
+function initStages(data: JobsTargets) {
+  const owners: Record<string, Record<string, string>> = {};
+  for (const e of data.team) {
+    owners[e] = {};
+    for (const m of data.stage_metrics) {
+      const v = data.stages.owners[e]?.[m.key];
+      owners[e][m.key] = v == null ? "" : String(v);
+    }
+  }
+  const team: Record<string, TeamDraft> = {};
+  for (const m of data.stage_metrics) {
+    const t = data.stages.team[m.key];
+    team[m.key] = { mode: t?.mode ?? "none", value: t?.mode === "set" && t.value != null ? String(t.value) : "" };
+  }
+  return { owners, team };
+}
+
+const BAND_LABEL: Record<string, string> = { outreach: "Outreach · contacts", pipeline: "Pipeline · opportunities" };
+
+/** Stages down the side (there are many), people across, Team last: the
+ *  transpose of the Outreach grid, which has few metrics and many cells. */
+function StageSection({ data, editable, nameOf }: {
+  data: JobsTargets; editable: boolean; nameOf: (e: string) => string;
+}) {
+  const [draft, setDraft] = useState(() => initStages(data));
+  const [error, setError] = useState<string | null>(null);
+  const save = useSaveStageTargets();
+  const initial = useMemo(() => JSON.stringify(initStages(data)), [data]);
+  // Same re-sync rule as Outreach: a refetch never wipes unsaved edits.
+  const prevInitial = useRef(initial);
+  useEffect(() => {
+    if (initial === prevInitial.current) return;
+    const fresh = JSON.parse(initial) as ReturnType<typeof initStages>;
+    setDraft((d) => {
+      if (JSON.stringify(d) === prevInitial.current) return fresh;
+      const owners: typeof d.owners = {};
+      for (const e of Object.keys(fresh.owners)) owners[e] = d.owners[e] ?? fresh.owners[e];
+      return { owners, team: d.team };
+    });
+    prevInitial.current = initial;
+  }, [initial]);
+  const dirty = JSON.stringify(draft) !== initial;
+
+  const invalid = (raw: string) => parseTarget(raw) === undefined;
+  const anyInvalid = Object.values(draft.owners).some((r) => Object.values(r).some(invalid))
+    || Object.values(draft.team).some((t) => t.mode === "set" && (t.value.trim() === "" || invalid(t.value)));
+
+  const teamEffective = (k: string): number | null => {
+    const t = draft.team[k];
+    if (!t || t.mode === "none") return null;
+    if (t.mode === "set") return parseTarget(t.value) ?? null;
+    const vals = data.team.map((e) => parseTarget(draft.owners[e]?.[k] ?? "")).filter((v): v is number => typeof v === "number");
+    return vals.length ? vals.reduce((a, b) => a + b, 0) : null;
+  };
+
+  const submit = () => {
+    if (anyInvalid) { setError("Targets must be whole numbers; a set team total needs a number."); return; }
+    const owners: Record<string, Record<string, number | null>> = {};
+    for (const [e, row] of Object.entries(draft.owners)) {
+      owners[e] = {};
+      for (const [k, raw] of Object.entries(row)) owners[e][k] = parseTarget(raw) ?? null;
+    }
+    const team: Record<string, { mode: TeamMode; value?: number | null }> = {};
+    for (const [k, t] of Object.entries(draft.team)) {
+      if (t.mode === "none") continue;
+      team[k] = t.mode === "set" ? { mode: "set", value: parseTarget(t.value) ?? null } : { mode: "sum" };
+    }
+    save.mutate({ owners, team }, {
+      onError: (e) => setError(apiErrorMessage(e, "Couldn't save stage targets.")),
+      onSuccess: () => setError(null),
+    });
+  };
+
+  const bands = ["outreach", "pipeline"].map((b) => ({ key: b, rows: data.stage_metrics.filter((m) => m.band === b) }));
+
+  return (
+    <Section title="Stage targets"
+      desc="Weekly Net New per stage on the Overview Stage Flow chart, prorated to whatever period it shows. The Stage tab uses the team column; the Owner tab uses each person's. Leave a cell blank for no target."
+      footer={<SaveBar editable={editable} dirty={dirty} saving={save.isPending} error={error}
+        onReset={() => { setDraft(JSON.parse(initial)); setError(null); }} onSave={submit} />}>
+      {!data.stages.available && (
+        <div className="mb-3 rounded-lg border border-[var(--amber)]/40 bg-[var(--amber-soft)] px-3 py-2 text-[12px] text-ink-2">
+          <b>Pending migration.</b> Editing turns on once Jac runs{" "}
+          <code className="text-[11px]">migrations/2026-10-13-jobs-stage-targets.sql</code>. Until then
+          Converted to opportunity uses the Outreach "Opportunities converted" target above.
+        </div>
+      )}
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[720px] text-[12.5px]">
+          <thead>
+            <tr className="text-[10.5px] uppercase tracking-wider text-ink-3">
+              <th className="py-1.5 pr-3 text-left font-semibold">Stage</th>
+              {data.team.map((e) => <th key={e} className="px-2 py-1.5 text-right font-semibold">{nameOf(e)}</th>)}
+              <th className="border-l-2 border-border-strong px-2 py-1.5 text-right font-semibold">Team</th>
+            </tr>
+          </thead>
+          <tbody>
+            {bands.map((band) => (
+              <BandRows key={band.key} label={BAND_LABEL[band.key]} span={data.team.length + 2}>
+                {band.rows.map((m) => {
+                  const t = draft.team[m.key];
+                  const eff = teamEffective(m.key);
+                  return (
+                    <tr key={m.key} className="border-t border-border align-top">
+                      <td className="py-1.5 pr-3 font-medium text-ink">{m.label}</td>
+                      {data.team.map((e) => (
+                        <td key={e} className="px-2 py-1.5 text-right">
+                          <NumInput label={`${nameOf(e)} · ${m.label} per week`} disabled={!editable}
+                            value={draft.owners[e]?.[m.key] ?? ""} invalid={invalid(draft.owners[e]?.[m.key] ?? "")}
+                            onChange={(v) => setDraft((d) => ({ ...d, owners: { ...d.owners, [e]: { ...d.owners[e], [m.key]: v } } }))} />
+                        </td>
+                      ))}
+                      <td className="border-l-2 border-border-strong bg-surface-2/50 px-2 py-1.5 text-right">
+                        <div className="flex items-center justify-end gap-1.5">
+                          <select value={t.mode} disabled={!editable} aria-label={`Team ${m.label}: how it's set`}
+                            onChange={(ev) => setDraft((d) => ({ ...d, team: { ...d.team, [m.key]: { ...t, mode: ev.target.value as TeamDraft["mode"] } } }))}
+                            className="h-7 rounded border border-border-strong bg-surface px-1 text-[11.5px] text-ink-2 outline-none focus:border-accent disabled:border-transparent disabled:bg-transparent">
+                            <option value="sum">Sum of owners</option>
+                            <option value="set">Set total</option>
+                            <option value="none">No target</option>
+                          </select>
+                          {t.mode === "set" ? (
+                            <NumInput label={`Team ${m.label} per week`} disabled={!editable} value={t.value}
+                              invalid={t.value.trim() === "" || invalid(t.value)}
+                              onChange={(v) => setDraft((d) => ({ ...d, team: { ...d.team, [m.key]: { ...t, value: v } } }))} />
+                          ) : (
+                            <span className="inline-block h-7 w-16 pr-1.5 text-right font-semibold leading-7 tabular-nums text-ink">{eff ?? "—"}</span>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </BandRows>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </Section>
+  );
+}
+
+function BandRows({ label, span, children }: { label: string; span: number; children: React.ReactNode }) {
+  return (
+    <>
+      <tr><td colSpan={span} className="pb-1 pt-3 text-[10.5px] font-bold uppercase tracking-wider text-ink-3">{label}</td></tr>
+      {children}
+    </>
   );
 }
