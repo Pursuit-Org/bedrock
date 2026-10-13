@@ -3838,14 +3838,13 @@ _FLOW_CONTACT_OWNER = "COALESCE(c.owner_email, m.owner_email)"
 # with exactly the Outreach › Activity Pipeline definitions (_send_events_sql,
 # _call_events_sql), so the two pages agree and the Settings outreach targets
 # apply. Each: (row key, label, the stage it sits under, leaf metrics with
-# their breakdown labels, Settings outreach metric for the target).
+# their breakdown labels, Settings outreach metric for the target). Discovery
+# call carries discovery calls only; all calls was dropped (Kwame 2026-10-13).
 _FLOW_ACTIVITY_ROWS = [
     ("outreach_sent", "Outreach sent", "initial_outreach",
      [("direct_email_sent", "Email"), ("linkedin_message_sent", "LinkedIn"),
       ("text_sent", "Text"), ("facilitated_intro_sent", "Intro")],
      "total_outreach_activity"),
-    ("calls_logged", "Calls logged", "call_booked",
-     [("call_discovery", "Discovery"), ("call_general", "General")], "total_calls"),
     ("discovery_calls_logged", "Discovery calls logged", "call_booked",
      [("call_discovery", "Discovery")], "call_discovery"),
 ]
