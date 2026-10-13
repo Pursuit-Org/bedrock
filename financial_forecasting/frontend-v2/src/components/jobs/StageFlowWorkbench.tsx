@@ -53,13 +53,17 @@ export interface WorkbenchRecord {
   when: string;
   /** Net New only: the stage it came from, already labelled. */
   from?: string | null;
+  /** Activity drills: the context cells, matching `contextHead`. */
+  extra?: string[];
 }
 
-export function StageFlowWorkbench({ band, title, subtitle, isPool, records, stageLabel, nameOf, onClose }: {
+export function StageFlowWorkbench({ band, title, subtitle, isPool, contextHead, records, stageLabel, nameOf, onClose }: {
   band: "outreach" | "pipeline";
   title: string;
   subtitle: string;
   isPool: boolean;
+  /** Overrides the context columns (In stage / Net new, From), e.g. Sends, Last. */
+  contextHead?: string[];
   records: WorkbenchRecord[];
   stageLabel: (s: string | null) => string;
   nameOf: (e: string | null) => string;
@@ -69,7 +73,7 @@ export function StageFlowWorkbench({ band, title, subtitle, isPool, records, sta
   return (
     <Drawer open onClose={onClose} title={title} subtitle={subtitle} width={width}>
       {band === "outreach"
-        ? <ContactsList isPool={isPool} records={records} stageLabel={stageLabel} nameOf={nameOf} />
+        ? <ContactsList isPool={isPool} contextHead={contextHead} records={records} stageLabel={stageLabel} nameOf={nameOf} />
         : <OpportunitiesList isPool={isPool} records={records} stageLabel={stageLabel} nameOf={nameOf} />}
     </Drawer>
   );
@@ -134,8 +138,9 @@ function Empty({ text }: { text: string }) {
 // Revisit asks for a date per contact, so it isn't offered in bulk.
 const BULK_STAGES = MEMBERSHIP_STAGES.filter((s) => s !== "revisit");
 
-function ContactsList({ isPool, records, stageLabel, nameOf }: {
-  isPool: boolean; records: WorkbenchRecord[]; stageLabel: (s: string | null) => string; nameOf: (e: string | null) => string;
+function ContactsList({ isPool, contextHead, records, stageLabel, nameOf }: {
+  isPool: boolean; contextHead?: string[]; records: WorkbenchRecord[];
+  stageLabel: (s: string | null) => string; nameOf: (e: string | null) => string;
 }) {
   const byId = useMemo(() => {
     const m = new Map<number, WorkbenchRecord>();
@@ -178,10 +183,11 @@ function ContactsList({ isPool, records, stageLabel, nameOf }: {
   };
   const busy = flag.isPending || setOwnerBulk.isPending;
 
-  const extraHead = isPool ? ["In stage"] : ["Net new", "From"];
+  const extraHead = contextHead ?? (isPool ? ["In stage"] : ["Net new", "From"]);
   const extra = (id: number) => {
     const r = byId.get(id);
     if (!r) return [];
+    if (r.extra) return r.extra;
     return isPool ? [r.when] : [r.when, r.from ? stageLabel(r.from) : "—"];
   };
 

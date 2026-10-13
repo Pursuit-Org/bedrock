@@ -3816,10 +3816,9 @@ _FLOW_CONTACT_STAGES = [
     ("assigned", "Assigned"),
     ("initial_outreach", "Initial outreach"),
     ("scheduling", "Scheduling"),
-    # Labelled "Discovery call" on this chart (Kwame 2026-10-09): the meeting
-    # tracks discovery calls. It still counts the call_booked membership stage,
-    # because calls are rarely tagged Discovery when logged (2 ever, as of
-    # 2026-10-09), so a count of logged discovery calls would read ~0.
+    # Labelled "Discovery call" on this chart (Kwame 2026-10-09). The row
+    # counts contacts in the call_booked membership stage; logged calls are the
+    # activity rows beneath it (Kwame 2026-10-13).
     ("call_booked", "Discovery call"),
 ]
 # The three ways a contact leaves outreach. Summed on the Contact closed row.
@@ -3834,9 +3833,22 @@ _FLOW_DEAL_TERMINAL = [("closed_won", "Closed Won"), ("closed_lost", "Closed Los
 # contacts (947 of 1,241 on 2026-10-13), which left the Owner filter and tab
 # blank for people the Contacts page shows as owned. Needs `c` and `m` aliases.
 _FLOW_CONTACT_OWNER = "COALESCE(c.owner_email, m.owner_email)"
-# The `from` a Discovery call entry carries when it came from a logged call
-# rather than a stage move; the drawer labels it.
-_FLOW_LOGGED_DISCOVERY = "logged_discovery_call"
+# Activity rows: what the team DID, beside the stages that work measures
+# (Kwame 2026-10-13). Stage rows count contacts moving; these count events,
+# with exactly the Outreach › Activity Pipeline definitions (_send_events_sql,
+# _call_events_sql), so the two pages agree and the Settings outreach targets
+# apply. Each: (row key, label, the stage it sits under, leaf metrics with
+# their breakdown labels, Settings outreach metric for the target).
+_FLOW_ACTIVITY_ROWS = [
+    ("outreach_sent", "Outreach sent", "initial_outreach",
+     [("direct_email_sent", "Email"), ("linkedin_message_sent", "LinkedIn"),
+      ("text_sent", "Text"), ("facilitated_intro_sent", "Intro")],
+     "total_outreach_activity"),
+    ("calls_logged", "Calls logged", "call_booked",
+     [("call_discovery", "Discovery"), ("call_general", "General")], "total_calls"),
+    ("discovery_calls_logged", "Discovery calls logged", "call_booked",
+     [("call_discovery", "Discovery")], "call_discovery"),
+]
 # Stage keys that may carry a weekly stage target: every stage row (Kwame
 # 2026-10-13), from the one list Settings › Targets › Jobs › Stages edits.
 # Summary rows (Contact closed, Closed) are sums and carry none.
@@ -3844,14 +3856,9 @@ STAGE_FLOW_TARGET_KEYS = list(jobs_targets_store.STAGE_METRIC_KEYS)
 # Until a stage target is set, a stage that measures exactly what an existing
 # Settings › Targets › Jobs › Outreach metric measures borrows that target.
 # Converted Opportunities counts the membership conversion stamp, which is what
-# "moved into Converted to opportunity" counts here. Discovery calls counts
-# logged discovery calls, which the Discovery call row's Net New also counts
-# (once per contact). The send and booked-call targets count activity events,
-# not contacts changing stage, so they are not borrowed.
-_FLOW_OUTREACH_TARGET = {
-    "converted_to_opportunity": "converted_opportunities",
-    "call_booked": "call_discovery",
-}
+# "moved into Converted to opportunity" counts here. The send and call targets
+# count activity events, so they sit on the activity rows instead.
+_FLOW_OUTREACH_TARGET = {"converted_to_opportunity": "converted_opportunities"}
 _FLOW_OUTREACH_LABELS = dict(jobs_targets_store.OUTREACH_METRICS)
 
 
@@ -3919,28 +3926,6 @@ async def _flow_moved(conn, owner_f, dt_f, p_from, p_to, have_history: bool) -> 
             from_of.setdefault(key, canon_membership_stage(r["from_stage"]))
             if key[1] in contact_keys and key not in seen:
                 seen[key] = (r, r["changed_at"])
-    # A logged Discovery call is a discovery call whether or not anyone moved the
-    # contact's stage (Kwame 2026-10-13), so it counts as Net New in the
-    # Discovery call row too: once per contact, after the stage entries, so a
-    # contact who was moved AND had the call logged still counts once.
-    if await _has_column("bedrock", "activity", "call_kind"):
-        drows = await conn.fetch(f"""
-            SELECT DISTINCT ON (a.participant_public_contact_id)
-                   a.participant_public_contact_id AS contact_id, a.activity_date AS at,
-                   c.full_name AS name, c.current_company AS company, {_FLOW_CONTACT_OWNER} AS owner
-            FROM bedrock.activity a
-            JOIN public.contacts c ON c.contact_id = a.participant_public_contact_id
-            LEFT JOIN bedrock.jobs_contact_membership m ON m.contact_id = c.contact_id
-            WHERE a.deleted_at IS NULL AND a.type IN ('call', 'meeting') AND a.call_kind = 'discovery'
-              AND a.activity_date >= $2 AND a.activity_date < $3 AND {_jobs_relevant('a')}
-              AND ($1::text IS NULL OR lower({_FLOW_CONTACT_OWNER}) = $1)
-            ORDER BY a.participant_public_contact_id, a.activity_date
-        """, owner_f, p_from, p_to)
-        for r in drows:
-            key = (r["contact_id"], "call_booked")
-            if key not in seen:
-                seen[key] = (r, r["at"])
-                from_of[key] = _FLOW_LOGGED_DISCOVERY
     for (cid, stage_key), (r, ts) in seen.items():
         moved.append({
             "band": "outreach", "stage": stage_key, "id": str(cid), "name": r["name"],
@@ -4006,6 +3991,31 @@ async def _flow_moved(conn, owner_f, dt_f, p_from, p_to, have_history: bool) -> 
             "from": canon_stage(r["from_stage"]),
         })
     return moved
+
+
+async def _flow_activity(conn, owner_f, p_from, p_to, span) -> tuple:
+    """Sends and calls in [p_from, p_to) and the period before, per (metric,
+    contact), from the Activity Pipeline's own event SQL. The Stage tab is the
+    Jobs team; an owner is that person as the SENDER (who did the work), the
+    same cut Outreach's Viewing filter makes. Returns (rows, has_call_kind)."""
+    has_call_kind = await _has_column("bedrock", "activity", "call_kind")
+    kind_sql = (f"'call_' || coalesce(a.call_kind, '{CALL_KIND_DEFAULT}')" if has_call_kind
+                else f"'call_{CALL_KIND_DEFAULT}'")
+    owner = owner_f if owner_f and _SAFE_EMAIL.match(owner_f) else None
+    rows = await conn.fetch(f"""
+        WITH ev AS (
+            {_send_events_sql("team", owner)}
+            UNION ALL
+            {_call_events_sql("team", owner, kind_sql)}
+        )
+        SELECT metric, contact_id,
+               count(*) FILTER (WHERE ts >= $2 AND ts < $3) AS n_this,
+               count(*) FILTER (WHERE ts >= $1 AND ts < $2) AS n_prev,
+               max(ts) FILTER (WHERE ts >= $2 AND ts < $3) AS last_at
+        FROM ev WHERE ts >= $1 AND ts < $3
+        GROUP BY metric, contact_id
+    """, p_from - span, p_from, p_to)
+    return rows, has_call_kind
 
 
 @router.get("/stage-flow")
@@ -4100,6 +4110,7 @@ async def get_stage_flow(
     # ── Moved in: this period, and the one before for the Trend ──────────────
     moved = await _flow_moved(conn, owner_f, dt_f, p_from, p_to, have_history)
     prev = await _flow_moved(conn, owner_f, dt_f, p_from - span, p_from, have_history)
+    act_rows, has_call_kind = await _flow_activity(conn, owner_f, p_from, p_to, span)
     moved.sort(key=lambda m: m["at"], reverse=True)
     members.sort(key=lambda m: -m["days"])
 
@@ -4160,10 +4171,61 @@ async def get_stage_flow(
             "delta": round(moved_in - target, 1) if target is not None else None,
         }
 
+    # ── Activity rows ────────────────────────────────────────────────────────
+    activity: list = []
+
+    def _activity_row(key: str, label: str, parent: str, leaves: list, metric: str) -> dict:
+        names = {m for m, _ in leaves}
+        mine = [r for r in act_rows if r["metric"] in names]
+        this_n = sum(int(r["n_this"] or 0) for r in mine)
+        prev_n = sum(int(r["n_prev"] or 0) for r in mine)
+        # One drill entry per contact touched; touches with no linked contact
+        # count in the number but can't be listed, so the drawer says how many.
+        per: dict = {}
+        for r in mine:
+            if r["contact_id"] is None or not r["n_this"]:
+                continue
+            e = per.setdefault(r["contact_id"], {"n": 0, "at": None})
+            e["n"] += int(r["n_this"])
+            if r["last_at"] is not None and (e["at"] is None or r["last_at"] > e["at"]):
+                e["at"] = r["last_at"]
+        for cid, e in per.items():
+            activity.append({"row": key, "id": str(cid), "n": e["n"],
+                             "at": e["at"].isoformat() if e["at"] else None})
+        weekly = None
+        if jobs_targets_store.available():
+            weekly = (jobs_targets_store.owner_weekly(owner_f, metric) if owner_f
+                      else jobs_targets_store.team_weekly(metric))
+        target = round(weekly * span_days / 7, 1) if weekly is not None else None
+        # Discovery needs the call-type column; until then every call is general,
+        # so the Discovery-only row reads "pending migration", not a fake zero.
+        ok = has_call_kind or names != {"call_discovery"}
+        return {
+            "key": key, "label": label, "depth": 1, "kind": "activity", "parent": parent,
+            "children": None, "available": ok, "in_now": None,
+            "moved_in": this_n, "prev_moved_in": prev_n,
+            "targetable": True, "target_weekly": weekly,
+            "target_source": "outreach" if weekly is not None else None,
+            "target_source_label": _FLOW_OUTREACH_LABELS.get(metric),
+            "target": target,
+            "delta": round(this_n - target, 1) if target is not None else None,
+            "breakdown": [{"key": m, "label": lbl,
+                           "n": sum(int(r["n_this"] or 0) for r in mine if r["metric"] == m)}
+                          for m, lbl in leaves] if len(leaves) > 1 else None,
+            "unlinked": sum(int(r["n_this"] or 0) for r in mine if r["contact_id"] is None),
+        }
+
+    def _outreach_stage_rows() -> list:
+        out = []
+        for k, lbl in _FLOW_CONTACT_STAGES:
+            out.append(_row("outreach", k, lbl, True))
+            out += [_activity_row(*a) for a in _FLOW_ACTIVITY_ROWS if a[2] == k]
+        return out
+
     closed_keys = [k for k, _ in _FLOW_CONTACT_CLOSED]
     bands = [
         {"key": "outreach", "label": "Outreach", "unit": "contacts",
-         "rows": [_row("outreach", k, lbl, True) for k, lbl in _FLOW_CONTACT_STAGES]
+         "rows": _outreach_stage_rows()
                  + [_row("outreach", "contact_closed", "Contact closed", True, children=closed_keys)]
                  + [_row("outreach", k, lbl, True, depth=1) for k, lbl in _FLOW_CONTACT_CLOSED]},
         {"key": "pipeline", "label": "Pipeline", "unit": "opportunities",
@@ -4187,10 +4249,11 @@ async def get_stage_flow(
         # The Jobs team (Settings › Targets › Jobs › Team), in its set order: the
         # Owner filter and the Owner tab list these people and nobody else.
         "team": jobs_targets_store.team_emails(),
-        "stage_labels": {**STAGE_LABELS, **{k: lbl for k, lbl in _FLOW_CONTACT_STAGES + _FLOW_CONTACT_CLOSED},
-                         _FLOW_LOGGED_DISCOVERY: "Logged discovery call"},
+        "stage_labels": {**STAGE_LABELS, **{k: lbl for k, lbl in _FLOW_CONTACT_STAGES + _FLOW_CONTACT_CLOSED}},
         "members": members,
         "moved": moved,
+        # Activity rows' drill: one entry per contact touched, with the count.
+        "activity": activity,
     }}
 
 

@@ -25,6 +25,7 @@
  */
 import { Fragment, useMemo, useState } from "react";
 import { format } from "date-fns";
+import { Zap } from "lucide-react";
 
 import {
   useJobsStaff,
@@ -46,13 +47,16 @@ import { cn } from "@/lib/utils";
 type Tab = "stage" | "owner";
 
 type Drill = {
-  kind: "now" | "moved";
+  /** "activity" = the contacts behind an activity row's sends or calls. */
+  kind: "now" | "moved" | "activity";
   band: StageFlowBand;
   stages: string[];
   label: string;
   /** A narrower cell (a time bucket or an owner): its label and exactly the
    *  `${id}:${stage}` records it counted. Null = the whole row. */
   col: { label: string; keys: Set<string> } | null;
+  /** Activity drills: the row clicked (its key, unit and unlinked count). */
+  activity?: StageFlowRow;
 };
 
 /** Band accents: a thin rule on the band header, so the two units read apart. */
@@ -164,7 +168,9 @@ export function StageFlowChart() {
             Pool is what sits in each stage today. Net New counts each contact or opportunity once per stage it entered
             during the period. Closed Won and Closed Lost count closes that stuck. Targets are weekly, prorated to the
             period; the Owner tab shows each person against their own
-            {current.targets_available ? "" : "; per-stage targets arrive with the stage-targets migration, and Discovery call and Converted to opportunity use the Settings outreach targets until then"}.
+            {current.targets_available ? "" : "; per-stage targets arrive with the stage-targets migration, and Converted to opportunity uses the Settings outreach target until then"}.
+            Rows marked ⚡ count activity, not contacts: every send or call the team logged in the period, exactly as
+            Outreach › Activity Pipeline counts it, against the Settings outreach targets.
             Deal type filters the Pipeline band only.
           </p>
         )}
@@ -315,6 +321,10 @@ function StageTable({ data, byTime, nameOf, onDrill }: {
               <Fragment key={band.key}>
                 <BandHeader band={band} colSpan={colCount} pool={pool} />
                 {band.rows.map((row) => {
+                  if (row.kind === "activity") {
+                    return <ActivityRow key={row.key} row={row} cols={cols.length}
+                      onDrill={() => onDrill({ kind: "activity", band: band.key, stages: [row.key], label: row.label, col: null, activity: row })} />;
+                  }
                   const stages = stagesOf(row);
                   const inRow = bandMembers.filter((m) => stages.includes(m.stage));
                   const pending = !row.available;
@@ -380,6 +390,53 @@ function StageTable({ data, byTime, nameOf, onDrill }: {
   );
 }
 
+/** Sends or calls logged in the period, under the stage that work moves. Same
+ *  columns as a stage row so the target, gap and trend read across, but a
+ *  violet bolt and a lighter weight mark it as a count of events: one contact
+ *  emailed three times is 3 here and 1 on the stage row above. */
+function ActivityRow({ row, cols, onDrill }: { row: StageFlowRow; cols: number; onDrill: () => void }) {
+  const pending = !row.available;
+  const unit = row.key === "outreach_sent" ? "sends" : "calls";
+  const targetTitle = row.target_weekly != null
+    ? `${row.target_weekly} a week, from Settings › Targets › Jobs › Outreach: ${row.target_source_label ?? ""}`
+    : `No ${row.target_source_label ?? "outreach"} target set in Settings › Targets › Jobs › Outreach`;
+  return (
+    <tr className="border-b border-border text-[12.5px] transition-colors hover:bg-surface-2/40"
+      title={`Activity: ${unit} logged in the period, as Outreach › Activity Pipeline counts them`}>
+      <td className={cn("py-2 pr-4 text-left", pending ? "text-ink-4" : "text-ink-2")} style={{ paddingLeft: "34px" }}>
+        <span className="flex items-center gap-1.5 whitespace-nowrap">
+          <Zap size={12} className="shrink-0" style={{ color: ACTIVITY_ACCENT }} aria-hidden />
+          <span className="font-medium">{row.label}</span>
+          {pending && <span className="ml-1 text-[10.5px] uppercase tracking-wide text-ink-4">pending migration</span>}
+        </span>
+        {!pending && row.breakdown && (
+          <span className="mt-0.5 block whitespace-nowrap pl-[18px] text-[11px] tabular-nums text-ink-4">
+            {row.breakdown.map((b) => `${b.label} ${b.n.toLocaleString()}`).join(" · ")}
+          </span>
+        )}
+      </td>
+      <td className={cn(TD, HL, "py-2 text-ink-4")} title="Activity has no pool">·</td>
+      <td className={cn(TD, HL_ACT, "border-l-2 border-border-strong py-2")}>
+        {pending ? <span className="text-ink-4">—</span>
+          : <NumButton n={row.moved_in} onClick={onDrill} title={`${row.moved_in} ${unit} logged`} />}
+      </td>
+      <td className={cn(TD, "py-2 text-ink-3")} title={targetTitle}>
+        {pending || row.target == null ? <span className="text-ink-4">—</span> : fmtTarget(row.target)}
+      </td>
+      <td className={cn(TD, "py-2")}>
+        {pending || row.target == null ? <span className="text-ink-4">—</span>
+          : <DeltaChip actual={row.moved_in} target={row.target} />}
+      </td>
+      <td className={cn(TD, "py-2 text-[12px]")}>
+        {pending ? <span className="text-ink-4">—</span> : <Trend current={row.moved_in} prior={row.prev_moved_in} />}
+      </td>
+      {Array.from({ length: cols }, (_, i) => (
+        <td key={i} className={cn("px-2 py-2", i === 0 && "border-l border-border-strong")} />
+      ))}
+    </tr>
+  );
+}
+
 // ── Owner tab: pick one person ───────────────────────────────────────────────
 
 /** One button per Jobs team member, styled as the Stage / Owner tabs so the
@@ -417,6 +474,9 @@ function StageFlowDrill({ drill, data, nameOf, onClose }: {
 
   // Exactly the records the clicked number counted; the workbench fetches
   // their full rows and keeps this as context (time in stage, when they moved).
+  if (drill.kind === "activity" && drill.activity) {
+    return <ActivityDrill drill={drill} row={drill.activity} data={data} nameOf={nameOf} onClose={onClose} />;
+  }
   const records: WorkbenchRecord[] = drill.kind === "now"
     ? data.members
         .filter((m) => m.band === drill.band && drill.stages.includes(m.stage) && inCell(m))
@@ -435,5 +495,27 @@ function StageFlowDrill({ drill, data, nameOf, onClose }: {
   return (
     <StageFlowWorkbench band={drill.band} title={drill.label} subtitle={`${n} ${noun} · ${note}`}
       isPool={drill.kind === "now"} records={records} stageLabel={stageLabel} nameOf={nameOf} onClose={onClose} />
+  );
+}
+
+/** The contacts behind an activity number, in the same working list, with how
+ *  many sends or calls each got and when the last one was. */
+function ActivityDrill({ drill, row, data, nameOf, onClose }: {
+  drill: Drill; row: StageFlowRow; data: StageFlow; nameOf: (e: string | null) => string; onClose: () => void;
+}) {
+  const unit = row.key === "outreach_sent" ? "send" : "call";
+  const entries = (data.activity ?? []).filter((a) => a.row === row.key).sort((a, b) => b.n - a.n);
+  const records: WorkbenchRecord[] = entries.map((a) => ({
+    id: a.id, stage: row.key, when: a.at ? utcDay(a.at) : "—",
+    extra: [a.n.toLocaleString(), a.at ? utcDay(a.at) : "—"],
+  }));
+  const plural = (n: number, w: string) => `${n.toLocaleString()} ${w}${n === 1 ? "" : "s"}`;
+  const unlinked = row.unlinked ? ` · ${plural(row.unlinked, unit)} with no linked contact` : "";
+  const stageLabel = (s: string | null) => (s ? data.stage_labels[s] ?? s : "—");
+  return (
+    <StageFlowWorkbench band="outreach" title={drill.label}
+      subtitle={`${plural(row.moved_in, unit)} to ${plural(records.length, "contact")} · ${shortRange(data.period.from, data.period.to)}${unlinked}`}
+      isPool={false} contextHead={[unit === "send" ? "Sends" : "Calls", "Last"]}
+      records={records} stageLabel={stageLabel} nameOf={nameOf} onClose={onClose} />
   );
 }

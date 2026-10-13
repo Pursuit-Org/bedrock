@@ -3162,6 +3162,14 @@ export interface StageFlowRow {
   depth: number;
   /** Set on a summary row: the stages it sums. */
   children: string[] | null;
+  /** "activity" = sends or calls logged (events, not contacts), shown under
+   *  `parent`. Absent on stage rows. */
+  kind?: "activity";
+  parent?: string;
+  /** Activity rows with several kinds: Email 12 · LinkedIn 3 … */
+  breakdown?: { key: string; label: string; n: number }[] | null;
+  /** Activity rows: touches counted with no linked contact (not listable). */
+  unlinked?: number;
   /** False while the database doesn't accept the stage yet (pending migration). */
   available: boolean;
   /** Null on movement-only rows (Closed Won, the off-ramps). */
@@ -3180,6 +3188,15 @@ export interface StageFlowRow {
   target: number | null;
   /** Moved in minus target; positive is ahead. Null without a target. */
   delta: number | null;
+}
+
+export interface StageFlowActivity {
+  /** The activity row's key, e.g. "outreach_sent". */
+  row: string;
+  id: string;
+  /** Touches to this contact in the period. */
+  n: number;
+  at: string | null;
 }
 
 export interface StageFlowMember {
@@ -3221,6 +3238,8 @@ export interface StageFlow {
   team: string[];
   members: StageFlowMember[];
   moved: StageFlowMove[];
+  /** Activity rows' drill: one entry per contact touched. Absent on older APIs. */
+  activity?: StageFlowActivity[];
 }
 
 export function useStageFlow(from: string, to: string, owner?: string, dealType?: string) {

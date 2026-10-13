@@ -278,8 +278,10 @@ def test_converted_borrows_the_settings_outreach_target():
     assert d["targets_available"] is False
     assert conv["target_weekly"] == 4 and conv["target_source"] == "outreach"
     assert conv["target_source_label"] == "Opportunities converted"
-    # Discovery call borrows Discovery calls (summed team line here).
-    dc = _rows(d)[("outreach", "call_booked")]
+    # Discovery calls is an activity target: it sits on the logged-calls row
+    # (summed team line here), not on the Discovery call stage row.
+    assert _rows(d)[("outreach", "call_booked")]["target"] is None
+    dc = _rows(d)[("outreach", "discovery_calls_logged")]
     assert dc["target_weekly"] == 5 and dc["target_source_label"] == "Discovery calls"
     # Nothing else borrows: sends and booked calls measure events, not stage entries.
     assert _rows(d)[("outreach", "scheduling")]["target"] is None
@@ -287,34 +289,97 @@ def test_converted_borrows_the_settings_outreach_target():
     r, _ = _get({}, owner="a@pursuit.org")
     rows = _rows(r.json()["data"])
     assert rows[("outreach", "converted_to_opportunity")]["target_weekly"] == 2
-    assert rows[("outreach", "call_booked")]["target_weekly"] == 5
+    assert rows[("outreach", "discovery_calls_logged")]["target_weekly"] == 5
 
 
-DISCOVERY_CALLS = "a.call_kind = 'discovery'"
+ACTIVITY = "FROM ev WHERE ts >="
 
 
-def test_logged_discovery_call_counts_once_in_discovery_call_net_new():
+def _act(metric, cid, n_this, n_prev=0, at_days=2):
+    return {"metric": metric, "contact_id": cid, "n_this": n_this, "n_prev": n_prev,
+            "last_at": ago(at_days) if n_this else None}
+
+
+def test_activity_rows_sit_under_their_stages_and_count_events():
     conn = FakeConn(
         vals={"information_schema.columns": 1},
         lists={
-            DISCOVERY_CALLS: [
-                # logged a discovery call, never moved stage: counts
-                {"contact_id": 7, "at": ago(2), "name": "C7", "company": "Co7", "owner": "a@pursuit.org"},
-                # moved to the stage AND had the call logged: counts once
-                {"contact_id": 8, "at": ago(2), "name": "C8", "company": "Co8", "owner": "a@pursuit.org"},
+            ACTIVITY: [
+                _act("direct_email_sent", 7, 3, n_prev=1),
+                _act("linkedin_message_sent", 7, 1),
+                _act("text_sent", 8, 2),
+                _act("facilitated_intro_sent", None, 1),   # no linked contact
+                _act("call_discovery", 7, 2, n_prev=1),
+                _act("call_general", 9, 1, n_prev=2),
             ],
+            # A logged discovery call no longer adds to the stage row: only the move.
             CONTACT_HISTORY: [
                 {"contact_id": 8, "from_stage": "initial_outreach", "to_stage": "call_booked", "changed_at": ago(3),
-                 "name": "C8", "company": "Co8", "owner": "a@pursuit.org"},
-            ],
+                 "name": "C8", "company": "Co8", "owner": "a@pursuit.org"}],
         })
     c = make_jobs_client(conn)
     d = c.get(f"/api/jobs/stage-flow?period_from={P_FROM}&period_to={P_TO}").json()["data"]
-    row = _rows(d)[("outreach", "call_booked")]
-    assert row["label"] == "Discovery call" and row["moved_in"] == 2
-    via = {m["id"]: m["from"] for m in d["moved"] if m["stage"] == "call_booked"}
-    assert via == {"7": "logged_discovery_call", "8": "initial_outreach"}
-    assert d["stage_labels"]["logged_discovery_call"] == "Logged discovery call"
+    keys = [r["key"] for r in d["bands"][0]["rows"]]
+    assert keys[:7] == ["assigned", "initial_outreach", "outreach_sent", "scheduling",
+                        "call_booked", "calls_logged", "discovery_calls_logged"]
+    rows = _rows(d)
+    assert rows[("outreach", "call_booked")]["moved_in"] == 1
+    sent = rows[("outreach", "outreach_sent")]
+    assert sent["kind"] == "activity" and sent["parent"] == "initial_outreach" and sent["in_now"] is None
+    assert sent["moved_in"] == 7 and sent["prev_moved_in"] == 1 and sent["unlinked"] == 1
+    assert {b["label"]: b["n"] for b in sent["breakdown"]} == {"Email": 3, "LinkedIn": 1, "Text": 2, "Intro": 1}
+    calls = rows[("outreach", "calls_logged")]
+    assert calls["moved_in"] == 3 and calls["prev_moved_in"] == 3
+    disc = rows[("outreach", "discovery_calls_logged")]
+    assert disc["moved_in"] == 2 and disc["breakdown"] is None and disc["available"] is True
+    # The drill: one entry per contact touched, with how many touches.
+    drill = {(a["row"], a["id"]): a["n"] for a in d["activity"]}
+    assert drill == {("outreach_sent", "7"): 4, ("outreach_sent", "8"): 2,
+                     ("calls_logged", "7"): 2, ("calls_logged", "9"): 1,
+                     ("discovery_calls_logged", "7"): 2}
+    # Activity rows stay out of the band's pool and the summary rows.
+    assert rows[("outreach", "contact_closed")]["children"] == ["converted_to_opportunity", "revisit", "not_a_fit"]
+
+
+def test_activity_rows_follow_the_sender_and_the_settings_outreach_targets():
+    class Pool:
+        async def fetchval(self, q, *a):
+            return None if "pg_get_constraintdef" in q else True
+
+        async def fetch(self, q, *a):
+            if "jobs_team_member" in q:
+                return [{"email": "a@pursuit.org"}]
+            return [{"section": "outreach", "metric": "total_outreach_activity", "owner_email": "a@pursuit.org",
+                     "period_start": None, "value": 25, "team_mode": None},
+                    {"section": "outreach", "metric": "total_outreach_activity", "owner_email": None,
+                     "period_start": None, "value": None, "team_mode": "sum"},
+                    {"section": "outreach", "metric": "call_discovery", "owner_email": "a@pursuit.org",
+                     "period_start": None, "value": 5, "team_mode": None}]
+    asyncio.run(store.refresh(Pool(), force=True))
+    from_14 = (NOW - timedelta(days=13)).date().isoformat()
+    r, conn = _get({ACTIVITY: [_act("direct_email_sent", 7, 30)]}, owner="a@pursuit.org", period_from=from_14)
+    rows = _rows(r.json()["data"])
+    sent = rows[("outreach", "outreach_sent")]
+    assert sent["target_weekly"] == 25 and sent["target"] == 50.0 and sent["delta"] == -20.0
+    assert sent["target_source_label"] == "Outreach activity"
+    assert rows[("outreach", "discovery_calls_logged")]["target_weekly"] == 5
+    assert rows[("outreach", "calls_logged")]["target"] is None
+    # The person is the sender, as on Outreach's Viewing filter.
+    q = next(c[1] for c in conn.calls if ACTIVITY in c[1])
+    assert "from_email ILIKE '%a@pursuit.org%'" in q and "logged_by ILIKE '%a@pursuit.org%'" in q
+    # The Discovery call stage row no longer borrows the Discovery calls target.
+    assert rows[("outreach", "call_booked")]["target"] is None
+
+
+def test_discovery_activity_row_is_pending_without_the_call_kind_column(monkeypatch):
+    from routes import jobs
+    # The probe caches a True; reset it so this run sees the column missing.
+    monkeypatch.setitem(jobs._COLUMN_CACHE, ("bedrock", "activity", "call_kind"), False)
+    r, _ = _get({ACTIVITY: [_act("call_general", 7, 2)]})
+    rows = _rows(r.json()["data"])
+    assert rows[("outreach", "discovery_calls_logged")]["available"] is False
+    assert rows[("outreach", "calls_logged")]["available"] is True
+    assert rows[("outreach", "calls_logged")]["moved_in"] == 2
 
 
 def test_contact_owner_comes_from_the_contact_record_first():
