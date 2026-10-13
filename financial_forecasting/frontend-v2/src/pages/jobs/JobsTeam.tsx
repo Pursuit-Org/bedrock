@@ -31,6 +31,8 @@ import {
   type OppPlacement,
 } from "@/services/jobs";
 import { ActivitySourceIcon } from "@/components/ActivitySourceIcon";
+import { CompanyPicker } from "@/components/jobs/CompanyPicker";
+import { ContactRefsPicker, type PickedContact } from "@/components/jobs/ContactRefsPicker";
 import { jobsOpportunityPath } from "@/components/jobs/jobsEntity";
 import { closedLostLabel } from "@/components/jobs/oppLabels";
 import { OppRolesSection } from "@/components/jobs/OppRolesSection";
@@ -325,16 +327,12 @@ function ContactPicker({
     return c.full_name ?? (`${c.first_name ?? ""} ${c.last_name ?? ""}`.trim() || `#${c.contact_id}`);
   }
 
-  /** Find the ref stored in sfContactIds that corresponds to this linked contact */
-  function findRef(c: JobContact): string {
-    return (
-      sfContactIds.find(
-        (id) =>
-          id === `airtable:${c.contact_id}` ||
-          id === `pub:${c.contact_id}` ||
-          id.endsWith(`:${c.contact_id}`)
-      ) ?? String(c.contact_id)
-    );
+  /** The ref stored in sfContactIds for this linked contact, as the server
+   *  resolved it. Null when the contact is linked only from its own side (it
+   *  converted to this opportunity), so there is nothing here to remove. */
+  function findRef(c: JobContact): string | null {
+    if (c.contact_ref && sfContactIds.includes(c.contact_ref)) return c.contact_ref;
+    return sfContactIds.includes(`pub:${c.contact_id}`) ? `pub:${c.contact_id}` : null;
   }
 
   function removeContact(ref: string) {
@@ -355,7 +353,7 @@ function ContactPicker({
         <div className="flex flex-wrap gap-1">
           {linkedContacts.map((c) => {
             const ref = findRef(c);
-            const badge = contactRefSource(ref);
+            const badge = contactRefSource(ref ?? `pub:${c.contact_id}`);
             return (
               <span
                 key={c.contact_id}
@@ -364,14 +362,16 @@ function ContactPicker({
               >
                 {contactDisplayName(c)}
                 <ContactSourceBadge label={badge.label} className={badge.className} />
-                <button
-                  type="button"
-                  onClick={() => removeContact(ref)}
-                  className="ml-0.5 text-ink-4 hover:text-red-500 transition-colors"
-                  title="Remove contact"
-                >
-                  <X size={11} />
-                </button>
+                {ref && (
+                  <button
+                    type="button"
+                    onClick={() => removeContact(ref)}
+                    className="ml-0.5 text-ink-4 hover:text-red-500 transition-colors"
+                    title="Remove contact"
+                  >
+                    <X size={11} />
+                  </button>
+                )}
               </span>
             );
           })}
@@ -1179,7 +1179,7 @@ function ContactsTab({
       </Field>
 
       {contacts.length === 0 ? (
-        <div className="py-4 text-center text-[12px] text-ink-3">No contacts linked to this deal.</div>
+        <div className="py-4 text-center text-[12px] text-ink-3">No contacts linked to this opportunity.</div>
       ) : (
         <ul className="flex flex-col divide-y divide-border-strong rounded-md border border-border-strong">
           {contacts.map((c) => (
@@ -1241,7 +1241,7 @@ const OPP_DEFAULT_VISIBLE: OppColKey[] = [
 
 const OPP_COL_LABELS: Record<OppColKey, string> = {
   company: "Company", role: "Role", salary: "Salary", stage: "Stage", status: "Status",
-  deal_type: "Deal Type", priority: "Priority", segment: "Segment", likelihood: "Likelihood",
+  deal_type: "Opportunity type", priority: "Priority", segment: "Segment", likelihood: "Likelihood",
   num_roles: "# Roles", owner: "Owner", target_close: "Target close", est_jobs: "Est. jobs", tasks: "Open tasks", recent: "Recent activity", updated: "Updated",
 };
 
@@ -1285,7 +1285,7 @@ const OPP_FILTERABLE: Record<OppField, FieldMeta<JobsOpportunity>> = {
   role:       { label: "Role",       type: "text",   getValue: (d) => d.title ?? "" },
   stage:      { label: "Stage",      type: "select", getValue: (d) => d.stage },
   status:     { label: "Status",     type: "select", getValue: (d) => stageStatus(d.stage) },
-  deal_type:  { label: "Deal type",  type: "select", getValue: (d) => d.deal_type ?? "" },
+  deal_type:  { label: "Opportunity type",  type: "select", getValue: (d) => d.deal_type ?? "" },
   segment:    { label: "Segment",    type: "select", getValue: (d) => d.segment ?? "" },
   priority:   { label: "Priority",   type: "select", getValue: (d) => (d.priority != null ? String(d.priority) : "") },
   likelihood: { label: "Likelihood", type: "select", getValue: (d) => d.likelihood ?? "" },
@@ -1302,7 +1302,7 @@ const OPP_GROUP_OPTIONS: { value: string; label: string }[] = [
   { value: "",          label: "No grouping" },
   { value: "segment",   label: "Group by Segment" },
   { value: "owner",     label: "Group by Owner" },
-  { value: "deal_type", label: "Group by Deal type" },
+  { value: "deal_type", label: "Group by Opportunity type" },
   { value: "stage",     label: "Group by Stage" },
   { value: "status",    label: "Group by Status" },
 ];
@@ -1553,10 +1553,13 @@ const DEFAULT_NEW_DEAL_FORM: NewDealForm = {
 function NewDealModal({ onClose }: { onClose: () => void }) {
   const nav = useNavigate();
   const [form, setForm] = useState<NewDealForm>(DEFAULT_NEW_DEAL_FORM);
+  // Creating an opportunity means picking its contacts (D15, PRO-101).
+  const [contacts, setContacts] = useState<PickedContact[]>([]);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const createOpportunity = useCreateOpportunity();
   const estJobs = parseEstimatedJobs(form.estimatedJobs);
-  const canSubmit = !!form.companyName.trim() && !!form.targetClose && estJobs !== undefined;
+  const canSubmit = !!form.companyName.trim() && !!form.targetClose && estJobs !== undefined
+    && contacts.length > 0;
 
   function set<K extends keyof NewDealForm>(key: K, value: NewDealForm[K]) {
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -1584,6 +1587,7 @@ function NewDealModal({ onClose }: { onClose: () => void }) {
       description: form.notes.trim() || undefined,
       target_close_date: form.targetClose,
       estimated_jobs: estJobs ?? null,
+      sf_contact_ids: contacts.map((c) => c.ref),
     } as Partial<JobsOpportunity>);
     } catch (err) {
       setSubmitError(apiErrorMessage(err, "Couldn't create the opportunity."));
@@ -1615,19 +1619,21 @@ function NewDealModal({ onClose }: { onClose: () => void }) {
 
         {/* Form */}
         <form onSubmit={(e) => void handleSubmit(e)} className="flex flex-col gap-4 px-5 py-4">
-          {/* Company Name */}
+          {/* Account: picked from existing accounts, or created through the
+              duplicate-checking dialog, never typed in (D9, PRO-101). */}
           <div className="flex flex-col gap-1">
             <label className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">
-              Company Name <span className="text-red-500">*</span>
+              Account <span className="text-red-500">*</span>
             </label>
-            <input
-              type="text"
-              required
-              value={form.companyName}
-              onChange={(e) => set("companyName", e.target.value)}
-              placeholder="Acme Corp"
-              className="w-full rounded-md border border-border-strong bg-surface px-3 py-2 text-[13px] text-ink placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
-            />
+            <CompanyPicker value={form.companyName} onChange={(v) => set("companyName", v)} />
+          </div>
+
+          {/* Contacts */}
+          <div className="flex flex-col gap-1">
+            <label className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">
+              Contacts <span className="text-red-500">*</span>
+            </label>
+            <ContactRefsPicker value={contacts} onChange={setContacts} company={form.companyName} />
           </div>
 
           {/* Stage */}
@@ -1649,7 +1655,7 @@ function NewDealModal({ onClose }: { onClose: () => void }) {
           {/* Deal Type + Role Title (two columns) */}
           <div className="grid grid-cols-2 gap-3">
             <div className="flex flex-col gap-1">
-              <label className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">Deal Type</label>
+              <label className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">Opportunity type</label>
               <select
                 value={form.dealType}
                 onChange={(e) => set("dealType", e.target.value as DealType | "")}
@@ -1726,7 +1732,7 @@ function NewDealModal({ onClose }: { onClose: () => void }) {
                 min={0}
                 max={999}
                 step={1}
-                title="How many jobs this deal is expected to yield. Optional."
+                title="How many jobs this opportunity is expected to yield. Optional."
                 className={cn(
                   "w-full rounded-md border bg-surface px-3 py-2 text-[13px] text-ink placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40",
                   estJobs === undefined ? "border-red" : "border-border-strong",
@@ -2164,7 +2170,7 @@ export function ClosedLostModal({
                 className="w-full rounded-md border border-border-strong bg-surface px-3 py-2 text-[13px] text-ink focus:outline-none focus:ring-1 focus:ring-accent/40"
               />
               <span className="text-[11px] text-accent">
-                Files a task for the deal's owner on that date.
+                Files a task for the opportunity's owner on that date.
               </span>
             </div>
           )}
@@ -2388,7 +2394,7 @@ export function JobsTeam() {
           ))}
         </select>
         <span className="font-mono text-[12px] text-ink-4">
-          {isLoading ? "…" : `${filtered.length} deal${filtered.length === 1 ? "" : "s"}`}
+          {isLoading ? "…" : `${filtered.length} opportunit${filtered.length === 1 ? "y" : "ies"}`}
         </span>
         <div className="ml-auto flex items-center gap-2">
           <ColumnChooser
@@ -2486,13 +2492,13 @@ export function JobsTeam() {
             {isLoading ? (
               <tr>
                 <td colSpan={visibleCols.length} className="px-6 py-10 text-center text-[13px] text-ink-3">
-                  Loading deals…
+                  Loading opportunities…
                 </td>
               </tr>
             ) : filtered.length === 0 ? (
               <tr>
                 <td colSpan={visibleCols.length} className="px-6 py-10 text-center text-[13px] text-ink-3">
-                  No deals match your filters.{" "}
+                  No opportunities match your filters.{" "}
                   <button
                     type="button"
                     className="text-accent underline underline-offset-2"

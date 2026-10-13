@@ -468,7 +468,7 @@ SELECT outreach FROM (
       FROM bedrock.activity_email_message aem
       JOIN bedrock.activity a ON a.id = aem.activity_id
       WHERE aem.from_email = ANY(((SELECT team FROM w))::text[]) AND ((NULL)::timestamptz IS NULL OR aem.sent_at >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR aem.sent_at < ((SELECT end_at FROM w))::timestamptz)
-        AND a.deleted_at IS NULL AND a.type = 'email' AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))
+        AND a.deleted_at IS NULL AND a.type = 'email' AND (coalesce(a.jobs_relevance_override, CASE WHEN a.type IN ('email','meeting') THEN a.jobs_relevance ELSE 'jobs' END) = 'jobs')
       UNION ALL
       -- Email with no indexed messages: hand-logged, Salesforce-sourced, or
       -- synced since the index last ran. The row stands for itself, by its
@@ -478,7 +478,7 @@ SELECT outreach FROM (
              a.subject, a.description, a.email_snippet, a.email_from, a.source, NULL::text, NULL::uuid
       FROM bedrock.activity a
       WHERE a.deleted_at IS NULL AND a.type = 'email' AND ((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz)
-        AND lower(btrim(coalesce(substring(a.email_from from '<([^>]+)>'), nullif(a.email_from, ''), CASE WHEN a.source = 'manual' THEN a.logged_by END))) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))
+        AND lower(btrim(coalesce(substring(a.email_from from '<([^>]+)>'), nullif(a.email_from, ''), CASE WHEN a.source = 'manual' THEN a.logged_by END))) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, CASE WHEN a.type IN ('email','meeting') THEN a.jobs_relevance ELSE 'jobs' END) = 'jobs')
         AND NOT EXISTS (SELECT 1 FROM bedrock.activity_email_message m WHERE m.activity_id = a.id)
       UNION ALL
       -- Hand-logged LinkedIn, text and calls, and meetings: whoever logged
@@ -501,7 +501,7 @@ SELECT outreach FROM (
                ORDER BY lc.id LIMIT 1) END
       FROM bedrock.activity a
       WHERE a.deleted_at IS NULL AND a.type IN ('linkedin', 'text', 'call', 'meeting')
-        AND (((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz) OR (a.type = 'call' AND ((NULL)::timestamptz IS NULL OR a.booked_at >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.booked_at < ((SELECT end_at FROM w))::timestamptz))) AND ((NULL)::timestamptz IS NULL OR CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END < ((SELECT end_at FROM w))::timestamptz) AND lower(btrim(a.logged_by)) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))
+        AND (((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz) OR (a.type = 'call' AND ((NULL)::timestamptz IS NULL OR a.booked_at >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.booked_at < ((SELECT end_at FROM w))::timestamptz))) AND ((NULL)::timestamptz IS NULL OR CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END < ((SELECT end_at FROM w))::timestamptz) AND lower(btrim(a.logged_by)) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, CASE WHEN a.type IN ('email','meeting') THEN a.jobs_relevance ELSE 'jobs' END) = 'jobs')
       UNION ALL
       -- A facilitated intro that was acted on, by who asked for it. Its
       -- subject is the ask (routes.jobs_intro.ASK_LABELS names it).
@@ -613,7 +613,7 @@ SELECT direct_email FROM (
       FROM bedrock.activity_email_message aem
       JOIN bedrock.activity a ON a.id = aem.activity_id
       WHERE aem.from_email = ANY(((SELECT team FROM w))::text[]) AND ((NULL)::timestamptz IS NULL OR aem.sent_at >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR aem.sent_at < ((SELECT end_at FROM w))::timestamptz)
-        AND a.deleted_at IS NULL AND a.type = 'email' AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))
+        AND a.deleted_at IS NULL AND a.type = 'email' AND (coalesce(a.jobs_relevance_override, CASE WHEN a.type IN ('email','meeting') THEN a.jobs_relevance ELSE 'jobs' END) = 'jobs')
       UNION ALL
       -- Email with no indexed messages: hand-logged, Salesforce-sourced, or
       -- synced since the index last ran. The row stands for itself, by its
@@ -623,7 +623,7 @@ SELECT direct_email FROM (
              a.subject, a.description, a.email_snippet, a.email_from, a.source, NULL::text, NULL::uuid
       FROM bedrock.activity a
       WHERE a.deleted_at IS NULL AND a.type = 'email' AND ((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz)
-        AND lower(btrim(coalesce(substring(a.email_from from '<([^>]+)>'), nullif(a.email_from, ''), CASE WHEN a.source = 'manual' THEN a.logged_by END))) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))
+        AND lower(btrim(coalesce(substring(a.email_from from '<([^>]+)>'), nullif(a.email_from, ''), CASE WHEN a.source = 'manual' THEN a.logged_by END))) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, CASE WHEN a.type IN ('email','meeting') THEN a.jobs_relevance ELSE 'jobs' END) = 'jobs')
         AND NOT EXISTS (SELECT 1 FROM bedrock.activity_email_message m WHERE m.activity_id = a.id)
       UNION ALL
       -- Hand-logged LinkedIn, text and calls, and meetings: whoever logged
@@ -646,7 +646,7 @@ SELECT direct_email FROM (
                ORDER BY lc.id LIMIT 1) END
       FROM bedrock.activity a
       WHERE a.deleted_at IS NULL AND a.type IN ('linkedin', 'text', 'call', 'meeting')
-        AND (((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz) OR (a.type = 'call' AND ((NULL)::timestamptz IS NULL OR a.booked_at >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.booked_at < ((SELECT end_at FROM w))::timestamptz))) AND ((NULL)::timestamptz IS NULL OR CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END < ((SELECT end_at FROM w))::timestamptz) AND lower(btrim(a.logged_by)) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))
+        AND (((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz) OR (a.type = 'call' AND ((NULL)::timestamptz IS NULL OR a.booked_at >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.booked_at < ((SELECT end_at FROM w))::timestamptz))) AND ((NULL)::timestamptz IS NULL OR CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END < ((SELECT end_at FROM w))::timestamptz) AND lower(btrim(a.logged_by)) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, CASE WHEN a.type IN ('email','meeting') THEN a.jobs_relevance ELSE 'jobs' END) = 'jobs')
       UNION ALL
       -- A facilitated intro that was acted on, by who asked for it. Its
       -- subject is the ask (routes.jobs_intro.ASK_LABELS names it).
@@ -758,7 +758,7 @@ SELECT linkedin FROM (
       FROM bedrock.activity_email_message aem
       JOIN bedrock.activity a ON a.id = aem.activity_id
       WHERE aem.from_email = ANY(((SELECT team FROM w))::text[]) AND ((NULL)::timestamptz IS NULL OR aem.sent_at >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR aem.sent_at < ((SELECT end_at FROM w))::timestamptz)
-        AND a.deleted_at IS NULL AND a.type = 'email' AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))
+        AND a.deleted_at IS NULL AND a.type = 'email' AND (coalesce(a.jobs_relevance_override, CASE WHEN a.type IN ('email','meeting') THEN a.jobs_relevance ELSE 'jobs' END) = 'jobs')
       UNION ALL
       -- Email with no indexed messages: hand-logged, Salesforce-sourced, or
       -- synced since the index last ran. The row stands for itself, by its
@@ -768,7 +768,7 @@ SELECT linkedin FROM (
              a.subject, a.description, a.email_snippet, a.email_from, a.source, NULL::text, NULL::uuid
       FROM bedrock.activity a
       WHERE a.deleted_at IS NULL AND a.type = 'email' AND ((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz)
-        AND lower(btrim(coalesce(substring(a.email_from from '<([^>]+)>'), nullif(a.email_from, ''), CASE WHEN a.source = 'manual' THEN a.logged_by END))) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))
+        AND lower(btrim(coalesce(substring(a.email_from from '<([^>]+)>'), nullif(a.email_from, ''), CASE WHEN a.source = 'manual' THEN a.logged_by END))) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, CASE WHEN a.type IN ('email','meeting') THEN a.jobs_relevance ELSE 'jobs' END) = 'jobs')
         AND NOT EXISTS (SELECT 1 FROM bedrock.activity_email_message m WHERE m.activity_id = a.id)
       UNION ALL
       -- Hand-logged LinkedIn, text and calls, and meetings: whoever logged
@@ -791,7 +791,7 @@ SELECT linkedin FROM (
                ORDER BY lc.id LIMIT 1) END
       FROM bedrock.activity a
       WHERE a.deleted_at IS NULL AND a.type IN ('linkedin', 'text', 'call', 'meeting')
-        AND (((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz) OR (a.type = 'call' AND ((NULL)::timestamptz IS NULL OR a.booked_at >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.booked_at < ((SELECT end_at FROM w))::timestamptz))) AND ((NULL)::timestamptz IS NULL OR CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END < ((SELECT end_at FROM w))::timestamptz) AND lower(btrim(a.logged_by)) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))
+        AND (((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz) OR (a.type = 'call' AND ((NULL)::timestamptz IS NULL OR a.booked_at >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.booked_at < ((SELECT end_at FROM w))::timestamptz))) AND ((NULL)::timestamptz IS NULL OR CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END < ((SELECT end_at FROM w))::timestamptz) AND lower(btrim(a.logged_by)) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, CASE WHEN a.type IN ('email','meeting') THEN a.jobs_relevance ELSE 'jobs' END) = 'jobs')
       UNION ALL
       -- A facilitated intro that was acted on, by who asked for it. Its
       -- subject is the ask (routes.jobs_intro.ASK_LABELS names it).
@@ -903,7 +903,7 @@ SELECT text FROM (
       FROM bedrock.activity_email_message aem
       JOIN bedrock.activity a ON a.id = aem.activity_id
       WHERE aem.from_email = ANY(((SELECT team FROM w))::text[]) AND ((NULL)::timestamptz IS NULL OR aem.sent_at >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR aem.sent_at < ((SELECT end_at FROM w))::timestamptz)
-        AND a.deleted_at IS NULL AND a.type = 'email' AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))
+        AND a.deleted_at IS NULL AND a.type = 'email' AND (coalesce(a.jobs_relevance_override, CASE WHEN a.type IN ('email','meeting') THEN a.jobs_relevance ELSE 'jobs' END) = 'jobs')
       UNION ALL
       -- Email with no indexed messages: hand-logged, Salesforce-sourced, or
       -- synced since the index last ran. The row stands for itself, by its
@@ -913,7 +913,7 @@ SELECT text FROM (
              a.subject, a.description, a.email_snippet, a.email_from, a.source, NULL::text, NULL::uuid
       FROM bedrock.activity a
       WHERE a.deleted_at IS NULL AND a.type = 'email' AND ((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz)
-        AND lower(btrim(coalesce(substring(a.email_from from '<([^>]+)>'), nullif(a.email_from, ''), CASE WHEN a.source = 'manual' THEN a.logged_by END))) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))
+        AND lower(btrim(coalesce(substring(a.email_from from '<([^>]+)>'), nullif(a.email_from, ''), CASE WHEN a.source = 'manual' THEN a.logged_by END))) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, CASE WHEN a.type IN ('email','meeting') THEN a.jobs_relevance ELSE 'jobs' END) = 'jobs')
         AND NOT EXISTS (SELECT 1 FROM bedrock.activity_email_message m WHERE m.activity_id = a.id)
       UNION ALL
       -- Hand-logged LinkedIn, text and calls, and meetings: whoever logged
@@ -936,7 +936,7 @@ SELECT text FROM (
                ORDER BY lc.id LIMIT 1) END
       FROM bedrock.activity a
       WHERE a.deleted_at IS NULL AND a.type IN ('linkedin', 'text', 'call', 'meeting')
-        AND (((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz) OR (a.type = 'call' AND ((NULL)::timestamptz IS NULL OR a.booked_at >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.booked_at < ((SELECT end_at FROM w))::timestamptz))) AND ((NULL)::timestamptz IS NULL OR CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END < ((SELECT end_at FROM w))::timestamptz) AND lower(btrim(a.logged_by)) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))
+        AND (((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz) OR (a.type = 'call' AND ((NULL)::timestamptz IS NULL OR a.booked_at >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.booked_at < ((SELECT end_at FROM w))::timestamptz))) AND ((NULL)::timestamptz IS NULL OR CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END < ((SELECT end_at FROM w))::timestamptz) AND lower(btrim(a.logged_by)) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, CASE WHEN a.type IN ('email','meeting') THEN a.jobs_relevance ELSE 'jobs' END) = 'jobs')
       UNION ALL
       -- A facilitated intro that was acted on, by who asked for it. Its
       -- subject is the ask (routes.jobs_intro.ASK_LABELS names it).
@@ -1048,7 +1048,7 @@ SELECT intro FROM (
       FROM bedrock.activity_email_message aem
       JOIN bedrock.activity a ON a.id = aem.activity_id
       WHERE aem.from_email = ANY(((SELECT team FROM w))::text[]) AND ((NULL)::timestamptz IS NULL OR aem.sent_at >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR aem.sent_at < ((SELECT end_at FROM w))::timestamptz)
-        AND a.deleted_at IS NULL AND a.type = 'email' AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))
+        AND a.deleted_at IS NULL AND a.type = 'email' AND (coalesce(a.jobs_relevance_override, CASE WHEN a.type IN ('email','meeting') THEN a.jobs_relevance ELSE 'jobs' END) = 'jobs')
       UNION ALL
       -- Email with no indexed messages: hand-logged, Salesforce-sourced, or
       -- synced since the index last ran. The row stands for itself, by its
@@ -1058,7 +1058,7 @@ SELECT intro FROM (
              a.subject, a.description, a.email_snippet, a.email_from, a.source, NULL::text, NULL::uuid
       FROM bedrock.activity a
       WHERE a.deleted_at IS NULL AND a.type = 'email' AND ((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz)
-        AND lower(btrim(coalesce(substring(a.email_from from '<([^>]+)>'), nullif(a.email_from, ''), CASE WHEN a.source = 'manual' THEN a.logged_by END))) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))
+        AND lower(btrim(coalesce(substring(a.email_from from '<([^>]+)>'), nullif(a.email_from, ''), CASE WHEN a.source = 'manual' THEN a.logged_by END))) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, CASE WHEN a.type IN ('email','meeting') THEN a.jobs_relevance ELSE 'jobs' END) = 'jobs')
         AND NOT EXISTS (SELECT 1 FROM bedrock.activity_email_message m WHERE m.activity_id = a.id)
       UNION ALL
       -- Hand-logged LinkedIn, text and calls, and meetings: whoever logged
@@ -1081,7 +1081,7 @@ SELECT intro FROM (
                ORDER BY lc.id LIMIT 1) END
       FROM bedrock.activity a
       WHERE a.deleted_at IS NULL AND a.type IN ('linkedin', 'text', 'call', 'meeting')
-        AND (((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz) OR (a.type = 'call' AND ((NULL)::timestamptz IS NULL OR a.booked_at >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.booked_at < ((SELECT end_at FROM w))::timestamptz))) AND ((NULL)::timestamptz IS NULL OR CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END < ((SELECT end_at FROM w))::timestamptz) AND lower(btrim(a.logged_by)) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))
+        AND (((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz) OR (a.type = 'call' AND ((NULL)::timestamptz IS NULL OR a.booked_at >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.booked_at < ((SELECT end_at FROM w))::timestamptz))) AND ((NULL)::timestamptz IS NULL OR CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END < ((SELECT end_at FROM w))::timestamptz) AND lower(btrim(a.logged_by)) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, CASE WHEN a.type IN ('email','meeting') THEN a.jobs_relevance ELSE 'jobs' END) = 'jobs')
       UNION ALL
       -- A facilitated intro that was acted on, by who asked for it. Its
       -- subject is the ask (routes.jobs_intro.ASK_LABELS names it).
@@ -1193,7 +1193,7 @@ SELECT calls FROM (
       FROM bedrock.activity_email_message aem
       JOIN bedrock.activity a ON a.id = aem.activity_id
       WHERE aem.from_email = ANY(((SELECT team FROM w))::text[]) AND ((NULL)::timestamptz IS NULL OR aem.sent_at >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR aem.sent_at < ((SELECT end_at FROM w))::timestamptz)
-        AND a.deleted_at IS NULL AND a.type = 'email' AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))
+        AND a.deleted_at IS NULL AND a.type = 'email' AND (coalesce(a.jobs_relevance_override, CASE WHEN a.type IN ('email','meeting') THEN a.jobs_relevance ELSE 'jobs' END) = 'jobs')
       UNION ALL
       -- Email with no indexed messages: hand-logged, Salesforce-sourced, or
       -- synced since the index last ran. The row stands for itself, by its
@@ -1203,7 +1203,7 @@ SELECT calls FROM (
              a.subject, a.description, a.email_snippet, a.email_from, a.source, NULL::text, NULL::uuid
       FROM bedrock.activity a
       WHERE a.deleted_at IS NULL AND a.type = 'email' AND ((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz)
-        AND lower(btrim(coalesce(substring(a.email_from from '<([^>]+)>'), nullif(a.email_from, ''), CASE WHEN a.source = 'manual' THEN a.logged_by END))) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))
+        AND lower(btrim(coalesce(substring(a.email_from from '<([^>]+)>'), nullif(a.email_from, ''), CASE WHEN a.source = 'manual' THEN a.logged_by END))) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, CASE WHEN a.type IN ('email','meeting') THEN a.jobs_relevance ELSE 'jobs' END) = 'jobs')
         AND NOT EXISTS (SELECT 1 FROM bedrock.activity_email_message m WHERE m.activity_id = a.id)
       UNION ALL
       -- Hand-logged LinkedIn, text and calls, and meetings: whoever logged
@@ -1226,7 +1226,7 @@ SELECT calls FROM (
                ORDER BY lc.id LIMIT 1) END
       FROM bedrock.activity a
       WHERE a.deleted_at IS NULL AND a.type IN ('linkedin', 'text', 'call', 'meeting')
-        AND (((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz) OR (a.type = 'call' AND ((NULL)::timestamptz IS NULL OR a.booked_at >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.booked_at < ((SELECT end_at FROM w))::timestamptz))) AND ((NULL)::timestamptz IS NULL OR CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END < ((SELECT end_at FROM w))::timestamptz) AND lower(btrim(a.logged_by)) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))
+        AND (((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz) OR (a.type = 'call' AND ((NULL)::timestamptz IS NULL OR a.booked_at >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.booked_at < ((SELECT end_at FROM w))::timestamptz))) AND ((NULL)::timestamptz IS NULL OR CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END < ((SELECT end_at FROM w))::timestamptz) AND lower(btrim(a.logged_by)) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, CASE WHEN a.type IN ('email','meeting') THEN a.jobs_relevance ELSE 'jobs' END) = 'jobs')
       UNION ALL
       -- A facilitated intro that was acted on, by who asked for it. Its
       -- subject is the ask (routes.jobs_intro.ASK_LABELS names it).
@@ -1339,7 +1339,7 @@ SELECT call_discovery FROM (
       FROM bedrock.activity_email_message aem
       JOIN bedrock.activity a ON a.id = aem.activity_id
       WHERE aem.from_email = ANY(((SELECT team FROM w))::text[]) AND ((NULL)::timestamptz IS NULL OR aem.sent_at >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR aem.sent_at < ((SELECT end_at FROM w))::timestamptz)
-        AND a.deleted_at IS NULL AND a.type = 'email' AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))
+        AND a.deleted_at IS NULL AND a.type = 'email' AND (coalesce(a.jobs_relevance_override, CASE WHEN a.type IN ('email','meeting') THEN a.jobs_relevance ELSE 'jobs' END) = 'jobs')
       UNION ALL
       -- Email with no indexed messages: hand-logged, Salesforce-sourced, or
       -- synced since the index last ran. The row stands for itself, by its
@@ -1349,7 +1349,7 @@ SELECT call_discovery FROM (
              a.subject, a.description, a.email_snippet, a.email_from, a.source, NULL::text, NULL::uuid
       FROM bedrock.activity a
       WHERE a.deleted_at IS NULL AND a.type = 'email' AND ((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz)
-        AND lower(btrim(coalesce(substring(a.email_from from '<([^>]+)>'), nullif(a.email_from, ''), CASE WHEN a.source = 'manual' THEN a.logged_by END))) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))
+        AND lower(btrim(coalesce(substring(a.email_from from '<([^>]+)>'), nullif(a.email_from, ''), CASE WHEN a.source = 'manual' THEN a.logged_by END))) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, CASE WHEN a.type IN ('email','meeting') THEN a.jobs_relevance ELSE 'jobs' END) = 'jobs')
         AND NOT EXISTS (SELECT 1 FROM bedrock.activity_email_message m WHERE m.activity_id = a.id)
       UNION ALL
       -- Hand-logged LinkedIn, text and calls, and meetings: whoever logged
@@ -1372,7 +1372,7 @@ SELECT call_discovery FROM (
                ORDER BY lc.id LIMIT 1) END
       FROM bedrock.activity a
       WHERE a.deleted_at IS NULL AND a.type IN ('linkedin', 'text', 'call', 'meeting')
-        AND (((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz) OR (a.type = 'call' AND ((NULL)::timestamptz IS NULL OR a.booked_at >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.booked_at < ((SELECT end_at FROM w))::timestamptz))) AND ((NULL)::timestamptz IS NULL OR CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END < ((SELECT end_at FROM w))::timestamptz) AND lower(btrim(a.logged_by)) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))
+        AND (((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz) OR (a.type = 'call' AND ((NULL)::timestamptz IS NULL OR a.booked_at >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.booked_at < ((SELECT end_at FROM w))::timestamptz))) AND ((NULL)::timestamptz IS NULL OR CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END < ((SELECT end_at FROM w))::timestamptz) AND lower(btrim(a.logged_by)) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, CASE WHEN a.type IN ('email','meeting') THEN a.jobs_relevance ELSE 'jobs' END) = 'jobs')
       UNION ALL
       -- A facilitated intro that was acted on, by who asked for it. Its
       -- subject is the ask (routes.jobs_intro.ASK_LABELS names it).
@@ -1485,7 +1485,7 @@ SELECT call_general FROM (
       FROM bedrock.activity_email_message aem
       JOIN bedrock.activity a ON a.id = aem.activity_id
       WHERE aem.from_email = ANY(((SELECT team FROM w))::text[]) AND ((NULL)::timestamptz IS NULL OR aem.sent_at >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR aem.sent_at < ((SELECT end_at FROM w))::timestamptz)
-        AND a.deleted_at IS NULL AND a.type = 'email' AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))
+        AND a.deleted_at IS NULL AND a.type = 'email' AND (coalesce(a.jobs_relevance_override, CASE WHEN a.type IN ('email','meeting') THEN a.jobs_relevance ELSE 'jobs' END) = 'jobs')
       UNION ALL
       -- Email with no indexed messages: hand-logged, Salesforce-sourced, or
       -- synced since the index last ran. The row stands for itself, by its
@@ -1495,7 +1495,7 @@ SELECT call_general FROM (
              a.subject, a.description, a.email_snippet, a.email_from, a.source, NULL::text, NULL::uuid
       FROM bedrock.activity a
       WHERE a.deleted_at IS NULL AND a.type = 'email' AND ((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz)
-        AND lower(btrim(coalesce(substring(a.email_from from '<([^>]+)>'), nullif(a.email_from, ''), CASE WHEN a.source = 'manual' THEN a.logged_by END))) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))
+        AND lower(btrim(coalesce(substring(a.email_from from '<([^>]+)>'), nullif(a.email_from, ''), CASE WHEN a.source = 'manual' THEN a.logged_by END))) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, CASE WHEN a.type IN ('email','meeting') THEN a.jobs_relevance ELSE 'jobs' END) = 'jobs')
         AND NOT EXISTS (SELECT 1 FROM bedrock.activity_email_message m WHERE m.activity_id = a.id)
       UNION ALL
       -- Hand-logged LinkedIn, text and calls, and meetings: whoever logged
@@ -1518,7 +1518,7 @@ SELECT call_general FROM (
                ORDER BY lc.id LIMIT 1) END
       FROM bedrock.activity a
       WHERE a.deleted_at IS NULL AND a.type IN ('linkedin', 'text', 'call', 'meeting')
-        AND (((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz) OR (a.type = 'call' AND ((NULL)::timestamptz IS NULL OR a.booked_at >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.booked_at < ((SELECT end_at FROM w))::timestamptz))) AND ((NULL)::timestamptz IS NULL OR CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END < ((SELECT end_at FROM w))::timestamptz) AND lower(btrim(a.logged_by)) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))
+        AND (((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz) OR (a.type = 'call' AND ((NULL)::timestamptz IS NULL OR a.booked_at >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.booked_at < ((SELECT end_at FROM w))::timestamptz))) AND ((NULL)::timestamptz IS NULL OR CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END < ((SELECT end_at FROM w))::timestamptz) AND lower(btrim(a.logged_by)) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, CASE WHEN a.type IN ('email','meeting') THEN a.jobs_relevance ELSE 'jobs' END) = 'jobs')
       UNION ALL
       -- A facilitated intro that was acted on, by who asked for it. Its
       -- subject is the ask (routes.jobs_intro.ASK_LABELS names it).
@@ -1631,7 +1631,7 @@ SELECT accounts_activated FROM (
       FROM bedrock.activity_email_message aem
       JOIN bedrock.activity a ON a.id = aem.activity_id
       WHERE aem.from_email = ANY(((SELECT team FROM w))::text[]) AND ((NULL)::timestamptz IS NULL OR aem.sent_at >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR aem.sent_at < ((SELECT end_at FROM w))::timestamptz)
-        AND a.deleted_at IS NULL AND a.type = 'email' AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))
+        AND a.deleted_at IS NULL AND a.type = 'email' AND (coalesce(a.jobs_relevance_override, CASE WHEN a.type IN ('email','meeting') THEN a.jobs_relevance ELSE 'jobs' END) = 'jobs')
       UNION ALL
       -- Email with no indexed messages: hand-logged, Salesforce-sourced, or
       -- synced since the index last ran. The row stands for itself, by its
@@ -1641,7 +1641,7 @@ SELECT accounts_activated FROM (
              a.subject, a.description, a.email_snippet, a.email_from, a.source, NULL::text, NULL::uuid
       FROM bedrock.activity a
       WHERE a.deleted_at IS NULL AND a.type = 'email' AND ((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz)
-        AND lower(btrim(coalesce(substring(a.email_from from '<([^>]+)>'), nullif(a.email_from, ''), CASE WHEN a.source = 'manual' THEN a.logged_by END))) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))
+        AND lower(btrim(coalesce(substring(a.email_from from '<([^>]+)>'), nullif(a.email_from, ''), CASE WHEN a.source = 'manual' THEN a.logged_by END))) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, CASE WHEN a.type IN ('email','meeting') THEN a.jobs_relevance ELSE 'jobs' END) = 'jobs')
         AND NOT EXISTS (SELECT 1 FROM bedrock.activity_email_message m WHERE m.activity_id = a.id)
       UNION ALL
       -- Hand-logged LinkedIn, text and calls, and meetings: whoever logged
@@ -1664,7 +1664,7 @@ SELECT accounts_activated FROM (
                ORDER BY lc.id LIMIT 1) END
       FROM bedrock.activity a
       WHERE a.deleted_at IS NULL AND a.type IN ('linkedin', 'text', 'call', 'meeting')
-        AND (((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz) OR (a.type = 'call' AND ((NULL)::timestamptz IS NULL OR a.booked_at >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.booked_at < ((SELECT end_at FROM w))::timestamptz))) AND ((NULL)::timestamptz IS NULL OR CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END < ((SELECT end_at FROM w))::timestamptz) AND lower(btrim(a.logged_by)) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))
+        AND (((NULL)::timestamptz IS NULL OR a.activity_date >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.activity_date < ((SELECT end_at FROM w))::timestamptz) OR (a.type = 'call' AND ((NULL)::timestamptz IS NULL OR a.booked_at >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR a.booked_at < ((SELECT end_at FROM w))::timestamptz))) AND ((NULL)::timestamptz IS NULL OR CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END >= (NULL)::timestamptz) AND (((SELECT end_at FROM w))::timestamptz IS NULL OR CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END < ((SELECT end_at FROM w))::timestamptz) AND lower(btrim(a.logged_by)) = ANY(((SELECT team FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, CASE WHEN a.type IN ('email','meeting') THEN a.jobs_relevance ELSE 'jobs' END) = 'jobs')
       UNION ALL
       -- A facilitated intro that was acted on, by who asked for it. Its
       -- subject is the ask (routes.jobs_intro.ASK_LABELS names it).
@@ -1806,7 +1806,7 @@ SELECT CASE WHEN activity >= 4 THEN '4+' ELSE activity::text END AS bucket, coun
       FROM bedrock.activity_email_message aem
       JOIN bedrock.activity a ON a.id = aem.activity_id
       WHERE aem.from_email = ANY(((SELECT senders FROM w))::text[]) AND (((SELECT since FROM w))::timestamptz IS NULL OR aem.sent_at >= ((SELECT since FROM w))::timestamptz) AND ((NULL)::timestamptz IS NULL OR aem.sent_at < (NULL)::timestamptz)
-        AND a.deleted_at IS NULL AND a.type = 'email' AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))
+        AND a.deleted_at IS NULL AND a.type = 'email' AND (coalesce(a.jobs_relevance_override, CASE WHEN a.type IN ('email','meeting') THEN a.jobs_relevance ELSE 'jobs' END) = 'jobs')
       UNION ALL
       -- Email with no indexed messages: hand-logged, Salesforce-sourced, or
       -- synced since the index last ran. The row stands for itself, by its
@@ -1816,7 +1816,7 @@ SELECT CASE WHEN activity >= 4 THEN '4+' ELSE activity::text END AS bucket, coun
              a.subject, a.description, a.email_snippet, a.email_from, a.source, NULL::text, NULL::uuid
       FROM bedrock.activity a
       WHERE a.deleted_at IS NULL AND a.type = 'email' AND (((SELECT since FROM w))::timestamptz IS NULL OR a.activity_date >= ((SELECT since FROM w))::timestamptz) AND ((NULL)::timestamptz IS NULL OR a.activity_date < (NULL)::timestamptz)
-        AND lower(btrim(coalesce(substring(a.email_from from '<([^>]+)>'), nullif(a.email_from, ''), CASE WHEN a.source = 'manual' THEN a.logged_by END))) = ANY(((SELECT senders FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))
+        AND lower(btrim(coalesce(substring(a.email_from from '<([^>]+)>'), nullif(a.email_from, ''), CASE WHEN a.source = 'manual' THEN a.logged_by END))) = ANY(((SELECT senders FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, CASE WHEN a.type IN ('email','meeting') THEN a.jobs_relevance ELSE 'jobs' END) = 'jobs')
         AND NOT EXISTS (SELECT 1 FROM bedrock.activity_email_message m WHERE m.activity_id = a.id)
       UNION ALL
       -- Hand-logged LinkedIn, text and calls, and meetings: whoever logged
@@ -1839,7 +1839,7 @@ SELECT CASE WHEN activity >= 4 THEN '4+' ELSE activity::text END AS bucket, coun
                ORDER BY lc.id LIMIT 1) END
       FROM bedrock.activity a
       WHERE a.deleted_at IS NULL AND a.type IN ('linkedin', 'text', 'call', 'meeting')
-        AND ((((SELECT since FROM w))::timestamptz IS NULL OR a.activity_date >= ((SELECT since FROM w))::timestamptz) AND ((NULL)::timestamptz IS NULL OR a.activity_date < (NULL)::timestamptz) OR (a.type = 'call' AND (((SELECT since FROM w))::timestamptz IS NULL OR a.booked_at >= ((SELECT since FROM w))::timestamptz) AND ((NULL)::timestamptz IS NULL OR a.booked_at < (NULL)::timestamptz))) AND (((SELECT since FROM w))::timestamptz IS NULL OR CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END >= ((SELECT since FROM w))::timestamptz) AND ((NULL)::timestamptz IS NULL OR CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END < (NULL)::timestamptz) AND lower(btrim(a.logged_by)) = ANY(((SELECT senders FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))
+        AND ((((SELECT since FROM w))::timestamptz IS NULL OR a.activity_date >= ((SELECT since FROM w))::timestamptz) AND ((NULL)::timestamptz IS NULL OR a.activity_date < (NULL)::timestamptz) OR (a.type = 'call' AND (((SELECT since FROM w))::timestamptz IS NULL OR a.booked_at >= ((SELECT since FROM w))::timestamptz) AND ((NULL)::timestamptz IS NULL OR a.booked_at < (NULL)::timestamptz))) AND (((SELECT since FROM w))::timestamptz IS NULL OR CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END >= ((SELECT since FROM w))::timestamptz) AND ((NULL)::timestamptz IS NULL OR CASE WHEN a.type = 'call' THEN coalesce(a.booked_at, a.activity_date) ELSE a.activity_date END < (NULL)::timestamptz) AND lower(btrim(a.logged_by)) = ANY(((SELECT senders FROM w))::text[]) AND (coalesce(a.jobs_relevance_override, CASE WHEN a.type IN ('email','meeting') THEN a.jobs_relevance ELSE 'jobs' END) = 'jobs')
       UNION ALL
       -- A facilitated intro that was acted on, by who asked for it. Its
       -- subject is the ask (routes.jobs_intro.ASK_LABELS names it).
@@ -2067,23 +2067,72 @@ Opportunities open at the end of the window: created by then, in a working stage
 
 ```sql
 WITH w AS (SELECT ((coalesce(nullif(current_setting('dd.window_from', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 7))::timestamp AT TIME ZONE 'America/New_York') AS start_at, (((coalesce(nullif(current_setting('dd.window_to', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 1) + 1))::timestamp AT TIME ZONE 'America/New_York') AS end_at),
-acct_last AS (
-  -- The latest external activity at each opportunity's account: any contact
-  -- whose company is the account, by participant link or meeting attendee.
-  SELECT k, max(at) AS at FROM (
-    SELECT lower(trim(c.current_company)) AS k, a.activity_date AS at
-    FROM bedrock.activity a
-    JOIN public.contacts c ON c.contact_id = a.participant_public_contact_id
-    WHERE (a.deleted_at IS NULL AND a.type IN ('email', 'call', 'meeting', 'linkedin', 'text') AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))) AND a.activity_date < (SELECT end_at FROM w)
-    UNION ALL
-    SELECT lower(trim(c.current_company)), a.activity_date
-    FROM bedrock.activity a,
-         jsonb_array_elements(coalesce(a.meeting_attendees, '[]'::jsonb)) att
-    JOIN public.contacts c ON lower(c.email) = lower(att->>'email')
-    WHERE a.source = 'calendar-sync' AND (a.deleted_at IS NULL AND a.type IN ('email', 'call', 'meeting', 'linkedin', 'text') AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))) AND a.activity_date < (SELECT end_at FROM w)
-  ) x
-  WHERE coalesce(k, '') <> ''
-  GROUP BY k
+opp_scope AS (
+  SELECT o.id, lower(btrim(o.account_name)) AS k, o.account_id FROM bedrock.jobs_opportunity o
+  WHERE o.deleted_at IS NULL AND ((o.created_at < (SELECT end_at FROM w) AND (o.closed_at IS NULL OR o.closed_at >= (SELECT end_at FROM w))))
+),
+opp_links AS (
+  -- Linked from the contact (its converted opportunity) or from the
+  -- opportunity's contact list: pub:<contact_id>, airtable:<id>, or a
+  -- Salesforce contact id.
+  SELECT m.opportunity_id AS opp_id, m.contact_id
+  FROM bedrock.jobs_contact_membership m JOIN opp_scope os ON os.id = m.opportunity_id
+  UNION
+  SELECT os.id, c.contact_id
+  FROM opp_scope os JOIN bedrock.jobs_opportunity o ON o.id = os.id
+  CROSS JOIN LATERAL unnest(o.sf_contact_ids) r(ref)
+  JOIN public.contacts c
+    ON c.contact_id = CASE WHEN r.ref ~ '^pub:[0-9]{1,9}$' THEN substring(r.ref from 5)::int END
+  UNION
+  SELECT os.id, c.contact_id
+  FROM opp_scope os JOIN bedrock.jobs_opportunity o ON o.id = os.id
+  CROSS JOIN LATERAL unnest(o.sf_contact_ids) r(ref)
+  JOIN public.contacts c ON c.airtable_id = substring(r.ref from 10)
+  WHERE r.ref LIKE 'airtable:%'
+  UNION
+  SELECT os.id, scl.public_contact_id
+  FROM opp_scope os JOIN bedrock.jobs_opportunity o ON o.id = os.id
+  CROSS JOIN LATERAL unnest(o.sf_contact_ids) r(ref)
+  JOIN bedrock.sf_contact_link scl ON scl.sf_contact_id = r.ref
+  WHERE r.ref NOT LIKE 'pub:%' AND r.ref NOT LIKE 'airtable:%' AND scl.public_contact_id IS NOT NULL
+),
+opp_contacts AS (
+  SELECT opp_id, contact_id, true AS linked FROM opp_links
+  UNION ALL
+  -- No linked contacts: everyone at the opportunity's account.
+  SELECT os.id, c.contact_id, false
+  FROM opp_scope os JOIN public.contacts c ON lower(btrim(c.current_company)) = os.k
+  WHERE os.k <> '' AND NOT EXISTS (SELECT 1 FROM opp_links l WHERE l.opp_id = os.id)
+),
+scope_contacts AS (SELECT contact_id FROM opp_contacts),
+contact_touches AS (
+  SELECT a.participant_public_contact_id AS contact_id, a.id AS activity_id, a.activity_date AS at
+  FROM bedrock.activity a
+  WHERE a.participant_public_contact_id IN (SELECT contact_id FROM scope_contacts)
+    AND (a.deleted_at IS NULL AND a.type IN ('email', 'call', 'meeting', 'linkedin', 'text') AND (coalesce(a.jobs_relevance_override, CASE WHEN a.type IN ('email','meeting') THEN a.jobs_relevance ELSE 'jobs' END) = 'jobs')) AND a.activity_date < (SELECT end_at FROM w)
+  UNION
+  -- Calendar rows carry attendees, not a participant link.
+  SELECT c.contact_id, a.id, a.activity_date
+  FROM bedrock.activity a,
+       jsonb_array_elements(coalesce(a.meeting_attendees, '[]'::jsonb)) att
+  JOIN public.contacts c ON lower(c.email) = lower(att->>'email')
+  WHERE a.source = 'calendar-sync' AND (a.deleted_at IS NULL AND a.type IN ('email', 'call', 'meeting', 'linkedin', 'text') AND (coalesce(a.jobs_relevance_override, CASE WHEN a.type IN ('email','meeting') THEN a.jobs_relevance ELSE 'jobs' END) = 'jobs')) AND a.activity_date < (SELECT end_at FROM w)
+    AND c.contact_id IN (SELECT contact_id FROM scope_contacts)
+),
+opp_touches AS (
+  SELECT os.id AS opp_id, a.id AS activity_id, a.activity_date AS at
+  FROM opp_scope os JOIN bedrock.activity a ON a.jobs_opportunity_id = os.id
+  WHERE (a.deleted_at IS NULL AND a.type IN ('email', 'call', 'meeting', 'linkedin', 'text') AND (coalesce(a.jobs_relevance_override, CASE WHEN a.type IN ('email','meeting') THEN a.jobs_relevance ELSE 'jobs' END) = 'jobs')) AND a.activity_date < (SELECT end_at FROM w)
+  UNION
+  SELECT os.id, a.id, a.activity_date
+  FROM opp_scope os JOIN bedrock.activity a ON a.account_id = os.account_id
+  WHERE os.account_id LIKE '001%' AND (a.deleted_at IS NULL AND a.type IN ('email', 'call', 'meeting', 'linkedin', 'text') AND (coalesce(a.jobs_relevance_override, CASE WHEN a.type IN ('email','meeting') THEN a.jobs_relevance ELSE 'jobs' END) = 'jobs')) AND a.activity_date < (SELECT end_at FROM w)
+  UNION
+  SELECT oc.opp_id, t.activity_id, t.at
+  FROM opp_contacts oc JOIN contact_touches t ON t.contact_id = oc.contact_id
+),
+opp_last AS (
+  SELECT opp_id, max(at) AS at FROM opp_touches GROUP BY opp_id
 ),
 open_set AS (
   -- Opportunities open at the end of the window.
@@ -2091,11 +2140,9 @@ open_set AS (
          greatest(o.created_at,
                   (SELECT max(h.changed_at) FROM bedrock.jobs_stage_history h
                     WHERE h.opportunity_id = o.id AND h.changed_at < (SELECT end_at FROM w)),
-                  (SELECT max(a.activity_date) FROM bedrock.activity a
-                    WHERE a.jobs_opportunity_id = o.id AND (a.deleted_at IS NULL AND a.type IN ('email', 'call', 'meeting', 'linkedin', 'text') AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))) AND a.activity_date < (SELECT end_at FROM w)),
-                  al.at) AS last_movement
+                  ol.at) AS last_movement
   FROM bedrock.jobs_opportunity o
-  LEFT JOIN acct_last al ON al.k = lower(trim(o.account_name))
+  LEFT JOIN opp_last ol ON ol.opp_id = o.id
   WHERE o.deleted_at IS NULL
     AND o.created_at < (SELECT end_at FROM w)
     AND (o.closed_at IS NULL OR o.closed_at >= (SELECT end_at FROM w))
@@ -2125,7 +2172,7 @@ WHERE o.deleted_at IS NULL AND o.created_at >= (SELECT start_at FROM w) AND o.cr
 
 ### Stalled opportunities (`stalled_opportunities`, draft)
 
-Open opportunities with no movement for more than 4 weeks (D3): no stage change, and no external activity on the opportunity or with anyone at its account. Comments don't count.
+Open opportunities with no movement for more than 4 weeks (D3): no stage change, and no external activity logged on the opportunity, with its contacts (or, when none are linked, anyone at its account), or on its Salesforce account. Comments and notes don't count.
 
 - Counts: Open opportunities with no movement for 4+ weeks
 - Divided by: Open opportunities
@@ -2135,23 +2182,72 @@ Open opportunities with no movement for more than 4 weeks (D3): no stage change,
 
 ```sql
 WITH w AS (SELECT ((coalesce(nullif(current_setting('dd.window_from', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 7))::timestamp AT TIME ZONE 'America/New_York') AS start_at, (((coalesce(nullif(current_setting('dd.window_to', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 1) + 1))::timestamp AT TIME ZONE 'America/New_York') AS end_at),
-acct_last AS (
-  -- The latest external activity at each opportunity's account: any contact
-  -- whose company is the account, by participant link or meeting attendee.
-  SELECT k, max(at) AS at FROM (
-    SELECT lower(trim(c.current_company)) AS k, a.activity_date AS at
-    FROM bedrock.activity a
-    JOIN public.contacts c ON c.contact_id = a.participant_public_contact_id
-    WHERE (a.deleted_at IS NULL AND a.type IN ('email', 'call', 'meeting', 'linkedin', 'text') AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))) AND a.activity_date < (SELECT end_at FROM w)
-    UNION ALL
-    SELECT lower(trim(c.current_company)), a.activity_date
-    FROM bedrock.activity a,
-         jsonb_array_elements(coalesce(a.meeting_attendees, '[]'::jsonb)) att
-    JOIN public.contacts c ON lower(c.email) = lower(att->>'email')
-    WHERE a.source = 'calendar-sync' AND (a.deleted_at IS NULL AND a.type IN ('email', 'call', 'meeting', 'linkedin', 'text') AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))) AND a.activity_date < (SELECT end_at FROM w)
-  ) x
-  WHERE coalesce(k, '') <> ''
-  GROUP BY k
+opp_scope AS (
+  SELECT o.id, lower(btrim(o.account_name)) AS k, o.account_id FROM bedrock.jobs_opportunity o
+  WHERE o.deleted_at IS NULL AND ((o.created_at < (SELECT end_at FROM w) AND (o.closed_at IS NULL OR o.closed_at >= (SELECT end_at FROM w))))
+),
+opp_links AS (
+  -- Linked from the contact (its converted opportunity) or from the
+  -- opportunity's contact list: pub:<contact_id>, airtable:<id>, or a
+  -- Salesforce contact id.
+  SELECT m.opportunity_id AS opp_id, m.contact_id
+  FROM bedrock.jobs_contact_membership m JOIN opp_scope os ON os.id = m.opportunity_id
+  UNION
+  SELECT os.id, c.contact_id
+  FROM opp_scope os JOIN bedrock.jobs_opportunity o ON o.id = os.id
+  CROSS JOIN LATERAL unnest(o.sf_contact_ids) r(ref)
+  JOIN public.contacts c
+    ON c.contact_id = CASE WHEN r.ref ~ '^pub:[0-9]{1,9}$' THEN substring(r.ref from 5)::int END
+  UNION
+  SELECT os.id, c.contact_id
+  FROM opp_scope os JOIN bedrock.jobs_opportunity o ON o.id = os.id
+  CROSS JOIN LATERAL unnest(o.sf_contact_ids) r(ref)
+  JOIN public.contacts c ON c.airtable_id = substring(r.ref from 10)
+  WHERE r.ref LIKE 'airtable:%'
+  UNION
+  SELECT os.id, scl.public_contact_id
+  FROM opp_scope os JOIN bedrock.jobs_opportunity o ON o.id = os.id
+  CROSS JOIN LATERAL unnest(o.sf_contact_ids) r(ref)
+  JOIN bedrock.sf_contact_link scl ON scl.sf_contact_id = r.ref
+  WHERE r.ref NOT LIKE 'pub:%' AND r.ref NOT LIKE 'airtable:%' AND scl.public_contact_id IS NOT NULL
+),
+opp_contacts AS (
+  SELECT opp_id, contact_id, true AS linked FROM opp_links
+  UNION ALL
+  -- No linked contacts: everyone at the opportunity's account.
+  SELECT os.id, c.contact_id, false
+  FROM opp_scope os JOIN public.contacts c ON lower(btrim(c.current_company)) = os.k
+  WHERE os.k <> '' AND NOT EXISTS (SELECT 1 FROM opp_links l WHERE l.opp_id = os.id)
+),
+scope_contacts AS (SELECT contact_id FROM opp_contacts),
+contact_touches AS (
+  SELECT a.participant_public_contact_id AS contact_id, a.id AS activity_id, a.activity_date AS at
+  FROM bedrock.activity a
+  WHERE a.participant_public_contact_id IN (SELECT contact_id FROM scope_contacts)
+    AND (a.deleted_at IS NULL AND a.type IN ('email', 'call', 'meeting', 'linkedin', 'text') AND (coalesce(a.jobs_relevance_override, CASE WHEN a.type IN ('email','meeting') THEN a.jobs_relevance ELSE 'jobs' END) = 'jobs')) AND a.activity_date < (SELECT end_at FROM w)
+  UNION
+  -- Calendar rows carry attendees, not a participant link.
+  SELECT c.contact_id, a.id, a.activity_date
+  FROM bedrock.activity a,
+       jsonb_array_elements(coalesce(a.meeting_attendees, '[]'::jsonb)) att
+  JOIN public.contacts c ON lower(c.email) = lower(att->>'email')
+  WHERE a.source = 'calendar-sync' AND (a.deleted_at IS NULL AND a.type IN ('email', 'call', 'meeting', 'linkedin', 'text') AND (coalesce(a.jobs_relevance_override, CASE WHEN a.type IN ('email','meeting') THEN a.jobs_relevance ELSE 'jobs' END) = 'jobs')) AND a.activity_date < (SELECT end_at FROM w)
+    AND c.contact_id IN (SELECT contact_id FROM scope_contacts)
+),
+opp_touches AS (
+  SELECT os.id AS opp_id, a.id AS activity_id, a.activity_date AS at
+  FROM opp_scope os JOIN bedrock.activity a ON a.jobs_opportunity_id = os.id
+  WHERE (a.deleted_at IS NULL AND a.type IN ('email', 'call', 'meeting', 'linkedin', 'text') AND (coalesce(a.jobs_relevance_override, CASE WHEN a.type IN ('email','meeting') THEN a.jobs_relevance ELSE 'jobs' END) = 'jobs')) AND a.activity_date < (SELECT end_at FROM w)
+  UNION
+  SELECT os.id, a.id, a.activity_date
+  FROM opp_scope os JOIN bedrock.activity a ON a.account_id = os.account_id
+  WHERE os.account_id LIKE '001%' AND (a.deleted_at IS NULL AND a.type IN ('email', 'call', 'meeting', 'linkedin', 'text') AND (coalesce(a.jobs_relevance_override, CASE WHEN a.type IN ('email','meeting') THEN a.jobs_relevance ELSE 'jobs' END) = 'jobs')) AND a.activity_date < (SELECT end_at FROM w)
+  UNION
+  SELECT oc.opp_id, t.activity_id, t.at
+  FROM opp_contacts oc JOIN contact_touches t ON t.contact_id = oc.contact_id
+),
+opp_last AS (
+  SELECT opp_id, max(at) AS at FROM opp_touches GROUP BY opp_id
 ),
 open_set AS (
   -- Opportunities open at the end of the window.
@@ -2159,11 +2255,9 @@ open_set AS (
          greatest(o.created_at,
                   (SELECT max(h.changed_at) FROM bedrock.jobs_stage_history h
                     WHERE h.opportunity_id = o.id AND h.changed_at < (SELECT end_at FROM w)),
-                  (SELECT max(a.activity_date) FROM bedrock.activity a
-                    WHERE a.jobs_opportunity_id = o.id AND (a.deleted_at IS NULL AND a.type IN ('email', 'call', 'meeting', 'linkedin', 'text') AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))) AND a.activity_date < (SELECT end_at FROM w)),
-                  al.at) AS last_movement
+                  ol.at) AS last_movement
   FROM bedrock.jobs_opportunity o
-  LEFT JOIN acct_last al ON al.k = lower(trim(o.account_name))
+  LEFT JOIN opp_last ol ON ol.opp_id = o.id
   WHERE o.deleted_at IS NULL
     AND o.created_at < (SELECT end_at FROM w)
     AND (o.closed_at IS NULL OR o.closed_at >= (SELECT end_at FROM w))
@@ -2193,7 +2287,7 @@ WITH last AS (
                   (SELECT max(h.changed_at) FROM bedrock.jobs_membership_stage_history h
                     WHERE h.contact_id = m.contact_id),
                   (SELECT max(a.activity_date) FROM bedrock.activity a
-                    WHERE a.participant_public_contact_id = m.contact_id AND (a.deleted_at IS NULL AND a.type IN ('email', 'call', 'meeting', 'linkedin', 'text') AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))))) AS last_at
+                    WHERE a.participant_public_contact_id = m.contact_id AND (a.deleted_at IS NULL AND a.type IN ('email', 'call', 'meeting', 'linkedin', 'text') AND (coalesce(a.jobs_relevance_override, CASE WHEN a.type IN ('email','meeting') THEN a.jobs_relevance ELSE 'jobs' END) = 'jobs')))) AS last_at
   FROM bedrock.jobs_contact_membership m
   WHERE m.stage IN ('assigned', 'initial_outreach', 'scheduling', 'call_booked')
 )
@@ -2224,10 +2318,84 @@ WITH open_accounts AS (
   SELECT DISTINCT lower(btrim(o.account_name)) FROM bedrock.jobs_opportunity o
   WHERE o.deleted_at IS NULL AND o.stage IN ('active_in_discussions', 'ask_submitted', 'active_opportunity_confirmed', 'builder_submitted', 'builder_interviewing', 'offer_contracting', 'lead_submitted', 'initial_outreach', 'reviewing_builders', 'active_builder_interview') AND btrim(coalesce(o.account_name, '')) <> ''
 ),
+opp_scope AS (
+  SELECT o.id, lower(btrim(o.account_name)) AS k, o.account_id FROM bedrock.jobs_opportunity o
+  WHERE o.deleted_at IS NULL AND ((FALSE) OR (TRUE))
+),
+opp_links AS (
+  -- Linked from the contact (its converted opportunity) or from the
+  -- opportunity's contact list: pub:<contact_id>, airtable:<id>, or a
+  -- Salesforce contact id.
+  SELECT m.opportunity_id AS opp_id, m.contact_id
+  FROM bedrock.jobs_contact_membership m JOIN opp_scope os ON os.id = m.opportunity_id
+  UNION
+  SELECT os.id, c.contact_id
+  FROM opp_scope os JOIN bedrock.jobs_opportunity o ON o.id = os.id
+  CROSS JOIN LATERAL unnest(o.sf_contact_ids) r(ref)
+  JOIN public.contacts c
+    ON c.contact_id = CASE WHEN r.ref ~ '^pub:[0-9]{1,9}$' THEN substring(r.ref from 5)::int END
+  UNION
+  SELECT os.id, c.contact_id
+  FROM opp_scope os JOIN bedrock.jobs_opportunity o ON o.id = os.id
+  CROSS JOIN LATERAL unnest(o.sf_contact_ids) r(ref)
+  JOIN public.contacts c ON c.airtable_id = substring(r.ref from 10)
+  WHERE r.ref LIKE 'airtable:%'
+  UNION
+  SELECT os.id, scl.public_contact_id
+  FROM opp_scope os JOIN bedrock.jobs_opportunity o ON o.id = os.id
+  CROSS JOIN LATERAL unnest(o.sf_contact_ids) r(ref)
+  JOIN bedrock.sf_contact_link scl ON scl.sf_contact_id = r.ref
+  WHERE r.ref NOT LIKE 'pub:%' AND r.ref NOT LIKE 'airtable:%' AND scl.public_contact_id IS NOT NULL
+),
+opp_contacts AS (
+  SELECT opp_id, contact_id, true AS linked FROM opp_links
+  UNION ALL
+  -- No linked contacts: everyone at the opportunity's account.
+  SELECT os.id, c.contact_id, false
+  FROM opp_scope os JOIN public.contacts c ON lower(btrim(c.current_company)) = os.k
+  WHERE os.k <> '' AND NOT EXISTS (SELECT 1 FROM opp_links l WHERE l.opp_id = os.id)
+),
+account_contacts AS (
+  SELECT lower(btrim(c.current_company)) AS k, c.contact_id FROM public.contacts c
+  WHERE btrim(coalesce(c.current_company, '')) <> '' AND TRUE
+),
+scope_contacts AS (SELECT contact_id FROM opp_contacts UNION SELECT contact_id FROM account_contacts),
+contact_touches AS (
+  SELECT a.participant_public_contact_id AS contact_id, a.id AS activity_id, a.activity_date AS at
+  FROM bedrock.activity a
+  WHERE a.participant_public_contact_id IN (SELECT contact_id FROM scope_contacts)
+    AND (a.deleted_at IS NULL AND a.type IN ('email', 'call', 'meeting', 'linkedin', 'text') AND (coalesce(a.jobs_relevance_override, CASE WHEN a.type IN ('email','meeting') THEN a.jobs_relevance ELSE 'jobs' END) = 'jobs'))
+  UNION
+  -- Calendar rows carry attendees, not a participant link.
+  SELECT c.contact_id, a.id, a.activity_date
+  FROM bedrock.activity a,
+       jsonb_array_elements(coalesce(a.meeting_attendees, '[]'::jsonb)) att
+  JOIN public.contacts c ON lower(c.email) = lower(att->>'email')
+  WHERE a.source = 'calendar-sync' AND (a.deleted_at IS NULL AND a.type IN ('email', 'call', 'meeting', 'linkedin', 'text') AND (coalesce(a.jobs_relevance_override, CASE WHEN a.type IN ('email','meeting') THEN a.jobs_relevance ELSE 'jobs' END) = 'jobs'))
+    AND c.contact_id IN (SELECT contact_id FROM scope_contacts)
+),
+opp_touches AS (
+  SELECT os.id AS opp_id, a.id AS activity_id, a.activity_date AS at
+  FROM opp_scope os JOIN bedrock.activity a ON a.jobs_opportunity_id = os.id
+  WHERE (a.deleted_at IS NULL AND a.type IN ('email', 'call', 'meeting', 'linkedin', 'text') AND (coalesce(a.jobs_relevance_override, CASE WHEN a.type IN ('email','meeting') THEN a.jobs_relevance ELSE 'jobs' END) = 'jobs'))
+  UNION
+  SELECT os.id, a.id, a.activity_date
+  FROM opp_scope os JOIN bedrock.activity a ON a.account_id = os.account_id
+  WHERE os.account_id LIKE '001%' AND (a.deleted_at IS NULL AND a.type IN ('email', 'call', 'meeting', 'linkedin', 'text') AND (coalesce(a.jobs_relevance_override, CASE WHEN a.type IN ('email','meeting') THEN a.jobs_relevance ELSE 'jobs' END) = 'jobs'))
+  UNION
+  SELECT oc.opp_id, t.activity_id, t.at
+  FROM opp_contacts oc JOIN contact_touches t ON t.contact_id = oc.contact_id
+),
+account_touches AS (
+  SELECT ac.k, t.activity_id, t.at
+  FROM account_contacts ac JOIN contact_touches t ON t.contact_id = ac.contact_id
+  UNION
+  SELECT os.k, t.activity_id, t.at
+  FROM opp_scope os JOIN opp_touches t ON t.opp_id = os.id
+  WHERE os.k <> '' AND TRUE
+),
 touched AS (
-  SELECT lower(btrim(c.current_company)) AS k, max(a.activity_date) AS at
-  FROM bedrock.activity a JOIN public.contacts c ON c.contact_id = a.participant_public_contact_id
-  WHERE (a.deleted_at IS NULL AND a.type IN ('email', 'call', 'meeting', 'linkedin', 'text') AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))) GROUP BY 1
+  SELECT k, max(at) AS at FROM account_touches GROUP BY k
 ),
 moved AS (
   SELECT lower(btrim(o.account_name)) AS k, max(h.changed_at) AS at
@@ -2313,23 +2481,72 @@ Open opportunities by how long they have been in their current stage: under 2 we
 
 ```sql
 WITH w AS (SELECT ((coalesce(nullif(current_setting('dd.window_from', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 7))::timestamp AT TIME ZONE 'America/New_York') AS start_at, (((coalesce(nullif(current_setting('dd.window_to', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 1) + 1))::timestamp AT TIME ZONE 'America/New_York') AS end_at),
-acct_last AS (
-  -- The latest external activity at each opportunity's account: any contact
-  -- whose company is the account, by participant link or meeting attendee.
-  SELECT k, max(at) AS at FROM (
-    SELECT lower(trim(c.current_company)) AS k, a.activity_date AS at
-    FROM bedrock.activity a
-    JOIN public.contacts c ON c.contact_id = a.participant_public_contact_id
-    WHERE (a.deleted_at IS NULL AND a.type IN ('email', 'call', 'meeting', 'linkedin', 'text') AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))) AND a.activity_date < (SELECT end_at FROM w)
-    UNION ALL
-    SELECT lower(trim(c.current_company)), a.activity_date
-    FROM bedrock.activity a,
-         jsonb_array_elements(coalesce(a.meeting_attendees, '[]'::jsonb)) att
-    JOIN public.contacts c ON lower(c.email) = lower(att->>'email')
-    WHERE a.source = 'calendar-sync' AND (a.deleted_at IS NULL AND a.type IN ('email', 'call', 'meeting', 'linkedin', 'text') AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))) AND a.activity_date < (SELECT end_at FROM w)
-  ) x
-  WHERE coalesce(k, '') <> ''
-  GROUP BY k
+opp_scope AS (
+  SELECT o.id, lower(btrim(o.account_name)) AS k, o.account_id FROM bedrock.jobs_opportunity o
+  WHERE o.deleted_at IS NULL AND ((o.created_at < (SELECT end_at FROM w) AND (o.closed_at IS NULL OR o.closed_at >= (SELECT end_at FROM w))))
+),
+opp_links AS (
+  -- Linked from the contact (its converted opportunity) or from the
+  -- opportunity's contact list: pub:<contact_id>, airtable:<id>, or a
+  -- Salesforce contact id.
+  SELECT m.opportunity_id AS opp_id, m.contact_id
+  FROM bedrock.jobs_contact_membership m JOIN opp_scope os ON os.id = m.opportunity_id
+  UNION
+  SELECT os.id, c.contact_id
+  FROM opp_scope os JOIN bedrock.jobs_opportunity o ON o.id = os.id
+  CROSS JOIN LATERAL unnest(o.sf_contact_ids) r(ref)
+  JOIN public.contacts c
+    ON c.contact_id = CASE WHEN r.ref ~ '^pub:[0-9]{1,9}$' THEN substring(r.ref from 5)::int END
+  UNION
+  SELECT os.id, c.contact_id
+  FROM opp_scope os JOIN bedrock.jobs_opportunity o ON o.id = os.id
+  CROSS JOIN LATERAL unnest(o.sf_contact_ids) r(ref)
+  JOIN public.contacts c ON c.airtable_id = substring(r.ref from 10)
+  WHERE r.ref LIKE 'airtable:%'
+  UNION
+  SELECT os.id, scl.public_contact_id
+  FROM opp_scope os JOIN bedrock.jobs_opportunity o ON o.id = os.id
+  CROSS JOIN LATERAL unnest(o.sf_contact_ids) r(ref)
+  JOIN bedrock.sf_contact_link scl ON scl.sf_contact_id = r.ref
+  WHERE r.ref NOT LIKE 'pub:%' AND r.ref NOT LIKE 'airtable:%' AND scl.public_contact_id IS NOT NULL
+),
+opp_contacts AS (
+  SELECT opp_id, contact_id, true AS linked FROM opp_links
+  UNION ALL
+  -- No linked contacts: everyone at the opportunity's account.
+  SELECT os.id, c.contact_id, false
+  FROM opp_scope os JOIN public.contacts c ON lower(btrim(c.current_company)) = os.k
+  WHERE os.k <> '' AND NOT EXISTS (SELECT 1 FROM opp_links l WHERE l.opp_id = os.id)
+),
+scope_contacts AS (SELECT contact_id FROM opp_contacts),
+contact_touches AS (
+  SELECT a.participant_public_contact_id AS contact_id, a.id AS activity_id, a.activity_date AS at
+  FROM bedrock.activity a
+  WHERE a.participant_public_contact_id IN (SELECT contact_id FROM scope_contacts)
+    AND (a.deleted_at IS NULL AND a.type IN ('email', 'call', 'meeting', 'linkedin', 'text') AND (coalesce(a.jobs_relevance_override, CASE WHEN a.type IN ('email','meeting') THEN a.jobs_relevance ELSE 'jobs' END) = 'jobs')) AND a.activity_date < (SELECT end_at FROM w)
+  UNION
+  -- Calendar rows carry attendees, not a participant link.
+  SELECT c.contact_id, a.id, a.activity_date
+  FROM bedrock.activity a,
+       jsonb_array_elements(coalesce(a.meeting_attendees, '[]'::jsonb)) att
+  JOIN public.contacts c ON lower(c.email) = lower(att->>'email')
+  WHERE a.source = 'calendar-sync' AND (a.deleted_at IS NULL AND a.type IN ('email', 'call', 'meeting', 'linkedin', 'text') AND (coalesce(a.jobs_relevance_override, CASE WHEN a.type IN ('email','meeting') THEN a.jobs_relevance ELSE 'jobs' END) = 'jobs')) AND a.activity_date < (SELECT end_at FROM w)
+    AND c.contact_id IN (SELECT contact_id FROM scope_contacts)
+),
+opp_touches AS (
+  SELECT os.id AS opp_id, a.id AS activity_id, a.activity_date AS at
+  FROM opp_scope os JOIN bedrock.activity a ON a.jobs_opportunity_id = os.id
+  WHERE (a.deleted_at IS NULL AND a.type IN ('email', 'call', 'meeting', 'linkedin', 'text') AND (coalesce(a.jobs_relevance_override, CASE WHEN a.type IN ('email','meeting') THEN a.jobs_relevance ELSE 'jobs' END) = 'jobs')) AND a.activity_date < (SELECT end_at FROM w)
+  UNION
+  SELECT os.id, a.id, a.activity_date
+  FROM opp_scope os JOIN bedrock.activity a ON a.account_id = os.account_id
+  WHERE os.account_id LIKE '001%' AND (a.deleted_at IS NULL AND a.type IN ('email', 'call', 'meeting', 'linkedin', 'text') AND (coalesce(a.jobs_relevance_override, CASE WHEN a.type IN ('email','meeting') THEN a.jobs_relevance ELSE 'jobs' END) = 'jobs')) AND a.activity_date < (SELECT end_at FROM w)
+  UNION
+  SELECT oc.opp_id, t.activity_id, t.at
+  FROM opp_contacts oc JOIN contact_touches t ON t.contact_id = oc.contact_id
+),
+opp_last AS (
+  SELECT opp_id, max(at) AS at FROM opp_touches GROUP BY opp_id
 ),
 open_set AS (
   -- Opportunities open at the end of the window.
@@ -2337,11 +2554,9 @@ open_set AS (
          greatest(o.created_at,
                   (SELECT max(h.changed_at) FROM bedrock.jobs_stage_history h
                     WHERE h.opportunity_id = o.id AND h.changed_at < (SELECT end_at FROM w)),
-                  (SELECT max(a.activity_date) FROM bedrock.activity a
-                    WHERE a.jobs_opportunity_id = o.id AND (a.deleted_at IS NULL AND a.type IN ('email', 'call', 'meeting', 'linkedin', 'text') AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))) AND a.activity_date < (SELECT end_at FROM w)),
-                  al.at) AS last_movement
+                  ol.at) AS last_movement
   FROM bedrock.jobs_opportunity o
-  LEFT JOIN acct_last al ON al.k = lower(trim(o.account_name))
+  LEFT JOIN opp_last ol ON ol.opp_id = o.id
   WHERE o.deleted_at IS NULL
     AND o.created_at < (SELECT end_at FROM w)
     AND (o.closed_at IS NULL OR o.closed_at >= (SELECT end_at FROM w))

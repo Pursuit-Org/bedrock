@@ -79,7 +79,9 @@ export function JobsOpportunityDetailPage() {
   }
 
   const accountKey = (o.account_name ?? "").trim().toLowerCase();
-  const lastActivity = o.activity?.find((a) => !a.deleted_at)?.activity_date ?? null;
+  // What counts as activity (no notes, jobs-related), from the server; the
+  // feed's newest row may be a note or a non-jobs email.
+  const lastActivity = o.last_activity_at ?? null;
 
   return (
     <div className="flex flex-col gap-4 px-7 py-4 pb-16">
@@ -130,7 +132,7 @@ export function JobsOpportunityDetailPage() {
       {/* Stats */}
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
         <Stat label="Stage" value={STAGE_LABELS[o.stage] ?? o.stage} />
-        <Stat label="Deal type" value={o.deal_type ? (DEAL_TYPE_LABELS[o.deal_type] ?? o.deal_type) : "—"} />
+        <Stat label="Opportunity type" value={o.deal_type ? (DEAL_TYPE_LABELS[o.deal_type] ?? o.deal_type) : "—"} />
         <Stat label="Roles" value={String(o.num_roles ?? 0)} />
         <Stat label="Last activity" value={lastActivity ? new Date(lastActivity).toLocaleDateString() : "—"} />
       </div>
@@ -144,7 +146,7 @@ export function JobsOpportunityDetailPage() {
           <EditField label="Relationship owner">
             <OwnerSelect owner={o.relationship_owner} staff={staff} onSave={(email) => patch("relationship_owner", email)} />
           </EditField>
-          <EditField label="Deal type">
+          <EditField label="Opportunity type">
             <InlineSelect<string> value={o.deal_type} options={DEAL_TYPE_OPTIONS} emptyLabel="—" onSave={(v) => patch("deal_type", v || null)} />
           </EditField>
           <EditField label="Priority">

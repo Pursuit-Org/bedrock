@@ -67,7 +67,7 @@ const COLUMN_ORDER: ColKey[] = ["name", "prospect", "flag", "title", "company", 
 const DEFAULT_VISIBLE: ColKey[] = ["name", "prospect", "flag", "title", "company", "tags", "owner", "connected", "last_touch", "listings"];
 const COL_LABELS: Record<ColKey, string> = {
   name: "Name", prospect: "Jobs prospect", flag: "Jobs stage", title: "Title", company: "Company", tags: "Tags", owner: "Owner", industry: "Industry",
-  last_touch: "Last activity", listings: "Job listings", tasks: "Open tasks", connected: "Connected staff", deal: "Linked deal", email: "Email", linkedin: "LinkedIn",
+  last_touch: "Last activity", listings: "Job listings", tasks: "Open tasks", connected: "Connected staff", deal: "Linked opportunity", email: "Email", linkedin: "LinkedIn",
 };
 // Default pixel widths — user-resizable via drag handles (useColumnWidths),
 // same grid components as the Opportunities table.
@@ -105,7 +105,7 @@ const FILTERABLE: Record<Field, FieldMeta<JobContactWithDeal>> = {
   owner: { label: "Owner", type: "select", getValue: (c) => c.owner_email ?? "" },
   tags: { label: "Tags", type: "tags", getValue: (c) => (c.crm_tags ?? []).join(",") },
   listings: { label: "Job listings (sourced + applied)", type: "number", getValue: (c) => (c.open_roles ?? 0) + (c.builder_apps ?? 0) },
-  has_deal: { label: "Linked deal", type: "select", getValue: (c) => (c.deal ? "yes" : "no") },
+  has_deal: { label: "Linked opportunity", type: "select", getValue: (c) => (c.deal ? "yes" : "no") },
   // Text: filter "Connected staff contains <person>" (a SPECIFIC staffer), plus
   // is_empty / is_not_empty for none / any connection.
   connected: { label: "Connected staff (name)", type: "text", getValue: (c) => (c.connected_staff_names ?? []).join(", ") },
@@ -123,7 +123,7 @@ const FILTERABLE: Record<Field, FieldMeta<JobContactWithDeal>> = {
 const GROUP_OPTIONS = [
   { value: "", label: "No grouping" },
   { value: "company", label: "Group by Account" },
-  { value: "has_deal", label: "Group by Linked deal" },
+  { value: "has_deal", label: "Group by Linked opportunity" },
 ];
 const ACCOUNT_GROUP = "company";
 const YESNO = [{ value: "yes", label: "Yes" }, { value: "no", label: "No" }];
@@ -450,9 +450,12 @@ function ContactRow({ contact, expanded, onOpen, visibleCols, selected, onToggle
           renderValue={(v) => <span className="rounded-full bg-accent-soft px-1.5 py-0.5 text-[10.5px] font-medium text-accent-ink">{MEMBERSHIP_STAGE_LABELS[(v ?? contact.membership_stage) as MembershipStage] ?? v}</span>}
           onSave={(v) => {
             if (!v) return Promise.resolve();
-            // Revisit asks for a date first (shared handler); anything else
-            // writes straight through.
-            if (v === "revisit") return stageChange.change(contact.contact_id, contact.full_name ?? "contact", v);
+            // Revisit asks for a date and Converted for its opportunity first
+            // (shared handler); anything else writes straight through.
+            if (stageChange.needsDialog(v)) {
+              return stageChange.change(contact.contact_id, contact.full_name ?? "contact", v,
+                undefined, contact.current_company);
+            }
             return new Promise<void>((res, rej) => updateMembership.mutate(
               { contact_id: contact.contact_id, stage: v }, { onSuccess: () => res(), onError: rej }));
           }} />
@@ -466,10 +469,12 @@ function ContactRow({ contact, expanded, onOpen, visibleCols, selected, onToggle
             // task — the exact problem Revisit replaced On Hold to fix.
             // `flagOne` creates the membership because PATCH /jobs-membership
             // is UPDATE-only and 404s without one.
-            if (v === "revisit") {
+            if (stageChange.needsDialog(v)) {
               return stageChange.change(
                 contact.contact_id, contact.full_name ?? "contact", v,
-                () => flagOne.mutateAsync({ contact_ids: [contact.contact_id], stage: v }),
+                // Converting: create the membership, then convert in the dialog.
+                () => flagOne.mutateAsync({ contact_ids: [contact.contact_id], stage: v === "revisit" ? v : undefined }),
+                contact.current_company,
               );
             }
             return new Promise<void>((res, rej) => {
@@ -693,7 +698,7 @@ export function JobsContacts({ initialQuery, initialContactId, initialConnectedO
 
   const groupLabel = useCallback((k: string) => {
     if (k === "") return "—";
-    if (groupBy === "has_deal") return k === "yes" ? "Has linked deal" : "No linked deal";
+    if (groupBy === "has_deal") return k === "yes" ? "Has linked opportunity" : "No linked opportunity";
     return k;
   }, [groupBy]);
 
@@ -844,8 +849,10 @@ export function JobsContacts({ initialQuery, initialContactId, initialConnectedO
                 date — that date is the whole reason it replaced On Hold — and
                 this bar has nowhere to ask for one, so offering it here would
                 write a batch of dateless revisits that never come back to
-                anyone. Set it per row, where the dialog asks. */}
-            {MEMBERSHIP_STAGE_OPTIONS.filter((o) => o.value !== "revisit")
+                anyone. Set it per row, where the dialog asks. Converted is
+                absent for the same reason: each conversion names its
+                opportunity (D15), and the API refuses a bulk one. */}
+            {MEMBERSHIP_STAGE_OPTIONS.filter((o) => o.value !== "revisit" && o.value !== "converted_to_opportunity")
               .map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
           </select>
           <select value={pendingOwner} disabled={bulkBusy} onChange={(e) => setPendingOwner(e.target.value)} className="h-7 max-w-[220px] rounded border border-border-strong bg-surface px-2 text-[12px] text-ink-2 outline-none focus:border-accent disabled:opacity-50">

@@ -135,6 +135,9 @@ export interface JobContact {
   current_company: string | null;
   contact_stage: string | null;
   linkedin_url: string | null;
+  /** On an opportunity's contact list: the ref it is stored under (pub:, airtable:
+   *  or a Salesforce id). Absent when it is linked only from the contact's side. */
+  contact_ref?: string | null;
 }
 
 export interface ContactsSummary {
@@ -560,13 +563,24 @@ export function useFlagContactsForJobs() {
 export function useUpdateJobsMembership() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async ({ contact_id, ...body }: { contact_id: number; stage?: string; owner_email?: string; first_outreach_by?: string; not_a_fit_reason?: string; revisit_date?: string }) => {
+    mutationFn: async ({ contact_id, ...body }: {
+      contact_id: number; stage?: string; owner_email?: string; first_outreach_by?: string;
+      not_a_fit_reason?: string; revisit_date?: string;
+      /** Required to move a contact INTO Converted (D15): the opportunities it converted to. */
+      opportunity_ids?: string[];
+    }) => {
       await api.patch(`/api/jobs/contacts/${contact_id}/jobs-membership`, body);
     },
-    onSuccess: () => {
+    onSuccess: (_d, vars) => {
       qc.invalidateQueries({ queryKey: ["jobs", "contacts"] });
       qc.invalidateQueries({ queryKey: ["jobs", "contact"] });
       qc.invalidateQueries({ queryKey: ["jobs", "accounts"] });
+      if (vars.opportunity_ids?.length) {
+        // The contact is now on those opportunities' contact lists.
+        qc.invalidateQueries({ queryKey: ["jobs", "opportunities"] });
+        qc.invalidateQueries({ queryKey: ["jobs", "opportunity"] });
+        qc.invalidateQueries({ queryKey: ["jobs", "contact-opps"] });
+      }
       // A revisit files a jobs_task, so the Jobs Home task widget is stale.
       // Keys are "jobs-tasks" / "jobs-tasks-all" (see services/jobsTasks.ts).
       qc.invalidateQueries({ queryKey: ["jobs-tasks"] });
@@ -780,8 +794,23 @@ export function useCreateJobsAccount() {
       qc.invalidateQueries({ queryKey: ["jobs", "account-names"] });
       toast.success("Account created");
     },
-    onError: () => toast.error("Failed to create account"),
+    // A second spelling of an existing account is refused (D9, PRO-101); the
+    // caller picks the existing one (sameNameAccount), so say which it is.
+    onError: (e: unknown) => {
+      const existing = sameNameAccount(e);
+      toast[existing ? "info" : "error"](existing
+        ? `${existing.display} already exists — using it`
+        : "Failed to create account");
+    },
   });
+}
+
+/** The existing account a create was refused for (409: another spelling of
+ *  it), or null for any other error. */
+export function sameNameAccount(e: unknown): { account_key: string; display: string } | null {
+  const r = (e as { response?: { status?: number; data?: { detail?: { existing?: { account_key: string; account: string } } } } })?.response;
+  const ex = r?.status === 409 ? r.data?.detail?.existing : undefined;
+  return ex ? { account_key: ex.account_key, display: ex.account } : null;
 }
 
 export interface JobsAccountName { account_key: string; account: string }
@@ -1950,9 +1979,9 @@ export function useCreateOpportunity() {
       invalidateOppDependents(qc, [
         ["jobs", "contacts"], ["jobs", "contacts-by-account"], ["jobs", "contacts-summary"],
       ]);
-      toast.success("Deal created");
+      toast.success("Opportunity created");
     },
-    onError: () => toast.error("Failed to create deal"),
+    onError: () => toast.error("Failed to create opportunity"),
   });
 }
 
@@ -2933,7 +2962,7 @@ export function useDeleteOpportunity() {
     },
     onSuccess: () => {
       invalidateOppDependents(qc, [["jobs", "placements"]]);
-      toast.success("Deal removed");
+      toast.success("Opportunity removed");
     },
   });
 }

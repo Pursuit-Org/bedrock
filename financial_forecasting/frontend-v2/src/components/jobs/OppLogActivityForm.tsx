@@ -133,7 +133,7 @@ export function OppLogActivityForm({ dealId, contacts, className }: {
       {isIntro && (
         contacts.length === 0 ? (
           <p className="text-[11.5px] text-ink-3">
-            An intro is logged against a person. Link a contact to this deal in the Contacts tab first.
+            An intro is logged against a person. Link a contact to this opportunity in the Contacts tab first.
           </p>
         ) : (
           <div className="flex flex-wrap gap-2">

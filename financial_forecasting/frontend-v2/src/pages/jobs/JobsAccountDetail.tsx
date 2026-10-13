@@ -264,7 +264,7 @@ export function JobsAccountDetailPage() {
         <Stat label="Status" value={account.account_status} />
         <Stat label="Opportunities" value={account.opp_count} />
         <Stat label="Contacts" value={account.prospect_count} />
-        <Stat label="Last activity" value={relativeDays(account.last_activity)} />
+        <Stat label="Last activity" value={relativeDays(account.last_activity_at ?? null)} />
       </div>
 
       {/* Details — what you set on this account, in one place. Owner lived in

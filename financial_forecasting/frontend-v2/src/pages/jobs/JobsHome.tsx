@@ -138,9 +138,12 @@ function AssignedRow({ c, staff, expanded, onToggle }: {
   const moveStage = (v: string) =>
     new Promise<void>((resolve, reject) => {
       if (!v || v === "assigned") return resolve();
-      // Revisit routes through the shared hook so it asks for a date; every
-      // other stage writes straight through.
-      if (v === "revisit") return stageChange.change(c.contact_id, c.full_name ?? "contact", v).then(resolve, reject);
+      // Revisit (a date) and Converted (its opportunity) route through the
+      // shared hook; every other stage writes straight through.
+      if (stageChange.needsDialog(v)) {
+        return stageChange.change(c.contact_id, c.full_name ?? "contact", v, undefined, c.current_company)
+          .then(resolve, reject);
+      }
       update.mutate(
         { contact_id: c.contact_id, stage: v },
         {
@@ -356,14 +359,15 @@ function RepliedZone({ owner }: { owner: string | null }) {
   // isLoading and took that early-return path on every switch.
   const stageChange = useContactStageChange();
   if (isLoading || data.length === 0) return null;
-  const move = (c: { contact_id: number; full_name: string | null }, stage: MembershipStage) => {
-    // Revisit needs its date, so it goes through the shared handler; the rest
-    // are one-click decisions and write immediately.
-    if (stage === "revisit") {
+  const move = (c: { contact_id: number; full_name: string | null; current_company?: string | null },
+                stage: MembershipStage) => {
+    // Revisit needs its date and Converted its opportunity, so they go through
+    // the shared handler; the rest are one-click decisions and write immediately.
+    if (stageChange.needsDialog(stage)) {
       // change() now rejects when the dialog is cancelled, and this path
       // has no InlineSelect to roll back — swallow it rather than emit an
       // unhandled rejection every time someone changes their mind.
-      stageChange.change(c.contact_id, c.full_name ?? "Contact", stage).catch(() => {});
+      stageChange.change(c.contact_id, c.full_name ?? "Contact", stage, undefined, c.current_company).catch(() => {});
       return;
     }
     update.mutate({ contact_id: c.contact_id, stage }, {

@@ -30,7 +30,7 @@ const TAB_META: Record<TabKey, { title: string; subtitle: string }> = {
     subtitle: "Each tag as a prioritized outreach push — who owns it, how far it's been worked, and what's left.",
   },
   outreach: { title: "Outreach", subtitle: "The contacts funnel, the week's queue, and what needs a decision." },
-  pipeline: { title: "Pipeline", subtitle: "The employer-deal pipeline — volume, conversion and where it's stuck." },
+  pipeline: { title: "Pipeline", subtitle: "The employer opportunity pipeline — volume, conversion and where it's stuck." },
   placement: { title: "Placement", subtitle: "Placement performance reporting." },
 };
 

@@ -6,7 +6,7 @@ export function JobsPipelinePage() {
     <div className="flex flex-col gap-0 px-7 py-4 pb-12">
       <PageHeader
         title="Pipeline"
-        subtitle="The employer deal list — every opportunity, stage, and owner."
+        subtitle="Every employer opportunity, stage, and owner."
       />
       <JobsTeam />
     </div>

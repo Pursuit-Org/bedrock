@@ -30,7 +30,7 @@ def _set_row(id_, name, *, created_days, moved_days, touch_days=None, priority=N
         "id": id_, "account_name": name, "stage": "active_in_discussions", "deal_type": "ft",
         "segment": None, "owner_email": "a@p.org", "priority": priority, "created_at": created,
         "entered_stage": created, "stage_from_created": True,
-        "opp_activity": None, "last_stage_change": None, "account_activity": None,
+        "last_stage_change": None,
         "last_touch": None if touch_days is None else NOW - timedelta(days=touch_days),
         "last_movement": NOW - timedelta(days=moved_days),
     }
@@ -40,7 +40,7 @@ class OverviewConn(FakeConn):
     """Routes the two closed-stage queries by their to_stage argument, which a
     substring match can't tell apart."""
     def __init__(self, set_rows, won=None, lost=None, moved=None):
-        super().__init__(lists={"WITH acct_last": set_rows,
+        super().__init__(lists={"opp_last AS (": set_rows,
                                 "h.from_stage, h.to_stage": moved or []})
         self._closed = {"closed_won": won or [], "closed_lost": lost or []}
 
@@ -85,8 +85,10 @@ def test_comments_dont_keep_an_opportunity_alive():
     """D3: notes are comments, not activity, so they don't reset the clock."""
     conn = OverviewConn([])
     make_jobs_client(conn).get("/api/jobs/opportunities/overview")
-    q = next(q for q in conn.queries("fetch") if "WITH acct_last" in q)
-    assert q.count("a.type IN ('email', 'call', 'meeting', 'linkedin', 'text')") == 3
+    q = next(q for q in conn.queries("fetch") if "opp_last AS (" in q)
+    # Every arm of the activity rule (PRO-101) reads external activity only.
+    assert q.count("a.type IN ('email', 'call', 'meeting', 'linkedin', 'text')") == 4
+    assert "'note'" not in q
 
 
 def test_overview_numbers_carry_their_definitions():
@@ -175,7 +177,7 @@ def test_overview_binds_deal_type_list():
     conn = OverviewConn([])
     c = make_jobs_client(conn)
     c.get("/api/jobs/opportunities/overview?deal_type=ft,unset")
-    q, args = next((call[1], call[2]) for call in conn.calls if "WITH acct_last" in call[1])
+    q, args = next((call[1], call[2]) for call in conn.calls if "opp_last AS (" in call[1])
     assert args[1] == ["ft", "unset"]
     assert "o.deal_type = ANY($2::text[])" in q
     assert "'unset' = ANY($2::text[]) AND o.deal_type IS NULL" in q

@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 # Targets > Jobs), the same source routes/jobs.py reads. Kept as a name for
 # callers that imported it; the live list is jobs_targets_store.team_emails().
 from services import jobs_targets_store
+from services.outreach_counting import jobs_relevant_sql
 JOBS_TEAM_EMAILS = jobs_targets_store.DEFAULT_TEAM
 
 # Sticky-once-true feature detect for bedrock.jobs_membership_stage_history —
@@ -214,7 +215,7 @@ async def auto_advance_outreached(conn) -> dict[str, Any]:
               AND a.deleted_at IS NULL
               AND a.activity_date >= m.assigned_at
               AND a.type NOT IN ('email')
-              AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type <> 'meeting')
+              AND """ + jobs_relevant_sql("a") + """
               AND (
                     a.type IN ('call', 'text', 'linkedin')
                  OR (a.type = 'meeting' AND EXISTS (
@@ -254,11 +255,13 @@ async def auto_advance_outreached(conn) -> dict[str, Any]:
     if with_history:
         # Command tag is INSERT 0 n — same trailing row count as UPDATE n.
         sql = sql_body + ",\n        adv AS (" + update_body + """
-            RETURNING m.contact_id, o.author
+            RETURNING m.contact_id, o.author, o.first_out
         )
         INSERT INTO bedrock.jobs_membership_stage_history
-            (contact_id, from_stage, to_stage, changed_by, note)
-        SELECT contact_id, 'assigned', 'initial_outreach', author, 'auto_advance_outreached'
+            (contact_id, from_stage, to_stage, changed_by, note, changed_at)
+        SELECT contact_id, 'assigned', 'initial_outreach', author, 'auto_advance_outreached',
+               -- dated by the outreach that moved it, not by the nightly run
+               coalesce(first_out, now())
         FROM adv
         """
     else:

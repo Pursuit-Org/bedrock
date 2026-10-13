@@ -76,7 +76,7 @@ export function buildItems(
     out.push({
       group: "Jobs Accounts",
       label: a.account,
-      sub: a.opp_count ? `${a.opp_count} deal${a.opp_count === 1 ? "" : "s"}` : "No deals yet",
+      sub: a.opp_count ? `${a.opp_count} opportunit${a.opp_count === 1 ? "y" : "ies"}` : "No opportunities yet",
       href: jobsAccountPath(a.account_key),
     });
   }
@@ -120,7 +120,7 @@ export function buildItems(
   for (const d of jobsDeals) {
     const account = d.account_name?.trim() || "Untitled";
     out.push({
-      group: "Jobs Deals",
+      group: "Jobs Opportunities",
       label: d.title?.trim() ? `${account} — ${d.title.trim()}` : account,
       sub: stageLabel(d.stage),
       href: jobsOpportunityPath(d.id),

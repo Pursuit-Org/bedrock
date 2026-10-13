@@ -72,7 +72,8 @@ def test_create_opportunity_stores_date_and_estimate(monkeypatch):
     )
     c = make_jobs_client(conn)
     r = c.post("/api/jobs/opportunities", json={
-        "account_id": "x", "account_name": "Acme", "target_close_date": "2026-12-15", "estimated_jobs": 3})
+        "account_id": "x", "account_name": "Acme", "target_close_date": "2026-12-15", "estimated_jobs": 3,
+        "sf_contact_ids": ["pub:5"]})
     assert r.status_code == 200, r.text
     q, args = _insert_call(conn)[1:]
     assert "estimated_jobs" in q
@@ -87,7 +88,8 @@ def test_create_without_an_estimate_still_works_before_migration():
     )
     c = make_jobs_client(conn)
     r = c.post("/api/jobs/opportunities", json={
-        "account_id": "x", "account_name": "Acme", "target_close_date": "2026-12-15"})
+        "account_id": "x", "account_name": "Acme", "target_close_date": "2026-12-15",
+        "sf_contact_ids": ["pub:5"]})
     assert r.status_code == 200, r.text
     q, args = _insert_call(conn)[1:]
     assert "estimated_jobs" not in q and len(args) == 16
@@ -103,7 +105,8 @@ def test_create_refuses_an_estimate_before_migration():
     )
     c = make_jobs_client(conn)
     r = c.post("/api/jobs/opportunities", json={
-        "account_id": "x", "account_name": "Acme", "target_close_date": "2026-12-15", "estimated_jobs": 3})
+        "account_id": "x", "account_name": "Acme", "target_close_date": "2026-12-15", "estimated_jobs": 3,
+        "sf_contact_ids": ["pub:5"]})
     assert r.status_code == 409, r.text
     assert "2026-09-29-jobs-estimated-jobs.sql" in r.text
 

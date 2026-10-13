@@ -64,7 +64,7 @@ const DEFAULT_VISIBLE: ColKey[] = ["account", "status", "owner", "investor", "si
 const COL_LABELS: Record<ColKey, string> = {
   account: "Account", status: "Status", owner: "Jobs owner",
   investor: "Investor", size: "Size", hq: "HQ", industry: "Industry", opps: "Opps",
-  contacts: "Contacts", listings: "Roles", hired: "Hired", tasks: "Open tasks", deal_types: "Deal types", last_activity: "Last activity",
+  contacts: "Contacts", listings: "Roles", hired: "Hired", tasks: "Open tasks", deal_types: "Opportunity types", last_activity: "Last activity",
 };
 // Default pixel widths — user-resizable via drag handles (useColumnWidths),
 // same grid components as the Opportunities table.
@@ -102,7 +102,7 @@ function extract(a: JobsAccount, key: ColKey): string | number {
     case "hired":         return totalHired(a);
     case "tasks":         return a.open_tasks ?? 0;
     case "deal_types":    return dealTypesOf(a).join(",");
-    case "last_activity": return a.last_activity ?? "";
+    case "last_activity": return a.last_activity_at ?? "";
   }
 }
 
@@ -115,7 +115,7 @@ const FILTERABLE: Record<Field, FieldMeta<JobsAccount>> = {
   industry:     { label: "Industry", type: "select", getValue: (a) => a.industry ?? "" },
   // An account can have several opportunities of different types; join code +
   // label so a "contains" filter matches on either ("ft", "contract", "Part-time").
-  deal_type:    { label: "Deal type", type: "text", getValue: (a) => dealTypesOf(a).map((t) => `${t} ${DEAL_TYPE_LABELS[t as keyof typeof DEAL_TYPE_LABELS] ?? ""}`).join(" | ") },
+  deal_type:    { label: "Opportunity type", type: "text", getValue: (a) => dealTypesOf(a).map((t) => `${t} ${DEAL_TYPE_LABELS[t as keyof typeof DEAL_TYPE_LABELS] ?? ""}`).join(" | ") },
   has_opps:     { label: "Has opportunities", type: "select", getValue: (a) => (a.opp_count > 0 ? "yes" : "no") },
   has_contacts: { label: "Has contacts",      type: "select", getValue: (a) => (a.prospect_count > 0 ? "yes" : "no") },
   // Top-of-funnel triage: filter by activity recency (Last 7/30/90 days dropdown).
@@ -206,7 +206,7 @@ function AccountRow({
       return <span className="inline-flex items-center gap-1 text-[12px] text-ink-2" title={title}><UserCheck size={11} className="text-green" />{total}</span>;
     })(),
     deal_types: (() => { const d = dealTypesOf(account); return d.length ? <span className="truncate text-[11.5px] text-ink-3">{d.map((t) => DEAL_TYPE_LABELS[t as keyof typeof DEAL_TYPE_LABELS] ?? t).join(", ")}</span> : <span className="text-ink-4">—</span>; })(),
-    last_activity: <span className="whitespace-nowrap text-[11.5px] text-ink-4">{relativeDays(account.last_activity)}</span>,
+    last_activity: <span className="whitespace-nowrap text-[11.5px] text-ink-4">{relativeDays(account.last_activity_at ?? null)}</span>,
   };
   return (
     <Fragment>

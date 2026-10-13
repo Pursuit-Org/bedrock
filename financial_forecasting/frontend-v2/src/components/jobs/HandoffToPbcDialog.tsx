@@ -75,7 +75,7 @@ export function HandoffToPbcDialog({
         <div className="flex items-center justify-between border-b border-border-strong px-5 py-3.5">
           <div>
             <h2 className="inline-flex items-center gap-1.5 text-[15px] font-semibold text-ink"><Briefcase size={15} /> Hand off to PBC</h2>
-            <p className="text-[11.5px] text-ink-4">Creates a separate Salesforce revenue opportunity, linked to this deal.</p>
+            <p className="text-[11.5px] text-ink-4">Creates a separate Salesforce revenue opportunity, linked to this opportunity.</p>
           </div>
           <button type="button" onClick={onClose} className="text-ink-3 hover:text-ink"><X size={16} /></button>
         </div>

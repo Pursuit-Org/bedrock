@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { Building2, Plus, X } from "lucide-react";
 
 import { jobsAccountPath } from "@/components/jobs/jobsEntity";
-import { useCreateJobsAccount, useResolveAccount, type AccountMatch } from "@/services/jobs";
+import { sameNameAccount, useCreateJobsAccount, useResolveAccount, type AccountMatch } from "@/services/jobs";
 
 function Spinner() {
   return <svg className="h-3 w-3 animate-spin" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" /></svg>;
@@ -42,11 +42,13 @@ export function NewAccountDialog({ onClose, initialName = "", onPicked }: {
   };
   // Open a match: if we already hold it locally, go straight there; otherwise
   // materialize it (carrying its SF id) and then open — all invisible.
+  // Another spelling of an account we already have is refused: take that one.
+  const onError = (e: unknown) => { const existing = sameNameAccount(e); if (existing) done(existing); };
   const openMatch = (m: AccountMatch) => {
     if (m.key) return done({ account_key: m.key, display: m.label });
-    create.mutate({ name: m.label, sf_account_id: m.sf_account_id }, { onSuccess: done });
+    create.mutate({ name: m.label, sf_account_id: m.sf_account_id }, { onSuccess: done, onError });
   };
-  const createNew = () => create.mutate({ name: name.trim(), sf_account_id: null }, { onSuccess: done });
+  const createNew = () => create.mutate({ name: name.trim(), sf_account_id: null }, { onSuccess: done, onError });
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>

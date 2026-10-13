@@ -3520,34 +3520,20 @@ async def opportunities_overview(
     # (b) was closed only after `ref` (so it was open at the time). When `ref` is
     # the current week this collapses to the live working set.
     #
-    # `last_touch` is the most recent jobs activity on the deal OR at its account
-    # (a contact whose company is the account, the same join the Accounts page
-    # uses for its last-activity column). Activity is rarely logged against the
-    # opportunity itself, so an opp-only read called deals with live threads
-    # stalled. `last_movement` adds stage changes and creation on top: the
-    # "nothing has happened here" clock that Stalled measures.
+    # `last_touch` is the most recent external activity on the opportunity:
+    # logged on it, or with one of its contacts (its linked contacts, else
+    # anyone at its account; jobs_metrics.activity_scope_ctes, PRO-101).
+    # Activity is rarely logged against the opportunity itself, so an opp-only
+    # read called deals with live threads stalled. `last_movement` adds stage
+    # changes and creation on top: the "nothing has happened here" clock that
+    # Stalled measures.
+    scope = jobs_metrics.activity_scope_ctes(
+        opps="o.created_at < $3::timestamptz AND (o.closed_at IS NULL OR o.closed_at >= $3::timestamptz)",
+        activity=f"{jobs_metrics.external_activity_sql('a')} AND a.activity_date < $3::timestamptz")
     rows = await conn.fetch(f"""
-        WITH acct_last AS (
-            SELECT k, max(at) AS at FROM (
-                SELECT lower(trim(c.current_company)) AS k, a.activity_date AS at
-                FROM bedrock.activity a
-                JOIN public.contacts c ON c.contact_id = a.participant_public_contact_id
-                WHERE a.activity_date < $3::timestamptz
-                  AND {jobs_metrics.external_activity_sql('a')}
-                UNION ALL
-                -- Calendar rows carry attendees, not a participant link.
-                SELECT lower(trim(c.current_company)), a.activity_date
-                FROM bedrock.activity a,
-                     jsonb_array_elements(coalesce(a.meeting_attendees, '[]'::jsonb)) att
-                JOIN public.contacts c ON lower(c.email) = lower(att->>'email')
-                WHERE a.source = 'calendar-sync'
-                  AND a.activity_date < $3::timestamptz
-                  AND {jobs_metrics.external_activity_sql('a')}
-            ) x
-            WHERE coalesce(k, '') <> ''
-              AND k IN (SELECT lower(trim(account_name)) FROM bedrock.jobs_opportunity
-                        WHERE deleted_at IS NULL)
-            GROUP BY k
+        WITH {scope},
+        opp_last AS (
+            SELECT opp_id, max(at) AS at FROM opp_touches GROUP BY opp_id
         ), base AS (
         SELECT o.id, o.account_name, o.stage, o.deal_type, o.segment, o.owner_email,
                o.priority, o.created_at,
@@ -3559,16 +3545,13 @@ async def opportunities_overview(
                (SELECT max(h.changed_at) FROM bedrock.jobs_stage_history h
                  WHERE h.opportunity_id = o.id AND h.to_stage = o.stage) IS NULL
                  AS stage_from_created,
-               -- clamp to the as-of instant so activity logged AFTER a selected
-               -- past week doesn't retroactively un-stall that week's view
-               (SELECT max(a.activity_date) FROM bedrock.activity a
-                WHERE a.jobs_opportunity_id = o.id AND {jobs_metrics.external_activity_sql('a')}
-                  AND a.activity_date < $3::timestamptz) AS opp_activity,
+               -- clamped to the as-of instant (in `scope`) so activity logged
+               -- AFTER a selected past week doesn't un-stall that week's view
+               ol.at AS last_touch,
                (SELECT max(h.changed_at) FROM bedrock.jobs_stage_history h
-                WHERE h.opportunity_id = o.id AND h.changed_at < $3::timestamptz) AS last_stage_change,
-               al.at AS account_activity
+                WHERE h.opportunity_id = o.id AND h.changed_at < $3::timestamptz) AS last_stage_change
         FROM bedrock.jobs_opportunity o
-        LEFT JOIN acct_last al ON al.k = lower(trim(o.account_name))
+        LEFT JOIN opp_last ol ON ol.opp_id = o.id
         WHERE o.deleted_at IS NULL
           AND o.created_at < $3::timestamptz
           AND (o.closed_at IS NULL OR o.closed_at >= $3::timestamptz)
@@ -3577,8 +3560,7 @@ async def opportunities_overview(
           AND {_deal_type_sql('o.deal_type', 2)}
         )
         SELECT base.*,
-               GREATEST(opp_activity, account_activity) AS last_touch,
-               GREATEST(created_at, last_stage_change, opp_activity, account_activity) AS last_movement
+               GREATEST(created_at, last_stage_change, last_touch) AS last_movement
         FROM base
     """, owner_f, dt_f, ref)
 
@@ -3723,7 +3705,7 @@ async def opportunities_overview(
                 why_bits.append(
                     f"{stage_days}d old, no stage change logged" if r["stage_from_created"]
                     else f"{stage_days}d in {STAGE_LABELS.get(r['stage'], r['stage'])}")
-            why_bits.append("no logged activity" if act_days is None else f"last activity {act_days}d ago")
+            why_bits.append("no activity" if act_days is None else f"last activity {act_days}d ago")
             needs.append({
                 "opportunity_id": str(r["id"]),
                 "account": r["account_name"], "owner": r["owner_email"],
@@ -6082,6 +6064,10 @@ async def jobs_account_names(
           SELECT lower(trim(c.current_company)) AS key, trim(c.current_company) AS name
           FROM public.contacts c
           WHERE c.is_jobs_contact = true AND coalesce(trim(c.current_company),'') <> '' {eng}
+          UNION ALL
+          -- An account created in Bedrock before anyone is at it (PRO-101):
+          -- a picker that can't find it invites a second one.
+          SELECT account_key, trim(coalesce(display_name, account_key)) FROM bedrock.jobs_account
         ) s
         GROUP BY key ORDER BY name
         """,
@@ -6113,6 +6099,8 @@ async def search_jobs_accounts(
           FROM public.contacts c
           WHERE c.is_jobs_contact = true AND coalesce(trim(c.current_company),'') <> ''
             AND {_engaged_clause('c')}
+          UNION ALL
+          SELECT account_key, trim(coalesce(display_name, account_key)), false FROM bedrock.jobs_account
         ) s
         WHERE key LIKE $1
         GROUP BY key
@@ -6311,7 +6299,7 @@ async def jobs_accounts(
     pool = get_pool()
     (
         opp_rows, prospect_rows, ja_rows, task_rows,
-        act1_rows, act2_rows, role_resp_rows, er_resp_rows,
+        act_rows, role_resp_rows, er_resp_rows,
         hires_rows, name_sf_rows, flagged_rows, listings_rows,
         industry_rows, contact_total_rows, domain_rows,
     ) = await asyncio.gather(
@@ -6351,34 +6339,20 @@ async def jobs_accounts(
         # Per-account activity for warmth: recent volume (90d), recency (last
         # touch), whether the account has RESPONDED (a meeting/call, or an inbound
         # email — not just our outbound), and which team members touched it.
+        # An account's activity is its contacts' and its opportunities'
+        # (jobs_metrics.activity_scope_ctes, PRO-101); notes don't count.
         pool.fetch(
             f"""
-            SELECT lower(trim(c.current_company)) AS company,
+            WITH {jobs_metrics.activity_scope_ctes(opps="FALSE", accounts="TRUE")},
+            t AS (SELECT DISTINCT k, activity_id FROM account_touches)
+            SELECT t.k AS company,
                    max(a.activity_date) AS last_act,
                    min(a.activity_date) AS first_act,
                    count(*) FILTER (WHERE a.activity_date >= now() - interval '90 days') AS recent,
                    bool_or(a.type IN ('call','meeting')
                            OR (a.type = 'email' AND NOT ({team_sender}))) AS responded,
                    array_agg(DISTINCT {actor_case}) AS actors
-            FROM bedrock.activity a JOIN public.contacts c ON c.contact_id = a.participant_public_contact_id
-            WHERE a.deleted_at IS NULL AND coalesce(trim(c.current_company),'') <> ''
-              AND {_jobs_relevant('a')}
-            GROUP BY 1"""),
-        # Meeting attendees (calendar rows have no participant link) so
-        # meetings/manual aren't undercounted.
-        pool.fetch(
-            f"""
-            SELECT lower(trim(c.current_company)) AS company,
-                   max(a.activity_date) AS last_act,
-                   min(a.activity_date) AS first_act,
-                   count(*) FILTER (WHERE a.activity_date >= now() - interval '90 days') AS recent,
-                   true AS responded,
-                   array_agg(DISTINCT {actor_case}) AS actors
-            FROM bedrock.activity a, jsonb_array_elements(coalesce(a.meeting_attendees, '[]'::jsonb)) att
-            JOIN public.contacts c ON lower(c.email) = lower(att->>'email')
-            WHERE a.deleted_at IS NULL AND a.source = 'calendar-sync'
-              AND coalesce(trim(c.current_company),'') <> ''
-              AND {_jobs_relevant('a')}
+            FROM t JOIN bedrock.activity a ON a.id = t.activity_id
             GROUP BY 1"""),
         # A role created or a hire tagged is real momentum — count it as responded.
         pool.fetch(
@@ -6615,9 +6589,7 @@ async def jobs_accounts(
         if actors:
             cur["actors"].update(a for a in actors if a)
 
-    for r in act1_rows:
-        _merge(r["company"], r["last_act"], r["recent"], r["responded"], r["actors"], r["first_act"])
-    for r in act2_rows:
+    for r in act_rows:
         _merge(r["company"], r["last_act"], r["recent"], r["responded"], r["actors"], r["first_act"])
     # A role created or a hire tagged is real momentum — count it as responded.
     for r in role_resp_rows:
@@ -6839,6 +6811,41 @@ def _acct_nkey(name: str) -> str:
     return s
 
 
+async def _same_name_account(conn, name: str) -> Optional[dict]:
+    """The existing account this name is another spelling of, or None. Looks
+    where the account pickers look: opportunities, jobs contacts' companies and
+    jobs_account. An exact key match wins; otherwise the variant with the most
+    records."""
+    nk = _acct_nkey(name)
+    if not nk:
+        return None
+    # Narrow by the normalized name's first word, then compare in Python with
+    # the same normalizer /accounts/resolve uses.
+    like = f"%{nk.split()[0]}%"
+    rows = await conn.fetch(
+        """
+        SELECT k, (array_agg(disp ORDER BY length(disp)))[1] AS display, sum(n) AS n FROM (
+          SELECT lower(trim(account_name)) k, trim(account_name) disp, count(*) n
+            FROM bedrock.jobs_opportunity
+           WHERE deleted_at IS NULL AND lower(trim(account_name)) LIKE $1 GROUP BY 1, 2
+          UNION ALL
+          SELECT lower(trim(current_company)), trim(current_company), count(*)
+            FROM public.contacts WHERE is_jobs_contact AND lower(trim(current_company)) LIKE $1 GROUP BY 1, 2
+          UNION ALL
+          SELECT account_key, trim(coalesce(display_name, account_key)), 0
+            FROM bedrock.jobs_account WHERE account_key LIKE $1
+        ) s GROUP BY k
+        """,
+        like,
+    )
+    same = [r for r in rows if _acct_nkey(r["display"] or r["k"]) == nk]
+    if not same:
+        return None
+    key = name.strip().lower()
+    best = next((r for r in same if r["k"] == key), None) or max(same, key=lambda r: int(r["n"] or 0))
+    return {"account_key": best["k"], "account": (best["display"] or best["k"]).strip()}
+
+
 @router.get("/accounts/resolve")
 async def resolve_account(
     name: str = Query(..., min_length=1),
@@ -6903,10 +6910,21 @@ async def create_jobs_account(
 ):
     """Create a net-new local jobs account. Optionally linked to an existing SF
     account (sf_account_id) — we NEVER create the account in Salesforce here.
-    Idempotent on account_key; won't clobber an existing SF link with null."""
+    Idempotent on account_key; won't clobber an existing SF link with null.
+
+    A name that is another spelling of an existing account (same name once case,
+    punctuation and legal suffixes are dropped: "JPMorgan Chase & Co." vs
+    "jpmorgan chase") is refused with 409 and the existing account, so the
+    caller picks it instead (D9, PRO-101: JPMorgan Chase had 10 spellings)."""
     key = body.name.strip().lower()
     if not key:
         raise HTTPException(status_code=400, detail="name is required")
+    existing = await _same_name_account(conn, body.name)
+    if existing and existing["account_key"] != key:
+        raise HTTPException(409, {
+            "message": f"{existing['account']} already exists. Pick it instead of creating another.",
+            "existing": existing,
+        })
     await conn.execute(
         """
         INSERT INTO bedrock.jobs_account (account_key, display_name, sf_account_id)
@@ -7050,6 +7068,10 @@ async def flag_contacts_for_jobs(body: FlagJobsBody, user=Depends(require_auth),
         raise HTTPException(400, "invalid activation_reason")
     if body.stage is not None and body.stage not in _MEMBERSHIP_STAGES:
         raise HTTPException(400, f"invalid stage; one of {_MEMBERSHIP_STAGES}")
+    if body.stage == "converted_to_opportunity":
+        # Each conversion names its opportunity (D15), so it's one contact at a
+        # time, through PATCH /contacts/{id}/jobs-membership.
+        raise HTTPException(400, "Convert contacts one at a time: each needs its opportunity")
     n = await _flag_contacts(conn, body.contact_ids, body.owner_email,
                              body.activation_reason, body.note, _user_email(user), body.stage)
     return {"success": True, "data": {"flagged": n}}
@@ -7060,6 +7082,10 @@ class MembershipPatch(BaseModel):
     owner_email: Optional[str] = None
     first_outreach_by: Optional[str] = None
     opportunity_id: Optional[str] = None
+    # The opportunities a contact converted to (D15): required to move it to
+    # Converted. The first is the contact's own opportunity_id; the contact is
+    # added to every one's contact list.
+    opportunity_ids: Optional[list[UUID]] = None
     not_a_fit_reason: Optional[str] = None
     # Set with stage='revisit': when to pick this contact back up. Stored on the
     # membership AND turned into a jobs_task so it surfaces in the owner's Jobs
@@ -7076,6 +7102,23 @@ async def update_jobs_membership(contact_id: int, body: MembershipPatch,
         "SELECT stage FROM bedrock.jobs_contact_membership WHERE contact_id = $1", contact_id)
     if old_stage is None:
         raise HTTPException(404, "contact is not flagged for jobs")
+    link_to = list(dict.fromkeys(body.opportunity_ids or []))
+    if body.opportunity_id and not link_to:
+        try:
+            link_to = [UUID(body.opportunity_id)]
+        except ValueError:
+            raise HTTPException(400, "invalid opportunity_id")
+    # Converting is gated on the opportunity (D15, decided 10/2): pick it, or
+    # create it first. Only a move INTO Converted needs one.
+    if body.stage == "converted_to_opportunity" and old_stage != body.stage and not link_to:
+        raise HTTPException(400, "Pick or create the opportunity this contact converted to")
+    if link_to:
+        found = {r["id"] for r in await conn.fetch(
+            "SELECT id FROM bedrock.jobs_opportunity WHERE id = ANY($1::uuid[]) AND deleted_at IS NULL",
+            link_to)}
+        missing = [str(x) for x in link_to if x not in found]
+        if missing:
+            raise HTTPException(404, f"Opportunity not found: {', '.join(missing)}")
     sets, params, i = [], [contact_id], 2
     if body.stage is not None:
         if body.stage not in _MEMBERSHIP_STAGES:
@@ -7116,8 +7159,8 @@ async def update_jobs_membership(contact_id: int, body: MembershipPatch,
         sets.append(f"revisit_date = ${i}"); params.append(revisit_on); i += 1
     if body.owner_email is not None:
         sets.append(f"owner_email = ${i}"); params.append(body.owner_email); i += 1
-    if body.opportunity_id is not None:
-        sets.append(f"opportunity_id = ${i}"); params.append(body.opportunity_id); i += 1
+    if link_to:
+        sets.append(f"opportunity_id = ${i}"); params.append(link_to[0]); i += 1
     if body.not_a_fit_reason is not None:
         sets.append(f"not_a_fit_reason = ${i}"); params.append(body.not_a_fit_reason); i += 1
     if not sets:
@@ -7148,6 +7191,8 @@ async def update_jobs_membership(contact_id: int, body: MembershipPatch,
                 contact_id, old_stage, body.stage, _user_email(user))
         if revisit_on is not None:
             await _ensure_revisit_task(conn, contact_id, revisit_on, _user_email(user))
+        for opp in link_to:
+            await _link_contacts_to_opportunity(conn, opp, [contact_id])
     return {"success": True}
 
 
@@ -7231,52 +7276,34 @@ async def account_activity(
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
-    """All engagement activity across an account's opportunities + contacts."""
+    """All engagement activity across an account's opportunities + contacts:
+    the account's share of jobs_metrics.activity_scope_ctes (PRO-101), every
+    row listed with its jobs tag."""
     k = key.strip().lower()
-    opps = await conn.fetch(
-        "SELECT id, account_id FROM bedrock.jobs_opportunity WHERE deleted_at IS NULL AND lower(trim(account_name)) = $1",
-        k,
-    )
-    opp_ids = [r["id"] for r in opps]
-    account_ids = [r["account_id"] for r in opps if r["account_id"] and str(r["account_id"]).startswith("001")]
-    contact_ids = [
-        r["contact_id"] for r in await conn.fetch(
-            # Include unconfirmed candidates matching the account so their activity
-            # rolls up immediately, before anyone reviews them.
-            "SELECT contact_id FROM public.contacts "
-            "WHERE (is_jobs_contact = true OR contact_stage = 'candidate') "
-            "AND lower(trim(current_company)) = $1",
-            k,
-        )
-    ]
     call_cols = await _call_columns()
+    # Activity should be real mail + calendar only. Exclude Salesforce ToDo
+    # tasks (sf_type='Task') that were imported as meeting/note — they show up
+    # as bogus "calendar" entries. SF Tasks logged as emails/calls are kept
+    # (those are real logged comms); genuine calendar events are sf_type='Event'.
+    scope = jobs_metrics.activity_scope_ctes(
+        opps="FALSE", accounts="{k} = $1",
+        activity="a.deleted_at IS NULL AND NOT (coalesce(a.sf_type, '') = 'Task' AND a.type IN ('meeting', 'note'))")
     rows = await conn.fetch(
-        """
+        "WITH " + scope + """
         SELECT a.id, a.type, a.subject, a.description, a.activity_date, a.source, a.logged_by,
                a.synced_at, a.email_from, a.email_to, a.email_snippet,
                left(a.email_body_text, 2000) AS email_body_text,  -- cap body: the rollup of 250 rows was ~1.9MB
                a.meeting_duration_minutes, """ + call_cols + """
                a.jobs_relevance, a.jobs_relevance_override,
-               a.jobs_relevance, a.jobs_relevance_override,
-            a.jobs_relevance, a.jobs_relevance_override,
             """ + _jobs_activity_flag("a") + """ AS is_jobs,
                a.deleted_at,
                count(*) OVER () AS total_rows
         FROM bedrock.activity a
-        WHERE a.deleted_at IS NULL AND (
-            ($1::uuid[] <> '{}' AND a.jobs_opportunity_id = ANY($1::uuid[]))
-            OR ($2::text[] <> '{}' AND a.account_id = ANY($2::text[]))
-            OR ($3::int[] <> '{}' AND a.participant_public_contact_id = ANY($3::int[]))
-        )
-        -- Activity should be real mail + calendar only. Exclude Salesforce ToDo
-        -- tasks (sf_type='Task') that were imported as meeting/note — they show up
-        -- as bogus "calendar" entries. SF Tasks logged as emails/calls are kept
-        -- (those are real logged comms); genuine calendar events are sf_type='Event'.
-        AND NOT (a.sf_type = 'Task' AND a.type IN ('meeting', 'note'))
+        WHERE a.id IN (SELECT activity_id FROM account_touches)
         ORDER BY a.activity_date DESC NULLS LAST
         LIMIT 250
         """,
-        opp_ids, account_ids, contact_ids,
+        k,
     )
     return {
         "success": True,
@@ -7486,7 +7513,7 @@ async def list_contacts(
     # mirrors the page's column semantics exactly; unknown fields/ops 400
     # instead of silently under-filtering. The frontend normalizes date
     # presets (in_range → between) before sending.
-    _ACT_GATE = "(coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))"
+    _ACT_GATE = _jobs_relevant("a")
     _ACT_LAST = ("(SELECT max(a.activity_date) FROM bedrock.activity a "
                  "WHERE a.participant_public_contact_id = c.contact_id "
                  f"AND a.deleted_at IS NULL AND {_ACT_GATE})")
@@ -7835,8 +7862,9 @@ async def contact_opportunities(
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
-    """Opportunities this contact is attached to — directly (sf_contact_ids) or
-    via a company-name match to the opportunity's account."""
+    """Opportunities this contact is attached to — linked from either side (the
+    one it converted to, or a contact list naming it by any ref) or via a
+    company-name match to the opportunity's account."""
     rows = await conn.fetch(
         """
         WITH c AS (
@@ -7849,6 +7877,10 @@ async def contact_opportunities(
         WHERE o.deleted_at IS NULL AND (
             ('pub:' || c.contact_id::text) = ANY(o.sf_contact_ids)
             OR (c.airtable_id IS NOT NULL AND ('airtable:' || c.airtable_id) = ANY(o.sf_contact_ids))
+            OR o.id IN (SELECT opportunity_id FROM bedrock.jobs_contact_membership
+                         WHERE contact_id = c.contact_id)
+            OR o.sf_contact_ids && ARRAY(SELECT sf_contact_id FROM bedrock.sf_contact_link
+                                          WHERE public_contact_id = c.contact_id)
             OR (coalesce(trim(c.current_company), '') <> ''
                 AND lower(trim(o.account_name)) = lower(trim(c.current_company)))
         )
@@ -7893,9 +7925,19 @@ async def get_contact(
             jo2.account_name AS deal_account2,
             jo2.stage        AS deal_stage2
         FROM public.contacts c
-        LEFT JOIN bedrock.jobs_opportunity jo
-            ON jo.deleted_at IS NULL
-            AND ('airtable:' || c.airtable_id) = ANY(jo.sf_contact_ids)
+        -- Linked from either side (PRO-101): the opportunity the contact
+        -- converted to, else one listing it (pub: or airtable: ref).
+        LEFT JOIN LATERAL (
+            SELECT o.* FROM bedrock.jobs_opportunity o
+            LEFT JOIN bedrock.jobs_contact_membership m
+              ON m.contact_id = c.contact_id AND m.opportunity_id = o.id
+            WHERE o.deleted_at IS NULL
+              AND (m.contact_id IS NOT NULL
+                   OR ('pub:' || c.contact_id) = ANY(o.sf_contact_ids)
+                   OR ('airtable:' || c.airtable_id) = ANY(o.sf_contact_ids))
+            ORDER BY (m.contact_id IS NOT NULL) DESC, o.updated_at DESC
+            LIMIT 1
+        ) jo ON true
         LEFT JOIN bedrock.jobs_opportunity jo2
             ON jo2.deleted_at IS NULL AND jo.id IS NULL
             -- exact current-company match only (see list_contacts note)
@@ -8150,22 +8192,24 @@ async def _resolve_contacts(conn, sf_contact_ids: list[str]) -> list[dict]:
     pub_ids      = [int(r[4:]) for r in sf_contact_ids if r.startswith("pub:") and r[4:].isdigit()]
     sf_ids       = [r for r in sf_contact_ids if not r.startswith("airtable:") and not r.startswith("pub:")]
 
+    # Each contact carries the ref it is listed under (`contact_ref`), so the
+    # contact list can remove it whichever form it was stored in.
     contacts = []
     if airtable_ids:
         rows = await conn.fetch(
             CONTACT_SELECT + "FROM public.contacts WHERE airtable_id = ANY($1::text[])",
             airtable_ids,
         )
-        contacts.extend([dict(r) for r in rows])
+        contacts.extend([{**dict(r), "contact_ref": f"airtable:{r['airtable_id']}"} for r in rows])
     if pub_ids:
         rows = await conn.fetch(
             CONTACT_SELECT + "FROM public.contacts WHERE contact_id = ANY($1::int[])",
             pub_ids,
         )
-        contacts.extend([dict(r) for r in rows])
+        contacts.extend([{**dict(r), "contact_ref": f"pub:{r['contact_id']}"} for r in rows])
     if sf_ids:
         rows = await conn.fetch(
-            CONTACT_SELECT + """FROM public.contacts c
+            CONTACT_SELECT + """, scl.sf_contact_id AS contact_ref FROM public.contacts c
                JOIN bedrock.sf_contact_link scl ON scl.public_contact_id = c.contact_id
                WHERE scl.sf_contact_id = ANY($1::text[])""",
             sf_ids,
@@ -8193,6 +8237,35 @@ async def _flag_jobs_contacts(conn, sf_contact_ids: list[str]) -> None:
             "WHERE contact_id = ANY($1::int[]) AND NOT is_jobs_contact",
             pub_ids,
         )
+
+
+async def _link_contacts_to_opportunity(conn, opp_id, contact_ids: list[int]) -> None:
+    """Link contacts to an opportunity from both sides (D15, PRO-101): each is on
+    the opportunity's contact list, and a converted contact with no opportunity
+    yet points back at this one. Contacts already on the list under another ref
+    (airtable:, a Salesforce id) aren't added twice."""
+    if not contact_ids:
+        return
+    refs = await conn.fetchval(
+        "SELECT sf_contact_ids FROM bedrock.jobs_opportunity WHERE id = $1", opp_id) or []
+    on_list = {c["contact_id"] for c in await _resolve_contacts(conn, list(refs))}
+    add = [f"pub:{cid}" for cid in dict.fromkeys(contact_ids) if cid not in on_list]
+    if add:
+        await conn.execute(
+            "UPDATE bedrock.jobs_opportunity SET sf_contact_ids = coalesce(sf_contact_ids, '{}') || $2::text[] "
+            "WHERE id = $1", opp_id, add)
+        await _flag_jobs_contacts(conn, add)
+    await _point_converted_contacts(conn, opp_id, contact_ids)
+
+
+async def _point_converted_contacts(conn, opp_id, contact_ids: list[int]) -> None:
+    """A converted contact on an opportunity's list, with no opportunity of its
+    own yet, converted to this one."""
+    if contact_ids:
+        await conn.execute(
+            "UPDATE bedrock.jobs_contact_membership SET opportunity_id = $1, updated_at = now() "
+            "WHERE contact_id = ANY($2::int[]) AND stage = 'converted_to_opportunity' "
+            "AND opportunity_id IS NULL", opp_id, contact_ids)
 
 
 @router.get("/opportunities/pipeline")
@@ -8279,13 +8352,25 @@ async def list_opportunities(
         filters.append(_deal_type_sql("o.deal_type", i)); params.append(dts); i += 1
 
     where = " AND ".join(filters)
+    # The same activity the Overview reads (PRO-101): logged on the
+    # opportunity, with its contacts, or on its Salesforce account. No notes.
+    scope = jobs_metrics.activity_scope_ctes(opps=where)
     rows = await conn.fetch(
         f"""
+        WITH {scope},
+        act AS (
+            SELECT opp_id,
+                   count(DISTINCT activity_id) AS activity_count,
+                   max(at) AS last_activity_at,
+                   count(DISTINCT activity_id) FILTER (
+                       WHERE at >= now() - interval '7 days') AS recent_activity_count
+            FROM opp_touches GROUP BY opp_id
+        )
         SELECT
             o.*,
-            act.activity_count,
+            coalesce(act.activity_count, 0) AS activity_count,
             act.last_activity_at,
-            act.recent_activity_count,
+            coalesce(act.recent_activity_count, 0) AS recent_activity_count,
             (SELECT count(*) FROM bedrock.jobs_task t
                WHERE t.parent_type='opportunity' AND t.parent_id = o.id::text
                  AND t.deleted_at IS NULL AND t.status <> 'Completed') AS open_tasks,
@@ -8301,28 +8386,13 @@ async def list_opportunities(
             LEAST(5, 1
                 + (COALESCE(o.num_roles, 0) > 0)::int
                 + (COALESCE(array_length(o.sf_contact_ids, 1), 0) > 1)::int
-                + (act.recent_activity_count > 0)::int
+                + (coalesce(act.recent_activity_count, 0) > 0)::int
                 + (EXISTS (SELECT 1 FROM public.job_applications ja WHERE ja.jobs_opportunity_id = o.id))::int
             ) AS priority_suggested
         FROM bedrock.jobs_opportunity o
-        LEFT JOIN LATERAL (
-            -- Same scope as the detail Activity tab: deal-tagged OR company-level
-            -- activity. Powers the row "recent activity" indicator so the team can
-            -- see at a glance which accounts moved this week.
-            SELECT
-                count(*)                                              AS activity_count,
-                max(a.activity_date)                                  AS last_activity_at,
-                count(*) FILTER (
-                    WHERE a.activity_date >= now() - interval '7 days'
-                )                                                     AS recent_activity_count
-            FROM bedrock.activity a
-            WHERE a.deleted_at IS NULL
-              AND {_jobs_relevant('a')}
-              AND (
-                a.jobs_opportunity_id = o.id
-                OR (o.account_id <> 'UNKNOWN' AND a.account_id = o.account_id)
-              )
-        ) act ON true
+        -- Powers the row "recent activity" indicator so the team can see at a
+        -- glance which accounts moved this week.
+        LEFT JOIN act ON act.opp_id = o.id
         LEFT JOIN LATERAL (
             SELECT count(*) OVER () AS comment_count,
                    left(jc.content, 280) AS last_comment,
@@ -8392,6 +8462,10 @@ async def create_opportunity(
         raise HTTPException(400, f"Invalid likelihood: {body.likelihood}")
     if body.target_close_date is None:
         raise HTTPException(400, "target_close_date is required")
+    # Creating an opportunity means picking its contacts (D15, decided 10/2), so
+    # its activity and its conversions can be found.
+    if not [r for r in body.sf_contact_ids if r and r.strip()]:
+        raise HTTPException(400, "Pick the opportunity's contacts: at least one is required")
 
     user_email = user.get("email") if isinstance(user, dict) else getattr(user, "email", None)
 
@@ -8411,8 +8485,10 @@ async def create_opportunity(
                 account_id, account_name, stage, deal_type,
                 title, description, salary_expected, num_roles, likelihood,
                 source, owner_email, relationship_owner, sf_contact_ids, builder_ids, follow_up_date,
-                target_close_date{', estimated_jobs' if store_est else ''}
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16{', $17' if store_est else ''})
+                target_close_date, closed_at{', estimated_jobs' if store_est else ''}
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,
+                      -- created already closed: it closed today (PRO-101)
+                      CASE WHEN $3 IN ('closed_won', 'closed_lost') THEN now() END{', $17' if store_est else ''})
             RETURNING id
             """,
             body.account_id, body.account_name, body.stage, body.deal_type,
@@ -8431,6 +8507,8 @@ async def create_opportunity(
             row_id, body.stage, user_email, body.note,
         )
         await _flag_jobs_contacts(conn, list(body.sf_contact_ids or []))
+        await _point_converted_contacts(
+            conn, row_id, [c["contact_id"] for c in await _resolve_contacts(conn, list(body.sf_contact_ids))])
 
     row = await conn.fetchrow(
         "SELECT * FROM bedrock.jobs_opportunity WHERE id=$1", row_id
@@ -8459,35 +8537,44 @@ async def get_opportunity(
         opp_id,
     )
     contacts = await _resolve_contacts(conn, list(row["sf_contact_ids"] or []))
+    # A contact converted onto this opportunity is linked from its side too.
+    seen = {c["contact_id"] for c in contacts}
+    contacts.extend(dict(r) for r in await conn.fetch(
+        CONTACT_SELECT + """FROM public.contacts WHERE contact_id IN (
+               SELECT contact_id FROM bedrock.jobs_contact_membership WHERE opportunity_id = $1)""",
+        opp_id) if r["contact_id"] not in seen)
 
-    account_id = row["account_id"]
-
-    # All activity for this account (Gmail, Calendar, SF, manual) + jobs-tagged
+    # Everything that happened on it (PRO-101): logged on it, with its contacts
+    # (linked, else anyone at its account), or on its Salesforce account. The
+    # feed lists every row, notes and non-jobs mail included, each with its tag;
+    # "Last activity" reads only what counts as activity.
     call_cols = await _call_columns()
+    feed_scope = jobs_metrics.activity_scope_ctes(opps="o.id = $1", activity="a.deleted_at IS NULL")
     activity = await conn.fetch(
-        """
+        "WITH " + feed_scope + """
         SELECT
             a.id, a.type, a.subject, a.description, a.activity_date,
             a.source, a.logged_by, a.synced_at, a.email_from, a.email_to,
             a.email_snippet, a.email_body_text,
             a.meeting_duration_minutes, a.meeting_attendees, a.deleted_at, """ + call_cols + """
+            a.jobs_relevance, a.jobs_relevance_override,
             """ + _jobs_activity_flag("a") + """ AS is_jobs,
-            count(*) OVER () AS total_rows
+            count(*) OVER () AS total_rows,
+            -- over every row, before the LIMIT: what counts as activity
+            max(a.activity_date) FILTER (WHERE """ + jobs_metrics.external_activity_sql("a") + """) OVER ()
+              AS last_activity_at
         FROM bedrock.activity a
-        WHERE a.deleted_at IS NULL
-          AND (
-            a.jobs_opportunity_id = $1
-            OR (a.account_id = $2 AND $2 != 'UNKNOWN')
-          )
+        WHERE a.id IN (SELECT activity_id FROM opp_touches)
         ORDER BY a.activity_date DESC NULLS LAST
         LIMIT 250
         """,
         opp_id,
-        account_id,
     )
+    last_activity_at = activity[0]["last_activity_at"] if activity else None
     # Intros for the deal's contacts, so one logged from the Pipeline drawer
     # shows up in the deal's own feed as well as the contact's.
-    all_activity = [{k: v for k, v in dict(a).items() if k != "total_rows"} for a in activity]
+    all_activity = [{k: v for k, v in dict(a).items() if k not in ("total_rows", "last_activity_at")}
+                    for a in activity]
     intros, intro_total = await _intro_activity_rows(
         conn, [c["contact_id"] for c in contacts if c.get("contact_id") is not None])
     all_activity.extend(intros)
@@ -8498,6 +8585,7 @@ async def get_opportunity(
             **_norm_opp(dict(row)),
             "stage_history": [dict(h) for h in history],
             "activity":      all_activity,
+            "last_activity_at": last_activity_at.isoformat() if last_activity_at else None,
             # Newest 250 activities + 50 intros are listed; this is how many
             # exist, so the tab can say "Showing X of Y" (PRO-96).
             "activity_total": _window_total(activity) + intro_total,
@@ -8570,8 +8658,11 @@ async def update_opportunity(
             continue
         sets.append(f"{field} = ${i}"); params.append(val); i += 1
 
-    # Auto-set closed_at
-    if body.stage in ("closed_won", "closed_lost") and not existing["closed_at"]:
+    # Auto-set closed_at: on closing, and again on a move from lost to won (or
+    # back), which closes it on a new day (PRO-101: 26 of 42 won had none).
+    if body.stage in ("closed_won", "closed_lost") and (
+            not existing["closed_at"] or (body.stage != existing["stage"]
+                                          and existing["stage"] in ("closed_won", "closed_lost"))):
         sets.append(f"closed_at = ${i}"); params.append(datetime.now(timezone.utc)); i += 1
     elif body.stage and not body.stage.startswith("closed_") and existing["closed_at"]:
         sets.append(f"closed_at = ${i}"); params.append(None); i += 1
@@ -8606,6 +8697,8 @@ async def update_opportunity(
             )
         if body.sf_contact_ids is not None:
             await _flag_jobs_contacts(conn, list(body.sf_contact_ids or []))
+            await _point_converted_contacts(
+                conn, opp_id, [c["contact_id"] for c in await _resolve_contacts(conn, list(body.sf_contact_ids))])
         # closed_lost + reason=revisit is "come back to this", not an ending, so
         # it has to leave something behind that resurfaces. The date rides on the
         # existing follow_up_date column; this turns it into a task for the
@@ -10797,15 +10890,23 @@ async def log_activity(
         )
         # A logged touch IS outreach — a still-flagged contact advances to
         # initial_outreach immediately (the nightly pass covers synced email).
-        await conn.execute(
-            """
+        # The move gets its history row, dated by the touch (PRO-101: this was
+        # the one live move that wrote none).
+        advance = """
             UPDATE bedrock.jobs_contact_membership
             SET stage = 'initial_outreach',
                 first_outreach_at = COALESCE(first_outreach_at, $2),
                 first_outreach_by = COALESCE(first_outreach_by, $3),
                 updated_at = now()
-            WHERE contact_id = $1 AND stage = 'assigned'
-            """,
+            WHERE contact_id = $1 AND stage = 'assigned'"""
+        if await has_membership_history(conn):
+            advance = f"""
+            WITH adv AS ({advance} RETURNING contact_id)
+            INSERT INTO bedrock.jobs_membership_stage_history
+                (contact_id, from_stage, to_stage, changed_by, note, changed_at)
+            SELECT contact_id, 'assigned', 'initial_outreach', $3, 'logged activity', $2 FROM adv"""
+        await conn.execute(
+            advance,
             # A call booked for next week was outreach the day it was booked.
             body.contact_id, booked_at or held_at or datetime.now(timezone.utc), user_email,
         )
@@ -11223,7 +11324,7 @@ _EXPORT_SPECS: dict[str, dict] = {
                     "segment", "touch_count", "follow_up_date", "target_close_date",
                     "created_at", "closed_at", "closed_lost_reason", "closed_lost_note"],
         "headers": {"account_name": "Account", "title": "Title", "stage": "Stage",
-                    "deal_type": "Deal type", "owner_email": "Owner",
+                    "deal_type": "Opportunity type", "owner_email": "Owner",
                     "salary_expected": "Salary", "num_roles": "Roles",
                     "likelihood": "Likelihood", "priority": "Priority",
                     "segment": "Segment", "touch_count": "Activity",

@@ -169,7 +169,7 @@ export function BuilderDetailDrawer({ userId, onClose }: { userId: number | null
           {/* 3 · Job search */}
           <Section title={`Job Search — ${data.applications.length} applications · ${data.placements.length} placements`}>
             {data.applications.length === 0 && data.placements.length === 0 && data.deal_matches.length === 0 ? (
-              <p className="text-[12px] text-ink-4">No applications, placements, or deal matches yet.</p>
+              <p className="text-[12px] text-ink-4">No applications, placements, or opportunity matches yet.</p>
             ) : null}
             {data.applications.length > 0 ? (
               <SubList title="Applications">
@@ -196,7 +196,7 @@ export function BuilderDetailDrawer({ userId, onClose }: { userId: number | null
               </SubList>
             ) : null}
             {data.deal_matches.length > 0 ? (
-              <SubList title="Deal matches">
+              <SubList title="Opportunity matches">
                 {data.deal_matches.map((d) => (
                   <Row key={d.id}>
                     <span className="min-w-0 flex-1 truncate font-medium text-ink">{d.account_name ?? "—"}</span>

@@ -13,7 +13,7 @@ export const FUNNEL_NOUN: Record<FunnelType, string> = {
 // opportunities subtitle used to say "transitions in the last 30d", which only
 // describes the Recent Movement list inside each stage, not the counts (OVR-09).
 const SNAPSHOT_SUBTITLE: Record<FunnelType, string> = {
-  opportunities: "Employer deals in each stage now",
+  opportunities: "Employer opportunities in each stage now",
   prospects: "Jobs-pipeline contacts in each stage now",
   builders: "Builder applications by stage",
 };

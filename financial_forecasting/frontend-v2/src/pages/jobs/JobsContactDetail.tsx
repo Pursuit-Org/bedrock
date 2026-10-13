@@ -12,6 +12,7 @@ import { BackLink, EditField, SectionCard, Stat } from "@/components/detail";
 import { JobsComments } from "@/components/jobs/JobsComments";
 import { JobsTasks } from "@/components/jobs/JobsTasks";
 import { ContactJobsFields } from "@/components/jobs/ContactJobsFields";
+import { InlineCompany } from "@/components/jobs/InlineCompany";
 import { PromoteContactDialog } from "@/components/jobs/PromoteContactDialog";
 import { RequestIntroDialog } from "@/components/jobs/RequestIntroDialog";
 import {
@@ -95,7 +96,7 @@ export function JobsContactDetailPage() {
       {/* Stats */}
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
         <Stat label="Jobs stage" value={c.membership_stage ? (MEMBERSHIP_STAGE_LABELS[c.membership_stage as MembershipStage] ?? c.membership_stage) : "—"} />
-        <Stat label="Linked deal" value={c.deal?.account_name ?? "—"} />
+        <Stat label="Linked opportunity" value={c.deal?.account_name ?? "—"} />
         <Stat label="Last activity" value={relativeDays(lastActivity)} />
         <Stat label="Connections" value={String(connectedStaff.length)} />
       </div>
@@ -106,7 +107,7 @@ export function JobsContactDetailPage() {
         <div className="grid grid-cols-2 gap-x-8 gap-y-3 px-5 py-4 md:grid-cols-3">
           <ContactJobsFields contact={c} />
           <EditField label="Title"><InlineText value={c.current_title} onSave={(v) => patch("current_title", v)} placeholder="—" /></EditField>
-          <EditField label="Company"><InlineText value={c.current_company} onSave={(v) => patch("current_company", v)} placeholder="—" /></EditField>
+          <EditField label="Company"><InlineCompany value={c.current_company} onSave={(v) => patch("current_company", v)} /></EditField>
           <EditField label="Email"><InlineText value={c.email} onSave={(v) => patch("email", v)} placeholder="—" /></EditField>
           <EditField label="LinkedIn"><InlineText value={c.linkedin_url} onSave={(v) => patch("linkedin_url", v)} placeholder="—" /></EditField>
         </div>

@@ -30,6 +30,7 @@ import { format, formatDistanceToNow } from "date-fns";
 
 import { JobsComments } from "@/components/jobs/JobsComments";
 import { JobsTasks } from "@/components/jobs/JobsTasks";
+import { InlineCompany } from "@/components/jobs/InlineCompany";
 import { RequestIntroDialog } from "@/components/jobs/RequestIntroDialog";
 import { RowExpandPanel } from "@/components/RowExpandPanel";
 import { InlineText } from "@/components/ui/InlineEdit";
@@ -400,7 +401,7 @@ export function ContactDetail({ contactId }: { contactId: number }) {
             </div>
             <div>
               <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-wide text-ink-4">Company</div>
-              <InlineText value={data.current_company} onSave={save("current_company")} placeholder="Current company" />
+              <InlineCompany value={data.current_company} onSave={save("current_company")} placeholder="Current company" />
             </div>
             <div>
               <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-wide text-ink-4">Email</div>
@@ -422,7 +423,7 @@ export function ContactDetail({ contactId }: { contactId: number }) {
 
           {data.deal && (
             <div className="rounded-lg border border-border-strong bg-surface p-3">
-              <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-ink-4">Linked Deal</div>
+              <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-ink-4">Linked opportunity</div>
               <div className="mb-1.5 flex items-center gap-1.5 text-[12px] font-medium text-ink-2">
                 <Building2 size={11} className="flex-shrink-0 text-ink-4" />
                 {data.deal.account_name || "—"}

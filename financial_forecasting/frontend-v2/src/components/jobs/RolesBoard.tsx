@@ -8,6 +8,7 @@ import { CSS } from "@dnd-kit/utilities";
 import { cn } from "@/lib/utils";
 import { fmtDate } from "@/lib/format";
 import { useBuilders, useCreateOpportunity, STAGES_ORDERED, STAGE_LABELS, type Builder, type JobStage } from "@/services/jobs";
+import { ContactRefsPicker, type PickedContact } from "@/components/jobs/ContactRefsPicker";
 import { NewAccountDialog } from "@/components/jobs/NewAccountDialog";
 import {
   useRolesBoard,
@@ -665,6 +666,8 @@ function AddRoleModal({ onClose, prefill }: { onClose: () => void; prefill?: Add
   const [newOppClose, setNewOppClose] = useState("");
   const [newOppEst, setNewOppEst] = useState("");
   const [newOppError, setNewOppError] = useState<string | null>(null);
+  // Creating an opportunity means picking its contacts (D15, PRO-101).
+  const [newOppContacts, setNewOppContacts] = useState<PickedContact[]>([]);
   const newOppEstVal = parseEstimatedJobs(newOppEst);
   const createOpportunity = useCreateOpportunity();
 
@@ -683,7 +686,7 @@ function AddRoleModal({ onClose, prefill }: { onClose: () => void; prefill?: Add
   const oppId = selectedOpp?.id ?? null;
 
   async function handleCreateOpportunity() {
-    if (!account || !newOppClose || newOppEstVal === undefined) return;
+    if (!account || !newOppClose || newOppEstVal === undefined || newOppContacts.length === 0) return;
     setNewOppError(null);
     let created;
     try {
@@ -694,6 +697,7 @@ function AddRoleModal({ onClose, prefill }: { onClose: () => void; prefill?: Add
         title: newOppTitle.trim() || undefined,
         target_close_date: newOppClose,
         estimated_jobs: newOppEstVal ?? null,
+        sf_contact_ids: newOppContacts.map((c) => c.ref),
       });
     } catch (err) {
       setNewOppError(apiErrorMessage(err, "Couldn't create the opportunity."));
@@ -792,7 +796,7 @@ function AddRoleModal({ onClose, prefill }: { onClose: () => void; prefill?: Add
                       type="text"
                       value={oppSearch}
                       onChange={(e) => setOppSearch(e.target.value)}
-                      placeholder="Employer or deal name…"
+                      placeholder="Employer or opportunity name…"
                       autoFocus
                       className="w-full rounded-md border border-border-strong bg-surface px-3 py-2 text-[13px] text-ink placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
                     />
@@ -866,7 +870,7 @@ function AddRoleModal({ onClose, prefill }: { onClose: () => void; prefill?: Add
                     </div>
                     <div className="flex flex-col gap-1">
                       <label className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">
-                        Deal name (optional)
+                        Opportunity name (optional)
                       </label>
                       <input
                         type="text"
@@ -905,12 +909,19 @@ function AddRoleModal({ onClose, prefill }: { onClose: () => void; prefill?: Add
                         />
                       </div>
                     </div>
+                    <div className="flex flex-col gap-1">
+                      <label className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">
+                        Contacts <span className="text-red-500">*</span>
+                      </label>
+                      <ContactRefsPicker value={newOppContacts} onChange={setNewOppContacts} company={account?.display} />
+                    </div>
                     {newOppError && (
                       <p role="alert" className="rounded border border-red bg-red-soft px-3 py-2 text-[12px] text-red">{newOppError}</p>
                     )}
                     <button
                       type="button"
-                      disabled={!account || !newOppClose || newOppEstVal === undefined || createOpportunity.isPending}
+                      disabled={!account || !newOppClose || newOppEstVal === undefined || newOppContacts.length === 0
+                        || createOpportunity.isPending}
                       onClick={() => void handleCreateOpportunity()}
                       className="flex items-center justify-center gap-1.5 rounded-lg bg-accent px-3 py-2 text-[13px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
                     >

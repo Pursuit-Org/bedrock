@@ -413,6 +413,216 @@ def external_activity_sql(alias: str = "a") -> str:
             f"AND {jobs_relevant_sql(alias)})")
 
 
+# ── Whose activity it is (D5, D15; PRO-101) ──────────────────────────────────
+# Activity is logged once, where it happened: on an opportunity, or with a
+# contact (a synced email, a meeting they attended, a call logged on them). It
+# counts on the contact, on that contact's opportunities and on the account.
+#
+#   * An opportunity's contacts are the ones linked to it: the contact's
+#     converted opportunity (jobs_contact_membership.opportunity_id) or the
+#     opportunity's contact list (sf_contact_ids). An opportunity with none
+#     borrows everyone at its account (same name), the fallback the contacts
+#     list already uses for a contact's opportunity (Nina, 10/13).
+#   * An opportunity's activity: logged on it, with one of its contacts, or on
+#     its Salesforce account.
+#   * An account's activity: its opportunities' and its contacts'.
+#
+# Accounts are names (jobs_account.account_key = lower(trim(name))) until the
+# merges in PRO-101 part 5 give them ids.
+
+def account_key_sql(col: str) -> str:
+    return f"lower(btrim({col}))"
+
+
+def activity_scope_ctes(*, opps: str = "TRUE", accounts: Optional[str] = None,
+                        activity: Optional[str] = None) -> str:
+    """CTEs (no leading WITH) naming whose activity each row is.
+
+    `opps` is a predicate on `o` (bedrock.jobs_opportunity) choosing the
+    opportunities in scope. `accounts`, when given, chooses accounts by their
+    key, written with a `{k}` placeholder ("{k} = $1", "TRUE"), and adds their
+    opportunities to the scope.
+    `activity` is a predicate on `a` (bedrock.activity); the default is
+    external_activity_sql (no notes, jobs-related only). Put any date bound in it.
+
+      opp_scope(id, k, account_id)
+      opp_contacts(opp_id, contact_id, linked)
+      contact_touches(contact_id, activity_id, at)
+      opp_touches(opp_id, activity_id, at)
+      account_touches(k, activity_id, at)      -- only when `accounts` is given
+    """
+    act = activity or external_activity_sql("a")
+    o_key = account_key_sql("o.account_name")
+    c_key = account_key_sql("c.current_company")
+    on_key = lambda expr: accounts.replace("{k}", expr)
+    acct_opps = f" OR ({on_key(o_key)})" if accounts else ""
+    ctes = [f"""opp_scope AS (
+  SELECT o.id, {o_key} AS k, o.account_id FROM bedrock.jobs_opportunity o
+  WHERE o.deleted_at IS NULL AND (({opps}){acct_opps})
+)""", """opp_links AS (
+  -- Linked from the contact (its converted opportunity) or from the
+  -- opportunity's contact list: pub:<contact_id>, airtable:<id>, or a
+  -- Salesforce contact id.
+  SELECT m.opportunity_id AS opp_id, m.contact_id
+  FROM bedrock.jobs_contact_membership m JOIN opp_scope os ON os.id = m.opportunity_id
+  UNION
+  SELECT os.id, c.contact_id
+  FROM opp_scope os JOIN bedrock.jobs_opportunity o ON o.id = os.id
+  CROSS JOIN LATERAL unnest(o.sf_contact_ids) r(ref)
+  JOIN public.contacts c
+    ON c.contact_id = CASE WHEN r.ref ~ '^pub:[0-9]{1,9}$' THEN substring(r.ref from 5)::int END
+  UNION
+  SELECT os.id, c.contact_id
+  FROM opp_scope os JOIN bedrock.jobs_opportunity o ON o.id = os.id
+  CROSS JOIN LATERAL unnest(o.sf_contact_ids) r(ref)
+  JOIN public.contacts c ON c.airtable_id = substring(r.ref from 10)
+  WHERE r.ref LIKE 'airtable:%'
+  UNION
+  SELECT os.id, scl.public_contact_id
+  FROM opp_scope os JOIN bedrock.jobs_opportunity o ON o.id = os.id
+  CROSS JOIN LATERAL unnest(o.sf_contact_ids) r(ref)
+  JOIN bedrock.sf_contact_link scl ON scl.sf_contact_id = r.ref
+  WHERE r.ref NOT LIKE 'pub:%' AND r.ref NOT LIKE 'airtable:%' AND scl.public_contact_id IS NOT NULL
+)""", f"""opp_contacts AS (
+  SELECT opp_id, contact_id, true AS linked FROM opp_links
+  UNION ALL
+  -- No linked contacts: everyone at the opportunity's account.
+  SELECT os.id, c.contact_id, false
+  FROM opp_scope os JOIN public.contacts c ON {c_key} = os.k
+  WHERE os.k <> '' AND NOT EXISTS (SELECT 1 FROM opp_links l WHERE l.opp_id = os.id)
+)"""]
+    if accounts:
+        ctes.append(f"""account_contacts AS (
+  SELECT {c_key} AS k, c.contact_id FROM public.contacts c
+  WHERE btrim(coalesce(c.current_company, '')) <> '' AND {on_key(c_key)}
+)""")
+    scope_contacts = ("SELECT contact_id FROM opp_contacts"
+                      + (" UNION SELECT contact_id FROM account_contacts" if accounts else ""))
+    ctes.append(f"""scope_contacts AS ({scope_contacts})""")
+    ctes.append(f"""contact_touches AS (
+  SELECT a.participant_public_contact_id AS contact_id, a.id AS activity_id, a.activity_date AS at
+  FROM bedrock.activity a
+  WHERE a.participant_public_contact_id IN (SELECT contact_id FROM scope_contacts)
+    AND {act}
+  UNION
+  -- Calendar rows carry attendees, not a participant link.
+  SELECT c.contact_id, a.id, a.activity_date
+  FROM bedrock.activity a,
+       jsonb_array_elements(coalesce(a.meeting_attendees, '[]'::jsonb)) att
+  JOIN public.contacts c ON lower(c.email) = lower(att->>'email')
+  WHERE a.source = 'calendar-sync' AND {act}
+    AND c.contact_id IN (SELECT contact_id FROM scope_contacts)
+)""")
+    ctes.append(f"""opp_touches AS (
+  SELECT os.id AS opp_id, a.id AS activity_id, a.activity_date AS at
+  FROM opp_scope os JOIN bedrock.activity a ON a.jobs_opportunity_id = os.id
+  WHERE {act}
+  UNION
+  SELECT os.id, a.id, a.activity_date
+  FROM opp_scope os JOIN bedrock.activity a ON a.account_id = os.account_id
+  WHERE os.account_id LIKE '001%' AND {act}
+  UNION
+  SELECT oc.opp_id, t.activity_id, t.at
+  FROM opp_contacts oc JOIN contact_touches t ON t.contact_id = oc.contact_id
+)""")
+    if accounts:
+        ctes.append(f"""account_touches AS (
+  SELECT ac.k, t.activity_id, t.at
+  FROM account_contacts ac JOIN contact_touches t ON t.contact_id = ac.contact_id
+  UNION
+  SELECT os.k, t.activity_id, t.at
+  FROM opp_scope os JOIN opp_touches t ON t.opp_id = os.id
+  WHERE os.k <> '' AND {on_key('os.k')}
+)""")
+    return ",\n".join(ctes)
+
+
+def dictionary_open_opportunities_sql(open_opp_stages: Iterable[str]) -> str:
+    """WITH w, the activity scope and open_set: the opportunities open at the
+    end of the dictionary window, each with its last movement (created, a stage
+    change, or activity by activity_scope_ctes). Opportunities open, Time in
+    stage and Stalled opportunities all start here."""
+    opp_in = ", ".join(f"'{s}'" for s in open_opp_stages)
+    end = "(SELECT end_at FROM w)"
+    scope = activity_scope_ctes(
+        opps=f"o.created_at < {end} AND (o.closed_at IS NULL OR o.closed_at >= {end})",
+        activity=f"{external_activity_sql('a')} AND a.activity_date < {end}")
+    return f"""WITH w AS (SELECT {DD_START} AS start_at, {DD_END} AS end_at),
+{scope},
+opp_last AS (
+  SELECT opp_id, max(at) AS at FROM opp_touches GROUP BY opp_id
+),
+open_set AS (
+  -- Opportunities open at the end of the window.
+  SELECT o.*,
+         greatest(o.created_at,
+                  (SELECT max(h.changed_at) FROM bedrock.jobs_stage_history h
+                    WHERE h.opportunity_id = o.id AND h.changed_at < {end}),
+                  ol.at) AS last_movement
+  FROM bedrock.jobs_opportunity o
+  LEFT JOIN opp_last ol ON ol.opp_id = o.id
+  WHERE o.deleted_at IS NULL
+    AND o.created_at < {end}
+    AND (o.closed_at IS NULL OR o.closed_at >= {end})
+    AND (o.stage IN ({opp_in}) OR (o.closed_at IS NOT NULL AND o.closed_at >= {end}))
+)"""
+
+
+def dictionary_stalled_sql(entity: str, open_opp_stages: Iterable[str],
+                           open_member_stages: Iterable[str]) -> str:
+    """The reference query for Stalled contacts, opportunities or accounts (D3),
+    reading activity by activity_scope_ctes. The open stage lists come from
+    routes/jobs.py (OPPORTUNITY_STAGES_ACTIVE_ANY, the open membership stages)."""
+    opp_in = ", ".join(f"'{s}'" for s in open_opp_stages)
+    mem_in = ", ".join(f"'{s}'" for s in open_member_stages)
+    ext = external_activity_sql("a")
+    if entity == "contacts":
+        return f"""WITH last AS (
+  SELECT m.contact_id,
+         greatest(m.assigned_at,
+                  (SELECT max(h.changed_at) FROM bedrock.jobs_membership_stage_history h
+                    WHERE h.contact_id = m.contact_id),
+                  (SELECT max(a.activity_date) FROM bedrock.activity a
+                    WHERE a.participant_public_contact_id = m.contact_id AND {ext})) AS last_at
+  FROM bedrock.jobs_contact_membership m
+  WHERE m.stage IN ({mem_in})
+)
+SELECT count(*) FILTER (WHERE last_at IS NULL OR last_at < now() - interval '2 weeks') AS stalled_contacts,
+       count(*) AS open_contacts
+FROM last"""
+    if entity == "opportunities":
+        end = "(SELECT end_at FROM w)"
+        return dictionary_open_opportunities_sql(open_opp_stages) + f"""
+SELECT count(*) FILTER (WHERE last_movement < least({end}, now()) - interval '4 weeks') AS stalled_opportunities,
+       count(*) AS opportunities_open
+FROM open_set"""
+    if entity == "accounts":
+        scope = activity_scope_ctes(opps="FALSE", accounts="TRUE")
+        return f"""WITH open_accounts AS (
+  SELECT DISTINCT lower(btrim(c.current_company)) AS k
+  FROM bedrock.jobs_contact_membership m JOIN public.contacts c ON c.contact_id = m.contact_id
+  WHERE m.stage IN ({mem_in})
+    AND btrim(coalesce(c.current_company, '')) <> ''
+  UNION
+  SELECT DISTINCT lower(btrim(o.account_name)) FROM bedrock.jobs_opportunity o
+  WHERE o.deleted_at IS NULL AND o.stage IN ({opp_in}) AND btrim(coalesce(o.account_name, '')) <> ''
+),
+{scope},
+touched AS (
+  SELECT k, max(at) AS at FROM account_touches GROUP BY k
+),
+moved AS (
+  SELECT lower(btrim(o.account_name)) AS k, max(h.changed_at) AS at
+  FROM bedrock.jobs_stage_history h JOIN bedrock.jobs_opportunity o ON o.id = h.opportunity_id
+  WHERE o.deleted_at IS NULL GROUP BY 1
+)
+SELECT count(*) FILTER (WHERE greatest(t.at, mv.at) IS NULL
+                          OR greatest(t.at, mv.at) < now() - interval '6 weeks') AS stalled_accounts,
+       count(*) AS open_accounts
+FROM open_accounts oa LEFT JOIN touched t USING (k) LEFT JOIN moved mv USING (k)"""
+    raise ValueError(entity)
+
+
 STALLED_AFTER: dict[str, timedelta] = {
     "contact": timedelta(weeks=2),
     "opportunity": timedelta(weeks=4),

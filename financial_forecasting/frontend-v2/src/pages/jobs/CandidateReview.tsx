@@ -11,6 +11,8 @@ import { Sparkles, Building2, Mail, UserPlus, X, ChevronDown, ChevronRight, Load
 import { cn } from "@/lib/utils";
 import { Drawer } from "@/components/ui/Drawer";
 import { Tag } from "@/components/ui/Tag";
+import { CompanyPicker } from "@/components/jobs/CompanyPicker";
+import { NewAccountDialog } from "@/components/jobs/NewAccountDialog";
 import {
   useCandidates, useCandidateDetail, useContactSearch, useEnrichCandidate, useLinkCandidate,
   useCandidateSfMatch, useLinkCandidateSf,
@@ -62,6 +64,9 @@ function CandidateDrawer({ contactId, onClose }: { contactId: number | null; onC
   const [name, setName] = useState("");
   const [title, setTitle] = useState("");
   const [company, setCompany] = useState("");
+  // A suggested or enriched company that isn't an account yet goes through the
+  // duplicate-checking dialog before it can be used (D9, PRO-101).
+  const [newAccount, setNewAccount] = useState<string | null>(null);
   const [linkQ, setLinkQ] = useState("");
   const { data: linkResults } = useContactSearch(linkQ.trim().length >= 2 ? linkQ.trim() : "");
   const merge = useMergeContacts();
@@ -77,7 +82,8 @@ function CandidateDrawer({ contactId, onClose }: { contactId: number | null; onC
     setCanonicalId((data?.possible_duplicates ?? [])[0]?.contact_id ?? null);
   }, [data?.contact.contact_id]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const accountNames = useMemo(() => accounts.map((a) => a.account).sort(), [accounts]);
+  const accountKeys = useMemo(() => new Set(accounts.map((a) => a.account_key)), [accounts]);
+  const notAnAccount = !!company.trim() && accounts.length > 0 && !accountKeys.has(company.trim().toLowerCase());
   const e = data?.enrichment;
   const sug = data?.suggested_account;
   const dups = data?.possible_duplicates ?? [];
@@ -209,11 +215,24 @@ function CandidateDrawer({ contactId, onClose }: { contactId: number | null; onC
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
             <Field label="Full name"><input value={name} onChange={(ev) => setName(ev.target.value)} className={inputCls} /></Field>
             <Field label="Title"><input value={title} onChange={(ev) => setTitle(ev.target.value)} className={inputCls} /></Field>
+            {/* Picked from existing accounts, or created through the dialog
+                that checks for duplicates first (D9, PRO-101). */}
             <Field label="Company / account">
-              <input value={company} onChange={(ev) => setCompany(ev.target.value)} list="cand-accounts" className={inputCls} placeholder="Type or pick…" />
-              <datalist id="cand-accounts">{accountNames.map((n) => <option key={n} value={n} />)}</datalist>
+              <CompanyPicker value={company} onChange={setCompany} />
+              {notAnAccount && (
+                <div className="mt-1 flex items-center gap-1.5 text-[11.5px] text-amber-700">
+                  Not an account yet.
+                  <button type="button" onClick={() => setNewAccount(company)} className="font-medium text-accent hover:underline">Create it</button>
+                  or pick another.
+                </div>
+              )}
             </Field>
           </div>
+
+          {newAccount && (
+            <NewAccountDialog initialName={newAccount} onClose={() => setNewAccount(null)}
+              onPicked={(a) => setCompany(a.display)} />
+          )}
 
           {/* Account linkage suggestion */}
           {sug && (
@@ -229,9 +248,13 @@ function CandidateDrawer({ contactId, onClose }: { contactId: number | null; onC
                 </div>
               </div>
               {sug.account_name && company !== sug.account_name && (
-                <button type="button" onClick={() => setCompany(sug.account_name!)}
+                <button type="button"
+                  // A suggested account not in the pipeline yet is created
+                  // through the duplicate-checking dialog, like any other.
+                  onClick={() => sug.in_pipeline ? setCompany(sug.account_name!) : setNewAccount(sug.account_name!)}
                   className="shrink-0 rounded border border-accent/40 px-2 py-1 text-[12px] text-accent hover:bg-accent-soft">Use</button>
               )}
+
             </div>
           )}
 
@@ -246,7 +269,8 @@ function CandidateDrawer({ contactId, onClose }: { contactId: number | null; onC
 
           {/* Actions */}
           <div className="sticky bottom-0 flex items-center gap-2 border-t border-border-strong bg-surface pt-3">
-            <button type="button" disabled={busy || !name}
+            <button type="button" disabled={busy || !name || notAnAccount}
+              title={notAnAccount ? "Pick an existing account or create this one first" : undefined}
               onClick={() => contactId && promote.mutate(
                 { id: contactId, full_name: name || undefined, current_title: title || undefined, current_company: company || undefined },
                 { onSuccess: onClose })}

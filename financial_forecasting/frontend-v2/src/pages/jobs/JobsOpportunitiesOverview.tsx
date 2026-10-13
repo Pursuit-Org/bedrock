@@ -60,7 +60,7 @@ import { cn } from "@/lib/utils";
 
 const DIMS: { key: OppBreakdownDim; label: string }[] = [
   { key: "status", label: "Status" },
-  { key: "deal_type", label: "Deal type" },
+  { key: "deal_type", label: "Opportunity type" },
   { key: "segment", label: "Segment" },
   { key: "stage", label: "Stage" },
   { key: "owner", label: "Owner" },
@@ -84,7 +84,7 @@ function dealTypeParam(selected: string[]): string {
 }
 
 function dealTypeSummary(selected: string[]): string {
-  if (selected.length === ALL_DEAL_TYPES.length) return "All deal types";
+  if (selected.length === ALL_DEAL_TYPES.length) return "All opportunity types";
   const labels = DEAL_TYPE_OPTIONS.filter((o) => selected.includes(o.value)).map((o) => o.label);
   return labels.length <= 2 ? labels.join(" + ") : `${labels[0]} + ${labels.length - 1} more`;
 }
@@ -130,7 +130,7 @@ function DealTypeFilter({ selected, onChange }: { selected: string[]; onChange: 
                 className={cn("flex items-center gap-2 px-3 py-1.5 text-[12px] text-ink hover:bg-surface-2",
                   last ? "cursor-not-allowed" : "cursor-pointer",
                   o.value === DEAL_TYPE_UNSET && "border-t border-border text-ink-2")}
-                title={last ? "At least one deal type stays selected" : undefined}>
+                title={last ? "At least one opportunity type stays selected" : undefined}>
                 <input type="checkbox" className="accent-[var(--accent)]" checked={on} disabled={last}
                   onChange={() => toggle(o.value)} />
                 {o.label}
@@ -276,7 +276,7 @@ export function JobsOpportunitiesOverview() {
           </select>
         </div>
         <div className="flex items-center gap-2">
-          <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">Deal type</span>
+          <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">Opportunity type</span>
           <DealTypeFilter selected={dealTypes} onChange={setDealTypes} />
         </div>
       </PeriodBar>
@@ -297,7 +297,7 @@ export function JobsOpportunitiesOverview() {
           onClick={() => setDrill({ title: "Net new", note: `Created ${rangeLabel}`, rows: data?.drills?.net_new ?? [] })} />
         <SummaryCard tone="ink" label="Stalled" value={s?.stalled} isLoading={isLoading}
           sub={s?.stalled_label ?? "No activity in 4+ weeks"}
-          onClick={() => setDrill({ title: "Stalled", note: `Open, no stage change and no activity (comments don't count) on the deal or anyone at its account · ${s?.stalled_label ?? ""} · date is last movement`, rows: data?.drills?.stalled ?? [] })} />
+          onClick={() => setDrill({ title: "Stalled", note: `Open, no stage change and no activity (comments don't count) on the opportunity or with its contacts · ${s?.stalled_label ?? ""} · date is last movement`, rows: data?.drills?.stalled ?? [] })} />
         {/* Stage-gate check: won on the board but the follow-through (e.g. the
             signed contract task) is still open — "signed contract = closed".
             Sits left of the outcome boxes: it's an action, they're a result. */}
@@ -391,7 +391,7 @@ export function JobsOpportunitiesOverview() {
           where you work the deals that close it. */}
       <Panel
         title="Jobs Projection"
-        desc="Closed against target, and whether the roles in flight close the gap. Click a row for its deals."
+        desc="Closed against target, and whether the roles in flight close the gap. Click a row for its opportunities."
         action={
           <div className="flex items-center gap-2">
           <button type="button" onClick={() => setProjPast(!projPast)} aria-pressed={projPast}
@@ -822,7 +822,7 @@ const ACTIVITY_ORDER_LABELS = ["Last 7 days", "8–30 days", "31–90 days", "Ov
 const SALARY_ORDER_LABELS = ["Under $80k", "$80k–100k", "$100k–120k", "$120k+", "Not set"];
 
 const OPP_FILTER_FIELDS: OppFilterField[] = [
-  { key: "deal_type", label: "Deal type",
+  { key: "deal_type", label: "Opportunity type",
     bucket: (o) => (o.deal_type ? DEAL_TYPE_LABELS[o.deal_type] ?? o.deal_type : "Untagged") },
   { key: "stage", label: "Stage",
     bucket: (o) => STAGE_LABELS[o.stage] ?? o.stage },

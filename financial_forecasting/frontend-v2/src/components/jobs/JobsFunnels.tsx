@@ -141,7 +141,7 @@ export function JobsFunnels({ builderSegment, only, period, periodLabel, dealTyp
             read as "PT shows full-time hires too" (TKT-129). */}
         {funnel !== "builders" && funnel !== "prospects" && !controlled && (
         <div className="flex items-center gap-1.5">
-          <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-4">Deal type</span>
+          <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-4">Opportunity type</span>
           <div className="inline-flex flex-wrap rounded-full border border-border-strong bg-surface-2 p-0.5">
             {DEAL_TYPE_FILTERS.map((d) => {
               const active = d.value === dealType;

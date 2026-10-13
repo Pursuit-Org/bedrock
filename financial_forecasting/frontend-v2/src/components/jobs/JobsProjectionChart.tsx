@@ -141,7 +141,7 @@ export function JobsProjectionChart({ granularity, showPast, owner, dealType, na
               return (
                 <tr key={r.key}
                   onClick={() => r.bucket.deals.length && setDrill(r.bucket)}
-                  title={r.bucket.deals.length ? "Show the deals" : undefined}
+                  title={r.bucket.deals.length ? "Show the opportunities" : undefined}
                   className={cn("border-t", r.bucket.deals.length && "cursor-pointer hover:bg-surface-2/60",
                     firstCatchall ? "border-t-2 border-border-strong" : quarterInMonthly && i > 0 ? "border-border-strong" : "border-border",
                     quarterInMonthly && "bg-surface-2/50",
@@ -190,7 +190,7 @@ export function JobsProjectionChart({ granularity, showPast, owner, dealType, na
 
       {drill && (
         <Drawer open onClose={() => setDrill(null)} title={`Jobs · ${drill.label}`} width={760}
-          subtitle={`${drill.deals.length} deal${drill.deals.length === 1 ? "" : "s"} · ${drill.won} closed · ${drill.confirmed} confirmed · ${drill.estimated} estimated${drill.target != null ? ` · target ${fmt(drill.target)}` : ""}`}>
+          subtitle={`${drill.deals.length} opportunit${drill.deals.length === 1 ? "y" : "ies"} · ${drill.won} closed · ${drill.confirmed} confirmed · ${drill.estimated} estimated${drill.target != null ? ` · target ${fmt(drill.target)}` : ""}`}>
           <table className="w-full text-[12px]">
             <thead className="bg-surface-2 text-[10.5px] uppercase tracking-wider text-ink-3">
               <tr>

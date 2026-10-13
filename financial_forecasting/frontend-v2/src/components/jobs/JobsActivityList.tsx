@@ -44,15 +44,18 @@ function dayKey(iso: string | null): string {
   return iso.slice(0, 10);
 }
 
-/** Jobs-relevance chip on synced email/meeting rows. Shows the effective
- * verdict (human override wins over the AI label); one click flips it, and an
- * overridden chip offers "auto" to restore the AI verdict. Open to all staff —
- * whoever had the conversation knows better than the model. */
+/** Jobs-relevance chip on every activity row (PRO-101). Shows the effective
+ * verdict: a person's tag wins; untagged, synced email and meetings carry the
+ * AI label and anything logged in the jobs tool is jobs work. One click flips
+ * it, and a tagged chip offers "auto" to go back. Open to all staff — whoever
+ * had the conversation knows better than the model. Notes aren't activity, so
+ * they get no chip. */
 function RelevanceChip({ a }: { a: ActivityEntry }) {
   const set = useSetActivityRelevance();
-  if (a.type !== "email" && a.type !== "meeting") return null;
+  if (a.type === "note") return null;
   if (a.jobs_relevance === undefined && a.jobs_relevance_override === undefined) return null;
-  const effective = a.jobs_relevance_override ?? a.jobs_relevance ?? "unclear";
+  const synced = a.type === "email" || a.type === "meeting";
+  const effective = a.jobs_relevance_override ?? (synced ? a.jobs_relevance : "jobs") ?? "unclear";
   const overridden = a.jobs_relevance_override != null;
   const isJobs = effective === "jobs";
   const label = isJobs ? "Jobs" : effective === "not_jobs" ? "Not jobs" : "Unclear";
@@ -63,7 +66,7 @@ function RelevanceChip({ a }: { a: ActivityEntry }) {
         disabled={set.isPending}
         title={overridden
           ? "Set manually — click to flip"
-          : `AI verdict: ${label} — click to ${isJobs ? "mark not jobs" : "mark as jobs outreach"}`}
+          : `${synced ? "AI verdict" : "Logged in the jobs tool"}: ${label} — click to ${isJobs ? "mark not jobs" : "mark as jobs outreach"}`}
         onClick={() => set.mutate({ id: a.id, override: isJobs ? "not_jobs" : "jobs" })}
         className={cn(
           "rounded-full border px-1.5 py-0.5 text-[9.5px] font-semibold uppercase tracking-wide leading-none transition-colors disabled:opacity-50",
@@ -80,7 +83,7 @@ function RelevanceChip({ a }: { a: ActivityEntry }) {
         <button
           type="button"
           disabled={set.isPending}
-          title="Clear override — back to the AI verdict"
+          title={synced ? "Clear the tag — back to the AI verdict" : "Clear the tag — back to jobs"}
           onClick={() => set.mutate({ id: a.id, override: null })}
           className="text-[9.5px] text-ink-4 hover:text-ink-2"
         >

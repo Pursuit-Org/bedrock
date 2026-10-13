@@ -12,6 +12,8 @@ from scripts import import_jobs_dictionary as imp
 from services import jobs_metrics as jm
 
 DRAFTS = imp.load_drafts()
+# The contact stages still being worked: Assigned to Call Booked.
+OPEN_MEMBER_STAGES = ["assigned", "initial_outreach", "scheduling", "call_booked"]
 BY_KEY = {c["bedrock_key"]: c for c in DRAFTS["concepts"]}
 
 
@@ -90,6 +92,23 @@ def test_stalled_queries_use_the_d3_limits_and_skip_comments():
     for k in ("stalled_opportunities", "stalled_contacts", "stalled_accounts"):
         assert "'note'" not in _cut(p, k)["sql_query"]
         assert "a.type IN ('email', 'call', 'meeting', 'linkedin', 'text')" in _cut(p, k)["sql_query"]
+
+
+@pytest.mark.parametrize("cut", ["stalled_opportunities", "stalled_contacts", "stalled_accounts"])
+def test_stalled_queries_are_the_activity_rule(cut):
+    """The dictionary holds jobs_metrics' activity rule (PRO-101), not a copy
+    that drifts. If this fails, regenerate the query from
+    jm.dictionary_stalled_sql."""
+    from routes.jobs import OPPORTUNITY_STAGES_ACTIVE_ANY
+    sql = jm.dictionary_stalled_sql(cut.split("_")[1], OPPORTUNITY_STAGES_ACTIVE_ANY, OPEN_MEMBER_STAGES)
+    assert _cut("employer_pipeline", cut)["sql_query"] == sql.strip()
+
+
+@pytest.mark.parametrize("cut", ["opportunities_open", "time_in_stage"])
+def test_open_opportunity_queries_start_from_the_shared_open_set(cut):
+    from routes.jobs import OPPORTUNITY_STAGES_ACTIVE_ANY
+    prefix = jm.dictionary_open_opportunities_sql(OPPORTUNITY_STAGES_ACTIVE_ANY)
+    assert _cut("employer_pipeline", cut)["sql_query"].startswith(prefix)
 
 
 def test_windowed_queries_read_the_dictionary_window():

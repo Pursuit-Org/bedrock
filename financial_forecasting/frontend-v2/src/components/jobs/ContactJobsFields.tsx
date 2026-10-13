@@ -84,6 +84,7 @@ export interface ContactJobsFieldsValue {
   full_name: string | null;
   owner_email?: string | null;
   membership_stage?: string | null;
+  current_company?: string | null;
   crm_tags?: string[];
   is_jobs_contact?: boolean;
 }
@@ -133,10 +134,14 @@ export function ContactJobsFields({ contact }: { contact: ContactJobsFieldsValue
             // With a membership, the shared handler writes the stage (and asks
             // for a date on Revisit). Without one, the membership has to be
             // created first, because PATCH /jobs-membership is update-only.
-            if (stage) return stageChange.change(id, name, v);
-            if (v === "revisit") {
+            const company = contact.current_company;
+            if (stage) return stageChange.change(id, name, v, undefined, company);
+            if (stageChange.needsDialog(v)) {
+              // Converting creates the membership first and converts through
+              // the dialog; bulk flagging can't convert (it names no opportunity).
               return stageChange.change(id, name, v,
-                () => flagOne.mutateAsync({ contact_ids: [id], stage: v }));
+                () => flagOne.mutateAsync({ contact_ids: [id], stage: v === "revisit" ? v : undefined }),
+                company);
             }
             return flagOne.mutateAsync({ contact_ids: [id], stage: v }).then(() => undefined);
           }}

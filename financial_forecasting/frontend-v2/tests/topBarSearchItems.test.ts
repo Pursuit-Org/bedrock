@@ -15,8 +15,8 @@ test("top-bar search returns jobs accounts and deals, not just contacts", () => 
     (s) => (s === "ask_submitted" ? "Ask Submitted" : s),
   );
   assert.deepEqual(items, [
-    { group: "Jobs Accounts", label: "Blackstone", sub: "7 deals", href: "/jobs/accounts/blackstone" },
-    { group: "Jobs Deals", label: "Blackstone — Data Analyst", sub: "Ask Submitted", href: "/jobs/opportunities/d1" },
+    { group: "Jobs Accounts", label: "Blackstone", sub: "7 opportunities", href: "/jobs/accounts/blackstone" },
+    { group: "Jobs Opportunities", label: "Blackstone — Data Analyst", sub: "Ask Submitted", href: "/jobs/opportunities/d1" },
   ]);
 });
 
@@ -27,7 +27,7 @@ test("jobs account keys are URL-encoded and deals without a title use the accoun
     jobsDeals: [{ id: "d2", account_name: "AT&T / Labs", title: null, stage: "closed_won" }],
   });
   assert.equal(items[0].href, "/jobs/accounts/at%26t%20%2F%20labs");
-  assert.equal(items[0].sub, "No deals yet");
+  assert.equal(items[0].sub, "No opportunities yet");
   assert.equal(items[1].label, "AT&T / Labs");
 });
 
@@ -48,6 +48,6 @@ test("existing groups keep their order around the new ones", () => {
   });
   assert.deepEqual(
     items.map((i) => i.group),
-    ["Accounts", "Jobs Accounts", "PBD Contacts", "Jobs Contacts", "Opportunities", "Jobs Deals"],
+    ["Accounts", "Jobs Accounts", "PBD Contacts", "Jobs Contacts", "Opportunities", "Jobs Opportunities"],
   );
 });

@@ -23,6 +23,7 @@ import { callNotReady, callRequestFields, localTodayIso, newCallDetails } from "
 import {
   useIntroConnectors, useLogFacilitatedIntro, INTRO_ASKS,
 } from "@/services/jobsAccounts";
+import { ContactRefsPicker, type PickedContact } from "@/components/jobs/ContactRefsPicker";
 import { JobsActivityList } from "@/components/jobs/JobsActivityList";
 import { JobsComments } from "@/components/jobs/JobsComments";
 import { JobsTasks } from "@/components/jobs/JobsTasks";
@@ -121,16 +122,19 @@ export function AccountOppsTab({ account }: { account: JobsAccount }) {
   const [numRoles, setNumRoles] = useState("1");
   const [targetClose, setTargetClose] = useState("");
   const [estJobs, setEstJobs] = useState("");
+  // Creating an opportunity means picking its contacts (D15, PRO-101).
+  const [contacts, setContacts] = useState<PickedContact[]>([]);
   const [adding, setAdding] = useState(false);
   const estValid = parseEstimatedJobs(estJobs) !== undefined;
   const canCreate = role.trim() !== "" && owner !== "" && dealType !== "" && likelihood !== "" && numRoles.trim() !== ""
-    && targetClose !== "" && estValid;
+    && targetClose !== "" && estValid && contacts.length > 0;
   const submit = () => {
     if (!canCreate) return;
     create.mutate(
       { account_id: account.account_id ?? "UNKNOWN", account_name: account.account, title: role.trim(), stage, owner_email: owner, deal_type: dealType as DealType, likelihood: likelihood as "low" | "medium" | "high", num_roles: Number(numRoles) || 1,
-        target_close_date: targetClose, estimated_jobs: parseEstimatedJobs(estJobs) ?? null },
-      { onSuccess: () => { setRole(""); setOwner(""); setDealType(""); setLikelihood(""); setNumRoles("1"); setTargetClose(""); setEstJobs(""); setStage("active_in_discussions"); setAdding(false); } },
+        target_close_date: targetClose, estimated_jobs: parseEstimatedJobs(estJobs) ?? null,
+        sf_contact_ids: contacts.map((c) => c.ref) },
+      { onSuccess: () => { setRole(""); setOwner(""); setDealType(""); setLikelihood(""); setNumRoles("1"); setTargetClose(""); setEstJobs(""); setContacts([]); setStage("active_in_discussions"); setAdding(false); } },
     );
   };
 
@@ -141,7 +145,7 @@ export function AccountOppsTab({ account }: { account: JobsAccount }) {
           <colgroup><col /><col style={{ width: "15%" }} /><col style={{ width: "14%" }} /><col style={{ width: "11%" }} /><col style={{ width: "10%" }} /><col style={{ width: "7%" }} /><col style={{ width: "12%" }} /><col style={{ width: "7%" }} /><col style={{ width: 56 }} /></colgroup>
           <thead className="bg-surface-2 text-[10.5px] uppercase tracking-wider text-ink-3"><tr>
             <th className="px-2 py-1.5 text-left font-semibold">Opportunity</th><th className="px-2 py-1.5 text-left font-semibold">Stage</th>
-            <th className="px-2 py-1.5 text-left font-semibold">Owner</th><th className="px-2 py-1.5 text-left font-semibold">Deal type</th>
+            <th className="px-2 py-1.5 text-left font-semibold">Owner</th><th className="px-2 py-1.5 text-left font-semibold">Opportunity type</th>
             <th className="px-2 py-1.5 text-left font-semibold">Likelihood</th><th className="px-2 py-1.5 text-left font-semibold"># Roles</th>
             <th className="px-2 py-1.5 text-left font-semibold">Target close</th><th className="px-2 py-1.5 text-left font-semibold" title="Estimated jobs">Est. jobs</th><th className="px-2 py-1.5" />
           </tr></thead>
@@ -184,7 +188,18 @@ export function AccountOppsTab({ account }: { account: JobsAccount }) {
                   </div>
                 </td>
               </tr>
-            ) : (
+            ) : null}
+            {adding && (
+              <tr className="bg-surface-2/40">
+                <td colSpan={9} className="px-2 pb-2">
+                  <div className="flex items-start gap-2">
+                    <span className={cn("mt-2 shrink-0 text-[10.5px] font-semibold uppercase tracking-wider", contacts.length ? "text-ink-4" : "text-amber-700")}>Contacts *</span>
+                    <div className="min-w-0 flex-1"><ContactRefsPicker value={contacts} onChange={setContacts} company={account.account} /></div>
+                  </div>
+                </td>
+              </tr>
+            )}
+            {adding ? null : (
               <tr className="border-t border-border-strong">
                 <td colSpan={9} className="px-2 py-1.5">
                   <button type="button" onClick={() => setAdding(true)} className="flex items-center gap-1.5 text-[12px] font-medium text-ink-3 hover:text-accent"><Plus size={13} /> New opportunity</button>

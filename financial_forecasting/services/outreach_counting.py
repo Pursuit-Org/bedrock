@@ -105,12 +105,12 @@ def bare_address(raw: Optional[str]) -> Optional[str]:
 
 
 def jobs_relevant_sql(alias: str) -> str:
-    """SQL predicate: the row is jobs-related. Synced email and meetings carry
-    the classifier's verdict, or a person's override of it; everything typed
-    into the jobs tool is jobs work by construction. See
+    """SQL predicate: the row is jobs-related. A person's tag wins on any row.
+    Untagged, synced email and meetings carry the classifier's verdict, and
+    everything typed into the jobs tool is jobs work by construction. See
     services/activity_classifier.py."""
-    return (f"(coalesce({alias}.jobs_relevance_override, {alias}.jobs_relevance) = 'jobs' "
-            f"OR {alias}.type NOT IN ('email','meeting'))")
+    return (f"(coalesce({alias}.jobs_relevance_override, CASE WHEN {alias}.type IN ('email','meeting') "
+            f"THEN {alias}.jobs_relevance ELSE 'jobs' END) = 'jobs')")
 
 
 def not_autoreply_sql(alias: str) -> str:

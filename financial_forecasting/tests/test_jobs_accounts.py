@@ -14,7 +14,9 @@ from tests.jobs_fakes import FakeConn, make_jobs_client
 OPP_SQL = "FROM bedrock.jobs_opportunity"
 PROSPECT_SQL = "c.is_jobs_contact = true"  # the per-company prospect COUNT aggregate
 JA_SQL = "account_key, display_name, owner_email, status_override, sf_account_id"  # the override-record SELECT (not jobs_account_task)
-ACT_SQL = "c.contact_id = a.participant_public_contact_id"  # the per-account warmth/actor aggregate
+# The per-account warmth/actor aggregate. It also names jobs_opportunity (an
+# account's activity includes its opportunities'), so it is matched first.
+ACT_SQL = "SELECT DISTINCT k, activity_id FROM account_touches"
 HIRES_SQL = "count(DISTINCT user_id) AS n FROM ("           # builders-hired-per-account aggregate
 
 # Relative to the real clock: the status rule compares against now(), so the
@@ -42,8 +44,8 @@ def _opp(account_name, stage, **ov):
 
 
 def _conn(opps=None, prospects=None, ja=None, activity=None, hires=None):
-    return FakeConn(lists={OPP_SQL: opps or [], PROSPECT_SQL: prospects or [],
-                           JA_SQL: ja or [], ACT_SQL: activity or [], HIRES_SQL: hires or []})
+    return FakeConn(lists={ACT_SQL: activity or [], OPP_SQL: opps or [], PROSPECT_SQL: prospects or [],
+                           JA_SQL: ja or [], HIRES_SQL: hires or []})
 
 
 def _act(company, recent=1, responded=False, actors=None, last=RECENT):
