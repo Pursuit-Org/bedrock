@@ -357,7 +357,10 @@ function StageTable({ data, byTime, nameOf, onDrill, pipelineFilter, actOpen, on
         <tbody>
           {data.bands.map((band) => {
             const bandMembers = data.members.filter((m) => m.band === band.key);
-            const pool = band.rows.filter((r) => (r.depth ?? 0) === 0).reduce((s, r) => s + (r.in_now?.total ?? 0), 0);
+            // Contacts being worked: the closed outcomes (Converted, Revisit,
+            // Not a fit) sit in the table but are not the working pool.
+            const pool = band.rows.filter((r) => (r.depth ?? 0) === 0 && !r.children)
+              .reduce((s, r) => s + (r.in_now?.total ?? 0), 0);
             return (
               <Fragment key={band.key}>
                 <BandHeader band={band} colSpan={colCount}

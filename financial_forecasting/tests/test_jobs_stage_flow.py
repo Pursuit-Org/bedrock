@@ -456,3 +456,26 @@ def test_role_type_filters_the_pipeline_band_by_its_live_roles():
     assert all("jobs_role r WHERE r.opportunity_id" not in c[1] for c in conn.calls)
     r, _ = _get({}, role_type="bogus")
     assert r.status_code == 400
+
+
+def test_contact_closed_counts_each_contact_once_like_its_drill():
+    # Converted AND moved to Revisit in the same week: two entries, one contact.
+    r, _ = _get({
+        CONTACT_STAMPS: [{"contact_id": 5, "name": "C5", "company": "Co", "owner": "a@pursuit.org",
+                          "assigned_at": None, "first_outreach_at": None, "converted_at": ago(3)}],
+        CONTACT_HISTORY: [{"contact_id": 5, "from_stage": "converted_to_opportunity", "to_stage": "revisit",
+                           "changed_at": ago(1), "name": "C5", "company": "Co", "owner": "a@pursuit.org"}],
+    })
+    rows = _rows(r.json()["data"])
+    assert rows[("outreach", "converted_to_opportunity")]["moved_in"] == 1
+    assert rows[("outreach", "revisit")]["moved_in"] == 1
+    assert rows[("outreach", "contact_closed")]["moved_in"] == 1
+
+
+def test_a_retired_on_hold_close_counts_as_closed_lost():
+    r, _ = _get({DEAL_CLOSES: [{"oid": "00000009-0000-0000-0000-000000000000", "from_stage": "ask_submitted",
+                                "to_stage": "on_hold_not_interested", "at": ago(2), "account_name": "A",
+                                "title": "SWE", "owner_email": "a@pursuit.org"}]})
+    rows = _rows(r.json()["data"])
+    assert rows[("pipeline", "closed_lost")]["moved_in"] == 1
+    assert rows[("pipeline", "closed")]["moved_in"] == 1

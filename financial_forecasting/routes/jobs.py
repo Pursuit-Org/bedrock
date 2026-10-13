@@ -3981,16 +3981,21 @@ async def _flow_moved(conn, owner_f, dt_f, p_from, p_to, have_history: bool, rt_
               AND {_deal_type_sql('o.deal_type', 2)} AND {_role_type_sql(rt_f)}
             ORDER BY h.opportunity_id, h.changed_at DESC
         ) last_change
-        WHERE to_stage IN ('closed_won', 'closed_lost') AND at >= $3
+        WHERE to_stage IN ({_FLOW_CLOSE_STAGES_SQL}) AND at >= $3
     """, owner_f, dt_f, p_from, p_to)
     for r in crows:
         moved.append({
-            "band": "pipeline", "stage": r["to_stage"], "id": str(r["oid"]), "name": r["account_name"],
+            "band": "pipeline", "stage": canon_stage(r["to_stage"]), "id": str(r["oid"]), "name": r["account_name"],
             "detail": r["title"], "owner": r["owner_email"], "at": r["at"].isoformat(),
             "from": canon_stage(r["from_stage"]),
         })
     return moved
 
+
+# Every stored stage that means a close, retired on_hold_* names included (they
+# fold to closed_lost), so a pre-migration close still counts in its period.
+_FLOW_CLOSE_STAGES_SQL = ", ".join(
+    f"'{s}'" for s in ["closed_won", "closed_lost"] + [k for k, v in _STAGE_CANON.items() if v == "closed_lost"])
 
 # Conversion (Kwame 2026-10-13): of what entered a stage in the period, the
 # share that is further along TODAY. "Further" is a later working stage, or
@@ -4206,7 +4211,9 @@ async def get_stage_flow(
         return None, None
 
     def _count(rows: list, band: str, keys: set) -> int:
-        return sum(1 for m in rows if m["band"] == band and m["stage"] in keys)
+        # Distinct records, so a summary row agrees with its drill list: a
+        # contact converted AND moved to Revisit in one week closed once.
+        return len({m["id"] for m in rows if m["band"] == band and m["stage"] in keys})
 
     def _row(band: str, key: str, label: str, with_pool: bool, depth: int = 0,
              children: Optional[list] = None) -> dict:
