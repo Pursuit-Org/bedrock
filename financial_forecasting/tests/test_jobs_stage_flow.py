@@ -263,7 +263,13 @@ def test_converted_borrows_the_settings_outreach_target():
             return [{"section": "outreach", "metric": "converted_opportunities", "owner_email": None,
                      "period_start": None, "value": 4, "team_mode": "set"},
                     {"section": "outreach", "metric": "converted_opportunities", "owner_email": "a@pursuit.org",
-                     "period_start": None, "value": 2, "team_mode": None}]
+                     "period_start": None, "value": 2, "team_mode": None},
+                    {"section": "outreach", "metric": "call_discovery", "owner_email": "a@pursuit.org",
+                     "period_start": None, "value": 5, "team_mode": None},
+                    {"section": "outreach", "metric": "call_discovery", "owner_email": None,
+                     "period_start": None, "value": None, "team_mode": "sum"},
+                    {"section": "outreach", "metric": "total_calls", "owner_email": "a@pursuit.org",
+                     "period_start": None, "value": 9, "team_mode": None}]
     asyncio.run(store.refresh(Pool(), force=True))
     r, _ = _get({})
     d = r.json()["data"]
@@ -271,10 +277,17 @@ def test_converted_borrows_the_settings_outreach_target():
     # Stage targets are still pending, but this one is live today.
     assert d["targets_available"] is False
     assert conv["target_weekly"] == 4 and conv["target_source"] == "outreach"
-    # Nothing else borrows: sends and calls measure events, not stage entries.
-    assert _rows(d)[("outreach", "call_booked")]["target"] is None
+    assert conv["target_source_label"] == "Opportunities converted"
+    # Discovery call borrows Discovery calls (summed team line here).
+    dc = _rows(d)[("outreach", "call_booked")]
+    assert dc["target_weekly"] == 5 and dc["target_source_label"] == "Discovery calls"
+    # Nothing else borrows: sends and booked calls measure events, not stage entries.
+    assert _rows(d)[("outreach", "scheduling")]["target"] is None
+    assert _rows(d)[("outreach", "initial_outreach")]["target"] is None
     r, _ = _get({}, owner="a@pursuit.org")
-    assert _rows(r.json()["data"])[("outreach", "converted_to_opportunity")]["target_weekly"] == 2
+    rows = _rows(r.json()["data"])
+    assert rows[("outreach", "converted_to_opportunity")]["target_weekly"] == 2
+    assert rows[("outreach", "call_booked")]["target_weekly"] == 5
 
 
 DISCOVERY_CALLS = "a.call_kind = 'discovery'"

@@ -3174,6 +3174,8 @@ export interface StageFlowRow {
   target_weekly: number | null;
   /** "stage" = a stage target; "outreach" = borrowed from the Settings outreach target. */
   target_source: "stage" | "outreach" | null;
+  /** The Settings › Outreach metric a borrowed target comes from, e.g. "Discovery calls". */
+  target_source_label?: string | null;
   /** The weekly target prorated to the period's length. */
   target: number | null;
   /** Moved in minus target; positive is ahead. Null without a target. */

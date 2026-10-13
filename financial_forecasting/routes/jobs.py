@@ -3844,9 +3844,15 @@ STAGE_FLOW_TARGET_KEYS = list(jobs_targets_store.STAGE_METRIC_KEYS)
 # Until a stage target is set, a stage that measures exactly what an existing
 # Settings › Targets › Jobs › Outreach metric measures borrows that target.
 # Converted Opportunities counts the membership conversion stamp, which is what
-# "moved into Converted to opportunity" counts here. The send and call targets
-# count activity events, not contacts changing stage, so they are not borrowed.
-_FLOW_OUTREACH_TARGET = {"converted_to_opportunity": "converted_opportunities"}
+# "moved into Converted to opportunity" counts here. Discovery calls counts
+# logged discovery calls, which the Discovery call row's Net New also counts
+# (once per contact). The send and booked-call targets count activity events,
+# not contacts changing stage, so they are not borrowed.
+_FLOW_OUTREACH_TARGET = {
+    "converted_to_opportunity": "converted_opportunities",
+    "call_booked": "call_discovery",
+}
+_FLOW_OUTREACH_LABELS = dict(jobs_targets_store.OUTREACH_METRICS)
 
 
 def _flow_period(period_from: Optional[str], period_to: Optional[str]) -> tuple:
@@ -4145,6 +4151,9 @@ async def get_stage_flow(
             "targetable": not children and key in STAGE_FLOW_TARGET_KEYS,
             "target_weekly": weekly,
             "target_source": source,
+            # Which Settings › Outreach target a borrowed one comes from.
+            "target_source_label": (_FLOW_OUTREACH_LABELS.get(_FLOW_OUTREACH_TARGET.get(key))
+                                    if source == "outreach" else None),
             # Prorated to the period: a weekly 5 over a 14-day window is 10.
             "target": target,
             # Moved in minus target: positive is ahead.

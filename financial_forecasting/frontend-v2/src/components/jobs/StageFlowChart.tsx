@@ -27,7 +27,9 @@ import { Fragment, useMemo, useState } from "react";
 import { format } from "date-fns";
 
 import {
+  scorecardCount,
   useJobsStaff,
+  useOutreachScorecard,
   useStageFlow,
   type OutreachGranularity,
   type StageFlow,
@@ -144,6 +146,9 @@ export function StageFlowChart() {
         {tab === "owner" && team.length > 0 && (
           <OwnerPicker team={team} selected={owner} nameOf={nameOf} onPick={setOwnerPick} />
         )}
+        {tab === "owner" && owner !== "all" && (
+          <OwnerOutreachTargets owner={owner} from={range[0]} to={range[1]} />
+        )}
         {isLoading && !data ? (
           <div className="m-4 h-72 animate-pulse rounded-lg bg-surface-2" />
         ) : isError || !data ? (
@@ -164,7 +169,7 @@ export function StageFlowChart() {
             Pool is what sits in each stage today. Net New counts each contact or opportunity once per stage it entered
             during the period. Closed Won and Closed Lost count closes that stuck. Targets are weekly, prorated to the
             period; the Owner tab shows each person against their own
-            {current.targets_available ? "" : "; per-stage targets arrive with the stage-targets migration, and Converted to opportunity uses the Settings outreach target until then"}.
+            {current.targets_available ? "" : "; per-stage targets arrive with the stage-targets migration, and Discovery call and Converted to opportunity use the Settings outreach targets until then"}.
             Deal type filters the Pipeline band only.
           </p>
         )}
@@ -321,7 +326,7 @@ function StageTable({ data, byTime, nameOf, onDrill }: {
                   const drillRow = (kind: "now" | "moved") =>
                     onDrill({ kind, band: band.key, stages, label: row.label, col: null });
                   const targetTitle = row.target_source === "outreach"
-                    ? "From Settings › Targets › Jobs › Outreach: Opportunities converted"
+                    ? `From Settings › Targets › Jobs › Outreach: ${row.target_source_label ?? "outreach target"}, until a stage target is set`
                     : row.target_weekly != null ? `${row.target_weekly} a week` : undefined;
                   return (
                     <tr key={row.key}
@@ -382,30 +387,84 @@ function StageTable({ data, byTime, nameOf, onDrill }: {
 
 // ── Owner tab: pick one person ───────────────────────────────────────────────
 
-function initials(name: string) {
-  const parts = name.split(/\s+/).filter(Boolean);
-  return ((parts[0]?.[0] ?? "") + (parts.length > 1 ? parts[parts.length - 1][0] : "")).toUpperCase();
+/** One button per Jobs team member, styled as the Stage / Owner tabs so the
+ *  two read as one control; the table below shows whoever is picked. */
+// The Settings › Targets › Jobs › Outreach metrics, in Settings order. These
+// count activity (sends, calls) and outcomes, not stage entries, so they sit
+// beside the stage rows rather than in them.
+const OUTREACH_TARGET_METRICS: [string, string][] = [
+  ["accounts_activated", "Accounts activated"],
+  ["total_outreach_activity", "Outreach activity"],
+  ["total_calls", "Calls"],
+  ["call_discovery", "Discovery calls"],
+  ["converted_opportunities", "Opportunities converted"],
+];
+
+/** One person's outreach targets against what they did in the period. Reads the
+ *  Activity Pipeline (Outreach tab), so the numbers match it exactly. Weekly
+ *  targets are prorated to the period the same way the stage rows are. */
+function OwnerOutreachTargets({ owner, from, to }: { owner: string; from: string; to: string }) {
+  // "week" asks for the weekly target; the custom range sets the counting window.
+  const q = useOutreachScorecard("week", "team", owner, { from, to });
+  const days = Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000) + 1;
+  const byMetric = new Map((q.data?.activity_pipeline ?? []).map((r) => [r.metric, r]));
+  return (
+    <div className="border-b border-border-strong bg-surface-2/40 px-4 py-2.5">
+      <div className="mb-1.5 flex items-baseline gap-2">
+        <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">Outreach targets</span>
+        <span className="text-[11px] text-ink-4">from Settings › Targets › Jobs · same counts as Outreach › Activity Pipeline</span>
+      </div>
+      {q.isLoading ? (
+        <div className="h-12 animate-pulse rounded-md bg-surface-2" />
+      ) : q.isError ? (
+        <div className="text-[12px] text-ink-4">Couldn't load outreach targets.</div>
+      ) : (
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
+          {OUTREACH_TARGET_METRICS.map(([key, label]) => {
+            const r = byMetric.get(key);
+            const actual = scorecardCount(r?.this_period);
+            const target = r?.target != null ? Math.round(r.target * days / 7 * 10) / 10 : null;
+            const pending = r?.available === false;
+            return (
+              <div key={key} className="flex items-center justify-between gap-2 rounded-md border border-border bg-surface px-3 py-1.5"
+                title={pending ? r?.unavailable_reason ?? "Pending migration"
+                  : r?.target != null ? `${r.target} a week` : "No target set in Settings"}>
+                <div className="min-w-0">
+                  <div className="truncate text-[11.5px] text-ink-3">{label}</div>
+                  <div className="text-[14px] font-semibold tabular-nums text-ink">
+                    {pending ? <span className="text-[11.5px] font-normal text-ink-4">pending migration</span> : (
+                      <>{actual}<span className="text-[12px] font-normal text-ink-4"> / {target != null ? fmtTarget(target) : "—"}</span></>
+                    )}
+                  </div>
+                </div>
+                {!pending && <DeltaChip actual={actual} target={target} />}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
 }
 
-/** One chip per Jobs team member; the table below shows whoever is picked. */
 function OwnerPicker({ team, selected, nameOf, onPick }: {
   team: string[]; selected: string; nameOf: (e: string | null) => string; onPick: (e: string) => void;
 }) {
   return (
-    <div className="flex flex-wrap items-center gap-2 border-b border-border-strong px-4 py-2.5" role="tablist" aria-label="Jobs team member">
-      {team.map((email) => {
-        const on = email === selected;
-        const name = nameOf(email);
-        return (
-          <button key={email} type="button" role="tab" aria-selected={on} onClick={() => onPick(email)}
-            className={cn("inline-flex items-center gap-2 rounded-full border py-1 pl-1 pr-3 text-[12.5px] font-medium transition-colors",
-              on ? "border-accent/40 bg-accent-soft text-accent" : "border-border-strong bg-surface text-ink-2 hover:border-ink-3")}>
-            <span className={cn("flex h-6 w-6 items-center justify-center rounded-full text-[10.5px] font-bold",
-              on ? "bg-accent text-white" : "bg-surface-2 text-ink-3")}>{initials(name)}</span>
-            {name}
-          </button>
-        );
-      })}
+    <div className="border-b border-border-strong px-4 py-2">
+      <div className="inline-flex flex-wrap items-center rounded-md border border-border-strong bg-surface p-0.5"
+        role="tablist" aria-label="Jobs team member">
+        {team.map((email) => {
+          const on = email === selected;
+          return (
+            <button key={email} type="button" role="tab" aria-selected={on} onClick={() => onPick(email)}
+              className={cn("rounded px-2.5 py-0.5 text-[12px] font-medium transition-colors",
+                on ? "bg-accent-soft text-accent" : "text-ink-2 hover:bg-surface-2")}>
+              {nameOf(email)}
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }
