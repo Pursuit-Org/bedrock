@@ -37,7 +37,7 @@ import {
 } from "@/services/jobs";
 import { StageFlowWorkbench, type WorkbenchRecord } from "@/components/jobs/StageFlowWorkbench";
 import { DeltaChip } from "@/components/jobs/DeltaChip";
-import { PeriodBar, defaultPeriod } from "@/components/jobs/PeriodBar";
+import { PeriodBar } from "@/components/jobs/PeriodBar";
 import {
   ALL_DEAL_TYPES, DEAL_TYPE_OPTIONS, dealTypeParam, dealTypeSummary,
 } from "@/pages/jobs/JobsOpportunitiesOverview";
@@ -75,8 +75,19 @@ const shortRange = (from: string, to: string) => `${utcDay(from)} – ${utcDay(t
 /** "5" for whole numbers, "2.9" otherwise: a prorated target can be fractional. */
 const fmtTarget = (n: number) => (Number.isInteger(n) ? String(n) : n.toFixed(1));
 
+/** [today − 6, today] as local YYYY-MM-DD. */
+function lastSevenDaysToToday(): [string, string] {
+  const day = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const end = new Date();
+  const start = new Date(end); start.setDate(end.getDate() - 6);
+  return [day(start), day(end)];
+}
+
 export function StageFlowChart() {
-  const [range, setRange] = useState<[string, string]>(() => defaultPeriod());
+  // Opens on the 7 days ending TODAY, unlike the review pages' "ending
+  // yesterday": the chart is worked day to day, so a stage move or a send
+  // logged this morning shows up without touching the dates (Kwame 2026-10-13).
+  const [range, setRange] = useState<[string, string]>(() => lastSevenDaysToToday());
   const [granularity, setGranularity] = useState<OutreachGranularity>("week");
   // The Owner tab looks at one Jobs team member at a time; the Stage tab is the team.
   const [ownerPick, setOwnerPick] = useSessionState<string | null>("jobsOverview.stageFlow.owner", null);
