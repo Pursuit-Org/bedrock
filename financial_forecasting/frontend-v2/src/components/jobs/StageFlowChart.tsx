@@ -158,7 +158,6 @@ export function StageFlowChart() {
               {team.map((email) => <option key={email} value={email}>{nameOf(email)}</option>)}
             </select>
           )}
-          <span className="hidden text-[11.5px] text-ink-4 md:inline">Outreach to Closed Won · click any number for the list</span>
           {(
             <select value={byTime ? "time" : "off"} onChange={(e) => setByTime(e.target.value === "time")}
               title="Split the Pool by how long it has sat in the stage"
@@ -276,7 +275,7 @@ function ActivityToggle({ lead, open, onToggle }: { lead: StageFlowRow; open: bo
   return (
     <button type="button" onClick={onToggle} aria-expanded={open}
       title={open ? `Hide ${label.toLowerCase()}` : `Show ${label.toLowerCase()} logged in the period, with targets`}
-      className="ml-2 inline-flex items-center gap-0.5 rounded px-1 align-[1px] text-[11.5px] font-normal text-ink-4 transition-colors hover:bg-surface-2 hover:text-ink-2">
+      className="ml-2 inline-flex items-center gap-0.5 rounded px-1 align-[1px] text-[11.5px] font-normal text-ink-2 transition-colors hover:bg-surface-2 hover:text-ink">
       {label}
       {open ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
     </button>
@@ -317,7 +316,7 @@ function StageTable({ data, byTime, nameOf, onDrill, pipelineFilter, actOpen, on
           <tr className="bg-surface-2 text-[10px] uppercase tracking-[0.08em]">
             <th />
             <th className={cn("px-3 pt-2.5", HL)}>
-              <GroupCap label="Stage" sub="as of today" color={STAGE_ACCENT} />
+              <GroupCap label="Stage" color={STAGE_ACCENT} />
             </th>
             <th colSpan={5} className="border-l-2 border-border-strong px-3 pt-2.5">
               <GroupCap label="Activity" sub={shortRange(data.period.from, data.period.to)} color={ACTIVITY_ACCENT} />
@@ -341,7 +340,7 @@ function StageTable({ data, byTime, nameOf, onDrill, pipelineFilter, actOpen, on
             </th>
             <th className={TH}><span className="block">Δ to Target</span><span className={SUB} /></th>
             <th className={TH} title="Of the Net New, the share that is further along today: a later stage, Converted to opportunity, or Closed Won">
-              <span className="block">Conversion</span><span className={SUB}>now further along</span>
+              <span className="block">Conversion</span><span className={SUB} />
             </th>
             <th className={TH} title="Net New against the period before, same length">
               <span className="block">Trend</span>
@@ -444,18 +443,17 @@ function StageTable({ data, byTime, nameOf, onDrill, pipelineFilter, actOpen, on
   );
 }
 
-/** "40%" with "2 of 5" beneath; the percentage opens the records that moved on. */
+/** "40%"; hover gives "2 of 5", and the percentage opens the records that moved on. */
 function ConversionCell({ row, pending, onDrill }: { row: StageFlowRow; pending: boolean; onDrill: () => void }) {
   const c = row.conversion;
   if (pending || !c || c.of === 0) return <span className="text-ink-4">—</span>;
   const pct = Math.round((c.on / c.of) * 100);
   return (
     <span className="inline-flex flex-col items-center leading-tight">
-      {c.on === 0 ? <span className="text-ink-3">0%</span> : (
+      {c.on === 0 ? <span className="text-ink-3" title={`0 of ${c.of} are further along now`}>0%</span> : (
         <button type="button" onClick={onDrill} title={`${c.on} of ${c.of} are further along now: click to list them`}
           className="tabular-nums text-ink underline-offset-2 hover:text-accent hover:underline">{pct}%</button>
       )}
-      <span className="text-[10.5px] tabular-nums text-ink-4">{c.on} of {c.of}</span>
     </span>
   );
 }
