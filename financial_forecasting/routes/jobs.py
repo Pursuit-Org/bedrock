@@ -379,10 +379,16 @@ class OpportunityUpdate(BaseModel):
     tags: Optional[list[str]] = None
 
 
+def _check_job_type(job_type: str) -> None:
+    if not jobs_metrics.valid_job_type(job_type):
+        raise HTTPException(400, f"Unknown job type: {job_type!r}")
+
+
 @router.get("/metrics/{key}")
 async def metric_drilldown(
     key: str,
     segment: Optional[str] = Query(None),
+    job_type: str = Query(jobs_metrics.FULL_TIME),
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
@@ -390,20 +396,23 @@ async def metric_drilldown(
 
     Generic shape: {title, columns:[{key,label}], rows:[{...}], count}.
     Lets the frontend render any metric's detail in one table component.
+    An expandable drill sends {columns, child_columns} and `_children` per row.
 
-    `segment` (an L3 cohort) mirrors the headline cards: the drill has to be
-    scoped the same way the number above it is, or the list doesn't reconcile
-    with it. Only builder-based rows can be scoped — a committed open req has
-    no builder and so no cohort, so under a segment it drops out of the drill
-    exactly as it drops out of the headline.
+    `segment` (an L3 cohort, or "current_l3") and `job_type` mirror the
+    headline cards: the drill is scoped the way the number above it is, so
+    its row count is the number. Committed roles have no builder and so no
+    cohort; they're their own drill, the same under every cohort.
     """
     ENGAGED = ("initial_outreach", "active", "on_hold")
+    _check_job_type(job_type)
 
     seg = segment if segment and segment != "all" else None
-    seg_uids: Optional[set] = None
-    if seg:
-        prows = await conn.fetch(f"WITH {_L3PLUS_POOL} SELECT user_id, segment FROM pool")
-        seg_uids = {r["user_id"] for r in prows if r["segment"] == seg}
+    _pop: list = []
+
+    async def population() -> jobs_metrics.Population:
+        if not _pop:
+            _pop.append(await jobs_metrics.population(conn, segment))
+        return _pop[0]
 
     # ---- contact-based metrics ----
     contact_cols = [
@@ -508,152 +517,98 @@ async def metric_drilldown(
         )
         return company_cols, [dict(r) for r in rows], "company"
 
-    # The placement drills share the headline's rule (services/jobs_metrics,
-    # PRO-97), so each list is exactly the records its card counted.
-    async def counted_records():
-        p = jobs_metrics.placements(await jobs_metrics.employment_records(conn), user_ids=seg_uids)
-        return sorted(p.records, key=lambda r: ((r["builder"] or "").lower(),
-                                                 r["employment_type"] != "full_time"))
+    # The outcome drills share the headline's rule (services/jobs_metrics,
+    # PRO-97, PRO-99): one row per builder the card counted, so the row count
+    # is the number, each expandable to the roles behind it. Read-only: pay,
+    # titles and stages are edited on the builder (Placement › Builders) or
+    # through the role on the opportunity.
+    async def counted() -> jobs_metrics.Placements:
+        pop = await population()
+        return jobs_metrics.placements(await jobs_metrics.employment_records(conn),
+                                       user_ids=pop.user_ids)
 
-    async def committed_open_roles():
-        # Committed open reqs have no builder, so no cohort: dropped under a
-        # segment to match the headline, which excludes them there.
-        if seg:
-            return []
-        return await conn.fetch(jobs_metrics.committed_roles_sql(
-            "r.id, r.approx_salary, r.opportunity_id::text AS opp_id, o.account_name, r.title",
-            order="o.account_name"))
+    def _pay(v) -> str:
+        return f"${int(v):,}" if v else "—"
 
-    async def placements(where: str):
-        # Drill for the "FT Roles Secured" headline. Flat table, one row per role:
-        # Company | Builder | Status | Role. Three kinds —
-        #   (1) FT-placed  → builder filled the full-time seat
-        #   (2) trial active → builder is in a committed trial (converts to a separate
-        #        open FT req, so it never inflates the FT number; Fowler/Ethan)
-        #   (3) committed open req → seat locked in, no builder placed yet (Builder = —)
-        # The headline count = (1)+(3); trials are shown here but not counted.
-        out = []
-        placed = [r for r in await counted_records() if r["employment_type"] == "full_time"]
-        opp_of = {}
-        if placed:
-            for r in await conn.fetch(
-                    "SELECT employment_record_id AS id, opportunity_id::text AS opp_id FROM bedrock.jobs_role "
-                    "WHERE employment_record_id = ANY($1::int[])", [r["id"] for r in placed]):
-                opp_of.setdefault(r["id"], r["opp_id"])
-        # The headline counts DISTINCT BUILDERS, so only one record per builder
-        # may carry the ✓ — someone with a prior FT role and a current one would
-        # otherwise tick twice against a number that counted them once, and the
-        # list would stop adding up to the card above it. Representative = the
-        # role they're actually in, else the best-paid one.
-        _rep: dict = {}
-        for r in placed:
-            key = (jobs_metrics.in_role(r), r["payment_amount"] or 0)
-            if r["user_id"] not in _rep or key > _rep[r["user_id"]][0]:
-                _rep[r["user_id"]] = (key, r["id"])
-        counted_ids = {v[1] for v in _rep.values()}
-        for r in placed:
-            out.append({
-                "id": str(r["id"]), "kind": "placed",
-                "opportunity_id": opp_of.get(r["id"]),
-                "company": r["company_name"] or "—",
-                "builder": r["builder"] or "—",
-                "status": ("Full-time placed" if jobs_metrics.in_role(r)
-                           else "Full-time placed — no longer in role"),
-                # Raw value so the drill can render an editable stage dropdown;
-                # `status` stays the human sentence for the read-only rows.
-                "engagement_stage": r["engagement_stage"],
-                "role": r["role_title"] or "—",
-                "salary": str(int(r["payment_amount"])) if r["payment_amount"] else "",
-                "counted": "✓" if r["id"] in counted_ids else "—",
-            })
-        # (2) committed active trials — builder in a trial (converts to the open FT req below)
-        trials = await conn.fetch(f"""
-            SELECT r.id, r.approx_salary, r.opportunity_id::text AS opp_id, o.account_name, r.title,
-                   r.filled_by_user_id, s.builder
-            FROM bedrock.jobs_role r
-            JOIN bedrock.jobs_opportunity o ON o.id = r.opportunity_id
-            LEFT JOIN bedrock.secured_jobs() s ON s.id = r.employment_record_id
-            WHERE o.deleted_at IS NULL AND {_trial_running()}
-            ORDER BY o.account_name
-        """)
-        # A trial HAS a builder, so it does have a cohort — scoped, not dropped.
-        if seg_uids is not None:
-            trials = [t for t in trials if t["filled_by_user_id"] in seg_uids]
-        for tr in trials:
-            out.append({
-                "id": str(tr["id"]), "kind": "role",
-                "opportunity_id": tr["opp_id"],
-                "company": tr["account_name"] or "—",
-                "builder": tr["builder"] or "—",
-                "status": "Trial active — counts on conversion",
-                "role": tr["title"] or "Trial",
-                "salary": str(int(tr["approx_salary"])) if tr["approx_salary"] else "",
-                "counted": "—",
-            })
-        # (3) committed FT roles still open — no builder placed yet.
-        for cr in await committed_open_roles():
-            out.append({
-                "id": str(cr["id"]), "kind": "role",
-                "opportunity_id": cr["opp_id"],
-                "company": cr["account_name"] or "—",
-                "builder": "—",
-                "status": "Committed – open req",
-                "role": cr["title"] or "FT role",
-                "salary": str(int(cr["approx_salary"])) if cr["approx_salary"] else "",
-                "counted": "✓",
-            })
-        # Sort so one company's rows sit together — a trial + its conversion seat
-        # read as one story instead of a confusing duplicate (JPMC, Fowler).
-        out.sort(key=lambda r: (r["company"].lower(), r["counted"] != "✓"))
-        cols = [
-            {"key": "company", "label": "Company"},
-            {"key": "builder", "label": "Builder"},
-            {"key": "status",  "label": "Status"},
-            {"key": "role",    "label": "Role"},
-            {"key": "salary",  "label": "Pay"},
-            {"key": "counted", "label": "In FT #"},
-        ]
-        return cols, out, "placement"
+    role_columns = [
+        {"key": "company", "label": "Company"},
+        {"key": "role", "label": "Role"},
+        {"key": "type", "label": "Type"},
+        {"key": "status", "label": "Status"},
+        {"key": "start_date", "label": "Started"},
+        {"key": "pay", "label": "Pay"},
+        {"key": "source", "label": "From"},
+    ]
 
-    async def salaries(_where: str):
-        # Flat, EDITABLE breakdown of everything feeding Avg FT Salary: each FT
-        # placement (employment_record) + each committed open FT role, with the
-        # id needed to edit it inline. Placed rows edit via the placement; committed
-        # via the role (both stay in sync once filled).
-        placed = [r for r in await counted_records() if r["employment_type"] == "full_time"]
-        out = []
-        for r in placed:
-            out.append({"id": str(r["id"]), "kind": "placed", "name": r["builder"],
-                        "where": r["company_name"] or "—", "role": r["role_title"] or "—",
-                        "status": "Placed", "salary": str(int(r["payment_amount"])) if r["payment_amount"] else ""})
-        for r in await committed_open_roles():
-            out.append({"id": str(r["id"]), "kind": "committed", "name": r["account_name"] or "—",
-                        "where": r["account_name"] or "—", "role": r["title"] or "FT role",
-                        "status": "Committed", "salary": str(int(r["approx_salary"])) if r["approx_salary"] else ""})
-        cols = [
-            {"key": "name", "label": "Builder / Account"},
-            {"key": "role", "label": "Role"},
-            {"key": "status", "label": "Status"},
-            {"key": "salary", "label": "Salary"},
-        ]
-        return cols, out, "salary"
-
-    async def any_paid(_where: str):
-        # One row PER PAID ROLE: builders with several paid engagements show each
-        # (the headline still counts distinct builders). Grouped by builder.
-        # Unpriced work isn't paid work under the placement rule (dictionary,
-        # 2026-08-16), so every row has its pay.
-        out = [{
-            "builder": r["builder"],
+    def _role_row(r) -> dict:
+        return {
+            "id": str(r["id"]),
+            "opportunity_id": str(r["opportunity_id"]) if r.get("opportunity_id") else None,
             "company": r["company_name"] or "—",
             "role": r["role_title"] or "—",
-            "type": ("Full-Time" if r["employment_type"] == "full_time"
-                     else (r["employment_type"] or "—").replace("_", " ").title()),
-            "salary": f"${int(r['payment_amount']):,}",
-        } for r in await counted_records()]
-        cols = [{"key": "builder", "label": "Builder"}, {"key": "company", "label": "Company"},
-                {"key": "role", "label": "Role"}, {"key": "type", "label": "Type"}, {"key": "salary", "label": "Pay"}]
-        return cols, out, "builder"
+            "type": jobs_metrics.record_type_label(r),
+            "status": "In role" if jobs_metrics.in_role(r) else "Left",
+            "start_date": r.get("start_date"),
+            "pay": _pay(r["payment_amount"]),
+            "source": jobs_metrics.provenance(r),
+        }
+
+    def by_builder(records, *, headline_pay=None):
+        """One row per builder, their roles folded (the same company, role and
+        pay once) and listed underneath. The row shows the role they're in,
+        else the best paid. `headline_pay` picks the pay the row shows."""
+        groups: dict = {}
+        for r in records:
+            groups.setdefault(r["user_id"], []).append(r)
+        out = []
+        for uid, recs in groups.items():
+            recs = jobs_metrics.fold_duplicates(recs)
+            recs.sort(key=lambda r: (not jobs_metrics.in_role(r), -(r["payment_amount"] or 0)))
+            lead = recs[0]
+            out.append({
+                "id": str(uid),
+                "builder": lead["builder"] or "—",
+                "company": lead["company_name"] or "—",
+                "role": lead["role_title"] or "—",
+                "type": jobs_metrics.record_type_label(lead),
+                "pay": _pay(headline_pay(recs) if headline_pay else lead["payment_amount"]),
+                "status": ("In role" if any(jobs_metrics.in_role(r) for r in recs) else "Left"),
+                "roles": len(recs),
+                "_children": [_role_row(r) for r in recs],
+            })
+        out.sort(key=lambda r: r["builder"].lower())
+        return out
+
+    builder_columns = [
+        {"key": "builder", "label": "Builder"},
+        {"key": "company", "label": "Company"},
+        {"key": "role", "label": "Role"},
+        {"key": "type", "label": "Type"},
+        {"key": "status", "label": "Status"},
+        {"key": "pay", "label": "Pay"},
+        {"key": "roles", "label": "Roles"},
+    ]
+
+    async def placed(_where: str):
+        # The Placed card: under full-time (the default), builders placed
+        # full-time or through a paid trial (D2); under another job type, the
+        # builders with counted work of that type; under "all", paid work.
+        rows = by_builder((await counted()).of_type(job_type))
+        return {"columns": builder_columns, "child_columns": role_columns}, rows, "builder"
+
+    async def any_paid(_where: str):
+        rows = by_builder((await counted()).of_type(jobs_metrics.ALL_PAID))
+        return {"columns": builder_columns, "child_columns": role_columns}, rows, "builder"
+
+    async def salaries(_where: str):
+        # What Avg FT salary averages: each full-time placed builder's highest
+        # full-time pay, once. Committed roles' expected salary is its own
+        # number (the committed_roles drill), never blended in.
+        ft = [r for r in (await counted()).records if r["employment_type"] == jobs_metrics.FULL_TIME]
+        rows = by_builder(ft, headline_pay=lambda recs: max(r["payment_amount"] or 0 for r in recs))
+        cols = [c for c in builder_columns if c["key"] != "type"]
+        cols = [{**c, "label": "FT salary"} if c["key"] == "pay" else c for c in cols]
+        return {"columns": cols, "child_columns": role_columns}, rows, "builder"
 
     async def committed_roles(_where: str):
         rows = await conn.fetch(jobs_metrics.committed_roles_sql(
@@ -670,8 +625,9 @@ async def metric_drilldown(
             WHERE stage='interview' AND source_type='Pursuit_referred'
             ORDER BY company_name
         """)
-        if seg_uids is not None:
-            rows = [r for r in rows if r["builder_id"] in seg_uids]
+        if seg:
+            uids = (await population()).user_ids
+            rows = [r for r in rows if r["builder_id"] in uids]
         out = [{"builder": r["builder"] or "—", "company": r["company_name"] or "—",
                 "role": r["role_title"] or "—", "stage": "Interviewing"} for r in rows]
         cols = [{"key": "builder", "label": "Builder"}, {"key": "company", "label": "Company"},
@@ -679,8 +635,8 @@ async def metric_drilldown(
         return cols, out, "builder"
 
     DISPATCH = {
-        "any_paid":             ("Builders With Paid Work",   lambda: any_paid("true")),
-        "committed_roles":      ("Committed FT Roles (unfilled)", lambda: committed_roles("true")),
+        "any_paid":             ("Builders with paid work",   lambda: any_paid("true")),
+        "committed_roles":      ("Committed roles (unfilled)", lambda: committed_roles("true")),
         "interviewing_builders": ("Builders Interviewing",    lambda: builders_interviewing("true")),
         "total_leads":          ("Total Leads",              lambda: contacts("true")),
         "engaged_leads":        ("Engaged Prospects",        lambda: engaged_prospects("true")),
@@ -692,8 +648,11 @@ async def metric_drilldown(
         "active_companies":     ("Active Companies",         lambda: deals(_sql_in("stage", OPPORTUNITY_STAGES_ACTIVE_ANY))),
         "in_discussion":        ("In Discussion",            lambda: deals("stage='active_in_discussions'")),
         "builder_interviews":   ("Builders Submitted / Interviewing", lambda: deals(_sql_in("stage", ["builder_submitted", "builder_interviewing", "reviewing_builders", "active_builder_interview"]))),
-        "placements":           ("FT Roles Secured", lambda: placements("true")),
-        "ft_salaries":          ("FT Salaries", lambda: salaries("true")),
+        "placements":           (("Placed" if job_type == jobs_metrics.FULL_TIME
+                                  else "Builders with paid work" if job_type == jobs_metrics.ALL_PAID
+                                  else f"Placed — {jobs_metrics.job_type_label(job_type)}"),
+                                 lambda: placed("true")),
+        "ft_salaries":          ("Full-time salaries", lambda: salaries("true")),
         "candidates_submitted": ("Companies w/ Candidates Submitted", lambda: companies("stage IN ('applied','interview','accepted')")),
         "interviewing":         ("Companies Interviewing Builders",   lambda: companies("stage='interview'")),
     }
@@ -716,8 +675,8 @@ async def metric_drilldown(
     if isinstance(columns, dict):
         child_columns = columns.get("child_columns")
         columns = columns["columns"]
-    # serialize dates + ids
-    for r in rows:
+    # serialize dates + ids, child rows included
+    for r in rows + [c for r in rows for c in r.get("_children", [])]:
         for k, v in list(r.items()):
             if hasattr(v, "isoformat"):
                 r[k] = v.isoformat()
@@ -735,134 +694,96 @@ async def metric_drilldown(
 @router.get("/placements")
 async def get_placements(
     segment: Optional[str] = Query(None),
+    job_type: str = Query(jobs_metrics.FULL_TIME),
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
-    """Secured jobs, from public.employment_records.
+    """The Overview's outcome cards, from public.employment_records.
 
     Every number here follows one placement rule (services/jobs_metrics.py,
     dictionary Employment #171 and Post-program salary #164): pay recorded,
     not pro bono, not a `pipeline` record, started, not on a deleted
-    opportunity, not a test account. A builder counts once. Self-sourced
-    placements (no opportunity) count, and are separated by `influenced`.
-    `segment` (an L3 cohort) scopes the builder-side numbers to that segment
-    of the job-ready pool; committed roles stay global (demand).
-    """
-    seg = segment if segment and segment != "all" else None
-    pool = await jobs_metrics.job_ready_pool(conn)
-    seg_uids = {uid for uid, s in pool.items() if s == seg} if seg else None
-    records = await jobs_metrics.employment_records(conn)
-    p = jobs_metrics.placements(records, user_ids=seg_uids)
+    opportunity, not a test account. A builder counts once.
 
-    # The representative placement per builder, for the list: FT, then
-    # influenced, then the better paid.
-    by_builder: dict = {}
-    for r in p.records:
-        key = (r["employment_type"] == "full_time", r["influenced"] is True, r["payment_amount"] or 0)
-        cur = by_builder.get(r["user_id"])
-        if cur is None or key > cur[0]:
-            by_builder[r["user_id"]] = (key, r)
+    Over the job-ready pool (#176), which `segment` narrows to one L3 cohort
+    ("current_l3": the one that finished most recently). Placed (D2) is
+    full-time or a paid trial; `job_type` swaps it for one other type, or
+    "all" paid work (D4). Committed roles sit beside Placed, never in it, and
+    have no cohort: they're the same under every segment.
+    """
+    _check_job_type(job_type)
+    pop = await jobs_metrics.population(conn, segment)
+    pop_uids = pop.user_ids
+    p = jobs_metrics.placements(await jobs_metrics.employment_records(conn), user_ids=pop_uids)
+
+    placed_uids = p.uids(job_type)
+    in_role = len(p.in_role_uids(job_type))
+    placed_rate = round(100 * len(placed_uids) / len(pop_uids), 1) if pop_uids else None
 
     committed = await conn.fetch(jobs_metrics.committed_roles_sql("r.id, r.approx_salary"))
-    committed_ft_roles = len(committed)
-    # Committed roles have no builder, so no cohort. Blending their (global)
-    # salaries into a cohort-scoped average repeated the same demand under
-    # every cohort (TKT-127). Under a segment the average is placed-only.
-    avg_salary_ft_secured = p.avg_ft_salary_secured(
-        [] if seg else [r["approx_salary"] for r in committed])
+    committed_salary = jobs_metrics.avg_expected_salary(r["approx_salary"] for r in committed)
 
-    # Builders in a committed paid trial that's under way. Shown beside the
-    # headline, not in it, until PRO-99 decides how trials count (D2).
-    trial_rows = await conn.fetch(f"""
-        SELECT DISTINCT r.filled_by_user_id AS uid FROM bedrock.jobs_role r
-        JOIN bedrock.jobs_opportunity o ON o.id = r.opportunity_id
-        WHERE o.deleted_at IS NULL AND {_trial_running()}
-    """)
-    trial_uids = {r["uid"] for r in trial_rows}
-    if seg_uids is not None:
-        trial_uids &= seg_uids
-
-    # Builders currently interviewing (job_applications), optionally segment-scoped.
+    # Builders currently interviewing (job_applications), in the population.
     iv_rows = await conn.fetch("""
         SELECT DISTINCT ja.builder_id FROM public.job_applications ja
         WHERE ja.stage = 'interview' AND ja.source_type = 'Pursuit_referred' AND ja.builder_id IS NOT NULL
     """)
-    iv_uids = {r["builder_id"] for r in iv_rows}
-    if seg_uids is not None:
-        iv_uids &= seg_uids
+    interviewing = len({r["builder_id"] for r in iv_rows} & pop_uids)
 
-    out = []
-    for uid, (_k, r) in sorted(by_builder.items(),
-                               key=lambda kv: (kv[1][1]["employment_type"] != "full_time",
-                                               kv[1][1]["builder"] or "")):
-        et = r["employment_type"]
-        type_label = ("Full-Time" if et == "full_time"
-                      else "PT / Contract" if et in ("contract", "freelance")
-                      else (et or "—").replace("_", " ").title())
-        out.append({
-            "id": str(r["id"]),
-            "builder": r["builder"],
-            "role_title": r["role_title"] or "—",
-            "company_name": r["company_name"] or "—",
-            "employment_type": type_label,
-            "ft_placed": uid in p.ft_uids,
-            "influenced": r["influenced"],
-            "salary": int(r["payment_amount"]) if r["payment_amount"] else None,
-            "source": r["source"],
-        })
-
-    # Committed roles have no builder, so no cohort: including them in a
-    # cohort-scoped headline repeated the same roles under every cohort
-    # (TKT-127). Under a segment they're reported separately and excluded
-    # from the additive number.
-    ft_roles_secured = p.placed_ft + (0 if seg else committed_ft_roles)
-    pool_uids = set(pool) if seg_uids is None else seg_uids
-    placed_ft_rate = (round(100 * len(p.ft_uids & pool_uids) / len(pool_uids), 1)
-                      if pool_uids else None)
-    filters = {"segment": seg}
-    drill = lambda key: {"endpoint": f"/api/jobs/metrics/{key}", "params": {"segment": seg}}
+    filters = {"segment": pop.segment, "job_type": job_type}
+    drill = lambda key, **kw: {"endpoint": f"/api/jobs/metrics/{key}",
+                               "params": {"segment": pop.picked, **kw}}
+    placed_drill = drill("placements", job_type=job_type)
     return {
         "success": True,
         "data": {
-            "ft_builders":  p.placed_ft,
-            "any_builders": p.paid_work,
-            "influenced_ft":  len(p.ft_uids & p.influenced_uids),
-            "influenced_any": len(p.paid_uids & p.influenced_uids),
-            "committed_ft_roles": committed_ft_roles,
-            "committed_trial_active": len(trial_uids),
-            "ft_no_longer_in_role": p.ft_no_longer_in_role,
-            "ft_roles_secured": ft_roles_secured,
+            "segment": pop.segment,
+            "job_type": job_type,
+            "job_types": p.job_types(),
+            "job_ready": len(pop_uids),
+            # The Placed card (headline = placed; full-time and trial lines
+            # only mean something under full-time).
+            "placed": len(placed_uids),
+            "placed_ft": len(p.ft_uids),
+            "placed_trial": len(p.trial_only_uids),
+            "placed_in_role": in_role,
+            "placed_left": len(placed_uids) - in_role,
+            "placed_rate": placed_rate,
+            "committed_roles": len(committed),
             "committed_is_global": True,
-            "avg_salary_ft_placed": p.avg_ft_salary_placed,
-            "avg_salary_ft_secured": avg_salary_ft_secured,
-            "placed_ft_rate": placed_ft_rate,
-            "interviewing": len(iv_uids),
-            "rows": out,
+            # Paid work: every type.
+            "paid_work": len(p.paid_uids),
+            "influenced_paid": len(p.paid_uids & p.influenced_uids),
+            # Avg FT salary: placed builders only; committed roles' expected
+            # salary is its own line.
+            "avg_ft_salary_placed": p.avg_ft_salary_placed,
+            "ft_salaried": len(p.ft_salary),
+            "committed_expected_salary": committed_salary,
+            "interviewing": interviewing,
             # What each number means, from the data dictionary (PRO-97).
-            # Retired #173/#174/#175 are no longer referenced: the cards read
-            # Employment (#171) and Post-program salary (#164).
             "definitions": {
-                "ft_roles_secured": jobs_metrics.define(
-                    "ft_roles_secured", value=ft_roles_secured, filters=filters, records=drill("placements")),
-                "ft_builders": jobs_metrics.define(
-                    "placed_ft", value=p.placed_ft, filters=filters, records=drill("placements")),
-                "ft_no_longer_in_role": jobs_metrics.define(
-                    "placed_ft_in_role", value=p.placed_ft - p.ft_no_longer_in_role, filters=filters,
-                    records=drill("placements")),
-                "committed_ft_roles": jobs_metrics.define(
-                    "committed_roles", value=committed_ft_roles, records=drill("committed_roles")),
-                "committed_trial_active": jobs_metrics.define(
-                    "trials_running", value=len(trial_uids), filters=filters, records=drill("placements")),
-                "any_builders": jobs_metrics.define(
-                    "paid_work", value=p.paid_work, filters=filters, records=drill("any_paid")),
-                "avg_salary_ft_placed": jobs_metrics.define(
-                    "avg_ft_salary_placed", value=p.avg_ft_salary_placed, filters=filters,
+                "placed": jobs_metrics.define(
+                    "placed", value=len(placed_uids), filters=filters, records=placed_drill),
+                "placed_ft": jobs_metrics.define(
+                    "placed_ft", value=len(p.ft_uids), filters=filters, records=placed_drill),
+                "placed_trial": jobs_metrics.define(
+                    "placed_trial", value=len(p.trial_only_uids), filters=filters, records=placed_drill),
+                "placed_in_role": jobs_metrics.define(
+                    "placed_in_role", value=in_role, filters=filters, records=placed_drill),
+                "placed_rate": jobs_metrics.define(
+                    "placed_rate", value=placed_rate, filters=filters),
+                "job_ready": jobs_metrics.define(
+                    "job_ready_pool", value=len(pop_uids), filters={"segment": pop.segment}),
+                "committed_roles": jobs_metrics.define(
+                    "committed_roles", value=len(committed), records=drill("committed_roles")),
+                "paid_work": jobs_metrics.define(
+                    "paid_work", value=len(p.paid_uids), filters={"segment": pop.segment},
+                    records=drill("any_paid")),
+                "avg_ft_salary_placed": jobs_metrics.define(
+                    "avg_ft_salary_placed", value=p.avg_ft_salary_placed, filters={"segment": pop.segment},
                     records=drill("ft_salaries")),
-                "avg_salary_ft_secured": jobs_metrics.define(
-                    "avg_ft_salary_secured", value=avg_salary_ft_secured, filters=filters,
-                    records=drill("ft_salaries")),
-                "placed_ft_rate": jobs_metrics.define(
-                    "placed_ft_rate", value=placed_ft_rate, filters=filters),
+                "committed_expected_salary": jobs_metrics.define(
+                    "committed_expected_salary", value=committed_salary, records=drill("committed_roles")),
             },
         },
     }
@@ -2681,13 +2602,21 @@ _L3PLUS_POOL = jobs_metrics.L3PLUS_POOL_CTE
 
 @router.get("/builder-segments")
 async def builder_segments(user=Depends(require_auth), conn=Depends(get_db)):
-    """L3-cohort segments present in the L3+ pool — drives the dashboard filter."""
+    """L3-cohort segments present in the L3+ pool — drives the dashboard filter.
+    "Current L3" (D12) comes first: the L3 cohort that finished most recently,
+    by the cohorts table's dates."""
     rows = await conn.fetch(f"""
         WITH {_L3PLUS_POOL}
         SELECT segment, count(*) AS n FROM pool GROUP BY segment ORDER BY n DESC
     """)
+    segments = [{"value": r["segment"], "label": r["segment"], "count": r["n"]} for r in rows]
+    current = await jobs_metrics.current_l3_cohort(conn)
+    if current:
+        n = next((s["count"] for s in segments if s["value"] == current), 0)
+        segments.insert(0, {"value": jobs_metrics.CURRENT_L3, "label": f"Current L3 · {current}",
+                            "count": n, "cohort": current})
     return {"success": True, "data": {
-        "segments": [{"value": r["segment"], "label": r["segment"], "count": r["n"]} for r in rows],
+        "segments": segments,
         "total": sum(r["n"] for r in rows),
     }}
 
@@ -2784,6 +2713,7 @@ async def get_funnel(
     period_from: Optional[str] = Query(None, description="YYYY-MM-DD, inclusive"),
     period_to: Optional[str] = Query(None, description="YYYY-MM-DD, inclusive"),
     owner: Optional[str] = Query(None, description="Opportunities only: scope to one owner email"),
+    job_type: str = Query(jobs_metrics.FULL_TIME, description="Builders only: what the last stage counts"),
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
@@ -2804,9 +2734,13 @@ async def get_funnel(
     Overview, 400% on Outreach and Pipeline when a backlog cleared. Only the
     builders funnel keeps a per-row rate, its stages being subsets of each other.
 
-    `deal_type` (ft | pt_contract | ...) scopes every funnel to that lens:
-    opportunities by their own deal_type; prospects to contacts at companies
-    that have a deal of that type; builders to applications on such opps.
+    `deal_type` (ft | pt_contract | ...) scopes the opportunities and
+    prospects funnels to that lens: opportunities by their own deal_type;
+    prospects to contacts at companies that have a deal of that type.
+
+    Builders: job-ready → paid work → placed, the Overview cards' numbers
+    (PRO-99). `segment` is an L3 cohort or "current_l3"; `job_type` is what
+    the last stage counts, placed (full-time or a paid trial) by default.
 
     `owner` scopes the opportunities funnel to one deal owner, matching the
     Owner filter on the Pipeline page it sits on (PIP-07).
@@ -2942,11 +2876,14 @@ async def get_funnel(
         # Job-ready pipeline keyed off the L3+ pool + actual paid placements
         # (employment_records) — so hiring a builder into a role shows them as
         # hired here (the old job_applications-based funnel never updated on hire).
-        seg = segment if segment and segment != "all" else None
+        _check_job_type(job_type)
+        seg = await jobs_metrics.resolve_segment(conn, segment)
         stage_order = [
-            ("job_ready", "Job Ready (L3+)"),
-            ("paid",      "Hired — Any Paid Work"),
-            ("ft",        "Hired — Full-Time"),
+            ("job_ready", "Job-ready (L3+)"),
+            ("paid",      "Paid work"),
+            ("placed",    "Placed" if job_type == jobs_metrics.FULL_TIME
+                          else f"Placed — {jobs_metrics.job_type_label(job_type)}"
+                          if job_type != jobs_metrics.ALL_PAID else "Paid work (all types)"),
         ]
         record_columns = [
             {"key": "name", "label": "Builder"},
@@ -2960,19 +2897,28 @@ async def get_funnel(
             "SELECT user_id, name, company, role FROM bedrock.l3plus_funnel($1)", seg
         )
         # Who is placed follows the Overview cards' rule (services/jobs_metrics,
-        # PRO-97), not the function's own flags: those skipped the deleted-
-        # opportunity and test-account filters, so the funnel and the cards
-        # above it disagreed.
-        placed = jobs_metrics.placements(await jobs_metrics.employment_records(conn),
-                                         user_ids={r["user_id"] for r in prows})
-        by_stage = {"job_ready": [], "paid": [], "ft": []}
+        # PRO-97, PRO-99), not the function's own flags: those skipped the
+        # deleted-opportunity and test-account filters, so the funnel and the
+        # cards above it disagreed. A builder's company and role are the
+        # counted record's (the one they're in, else the best paid), not the
+        # function's best-paid record of any kind.
+        p = jobs_metrics.placements(await jobs_metrics.employment_records(conn),
+                                    user_ids={r["user_id"] for r in prows})
+        paid, placed_uids = p.paid_uids, p.uids(job_type)
+        lead: dict = {}
+        for r in sorted(p.records, key=lambda r: (jobs_metrics.in_role(r), r["payment_amount"] or 0)):
+            lead[r["user_id"]] = r
+        by_stage = {"job_ready": [], "paid": [], "placed": []}
         for r in prows:
-            rec = {"name": r["name"], "company": r["company"] or "—", "role": r["role"] or "—"}
+            got = lead.get(r["user_id"])
+            rec = {"name": r["name"],
+                   "company": (got or {}).get("company_name") or "—",
+                   "role": (got or {}).get("role_title") or "—"}
             by_stage["job_ready"].append(rec)
-            if r["user_id"] in placed.paid_uids:
+            if r["user_id"] in paid:
                 by_stage["paid"].append(rec)
-            if r["user_id"] in placed.ft_uids:
-                by_stage["ft"].append(rec)
+            if r["user_id"] in placed_uids:
+                by_stage["placed"].append(rec)
     else:
         raise HTTPException(404, f"Unknown funnel: {ftype}")
 
@@ -3233,11 +3179,11 @@ async def get_funnel(
     # What the counts and rates mean, from the data dictionary (PRO-97).
     filters = {"deal_type": deal_type, "owner": owner_f, "segment": segment}
     if ftype == "builders":
-        within = {**filters, "population": "job-ready pool"}
+        within = {"segment": seg, "population": "job-ready pool"}
         definitions = {
             "job_ready": jobs_metrics.define("job_ready_pool", value=counts[0], filters=within),
             "paid": jobs_metrics.define("paid_work", value=counts[1], filters=within),
-            "ft": jobs_metrics.define("placed_ft", value=counts[2], filters=within),
+            "placed": jobs_metrics.define("placed", value=counts[2], filters={**within, "job_type": job_type}),
         }
     else:
         noun = "contacts" if ftype == "prospects" else "opportunities"
@@ -6998,8 +6944,7 @@ _MEMBERSHIP_STAGES = ('assigned', 'initial_outreach', 'scheduling', 'call_booked
 
 # TKT-161: placements whose linked opportunity was soft-deleted (data-entry
 # errors) must not count anywhere. Self-sourced placements (no opp link) stay.
-# Both rules live in services/jobs_metrics.py (the placement rule, PRO-97).
-_trial_running = jobs_metrics.trial_running_sql
+# The rule lives in services/jobs_metrics.py (the placement rule, PRO-97).
 _live_placement = jobs_metrics.live_placement
 
 
@@ -10859,7 +10804,7 @@ async def log_activity(
 # the editable coach/readiness/competency overlay lives in
 # bedrock.builder_job_profile. Status is auto-derived with a manual override.
 
-BUILDER_STATUSES = {"not_started", "actively_applying", "interviewing", "placed", "paused"}
+BUILDER_STATUSES = {"not_started", "actively_applying", "interviewing", "paid_work", "placed", "paused"}
 _READY_KEYS = ("ready_lookbook", "ready_linkedin", "ready_github", "ready_cv", "ready_mock")
 # Profile fields the Builders table shows as editable columns.
 _BOARD_PROFILE_KEYS = (
@@ -10870,21 +10815,19 @@ _BOARD_PROFILE_KEYS = (
 )
 
 
-def _derive_builder_status(placed: bool, interviewing: bool, applying: bool) -> str:
+def _derive_builder_status(placed: bool, paid: bool, interviewing: bool, applying: bool) -> str:
+    """Placed and paid work are the Overview's rule (services/jobs_metrics,
+    PRO-99): placed = full-time or a paid trial; paid work = other counted
+    paid work (Nina 10/13), so Placed + Paid work is the paid-work card."""
     if placed:
         return "placed"
+    if paid:
+        return "paid_work"
     if interviewing:
         return "interviewing"
     if applying:
         return "actively_applying"
     return "not_started"
-
-
-def _is_placed(payment_amount, engagement_stage) -> bool:
-    # "Placed" = a PAID placement, consistent with the placements / North-Star
-    # definition. Unpaid active/completed freelance projects don't count — those
-    # builders are still job-searching.
-    return (payment_amount or 0) > 0
 
 
 # ── Builders tab roster ───────────────────────────────────────────────────────
@@ -10946,14 +10889,16 @@ async def builders_board(user=Depends(require_auth), conn=Depends(get_db)):
     """)
     apps_by = {r["builder_id"]: r for r in apps}
 
+    records = await jobs_metrics.employment_records(conn)
+    counted = jobs_metrics.placements(records)
+    placed_uids, paid_uids = counted.placed_uids, counted.paid_uids
     plc_by: dict = {}
-    for r in await conn.fetch(f"SELECT user_id, payment_amount, engagement_stage, opportunity_id FROM bedrock.secured_jobs() WHERE {_live_placement()}"):
-        b = plc_by.setdefault(r["user_id"], {"count": 0, "placed": False, "deals": set()})
-        b["count"] += 1
-        if _is_placed(r["payment_amount"], r["engagement_stage"]):
-            b["placed"] = True
+    for r in counted.records:
+        plc_by.setdefault(r["user_id"], []).append(r)
+    deals_by: dict = {}
+    for r in records:
         if r["opportunity_id"]:
-            b["deals"].add(r["opportunity_id"])
+            deals_by.setdefault(r["user_id"], set()).add(r["opportunity_id"])
 
     enrolled = {r["builder_id"] for r in await conn.fetch("SELECT DISTINCT builder_id FROM public.job_strategy_enrollments")}
     profs = {r["user_id"]: r for r in await conn.fetch("SELECT * FROM bedrock.builder_job_profile")}
@@ -10962,11 +10907,10 @@ async def builders_board(user=Depends(require_auth), conn=Depends(get_db)):
     status_counts = {s: 0 for s in BUILDER_STATUSES}
     for b in builders:
         uid = b["user_id"]
-        a, p, prof = apps_by.get(uid), plc_by.get(uid), profs.get(uid)
+        a, prof = apps_by.get(uid), profs.get(uid)
         interviews = a["interviews"] if a else 0
-        placed = bool(p and p["placed"])
         applying = (uid in enrolled) or bool(a and a["recent"])
-        derived = _derive_builder_status(placed, interviews > 0, applying)
+        derived = _derive_builder_status(uid in placed_uids, uid in paid_uids, interviews > 0, applying)
         overridden = bool(prof and prof["status_overridden"])
         status = prof["job_search_status"] if (overridden and prof and prof["job_search_status"]) else derived
         status_counts[status] = status_counts.get(status, 0) + 1
@@ -10980,8 +10924,9 @@ async def builders_board(user=Depends(require_auth), conn=Depends(get_db)):
             "counts": {
                 "applications": (a["total"] if a else 0),
                 "interviews": interviews,
-                "placements": (p["count"] if p else 0),
-                "deal_matches": (len(p["deals"]) if p else 0),
+                # Counted paid work, a job's duplicate copies once.
+                "placements": len(jobs_metrics.fold_duplicates(plc_by.get(uid, []))),
+                "deal_matches": len(deals_by.get(uid, ())),
             },
             "readiness": {"complete": sum(ready.values()), "total": len(_READY_KEYS),
                           **{k.replace("ready_", ""): v for k, v in ready.items()}},
@@ -11022,12 +10967,20 @@ async def builder_detail(user_id: int, user=Depends(require_auth), conn=Depends(
         WHERE builder_id = $1 AND source_type = 'Pursuit_referred'
         ORDER BY date_applied DESC NULLS LAST
     """, user_id)
-    placements = await conn.fetch(f"""
-        SELECT id, role_title, company_name, employment_type, payment_amount,
-               engagement_stage, influenced, opportunity_id, start_date
-        FROM bedrock.secured_jobs() WHERE user_id = $1 AND {_live_placement()}
-        ORDER BY (payment_amount > 0) DESC NULLS LAST, payment_amount DESC NULLS LAST
-    """, user_id)
+    # Every live record, each saying whether the placement rule counts it and
+    # where its details come from. This drawer is where they're edited
+    # (Nina 10/13); the Overview's drawers are read-only.
+    placements = sorted(
+        (r for r in await jobs_metrics.employment_records(conn) if r["user_id"] == user_id),
+        key=lambda r: (not (r["payment_amount"] or 0) > 0, -(r["payment_amount"] or 0)))
+    today = jobs_metrics.ny_today()
+    counted = jobs_metrics.placements(placements, today=today)     # before `excluded` is dropped
+    for r in placements:
+        r["counted"] = jobs_metrics.counts_as_placement(r, today)
+        r["in_role"] = jobs_metrics.in_role(r, today)
+        r["provenance"] = jobs_metrics.provenance(r)
+        r["type_label"] = jobs_metrics.record_type_label(r)
+        r.pop("excluded", None)
     deal_ids = [r["opportunity_id"] for r in placements if r["opportunity_id"]]
     deals = []
     if deal_ids:
@@ -11051,11 +11004,10 @@ async def builder_detail(user_id: int, user=Depends(require_auth), conn=Depends(
     """, user_id)
     prof = await conn.fetchrow("SELECT * FROM bedrock.builder_job_profile WHERE user_id = $1", user_id)
 
-    placed = any(_is_placed(r["payment_amount"], r["engagement_stage"]) for r in placements)
     interviewing = any(r["stage"] == "interview" for r in apps)
     recent = any(r["date_applied"] and (datetime.now().date() - r["date_applied"]).days <= 60 for r in apps)
     applying = enrollment is not None or recent
-    derived = _derive_builder_status(placed, interviewing, applying)
+    derived = _derive_builder_status(bool(counted.placed_uids), bool(counted.paid_uids), interviewing, applying)
     overridden = bool(prof and prof["status_overridden"])
     status = prof["job_search_status"] if (overridden and prof and prof["job_search_status"]) else derived
 
@@ -11072,7 +11024,7 @@ async def builder_detail(user_id: int, user=Depends(require_auth), conn=Depends(
         },
         "status": status, "status_overridden": overridden, "derived_status": derived,
         "applications": [dict(r) for r in apps],
-        "placements": [dict(r) for r in placements],
+        "placements": placements,
         "deal_matches": [dict(r) for r in deals],
         "intake_quiz": [{"question_key": r["question_key"], "response_text": r["response_text"],
                          "response_structured": _jsonb(r["response_structured"])} for r in quiz],

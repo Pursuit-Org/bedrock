@@ -985,7 +985,7 @@ export interface MetricDrill {
   columns: { key: string; label: string }[];
   rows: (Record<string, string | null> & { _children?: Record<string, string | null>[] })[];
   count: number;
-  entity: "deal" | "contact" | "activity" | "company" | "placement" | "salary";
+  entity: "deal" | "contact" | "activity" | "company" | "builder" | "role";
   child_columns: { key: string; label: string }[] | null;
 }
 
@@ -1012,33 +1012,39 @@ export interface RolesSummary {
   rows: JobRole[];
 }
 
-export interface Placement {
-  id: string;
-  builder: string;
-  role_title: string;
-  company_name: string;
-  employment_type: string;
-  engagement_stage: string | null;
-  influenced: boolean | null;
-  salary: number | null;
-}
+/** One option of the Overview's job-type filter (D4). "full_time" is placed
+ *  (full-time or a paid trial, D2); "all" is all paid work. */
+export interface JobTypeOption { value: string; label: string; count: number }
 
+/** The Overview's outcome cards (PRO-99). Over the job-ready pool, narrowed
+ *  by `segment`; `placed` follows `job_type`. */
 export interface PlacementsSummary {
-  ft_builders: number;
-  any_builders: number;
-  influenced_ft: number;
-  influenced_any: number;
-  committed_ft_roles: number;
-  committed_trial_active: number;
-  ft_no_longer_in_role: number;
-  ft_roles_secured: number;
-  avg_salary_ft_placed: number | null;
-  avg_salary_ft_secured: number | null;
+  segment: string | null;
+  job_type: string;
+  job_types: JobTypeOption[];
+  job_ready: number;
+  placed: number;
+  /** Full-time only; the breakdown of `placed` under the full-time job type. */
+  placed_ft: number;
+  /** Placed through a paid trial, with no full-time job. */
+  placed_trial: number;
+  placed_in_role: number;
+  placed_left: number;
+  placed_rate: number | null;
+  /** Beside Placed, never added in. No cohort, so the same under every segment. */
+  committed_roles: number;
+  committed_is_global: boolean;
+  paid_work: number;
+  influenced_paid: number;
+  avg_ft_salary_placed: number | null;
+  ft_salaried: number;
+  committed_expected_salary: number | null;
   interviewing: number;
-  rows: Placement[];
 }
 
-export interface BuilderSegment { value: string; label: string; count: number }
+/** An L3 cohort of the job-ready pool. "current_l3" names the cohort it
+ *  stands for in `cohort`. */
+export interface BuilderSegment { value: string; label: string; count: number; cohort?: string }
 export function useBuilderSegments() {
   return useQuery<{ segments: BuilderSegment[]; total: number }>({
     queryKey: ["jobs", "builder-segments"],
@@ -1080,13 +1086,14 @@ export function useThisWeekSummary() {
   });
 }
 
-export function usePlacements(segment?: string) {
+export function usePlacements(segment?: string, jobType = "full_time") {
   const seg = segment && segment !== "all" ? segment : undefined;
   return useQuery<PlacementsSummary>({
-    queryKey: ["jobs", "placements", seg ?? "all"],
+    queryKey: ["jobs", "placements", seg ?? "all", jobType],
     queryFn: async () => {
-      const qs = seg ? `?segment=${encodeURIComponent(seg)}` : "";
-      const { data } = await api.get<ApiResponse<PlacementsSummary>>(`/api/jobs/placements${qs}`);
+      const { data } = await api.get<ApiResponse<PlacementsSummary>>("/api/jobs/placements", {
+        params: { ...(seg ? { segment: seg } : {}), job_type: jobType },
+      });
       return data.data;
     },
     staleTime: 30_000,
@@ -1195,6 +1202,14 @@ export function useUpdatePlacement() {
   });
 }
 
+/** Everything a placement edit changes: the Overview cards and drills, the
+ *  Builders funnel, and the builder board and drawer it's edited from. */
+function invalidatePlacementDependents(qc: ReturnType<typeof useQueryClient>) {
+  for (const key of ["placements", "metric", "funnel", "builders", "builder"]) {
+    qc.invalidateQueries({ queryKey: ["jobs", key] });
+  }
+}
+
 export function useUpdatePlacementSalary() {
   const qc = useQueryClient();
   return useMutation({
@@ -1202,8 +1217,7 @@ export function useUpdatePlacementSalary() {
       await api.patch(`/api/jobs/placements/${id}`, { salary });
     },
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["jobs", "placements"] });
-      qc.invalidateQueries({ queryKey: ["jobs", "metric"] });
+      invalidatePlacementDependents(qc);
       toast.success("Salary updated");
     },
     onError: () => toast.error("Update failed"),
@@ -1246,8 +1260,7 @@ export function useUpdatePlacementStage() {
       });
     },
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["jobs", "placements"] });
-      qc.invalidateQueries({ queryKey: ["jobs", "metric"] });
+      invalidatePlacementDependents(qc);
       toast.success("Status updated");
     },
     onError: () => toast.error("Update failed"),
@@ -1290,8 +1303,7 @@ export function useUpdatePlacementTitle() {
       await api.patch(`/api/jobs/placements/${id}`, { role_title });
     },
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["jobs", "placements"] });
-      qc.invalidateQueries({ queryKey: ["jobs", "metric"] });
+      invalidatePlacementDependents(qc);
       toast.success("Title updated");
     },
     onError: () => toast.error("Update failed"),
@@ -1376,6 +1388,7 @@ export function useJobsFunnel(
   segment?: string,
   period?: FunnelPeriod,
   owner?: string,
+  jobType?: string,
 ) {
   const dt = dealType && dealType !== "all" ? dealType : undefined;
   const seg = segment && segment !== "all" ? segment : undefined;
@@ -1384,12 +1397,15 @@ export function useJobsFunnel(
   // The builders funnel has no stage-entry stamps, so a period would silently
   // return zeros — the backend ignores it, and we keep it out of the key too.
   const p0 = ftype === "builders" ? undefined : period;
+  // What the builders funnel's last stage counts (D4); placed by default.
+  const jt = ftype === "builders" && jobType && jobType !== "full_time" ? jobType : undefined;
   return useQuery<FunnelData>({
-    queryKey: ["jobs", "funnel", ftype, dt ?? "all", seg ?? "all", p0?.from ?? "", p0?.to ?? "", own ?? "all"],
+    queryKey: ["jobs", "funnel", ftype, dt ?? "all", seg ?? "all", p0?.from ?? "", p0?.to ?? "", own ?? "all", jt ?? ""],
     queryFn: async () => {
       const p = new URLSearchParams();
       if (dt) p.set("deal_type", dt);
       if (seg) p.set("segment", seg);
+      if (jt) p.set("job_type", jt);
       if (own) p.set("owner", own);
       if (p0?.from && p0?.to) {
         p.set("period_from", p0.from);
@@ -1414,12 +1430,13 @@ export function useJobRoles() {
   });
 }
 
-export function useMetricDrill(metricKey: string | null, segment?: string) {
+export function useMetricDrill(metricKey: string | null, segment?: string, jobType = "full_time") {
+  const seg = segment && segment !== "all" ? segment : undefined;
   return useQuery<MetricDrill>({
-    queryKey: ["jobs", "metric", metricKey, segment ?? "all"],
+    queryKey: ["jobs", "metric", metricKey, seg ?? "all", jobType],
     queryFn: async () => {
       const { data } = await api.get<ApiResponse<MetricDrill>>(`/api/jobs/metrics/${metricKey}`, {
-        params: segment && segment !== "all" ? { segment } : undefined,
+        params: { ...(seg ? { segment: seg } : {}), job_type: jobType },
       });
       return data.data;
     },
@@ -3027,17 +3044,20 @@ export function useDeleteOpportunity() {
 
 // ── Builders tab ──────────────────────────────────────────────────────────────
 
+/** Placed and Paid work follow the Overview's rule (PRO-99): placed is
+ *  full-time or a paid trial; paid work is other counted paid work. */
 export type BuilderStatus =
-  | "not_started" | "actively_applying" | "interviewing" | "placed" | "paused";
+  | "not_started" | "actively_applying" | "interviewing" | "paid_work" | "placed" | "paused";
 
 export const BUILDER_STATUS_ORDER: BuilderStatus[] = [
-  "actively_applying", "interviewing", "placed", "paused", "not_started",
+  "actively_applying", "interviewing", "paid_work", "placed", "paused", "not_started",
 ];
 
 export const BUILDER_STATUS_LABELS: Record<BuilderStatus, string> = {
   not_started: "Not Started",
   actively_applying: "Actively Applying",
   interviewing: "Interviewing",
+  paid_work: "Paid Work",
   placed: "Placed",
   paused: "Paused",
 };
@@ -3046,6 +3066,7 @@ export const BUILDER_STATUS_STYLES: Record<BuilderStatus, string> = {
   not_started:       "text-ink-3 bg-surface-2",
   actively_applying: "text-[var(--accent)] bg-[var(--accent-soft)]",
   interviewing:      "text-[var(--amber)] bg-[var(--amber-soft)]",
+  paid_work:         "text-[var(--accent)] bg-[var(--green-soft)]",
   placed:            "text-[var(--green)] bg-[var(--green-soft)]",
   paused:            "text-ink-3 bg-surface-2",
 };
@@ -3138,7 +3159,19 @@ export interface BuilderApplication {
 export interface BuilderPlacement {
   id: number; role_title: string | null; company_name: string | null; employment_type: string | null;
   payment_amount: number | null; engagement_stage: string | null; influenced: boolean | null;
-  opportunity_id: string | null; start_date: string | null;
+  opportunity_id: string | null; start_date: string | null; end_date: string | null;
+  source: string | null;
+  /** The placement rule counts it (PRO-97): pay recorded, started, not pro bono… */
+  counted: boolean;
+  in_role: boolean;
+  /** A filled paid-trial role links to it (D2). */
+  is_trial: boolean;
+  /** Hired through a role on an opportunity: pay and title follow the role. */
+  from_role: boolean;
+  /** "Deal role" | "Entered by hand" | "Imported" */
+  provenance: string;
+  /** "Full-time", "Contract", "Paid trial", … */
+  type_label: string;
 }
 export interface BuilderDealMatch {
   id: string; account_name: string | null; stage: JobStage; deal_type: DealType | null; owner_email: string | null;

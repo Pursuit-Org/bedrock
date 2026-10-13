@@ -52,7 +52,7 @@ class Ctx:
 
 async def _placements(ctx):
     from routes import jobs
-    return await ctx.once("placements", lambda: jobs.get_placements(segment=None, user=None, conn=ctx.conn))
+    return await ctx.once("placements", lambda: jobs.get_placements(segment=None, job_type="full_time", user=None, conn=ctx.conn))
 
 
 async def _summary(ctx):
@@ -102,11 +102,6 @@ async def _segments(ctx):
     return await ctx.once("segments", lambda: jobs.builder_segments(user=None, conn=ctx.conn))
 
 
-async def _in_role(ctx):
-    d = (await _placements(ctx))["data"]
-    return d["ft_builders"] - d["ft_no_longer_in_role"]
-
-
 def _row(metric):
     async def get(ctx):
         rows = (await _scorecard(ctx))["data"]["activity_pipeline"]
@@ -124,15 +119,15 @@ def _data(fetch, *path):
 
 
 CHECKS = [
-    Check("placed_ft", "full_time", _data(_placements, "ft_builders")),
-    Check("placed_ft_in_role", "full_time", _in_role),
-    Check("paid_work", "builders_with_paid_work", _data(_placements, "any_builders")),
-    Check("ft_roles_secured", "ft_roles_secured", _data(_placements, "ft_roles_secured")),
-    Check("placed_ft_rate", "rate_pct", _data(_placements, "placed_ft_rate")),
-    Check("trials_running", "trials_running", _data(_placements, "committed_trial_active")),
-    Check("committed_roles", "committed_roles", _data(_placements, "committed_ft_roles")),
-    Check("avg_ft_salary_placed", "avg_ft_salary", _data(_placements, "avg_salary_ft_placed")),
-    Check("avg_ft_salary_secured", "avg_ft_salary", _data(_placements, "avg_salary_ft_secured")),
+    Check("placed", "placed", _data(_placements, "placed")),
+    Check("placed_ft", "full_time", _data(_placements, "placed_ft")),
+    Check("placed_trial", "trial", _data(_placements, "placed_trial")),
+    Check("placed_in_role", "placed_in_role", _data(_placements, "placed_in_role")),
+    Check("placed_rate", "rate_pct", _data(_placements, "placed_rate")),
+    Check("paid_work", "builders_with_paid_work", _data(_placements, "paid_work")),
+    Check("committed_roles", "committed_roles", _data(_placements, "committed_roles")),
+    Check("avg_ft_salary_placed", "avg_ft_salary", _data(_placements, "avg_ft_salary_placed")),
+    Check("committed_expected_salary", "avg_expected_salary", _data(_placements, "committed_expected_salary")),
     Check("job_ready_pool", "job_ready_pool", _data(_segments, "total")),
     Check("accounts_activated", "accounts_activated", _data(_summary, "accounts_activated")),
     Check("outreach", "outreach", _data(_summary, "outreach_activity")),

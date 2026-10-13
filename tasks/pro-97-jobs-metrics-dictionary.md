@@ -129,6 +129,9 @@ Backend: 1,301 passed, 25 skipped, 1 xfail (PRO-99's). Frontend: `tsc -b` clean,
 
 **Pinned values, production, 10/7** (dictionary query; Bedrock runs the same rule):
 
+> Placed, paid work and salary were re-pinned by PRO-99 on 10/13 (placed 18 of 59 with paid trials, paid work 39,
+> avg FT salary $76,821 placed-only): see `tasks/pro-99-outcome-metrics.md`.
+
 | Number | Value | Ticket's pin | Why it moved |
 |---|---|---|---|
 | Placed full-time | 14 of 59 job-ready (23.7%) | 14 of 59 | |

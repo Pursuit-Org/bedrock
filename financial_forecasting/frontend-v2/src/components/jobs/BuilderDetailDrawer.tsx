@@ -1,19 +1,25 @@
-import { type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
+import { Link } from "react-router-dom";
 import { Linkedin, Github, FileText, BookOpen, ExternalLink, Check } from "lucide-react";
 
 import { Drawer } from "@/components/ui/Drawer";
 import { InlineText } from "@/components/ui/InlineEdit";
 import { JobStageChip } from "@/components/jobs/JobStageChip";
+import { PlacementEndDialog } from "@/components/jobs/PlacementEndDialog";
 import { BuilderFieldEditor, type BuilderEditableField } from "@/components/jobs/BuilderFieldEditor";
 import {
   useBuilderDetail,
   useUpdateBuilderProfile,
+  useUpdatePlacementSalary,
+  useUpdatePlacementStage,
+  useUpdatePlacementTitle,
   BUILDER_STATUS_LABELS,
   BUILDER_STATUS_STYLES,
   BUILDER_STATUS_ORDER,
   type JobStage,
   type BuilderJobProfile,
   type BuilderProfileFields,
+  type BuilderPlacement,
 } from "@/services/jobs";
 import { cn } from "@/lib/utils";
 
@@ -186,12 +192,7 @@ export function BuilderDetailDrawer({ userId, onClose }: { userId: number | null
             {data.placements.length > 0 ? (
               <SubList title="Placements">
                 {data.placements.map((pl) => (
-                  <Row key={pl.id}>
-                    <span className="min-w-0 flex-1 truncate font-medium text-ink">{pl.company_name ?? "Independent / Freelance"}</span>
-                    <span className="min-w-0 flex-1 truncate text-ink-3">{pl.role_title ?? "—"}</span>
-                    <span className="text-[11px] text-ink-4">{pl.employment_type ?? "—"}</span>
-                    <span className="w-[80px] text-right font-mono text-[11px] text-ink-2">{pl.payment_amount ? `$${Math.round(pl.payment_amount).toLocaleString()}` : "—"}</span>
-                  </Row>
+                  <PlacementRow key={pl.id} pl={pl} builder={id?.name ?? "—"} />
                 ))}
               </SubList>
             ) : null}
@@ -255,6 +256,89 @@ export function BuilderDetailDrawer({ userId, onClose }: { userId: number | null
         </div>
       )}
     </Drawer>
+  );
+}
+
+// ── Placements: where pay, title and stage are edited (Nina 10/13) ────────────
+// The Overview's drills are read-only (PRO-99); this is the one place a
+// placement is changed. A record hired through a role on an opportunity syncs
+// its pay and title with that role either way.
+
+const STAGE_OPTIONS = [
+  { value: "active", label: "In role" },
+  { value: "completed", label: "Completed" },
+  { value: "ended", label: "No longer in role" },
+];
+
+function PlacementRow({ pl, builder }: { pl: BuilderPlacement; builder: string }) {
+  const updateSalary = useUpdatePlacementSalary();
+  const updateTitle = useUpdatePlacementTitle();
+  const updateStage = useUpdatePlacementStage();
+  const [ending, setEnding] = useState<string | null>(null);
+  const id = String(pl.id);
+  const stage = pl.engagement_stage ?? "active";
+
+  return (
+    <div className="flex flex-col gap-1 border-t border-border-strong py-1.5 text-[12px] first:border-t-0">
+      <div className="flex items-center gap-2">
+        <span className="min-w-0 flex-1 truncate font-medium text-ink">
+          {pl.opportunity_id ? (
+            <Link to={`/jobs/opportunities/${pl.opportunity_id}`} className="inline-flex items-center gap-1 hover:underline">
+              {pl.company_name ?? "—"} <ExternalLink size={10} />
+            </Link>
+          ) : (pl.company_name ?? "Independent / Freelance")}
+        </span>
+        <span className="min-w-0 flex-1 truncate text-ink-3">
+          <InlineText
+            value={pl.role_title ?? ""}
+            onSave={async (v) => { if (v.trim()) await updateTitle.mutateAsync({ id, role_title: v.trim() }); }}
+          />
+        </span>
+        <span className="text-[11px] text-ink-4">{pl.type_label}</span>
+        <span className="w-[96px] text-right font-mono text-[11px] text-ink-2">
+          <InlineText
+            value={pl.payment_amount ? String(Math.round(pl.payment_amount)) : ""}
+            formatDisplay={(v) => (v ? `$${Number(v).toLocaleString("en-US")}` : "—")}
+            onSave={async (v) => {
+              const n = parseInt(v.replace(/[^0-9]/g, ""), 10);
+              if (!Number.isNaN(n)) await updateSalary.mutateAsync({ id, salary: n });
+            }}
+          />
+        </span>
+      </div>
+      <div className="flex flex-wrap items-center gap-2 text-[10.5px] text-ink-4">
+        <select
+          value={stage}
+          onChange={(e) => {
+            const v = e.target.value;
+            // Ending needs a date (the API rejects a terminal stage without
+            // one), so the dialog collects it before anything is written.
+            if (v === "completed" || v === "ended") setEnding(v);
+            else updateStage.mutate({ id, engagement_stage: v });
+          }}
+          className="rounded border border-border-strong bg-surface px-1 py-0.5 text-[10.5px] text-ink-2"
+        >
+          {stage === "pipeline" ? <option value="pipeline">Not started (pipeline)</option> : null}
+          {STAGE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </select>
+        <span>{pl.provenance}</span>
+        {pl.type_label === "Paid trial" ? <span className="rounded bg-[var(--accent-soft)] px-1 text-[var(--accent)]">paid trial</span> : null}
+        {pl.counted ? null : (
+          <span title="Pro bono, unpriced, not started, at the pipeline stage, or a test account">
+            · not counted in the outcomes
+          </span>
+        )}
+      </div>
+      {ending ? (
+        <PlacementEndDialog
+          placementId={id}
+          stage={ending}
+          builder={builder}
+          role={pl.role_title ?? "—"}
+          onClose={() => setEnding(null)}
+        />
+      ) : null}
+    </div>
   );
 }
 

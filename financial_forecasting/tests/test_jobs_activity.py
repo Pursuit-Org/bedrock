@@ -127,9 +127,10 @@ def test_funnel_unknown_type_404():
     assert r.status_code == 404
 
 
-def test_funnel_builders_job_ready_paid_ft():
+def test_funnel_builders_job_ready_paid_placed():
     # bedrock.l3plus_funnel returns the L3+ pool; who is placed follows the
-    # placement rule over employment records (services/jobs_metrics, PRO-97).
+    # placement rule over employment records (services/jobs_metrics, PRO-97,
+    # PRO-99): full-time or a paid trial.
     job = lambda uid, **kw: {"id": uid, "user_id": uid, "employment_type": "full_time",
                              "engagement_stage": "active", "payment_amount": 80000,
                              "start_date": None, "end_date": None, "excluded": False, **kw}
@@ -138,17 +139,24 @@ def test_funnel_builders_job_ready_paid_ft():
             {"user_id": 1, "name": "Ana", "company": "Acme", "role": "Eng"},
             {"user_id": 2, "name": "Ben", "company": "Beta", "role": "PT"},
             {"user_id": 3, "name": "Cy",  "company": None,   "role": None},
+            {"user_id": 5, "name": "Di",  "company": "Pro bono org", "role": "Volunteer"},
         ],
         "jobs_employment_records()": [
-            job(1), job(2, employment_type="contract"),
+            job(1, company_name="Acme", role_title="Eng"),
+            job(2, employment_type="contract"),
             job(3, excluded=True),                       # a test account doesn't count
             job(4),                                      # not in the job-ready pool
+            job(5, employment_type="contract", is_trial=True, company_name="JPMC", role_title="Trial"),
         ]})
     c = make_jobs_client(conn)
     r = c.get("/api/jobs/funnel/builders")
     assert r.status_code == 200, r.text
-    stages = {s["key"]: s["count"] for s in r.json()["data"]["stages"]}
-    assert stages == {"job_ready": 3, "paid": 2, "ft": 1}   # nested funnel
+    stages = {s["key"]: s for s in r.json()["data"]["stages"]}
+    assert {k: s["count"] for k, s in stages.items()} == {"job_ready": 4, "paid": 3, "placed": 2}
+    # A builder's company is the counted record's, not the function's pick.
+    assert {x["name"]: x["company"] for x in stages["placed"]["records"]} == {"Ana": "Acme", "Di": "JPMC"}
+    r = c.get("/api/jobs/funnel/builders?job_type=contract")
+    assert {s["key"]: s["count"] for s in r.json()["data"]["stages"]}["placed"] == 2   # Ben, Di
     # segment param is bound to the function call
     seg_conn = FakeConn(lists={"l3plus_funnel": []})
     sc = make_jobs_client(seg_conn)

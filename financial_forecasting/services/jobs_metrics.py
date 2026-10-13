@@ -21,8 +21,9 @@ The shared rules live here too, so each is written once:
   * activity (D17): `services/outreach_counting.py`, re-exported below;
   * stalled (D3): no jobs-related activity for 2 weeks on a contact, 4 on an
     opportunity, 6 on an account;
-  * placed and paid work (D2, D4; Nina 10/7): who counts, from employment
-    records;
+  * placed and paid work (D2, D4; Nina 10/7; PRO-99): who counts, from
+    employment records, over the job-ready pool; paid trials are placed;
+  * Current L3 (D12): the L3 cohort that finished most recently;
   * committed roles: open, committed, not a trial, full-time;
   * interviews: an application's first move into interview, from its stage
     history (PRO-117);
@@ -86,17 +87,17 @@ class Measure:
 # one entry here. Its filters (a campaign, an owner, a cohort) are reported
 # beside it rather than making it a different measure.
 MEASURES: dict[str, Measure] = {
-    # Outcomes (Overview)
-    "ft_roles_secured":       Measure("employment", "ft_roles_secured"),
-    "placed_ft":              Measure("employment", "ever_employed_count", "full_time"),
-    "placed_ft_in_role":      Measure("employment", "actively_employed_count", "full_time"),
-    "placed_ft_rate":         Measure("employment", "placed_ft_rate", "rate_pct"),
-    "trials_running":         Measure("employment", "trials_running"),
+    # Outcomes (Overview, Builders funnel, Placement › Builders; PRO-99)
+    "placed":                 Measure("employment", "placed", "placed"),
+    "placed_ft":              Measure("employment", "placed", "full_time"),
+    "placed_trial":           Measure("employment", "placed", "trial"),
+    "placed_in_role":         Measure("employment", "placed_in_role", "placed_in_role"),
+    "placed_rate":            Measure("employment", "placed_rate", "rate_pct"),
     "paid_work":              Measure("employment", "builders_with_paid_work"),
     "avg_ft_salary_placed":   Measure("salary", "avg_ft_salary_placed"),
-    "avg_ft_salary_secured":  Measure("salary", "avg_ft_salary_secured"),
     "job_ready_pool":         Measure("job_ready_pool", "pool"),
     "committed_roles":        Measure("employer_pipeline", "committed_roles"),
+    "committed_expected_salary": Measure("employer_pipeline", "committed_expected_salary", "avg_expected_salary"),
     # Outreach
     "accounts_activated":     Measure("employer_outreach", "accounts_activated"),
     "outreach":               Measure("employer_outreach", "outreach_sent"),
@@ -728,7 +729,7 @@ MEMBERSHIP_WITH_ACCOUNT_SQL = """
 """
 
 
-# ── Placed and paid work (D2, D4; Nina 2026-10-07) ───────────────────────────
+# ── Placed and paid work (D2, D4; Nina 2026-10-07; PRO-99) ───────────────────
 # From employment records. A record counts as a placement when:
 #   * the person isn't a test account (users.exclude_from_metrics);
 #   * a pay amount is recorded (unpriced work doesn't count: dictionary, 8/16);
@@ -736,11 +737,17 @@ MEMBERSHIP_WITH_ACCOUNT_SQL = """
 #   * it has started (no start date is counted, and flagged as a data gap);
 #   * its opportunity wasn't deleted as a data-entry error (TKT-161).
 # Pursuit's own hires count, whatever their role is now (dictionary, 9/24).
-# A builder counts once. Full-time is the core number; all paid work can be
-# viewed (D4). A builder who has left the role still counts as placed, and
-# the card says how many are still in it.
-# Trials: D2 says trials count; how is PRO-99's to build. Today a running
-# trial is reported beside the number, not in it.
+# A builder counts once.
+#
+# Placed (D2, PRO-99): a counted full-time record, or a counted paid trial.
+# Trials are recorded as contract work; a trial record is one a filled
+# `is_trial` role links to, whether or not the trial is still running. A
+# builder who has left the role still counts as placed, and the card says how
+# many are still in it. Full-time is the core number; every other job type,
+# and all paid work, can be viewed (D4).
+#
+# The Overview's outcome numbers are over the job-ready pool (#176), so the
+# cards, the Builders funnel and the Placement tab count the same people.
 
 def live_placement(a: str = "") -> str:
     """SQL: the record's opportunity wasn't soft-deleted (TKT-161).
@@ -750,14 +757,17 @@ def live_placement(a: str = "") -> str:
             f"WHERE dop.id = {col} AND dop.deleted_at IS NOT NULL))")
 
 
-def trial_running_sql(a: str = "r") -> str:
-    """SQL: a committed trial actually under way. A builder is in it and it
-    hasn't ended. Staff close a trial by putting an end date on the role (it
-    stays `filled`, since it was), so a past end date marks it finished. A
-    future end date still reads as running."""
-    return (f"{a}.commitment = 'committed' AND {a}.is_trial = true "
-            f"AND {a}.filled_by_user_id IS NOT NULL AND {a}.status <> 'cancelled' "
-            f"AND ({a}.end_date IS NULL OR {a}.end_date >= CURRENT_DATE)")
+def trial_record_sql(a: str = "s") -> str:
+    """SQL: the employment record is a paid trial, i.e. a filled `is_trial`
+    role links to it (D2, PRO-99). Ended trials stay trials."""
+    return (f"EXISTS (SELECT 1 FROM bedrock.jobs_role tr WHERE tr.employment_record_id = {a}.id "
+            f"AND tr.is_trial = true AND tr.status = 'filled')")
+
+
+def from_role_sql(a: str = "s") -> str:
+    """SQL: the record was made by hiring into a role on an opportunity, so
+    its pay and title follow the role's."""
+    return f"EXISTS (SELECT 1 FROM bedrock.jobs_role fr WHERE fr.employment_record_id = {a}.id)"
 
 
 EMPLOYMENT_FN = "bedrock.jobs_employment_records()"
@@ -776,6 +786,7 @@ def employment_sql(fn: str = EMPLOYMENT_FN) -> str:
         cols = ("s.id, s.user_id, s.builder, s.role_title, s.company_name, s.employment_type, "
                 "s.engagement_stage, s.payment_amount, s.influenced, s.opportunity_id, "
                 "s.start_date, NULL::date AS end_date, s.source, false AS excluded")
+    cols += f", {trial_record_sql('s')} AS is_trial, {from_role_sql('s')} AS from_role"
     return f"SELECT {cols} FROM {fn} s WHERE {live_placement('s')}"
 
 
@@ -814,59 +825,145 @@ def in_role(r: Mapping, today: Optional[date] = None) -> bool:
     return r.get("engagement_stage") == "active" and (end is None or end >= today)
 
 
+# Job types (D4). Full-time is the default and means placed (D2): full-time
+# or a paid trial. "all" is all paid work.
+FULL_TIME = "full_time"
+ALL_PAID = "all"
+JOB_TYPE_LABELS = {
+    "full_time": "Full-time",
+    "part_time": "Part-time",
+    "contract": "Contract",
+    "freelance": "Freelance",
+    "internship": "Internship",
+    "apprenticeship": "Apprenticeship",
+    "temporary": "Temporary",
+}
+
+
+def valid_job_type(t: str) -> bool:
+    """A job type the filter can ask for: full-time, all, or an
+    employment_type value (lower-case words; the options come from the data)."""
+    return bool(t) and len(t) <= 40 and t.replace("_", "").isalpha() and t.islower()
+
+
+def job_type_label(t: Optional[str]) -> str:
+    return JOB_TYPE_LABELS.get(t or "", (t or "—").replace("_", " ").capitalize())
+
+
+def record_type_label(r: Mapping) -> str:
+    """What a counted record is, for a list: a paid trial reads as one."""
+    if r.get("is_trial") and r.get("employment_type") != "full_time":
+        return "Paid trial"
+    return job_type_label(r.get("employment_type"))
+
+
 @dataclass
 class Placements:
     """The placement numbers for one set of employment records."""
     records: list            # the records that count, one or more per builder
-    ft_uids: set
-    paid_uids: set
-    ft_in_role_uids: set
-    influenced_uids: set
-    ft_salary: dict          # user_id -> highest full-time pay
+    today: date
+
+    def of_type(self, job_type: str = FULL_TIME) -> list:
+        """The counted records a job type covers. Full-time is placed (D2):
+        full-time records and paid trials."""
+        if job_type == ALL_PAID:
+            return self.records
+        if job_type == FULL_TIME:
+            return [r for r in self.records if r["employment_type"] == FULL_TIME or r.get("is_trial")]
+        return [r for r in self.records if r["employment_type"] == job_type]
+
+    def uids(self, job_type: str = FULL_TIME) -> set:
+        return {r["user_id"] for r in self.of_type(job_type)}
+
+    def in_role_uids(self, job_type: str = FULL_TIME) -> set:
+        return {r["user_id"] for r in self.of_type(job_type) if in_role(r, self.today)}
 
     @property
-    def placed_ft(self) -> int:
-        return len(self.ft_uids)
+    def ft_uids(self) -> set:
+        """Placed through a full-time job."""
+        return {r["user_id"] for r in self.records if r["employment_type"] == FULL_TIME}
 
     @property
-    def paid_work(self) -> int:
-        return len(self.paid_uids)
+    def placed_uids(self) -> set:
+        return self.uids(FULL_TIME)
 
     @property
-    def ft_no_longer_in_role(self) -> int:
-        return len(self.ft_uids - self.ft_in_role_uids)
+    def trial_only_uids(self) -> set:
+        """Placed through a paid trial, with no full-time job."""
+        return self.placed_uids - self.ft_uids
+
+    @property
+    def paid_uids(self) -> set:
+        return self.uids(ALL_PAID)
+
+    @property
+    def influenced_uids(self) -> set:
+        return {r["user_id"] for r in self.records if r.get("influenced") is True}
+
+    @property
+    def ft_salary(self) -> dict:
+        """user_id -> highest full-time pay. What Avg FT salary averages."""
+        out: dict = {}
+        for r in self.records:
+            if r["employment_type"] == FULL_TIME:
+                out[r["user_id"]] = max(out.get(r["user_id"], 0), float(r["payment_amount"]))
+        return out
 
     @property
     def avg_ft_salary_placed(self) -> Optional[int]:
         vals = list(self.ft_salary.values())
         return round(sum(vals) / len(vals)) if vals else None
 
-    def avg_ft_salary_secured(self, committed_salaries: Iterable[float]) -> Optional[int]:
-        """Placed builders' salaries blended with the expected salary of
-        committed, unfilled full-time roles."""
-        vals = list(self.ft_salary.values()) + [float(s) for s in committed_salaries if s]
-        return round(sum(vals) / len(vals)) if vals else None
+    def job_types(self) -> list[dict]:
+        """The job-type filter's options, with how many builders each covers:
+        full-time first (the default), the other types present, then all."""
+        present = sorted({r["employment_type"] for r in self.records} - {FULL_TIME},
+                         key=lambda t: job_type_label(t))
+        return ([{"value": FULL_TIME, "label": "Full-time (placed)", "count": len(self.placed_uids)}]
+                + [{"value": t, "label": job_type_label(t), "count": len(self.uids(t))} for t in present]
+                + [{"value": ALL_PAID, "label": "All paid work", "count": len(self.paid_uids)}])
+
+
+def avg_expected_salary(salaries: Iterable) -> Optional[int]:
+    """The average expected salary of committed roles. Beside Avg FT salary,
+    never blended into it (PRO-99)."""
+    vals = [float(s) for s in salaries if s]
+    return round(sum(vals) / len(vals)) if vals else None
 
 
 def placements(rows: Iterable[Mapping], *, user_ids: Optional[set] = None,
                today: Optional[date] = None) -> Placements:
-    """Apply the placement rule. `user_ids` narrows to some builders (an L3
-    cohort, the job-ready pool)."""
+    """Apply the placement rule. `user_ids` narrows to some builders (the
+    job-ready pool, an L3 cohort)."""
     today = today or ny_today()
     counted = [r for r in rows if counts_as_placement(r, today)
                and (user_ids is None or r["user_id"] in user_ids)]
-    ft = [r for r in counted if r["employment_type"] == "full_time"]
-    salary: dict = {}
-    for r in ft:
-        salary[r["user_id"]] = max(salary.get(r["user_id"], 0), float(r["payment_amount"]))
-    return Placements(
-        records=counted,
-        ft_uids={r["user_id"] for r in ft},
-        paid_uids={r["user_id"] for r in counted},
-        ft_in_role_uids={r["user_id"] for r in ft if in_role(r, today)},
-        influenced_uids={r["user_id"] for r in counted if r.get("influenced") is True},
-        ft_salary=salary,
-    )
+    return Placements(records=counted, today=today)
+
+
+def fold_duplicates(records: Iterable[Mapping], today: Optional[date] = None) -> list:
+    """One record per (company, role, pay): a builder's two copies of the
+    same job (a completed and an active one) read as one. Keeps the copy
+    they're in, else the latest started."""
+    today = today or ny_today()
+    best: dict = {}
+    for r in records:
+        k = ((r.get("company_name") or "").strip().lower(), (r.get("role_title") or "").strip().lower(),
+             float(r.get("payment_amount") or 0))
+        rank = (in_role(r, today), r.get("start_date") or date.min, r.get("id") or 0)
+        if k not in best or rank > best[k][0]:
+            best[k] = (rank, r)
+    return [r for _, r in best.values()]
+
+
+def provenance(r: Mapping) -> str:
+    """Where a record's details come from: a role on an opportunity (pay and
+    title follow the role), typed in by hand in Bedrock, or imported."""
+    if r.get("from_role"):
+        return "Deal role"
+    if r.get("source") == "imported":
+        return "Imported"
+    return "Entered by hand"
 
 
 # ── Committed roles ──────────────────────────────────────────────────────────
@@ -1386,9 +1483,114 @@ async def job_ready_pool(conn) -> dict:
     return {r["user_id"]: r["segment"] for r in rows}
 
 
-async def segment_user_ids(conn, segment: Optional[str]) -> Optional[set]:
-    """The builders in one L3 cohort segment, or None for no segment."""
+# Current L3 (D12; default stood 10/7): the L3 cohort that finished most
+# recently, by the cohorts table's dates, never `is_active` (a cohort stays
+# active after it ends). It moves on by itself the day after the next one ends.
+CURRENT_L3 = "current_l3"
+CURRENT_L3_SQL = """
+SELECT ch.name FROM public.cohort ch
+JOIN public.course co ON co.course_id = ch.course_id
+WHERE co.level = 'L3' AND ch.end_date IS NOT NULL
+  AND ch.end_date::date < (now() AT TIME ZONE 'America/New_York')::date
+ORDER BY ch.end_date DESC LIMIT 1
+"""
+
+
+async def current_l3_cohort(conn) -> Optional[str]:
+    return await conn.fetchval(CURRENT_L3_SQL)
+
+
+async def resolve_segment(conn, segment: Optional[str]) -> Optional[str]:
+    """A segment as the viewer picked it -> the L3 cohort name it means.
+    None for the whole pool."""
     if not segment or segment == "all":
         return None
-    pool = await job_ready_pool(conn)
-    return {uid for uid, seg in pool.items() if seg == segment}
+    if segment == CURRENT_L3:
+        return await current_l3_cohort(conn) or ""     # "" matches nobody
+    return segment
+
+
+@dataclass
+class Population:
+    """Who the outcome numbers cover: the job-ready pool, or one L3 cohort of it."""
+    pool: dict               # user_id -> L3 cohort segment, the whole pool
+    segment: Optional[str]   # the cohort name, None for the whole pool
+    picked: Optional[str]    # what the viewer picked ("current_l3", a name, None)
+
+    @property
+    def user_ids(self) -> set:
+        if self.segment is None:
+            return set(self.pool)
+        return {uid for uid, s in self.pool.items() if s == self.segment}
+
+
+async def population(conn, segment: Optional[str]) -> Population:
+    picked = segment if segment and segment != "all" else None
+    return Population(pool=await job_ready_pool(conn),
+                      segment=await resolve_segment(conn, picked), picked=picked)
+
+
+# ── The dictionary's outcome queries ─────────────────────────────────────────
+# Generated, like the outreach ones, so the dictionary holds this module's
+# rules rather than a copy that drifts. A test keeps the JSON identical.
+
+PLACED_CTES = f"""WITH {L3PLUS_POOL_CTE.strip()},
+  counted AS (
+    -- Employment (#171): the records that count as a placement, for builders
+    -- in the job-ready pool (#176).
+    SELECT er.*, {trial_record_sql('er')} AS is_trial
+    FROM public.employment_records er
+    JOIN pool ON pool.user_id = er.user_id
+    LEFT JOIN public.users u ON u.user_id = er.user_id
+    WHERE coalesce(u.exclude_from_metrics, false) = false          -- not a test account
+      AND er.payment_amount > 0                                      -- pay recorded
+      AND er.employment_type IS DISTINCT FROM 'pro_bono'
+      AND er.engagement_stage IS DISTINCT FROM 'pipeline'            -- not a job yet
+      AND (er.start_date IS NULL OR er.start_date <= {DD_TODAY})     -- has started
+      AND (er.opportunity_id IS NULL OR NOT EXISTS (                 -- opportunity not deleted
+            SELECT 1 FROM bedrock.jobs_opportunity dop
+            WHERE dop.id = er.opportunity_id AND dop.deleted_at IS NOT NULL))
+  ),
+  placed AS (
+    -- Placed (D2): full-time, or a paid trial.
+    SELECT * FROM counted WHERE employment_type = 'full_time' OR is_trial
+  )"""
+
+IN_ROLE_SQL = f"engagement_stage = 'active' AND (end_date IS NULL OR end_date >= {DD_TODAY})"
+
+OUTCOME_SELECTS = {
+    "placed": (
+        "SELECT count(DISTINCT user_id) AS placed,\n"
+        "       count(DISTINCT user_id) FILTER (WHERE employment_type = 'full_time') AS full_time,\n"
+        "       (SELECT count(DISTINCT user_id) FROM placed p WHERE NOT EXISTS (\n"
+        "          SELECT 1 FROM placed f WHERE f.user_id = p.user_id AND f.employment_type = 'full_time'))\n"
+        "         AS trial\n"
+        "FROM placed"),
+    "placed_in_role": (
+        f"SELECT count(DISTINCT user_id) FILTER (WHERE {IN_ROLE_SQL}) AS placed_in_role,\n"
+        f"       count(DISTINCT user_id) AS placed\n"
+        f"FROM placed"),
+    "placed_rate": (
+        "SELECT (SELECT count(DISTINCT user_id) FROM placed) AS placed,\n"
+        "       (SELECT count(*) FROM pool) AS job_ready,\n"
+        "       round(100.0 * (SELECT count(DISTINCT user_id) FROM placed)\n"
+        "             / nullif((SELECT count(*) FROM pool), 0), 1) AS rate_pct"),
+    "builders_with_paid_work": "SELECT count(DISTINCT user_id) AS builders_with_paid_work FROM counted",
+    "avg_ft_salary_placed": (
+        "SELECT round(avg(salary)) AS avg_ft_salary, count(*) AS placed_builders FROM (\n"
+        "  SELECT user_id, max(payment_amount) AS salary FROM counted\n"
+        "  WHERE employment_type = 'full_time' GROUP BY user_id\n"
+        ") per_builder"),
+}
+
+
+def dictionary_outcome_sql(cut: str) -> str:
+    """The reference query for one outcome measure."""
+    return f"{PLACED_CTES}\n{OUTCOME_SELECTS[cut]}"
+
+
+def dictionary_committed_salary_sql() -> str:
+    return (f"SELECT round(avg(approx_salary) FILTER (WHERE approx_salary > 0)) AS avg_expected_salary,\n"
+            f"       count(*) FILTER (WHERE approx_salary > 0) AS roles_with_salary,\n"
+            f"       count(*) AS committed_roles\n"
+            f"FROM ({committed_roles_sql('r.id, r.approx_salary')}) cr")

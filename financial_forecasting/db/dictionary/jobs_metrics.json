@@ -7,7 +7,7 @@
       "metric_id": 171,
       "name": "Employment",
       "_update": "Changes the measures below; every other measure on #171 is left as it is.",
-      "caveats": "One placement rule for every measure here (decided 10/2, D2 and D4; settled 10/7, Nina): a builder is placed when they have an employment record with pay recorded, that isn't pro bono, isn't at the `pipeline` stage, has started (a missing start date counts and is a data gap to fill), isn't on an opportunity deleted as a data-entry error, and belongs to someone not excluded from metrics. Pursuit's own hires count whatever their role is now. Unpriced contract or freelance work doesn't count (8/16). Each builder counts once. Full-time is the core number; all paid work can be viewed.\n\nTrials: D2 says trials count as placed. Until PRO-99 builds that, a running trial is reported beside the number (trials_running), not in it.\n\nLeft the role: a builder who left still counts as placed (default from 10/2, open call); actively_employed_count says how many are still in the role.\n\never_employed_count.ever_employed_any_paid and builders_with_paid_work are the same number; consolidate them when the group confirms.\n\nReplaces the retired FT Roles Secured (#173) and Builders with Paid Work (#174) on the Jobs Overview.",
+      "caveats": "One placement rule for every measure here (decided 10/2, D2 and D4; settled 10/7, Nina): a builder has counted work when they have an employment record with pay recorded, that isn't pro bono, isn't at the `pipeline` stage, has started (a missing start date counts and is a data gap to fill), isn't on an opportunity deleted as a data-entry error, and belongs to someone not excluded from metrics. Pursuit's own hires count whatever their role is now. Unpriced contract or freelance work doesn't count (8/16). Each builder counts once.\n\nPlaced (D2; PRO-99, 10/13): counted full-time work, or a paid trial. Trials are recorded as contract work; a trial is a record that a filled paid-trial role on an opportunity links to, running or ended. The Jobs Overview counts placed, paid work and salary over the job-ready pool (#176); an L3 cohort narrows it, and \"Current L3\" is the L3 cohort that finished most recently, by its dates. Full-time is the core number; each other job type, and all paid work, can be viewed (D4).\n\nLeft the role: a builder who left still counts as placed (default from 10/2, stood 10/7); placed_in_role says how many are still in the role.\n\never_employed_count.ever_employed_any_paid and builders_with_paid_work count the same rule; builders_with_paid_work is limited to the job-ready pool. Consolidate them when the group confirms.\n\nReplaces the retired FT Roles Secured (#173) and Builders with Paid Work (#174) on the Jobs Overview.",
       "cuts": [
         {
           "key": "ever_employed_count",
@@ -82,14 +82,68 @@
           ]
         },
         {
+          "key": "placed",
+          "label": "Placed",
+          "status": "draft",
+          "definition": "Job-ready builders placed (D2): counted full-time work or a paid trial, counted once each. The Jobs Overview headline, the Builders funnel's last stage and Placement › Builders' Placed. full_time: placed through a full-time job; trial: placed through a paid trial only, with no full-time job. Cumulative: a builder who left the role still counts.",
+          "numerator": "Job-ready builders with counted full-time work or a paid trial",
+          "denominator": "n/a (count)",
+          "is_rate": false,
+          "sql_query": "WITH l3plus AS (\n    SELECT DISTINCT ue.user_id\n    FROM public.user_enrollment ue\n    JOIN public.cohort ch ON ch.cohort_id = ue.cohort_id\n    JOIN public.course co ON co.course_id = ch.course_id\n    WHERE co.level = 'L3+'\n  ),\n  l3cohort AS (\n    SELECT DISTINCT ON (ue.user_id) ue.user_id, ch.name AS segment\n    FROM public.user_enrollment ue\n    JOIN public.cohort ch ON ch.cohort_id = ue.cohort_id\n    JOIN public.course co ON co.course_id = ch.course_id\n    WHERE co.level = 'L3' AND ue.user_id IN (SELECT user_id FROM l3plus)\n    ORDER BY ue.user_id, ue.enrolled_date DESC\n  ),\n  pool AS (\n    SELECT lp.user_id, COALESCE(lc.segment, 'Other L3+') AS segment\n    FROM l3plus lp LEFT JOIN l3cohort lc ON lc.user_id = lp.user_id\n  ),\n  counted AS (\n    -- Employment (#171): the records that count as a placement, for builders\n    -- in the job-ready pool (#176).\n    SELECT er.*, EXISTS (SELECT 1 FROM bedrock.jobs_role tr WHERE tr.employment_record_id = er.id AND tr.is_trial = true AND tr.status = 'filled') AS is_trial\n    FROM public.employment_records er\n    JOIN pool ON pool.user_id = er.user_id\n    LEFT JOIN public.users u ON u.user_id = er.user_id\n    WHERE coalesce(u.exclude_from_metrics, false) = false          -- not a test account\n      AND er.payment_amount > 0                                      -- pay recorded\n      AND er.employment_type IS DISTINCT FROM 'pro_bono'\n      AND er.engagement_stage IS DISTINCT FROM 'pipeline'            -- not a job yet\n      AND (er.start_date IS NULL OR er.start_date <= (now() AT TIME ZONE 'America/New_York')::date)     -- has started\n      AND (er.opportunity_id IS NULL OR NOT EXISTS (                 -- opportunity not deleted\n            SELECT 1 FROM bedrock.jobs_opportunity dop\n            WHERE dop.id = er.opportunity_id AND dop.deleted_at IS NOT NULL))\n  ),\n  placed AS (\n    -- Placed (D2): full-time, or a paid trial.\n    SELECT * FROM counted WHERE employment_type = 'full_time' OR is_trial\n  )\nSELECT count(DISTINCT user_id) AS placed,\n       count(DISTINCT user_id) FILTER (WHERE employment_type = 'full_time') AS full_time,\n       (SELECT count(DISTINCT user_id) FROM placed p WHERE NOT EXISTS (\n          SELECT 1 FROM placed f WHERE f.user_id = p.user_id AND f.employment_type = 'full_time'))\n         AS trial\nFROM placed",
+          "mappings": [],
+          "time_anchors": [
+            {
+              "kind": "state",
+              "label": "as of today",
+              "default": true
+            }
+          ]
+        },
+        {
+          "key": "placed_in_role",
+          "label": "Placed, still in the role",
+          "status": "draft",
+          "definition": "Placed builders who are in that job today: the full-time or trial record is active and hasn't reached its end date. Shown beside Placed; the difference is how many have since left.",
+          "numerator": "Placed builders in the role today",
+          "denominator": "n/a (count)",
+          "is_rate": false,
+          "sql_query": "WITH l3plus AS (\n    SELECT DISTINCT ue.user_id\n    FROM public.user_enrollment ue\n    JOIN public.cohort ch ON ch.cohort_id = ue.cohort_id\n    JOIN public.course co ON co.course_id = ch.course_id\n    WHERE co.level = 'L3+'\n  ),\n  l3cohort AS (\n    SELECT DISTINCT ON (ue.user_id) ue.user_id, ch.name AS segment\n    FROM public.user_enrollment ue\n    JOIN public.cohort ch ON ch.cohort_id = ue.cohort_id\n    JOIN public.course co ON co.course_id = ch.course_id\n    WHERE co.level = 'L3' AND ue.user_id IN (SELECT user_id FROM l3plus)\n    ORDER BY ue.user_id, ue.enrolled_date DESC\n  ),\n  pool AS (\n    SELECT lp.user_id, COALESCE(lc.segment, 'Other L3+') AS segment\n    FROM l3plus lp LEFT JOIN l3cohort lc ON lc.user_id = lp.user_id\n  ),\n  counted AS (\n    -- Employment (#171): the records that count as a placement, for builders\n    -- in the job-ready pool (#176).\n    SELECT er.*, EXISTS (SELECT 1 FROM bedrock.jobs_role tr WHERE tr.employment_record_id = er.id AND tr.is_trial = true AND tr.status = 'filled') AS is_trial\n    FROM public.employment_records er\n    JOIN pool ON pool.user_id = er.user_id\n    LEFT JOIN public.users u ON u.user_id = er.user_id\n    WHERE coalesce(u.exclude_from_metrics, false) = false          -- not a test account\n      AND er.payment_amount > 0                                      -- pay recorded\n      AND er.employment_type IS DISTINCT FROM 'pro_bono'\n      AND er.engagement_stage IS DISTINCT FROM 'pipeline'            -- not a job yet\n      AND (er.start_date IS NULL OR er.start_date <= (now() AT TIME ZONE 'America/New_York')::date)     -- has started\n      AND (er.opportunity_id IS NULL OR NOT EXISTS (                 -- opportunity not deleted\n            SELECT 1 FROM bedrock.jobs_opportunity dop\n            WHERE dop.id = er.opportunity_id AND dop.deleted_at IS NOT NULL))\n  ),\n  placed AS (\n    -- Placed (D2): full-time, or a paid trial.\n    SELECT * FROM counted WHERE employment_type = 'full_time' OR is_trial\n  )\nSELECT count(DISTINCT user_id) FILTER (WHERE engagement_stage = 'active' AND (end_date IS NULL OR end_date >= (now() AT TIME ZONE 'America/New_York')::date)) AS placed_in_role,\n       count(DISTINCT user_id) AS placed\nFROM placed",
+          "mappings": [],
+          "time_anchors": [
+            {
+              "kind": "state",
+              "label": "as of today",
+              "default": true
+            }
+          ]
+        },
+        {
+          "key": "placed_rate",
+          "label": "Placed, % of job-ready",
+          "status": "draft",
+          "definition": "Of the job-ready pool (#176), the share placed (D2). The Jobs Overview card's ring.",
+          "numerator": "Job-ready builders placed",
+          "denominator": "Job-ready pool (#176)",
+          "is_rate": true,
+          "sql_query": "WITH l3plus AS (\n    SELECT DISTINCT ue.user_id\n    FROM public.user_enrollment ue\n    JOIN public.cohort ch ON ch.cohort_id = ue.cohort_id\n    JOIN public.course co ON co.course_id = ch.course_id\n    WHERE co.level = 'L3+'\n  ),\n  l3cohort AS (\n    SELECT DISTINCT ON (ue.user_id) ue.user_id, ch.name AS segment\n    FROM public.user_enrollment ue\n    JOIN public.cohort ch ON ch.cohort_id = ue.cohort_id\n    JOIN public.course co ON co.course_id = ch.course_id\n    WHERE co.level = 'L3' AND ue.user_id IN (SELECT user_id FROM l3plus)\n    ORDER BY ue.user_id, ue.enrolled_date DESC\n  ),\n  pool AS (\n    SELECT lp.user_id, COALESCE(lc.segment, 'Other L3+') AS segment\n    FROM l3plus lp LEFT JOIN l3cohort lc ON lc.user_id = lp.user_id\n  ),\n  counted AS (\n    -- Employment (#171): the records that count as a placement, for builders\n    -- in the job-ready pool (#176).\n    SELECT er.*, EXISTS (SELECT 1 FROM bedrock.jobs_role tr WHERE tr.employment_record_id = er.id AND tr.is_trial = true AND tr.status = 'filled') AS is_trial\n    FROM public.employment_records er\n    JOIN pool ON pool.user_id = er.user_id\n    LEFT JOIN public.users u ON u.user_id = er.user_id\n    WHERE coalesce(u.exclude_from_metrics, false) = false          -- not a test account\n      AND er.payment_amount > 0                                      -- pay recorded\n      AND er.employment_type IS DISTINCT FROM 'pro_bono'\n      AND er.engagement_stage IS DISTINCT FROM 'pipeline'            -- not a job yet\n      AND (er.start_date IS NULL OR er.start_date <= (now() AT TIME ZONE 'America/New_York')::date)     -- has started\n      AND (er.opportunity_id IS NULL OR NOT EXISTS (                 -- opportunity not deleted\n            SELECT 1 FROM bedrock.jobs_opportunity dop\n            WHERE dop.id = er.opportunity_id AND dop.deleted_at IS NOT NULL))\n  ),\n  placed AS (\n    -- Placed (D2): full-time, or a paid trial.\n    SELECT * FROM counted WHERE employment_type = 'full_time' OR is_trial\n  )\nSELECT (SELECT count(DISTINCT user_id) FROM placed) AS placed,\n       (SELECT count(*) FROM pool) AS job_ready,\n       round(100.0 * (SELECT count(DISTINCT user_id) FROM placed)\n             / nullif((SELECT count(*) FROM pool), 0), 1) AS rate_pct",
+          "mappings": [],
+          "time_anchors": [
+            {
+              "kind": "state",
+              "label": "as of today",
+              "default": true
+            }
+          ]
+        },
+        {
           "key": "builders_with_paid_work",
           "label": "Builders with paid work",
           "status": "draft",
-          "definition": "Builders with any counted paid work, full-time included, counted once each. The Jobs Overview's \"Builders with paid work\".",
-          "numerator": "Builders with a counted placement of any type",
+          "definition": "Job-ready builders with any counted paid work, full-time and paid trials included, counted once each. Pro bono and unpriced work are out. The Jobs Overview's \"Builders with paid work\".",
+          "numerator": "Job-ready builders with a counted placement of any type",
           "denominator": "n/a (count)",
           "is_rate": false,
-          "sql_query": "WITH placed AS (\n  -- Employment (#171): the records that count as a placement.\n  SELECT er.*\n  FROM public.employment_records er\n  LEFT JOIN public.users u ON u.user_id = er.user_id\n  WHERE coalesce(u.exclude_from_metrics, false) = false          -- not a test account\n    AND er.payment_amount > 0                                      -- pay recorded\n    AND er.employment_type IS DISTINCT FROM 'pro_bono'\n    AND er.engagement_stage IS DISTINCT FROM 'pipeline'            -- not a job yet\n    AND (er.start_date IS NULL OR er.start_date <= (now() AT TIME ZONE 'America/New_York')::date)            -- has started\n    AND (er.opportunity_id IS NULL OR NOT EXISTS (                 -- opportunity not deleted\n          SELECT 1 FROM bedrock.jobs_opportunity dop\n          WHERE dop.id = er.opportunity_id AND dop.deleted_at IS NOT NULL))\n)\nSELECT count(DISTINCT user_id) AS builders_with_paid_work FROM placed",
+          "sql_query": "WITH l3plus AS (\n    SELECT DISTINCT ue.user_id\n    FROM public.user_enrollment ue\n    JOIN public.cohort ch ON ch.cohort_id = ue.cohort_id\n    JOIN public.course co ON co.course_id = ch.course_id\n    WHERE co.level = 'L3+'\n  ),\n  l3cohort AS (\n    SELECT DISTINCT ON (ue.user_id) ue.user_id, ch.name AS segment\n    FROM public.user_enrollment ue\n    JOIN public.cohort ch ON ch.cohort_id = ue.cohort_id\n    JOIN public.course co ON co.course_id = ch.course_id\n    WHERE co.level = 'L3' AND ue.user_id IN (SELECT user_id FROM l3plus)\n    ORDER BY ue.user_id, ue.enrolled_date DESC\n  ),\n  pool AS (\n    SELECT lp.user_id, COALESCE(lc.segment, 'Other L3+') AS segment\n    FROM l3plus lp LEFT JOIN l3cohort lc ON lc.user_id = lp.user_id\n  ),\n  counted AS (\n    -- Employment (#171): the records that count as a placement, for builders\n    -- in the job-ready pool (#176).\n    SELECT er.*, EXISTS (SELECT 1 FROM bedrock.jobs_role tr WHERE tr.employment_record_id = er.id AND tr.is_trial = true AND tr.status = 'filled') AS is_trial\n    FROM public.employment_records er\n    JOIN pool ON pool.user_id = er.user_id\n    LEFT JOIN public.users u ON u.user_id = er.user_id\n    WHERE coalesce(u.exclude_from_metrics, false) = false          -- not a test account\n      AND er.payment_amount > 0                                      -- pay recorded\n      AND er.employment_type IS DISTINCT FROM 'pro_bono'\n      AND er.engagement_stage IS DISTINCT FROM 'pipeline'            -- not a job yet\n      AND (er.start_date IS NULL OR er.start_date <= (now() AT TIME ZONE 'America/New_York')::date)     -- has started\n      AND (er.opportunity_id IS NULL OR NOT EXISTS (                 -- opportunity not deleted\n            SELECT 1 FROM bedrock.jobs_opportunity dop\n            WHERE dop.id = er.opportunity_id AND dop.deleted_at IS NOT NULL))\n  ),\n  placed AS (\n    -- Placed (D2): full-time, or a paid trial.\n    SELECT * FROM counted WHERE employment_type = 'full_time' OR is_trial\n  )\nSELECT count(DISTINCT user_id) AS builders_with_paid_work FROM counted",
           "mappings": [],
           "time_anchors": [
             {
@@ -115,7 +169,8 @@
               "label": "as of today",
               "default": true
             }
-          ]
+          ],
+          "caveat": "Retired from the Jobs Overview by PRO-99 (10/13): the headline is Placed, and committed roles sit beside it, never added in. Kept so the dictionary still explains numbers people saw before."
         },
         {
           "key": "placed_ft_rate",
@@ -133,7 +188,8 @@
               "label": "as of today",
               "default": true
             }
-          ]
+          ],
+          "caveat": "Retired from the Jobs Overview by PRO-99 (10/13): the ring is placed_rate, which counts paid trials (D2). Kept so the dictionary still explains numbers people saw before."
         },
         {
           "key": "trials_running",
@@ -151,7 +207,8 @@
               "label": "as of today",
               "default": true
             }
-          ]
+          ],
+          "caveat": "Retired from the Jobs Overview by PRO-99 (10/13): paid trials are counted in Placed (D2), shown as their own line (placed.trial). Kept so the dictionary still explains numbers people saw before."
         }
       ]
     },
@@ -160,17 +217,17 @@
       "metric_id": 164,
       "name": "Post-program salary",
       "_update": "Changes the two measures below; every other measure on #164 is left as it is.",
-      "caveats_append": "The Jobs Overview's Avg FT salary reads avg_ft_salary_placed and avg_ft_salary_secured, which use Employment's (#171) placement rule: test accounts, unstarted, `pipeline` and deleted-opportunity records are out, Pursuit's own hires are in. Each builder's highest full-time salary counts once. Replaces the retired Avg FT Salary (#175).",
+      "caveats_append": "The Jobs Overview's Avg FT salary reads avg_ft_salary_placed, which uses Employment's (#171) placement rule over the job-ready pool: test accounts, unstarted, `pipeline` and deleted-opportunity records are out, Pursuit's own hires are in. Each builder's highest full-time salary counts once. The expected salary of committed roles is its own number (Employer pipeline: committed_expected_salary), never blended in (PRO-99). Replaces the retired Avg FT Salary (#175).",
       "cuts": [
         {
           "key": "avg_ft_salary_placed",
           "label": "Avg FT salary, placed builders",
           "status": "draft",
-          "definition": "The average of what full-time placed builders are paid, taking each builder's highest full-time salary once. Placed is Employment's (#171) rule.",
+          "definition": "The average of what job-ready builders placed full-time are paid, taking each builder's highest full-time salary once. Placed is Employment's (#171) rule. The Jobs Overview's Avg FT salary.",
           "numerator": "Sum of each FT-placed builder's highest FT salary",
           "denominator": "FT-placed builders",
           "is_rate": false,
-          "sql_query": "WITH placed AS (\n  -- Employment (#171): the records that count as a placement.\n  SELECT er.*\n  FROM public.employment_records er\n  LEFT JOIN public.users u ON u.user_id = er.user_id\n  WHERE coalesce(u.exclude_from_metrics, false) = false          -- not a test account\n    AND er.payment_amount > 0                                      -- pay recorded\n    AND er.employment_type IS DISTINCT FROM 'pro_bono'\n    AND er.engagement_stage IS DISTINCT FROM 'pipeline'            -- not a job yet\n    AND (er.start_date IS NULL OR er.start_date <= (now() AT TIME ZONE 'America/New_York')::date)            -- has started\n    AND (er.opportunity_id IS NULL OR NOT EXISTS (                 -- opportunity not deleted\n          SELECT 1 FROM bedrock.jobs_opportunity dop\n          WHERE dop.id = er.opportunity_id AND dop.deleted_at IS NOT NULL))\n),\nper_builder AS (\n  SELECT user_id, max(payment_amount) AS salary FROM placed\n  WHERE employment_type = 'full_time' GROUP BY user_id\n)\nSELECT round(avg(salary)) AS avg_ft_salary, count(*) AS placed_builders FROM per_builder",
+          "sql_query": "WITH l3plus AS (\n    SELECT DISTINCT ue.user_id\n    FROM public.user_enrollment ue\n    JOIN public.cohort ch ON ch.cohort_id = ue.cohort_id\n    JOIN public.course co ON co.course_id = ch.course_id\n    WHERE co.level = 'L3+'\n  ),\n  l3cohort AS (\n    SELECT DISTINCT ON (ue.user_id) ue.user_id, ch.name AS segment\n    FROM public.user_enrollment ue\n    JOIN public.cohort ch ON ch.cohort_id = ue.cohort_id\n    JOIN public.course co ON co.course_id = ch.course_id\n    WHERE co.level = 'L3' AND ue.user_id IN (SELECT user_id FROM l3plus)\n    ORDER BY ue.user_id, ue.enrolled_date DESC\n  ),\n  pool AS (\n    SELECT lp.user_id, COALESCE(lc.segment, 'Other L3+') AS segment\n    FROM l3plus lp LEFT JOIN l3cohort lc ON lc.user_id = lp.user_id\n  ),\n  counted AS (\n    -- Employment (#171): the records that count as a placement, for builders\n    -- in the job-ready pool (#176).\n    SELECT er.*, EXISTS (SELECT 1 FROM bedrock.jobs_role tr WHERE tr.employment_record_id = er.id AND tr.is_trial = true AND tr.status = 'filled') AS is_trial\n    FROM public.employment_records er\n    JOIN pool ON pool.user_id = er.user_id\n    LEFT JOIN public.users u ON u.user_id = er.user_id\n    WHERE coalesce(u.exclude_from_metrics, false) = false          -- not a test account\n      AND er.payment_amount > 0                                      -- pay recorded\n      AND er.employment_type IS DISTINCT FROM 'pro_bono'\n      AND er.engagement_stage IS DISTINCT FROM 'pipeline'            -- not a job yet\n      AND (er.start_date IS NULL OR er.start_date <= (now() AT TIME ZONE 'America/New_York')::date)     -- has started\n      AND (er.opportunity_id IS NULL OR NOT EXISTS (                 -- opportunity not deleted\n            SELECT 1 FROM bedrock.jobs_opportunity dop\n            WHERE dop.id = er.opportunity_id AND dop.deleted_at IS NOT NULL))\n  ),\n  placed AS (\n    -- Placed (D2): full-time, or a paid trial.\n    SELECT * FROM counted WHERE employment_type = 'full_time' OR is_trial\n  )\nSELECT round(avg(salary)) AS avg_ft_salary, count(*) AS placed_builders FROM (\n  SELECT user_id, max(payment_amount) AS salary FROM counted\n  WHERE employment_type = 'full_time' GROUP BY user_id\n) per_builder",
           "mappings": [],
           "time_anchors": [
             {
@@ -196,7 +253,8 @@
               "label": "as of today",
               "default": true
             }
-          ]
+          ],
+          "caveat": "Retired from the Jobs Overview by PRO-99 (10/13): the headline is placed-only; committed roles' expected salary is its own line (Employer pipeline: committed_expected_salary). Kept so the dictionary still explains numbers people saw before."
         }
       ]
     },
@@ -592,6 +650,24 @@
           "denominator": "n/a (count)",
           "is_rate": false,
           "sql_query": "SELECT count(*) AS committed_roles FROM (SELECT r.id, r.approx_salary FROM bedrock.jobs_role r JOIN bedrock.jobs_opportunity o ON o.id = r.opportunity_id WHERE r.status = 'open' AND o.deleted_at IS NULL AND r.commitment = 'committed' AND r.is_trial = false AND (r.employment_type = 'full_time' OR (r.employment_type IS NULL AND o.deal_type = 'ft'))) cr",
+          "mappings": [],
+          "time_anchors": [
+            {
+              "kind": "state",
+              "label": "as of today",
+              "default": true
+            }
+          ]
+        },
+        {
+          "key": "committed_expected_salary",
+          "label": "Committed roles, expected salary",
+          "status": "draft",
+          "definition": "The average expected salary of committed roles (committed_roles) that have one. Shown on its own line under Avg FT salary, never blended into it. Committed roles have no builder, so no cohort: the number is the same under every cohort filter.",
+          "numerator": "Sum of committed roles' expected salary",
+          "denominator": "Committed roles with an expected salary",
+          "is_rate": false,
+          "sql_query": "SELECT round(avg(approx_salary) FILTER (WHERE approx_salary > 0)) AS avg_expected_salary,\n       count(*) FILTER (WHERE approx_salary > 0) AS roles_with_salary,\n       count(*) AS committed_roles\nFROM (SELECT r.id, r.approx_salary FROM bedrock.jobs_role r JOIN bedrock.jobs_opportunity o ON o.id = r.opportunity_id WHERE r.status = 'open' AND o.deleted_at IS NULL AND r.commitment = 'committed' AND r.is_trial = false AND (r.employment_type = 'full_time' OR (r.employment_type IS NULL AND o.deal_type = 'ft'))) cr",
           "mappings": [],
           "time_anchors": [
             {

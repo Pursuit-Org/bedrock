@@ -66,8 +66,10 @@ const DEAL_TYPE_FILTERS: { value: string; label: string }[] = [
   ),
 ];
 
-export function JobsFunnels({ builderSegment, only, period, periodLabel, dealType: dealTypeProp, owner, defaultOpen }: {
+export function JobsFunnels({ builderSegment, builderJobType, only, period, periodLabel, dealType: dealTypeProp, owner, defaultOpen }: {
   builderSegment?: string;
+  /** What the builders funnel's last stage counts (D4): placed by default. */
+  builderJobType?: string;
   only?: FunnelType;
   /** Pass a window to get period-flow counts (records that ENTERED each stage).
    *  Omit it for the all-time snapshot — the Exec view has no period control. */
@@ -100,6 +102,7 @@ export function JobsFunnels({ builderSegment, only, period, periodLabel, dealTyp
     funnel === "builders" ? builderSegment : undefined,
     period,
     owner,
+    funnel === "builders" ? builderJobType : undefined,
   );
   const isPeriod = data?.mode === "period";
 

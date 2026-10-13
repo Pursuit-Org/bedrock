@@ -76,12 +76,37 @@ def test_placement_queries_apply_the_whole_rule():
     on 10/7, the same parts counts_as_placement checks."""
     for concept, cut in [("employment", "ever_employed_count"), ("employment", "builders_with_paid_work"),
                          ("employment", "actively_employed_count"), ("salary", "avg_ft_salary_placed"),
-                         ("salary", "avg_ft_salary_secured"), ("employment", "ft_roles_secured")]:
+                         ("employment", "placed"), ("employment", "placed_in_role"),
+                         ("employment", "placed_rate")]:
         sql = _cut(concept, cut)["sql_query"]
         for part in ("exclude_from_metrics", "payment_amount > 0", "'pro_bono'", "'pipeline'",
                      "start_date", "deleted_at IS NOT NULL"):
             assert part in sql, f"{concept}.{cut} misses {part}"
         assert "u.role" not in sql, "Pursuit's own hires count whatever their role is now"
+
+
+@pytest.mark.parametrize("cut", sorted(jm.OUTCOME_SELECTS))
+def test_outcome_queries_are_the_module(cut):
+    """The Overview's outcome measures (PRO-99) hold jobs_metrics' rule, not a
+    copy that drifts: the job-ready pool, paid trials as placed. If this
+    fails, regenerate them from jobs_metrics.dictionary_outcome_sql."""
+    concept = "salary" if cut.startswith("avg_") else "employment"
+    sql = _cut(concept, cut)["sql_query"]
+    assert sql == jm.dictionary_outcome_sql(cut).strip()
+    assert "JOIN pool ON pool.user_id = er.user_id" in sql
+    assert jm.trial_record_sql("er") in sql
+
+
+def test_committed_salary_query_is_the_committed_rule():
+    assert (_cut("employer_pipeline", "committed_expected_salary")["sql_query"]
+            == jm.dictionary_committed_salary_sql().strip())
+
+
+def test_measures_the_overview_retired_say_so():
+    for concept, cut in [("employment", "ft_roles_secured"), ("employment", "placed_ft_rate"),
+                         ("employment", "trials_running"), ("salary", "avg_ft_salary_secured")]:
+        assert "Retired from the Jobs Overview by PRO-99" in _cut(concept, cut)["caveat"]
+        assert not any(m.concept == concept and m.cut == cut for m in jm.MEASURES.values())
 
 
 def test_stalled_queries_use_the_d3_limits_and_skip_comments():
@@ -137,7 +162,7 @@ def test_a_number_not_yet_in_the_dictionary_says_so(dictionary):
 
 def test_a_number_reads_its_definition_and_status(dictionary):
     jm.load([{"metric_id": 171, "name": "Employment", "status": "draft", "definition": "concept words",
-              "cuts": '[{"key": "ever_employed_count", "label": "Placed (ever)", "status": "confirmed",'
+              "cuts": '[{"key": "placed", "label": "Placed", "status": "confirmed",'
                       ' "definition": "measure words", "numerator": "n", "denominator": "d"}]'}])
     start, end = jm.date_window("2026-09-21", "2026-09-27")
     d = jm.define("placed_ft", value=14, window=(start, end), filters={"segment": "all", "owner": "a@x"},
@@ -231,10 +256,65 @@ def test_the_placement_rule():
     p = jm.placements(rows, today=TODAY)
     assert p.ft_uids == {1, 7, 9}
     assert p.paid_uids == {1, 7, 8, 9}
-    assert p.ft_no_longer_in_role == 1
+    assert p.placed_uids == {1, 7, 9}
+    assert p.placed_uids - p.in_role_uids() == {9}       # left the role, still placed
     assert p.avg_ft_salary_placed == 80000
-    assert p.avg_ft_salary_secured([100000, None]) == 85000
     assert jm.placements(rows, user_ids={1, 8}, today=TODAY).paid_uids == {1, 8}
+
+
+def test_a_paid_trial_is_placed():
+    """D2 (PRO-99): a builder in a filled paid-trial role is placed, running
+    or ended, shown as its own line; the trial isn't full-time pay."""
+    rows = [
+        _job(1),
+        _job(2, employment_type="contract", payment_amount=97760, is_trial=True),
+        _job(3, employment_type="contract", payment_amount=6973, is_trial=True, engagement_stage="ended"),
+        _job(3, id=33),                                             # converted to full-time
+        _job(4, employment_type="contract", payment_amount=5000),   # contract, not a trial
+        _job(5, employment_type="contract", payment_amount=None, is_trial=True),  # unpriced: not counted
+    ]
+    p = jm.placements(rows, today=TODAY)
+    assert p.placed_uids == {1, 2, 3}
+    assert p.trial_only_uids == {2}
+    assert p.paid_uids == {1, 2, 3, 4}
+    assert p.ft_salary == {1: 80000, 3: 80000}
+    assert p.uids("contract") == {2, 3, 4} and p.uids("all") == p.paid_uids
+    assert [t["value"] for t in p.job_types()] == ["full_time", "contract", "all"]
+    assert jm.record_type_label(rows[1]) == "Paid trial"
+
+
+def test_job_types_the_filter_accepts():
+    for ok in ("full_time", "all", "contract", "part_time"):
+        assert jm.valid_job_type(ok)
+    for bad in ("", "FT", "full time", "x;drop", "a" * 41):
+        assert not jm.valid_job_type(bad)
+
+
+def test_duplicates_fold_to_the_copy_in_the_role():
+    a = _job(1, id=80, employment_type="contract", payment_amount=3200, engagement_stage="completed",
+             company_name="RXR", role_title="Developer")
+    b = _job(1, id=82, employment_type="contract", payment_amount=3200, company_name="rxr ",
+             role_title="Developer")
+    other = _job(1, id=90, employment_type="contract", payment_amount=4000, company_name="RXR",
+                 role_title="Developer")
+    assert sorted(r["id"] for r in jm.fold_duplicates([a, b, other], TODAY)) == [82, 90]
+
+
+def test_where_a_record_comes_from():
+    assert jm.provenance({"from_role": True, "source": "staff_created"}) == "Deal role"
+    assert jm.provenance({"from_role": False, "source": "imported"}) == "Imported"
+    assert jm.provenance({"from_role": False, "source": "staff_created"}) == "Entered by hand"
+
+
+def test_current_l3_reads_the_dates_not_is_active():
+    assert "is_active" not in jm.CURRENT_L3_SQL
+    assert "ch.end_date::date < (now() AT TIME ZONE 'America/New_York')::date" in jm.CURRENT_L3_SQL
+    assert "co.level = 'L3'" in jm.CURRENT_L3_SQL and "ORDER BY ch.end_date DESC" in jm.CURRENT_L3_SQL
+
+
+def test_avg_expected_salary_skips_roles_without_one():
+    assert jm.avg_expected_salary([80000, None, 100000, 0]) == 90000
+    assert jm.avg_expected_salary([]) is None
 
 
 def test_in_role_honours_an_end_date():
