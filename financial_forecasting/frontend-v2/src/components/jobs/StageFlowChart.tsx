@@ -33,8 +33,6 @@ import {
   type OutreachGranularity,
   type StageFlow,
   type StageFlowBand,
-  type StageFlowMember,
-  type StageFlowMove,
   type StageFlowRow,
 } from "@/services/jobs";
 import { Drawer } from "@/components/ui/Drawer";
@@ -43,6 +41,7 @@ import { PeriodBar, defaultPeriod } from "@/components/jobs/PeriodBar";
 import { DealTypeFilter, dealTypeParam } from "@/pages/jobs/JobsOpportunitiesOverview";
 import { Trend } from "@/pages/jobs/JobsOutreach";
 import { useSessionState } from "@/lib/useSessionState";
+import { useCurrentUser } from "@/services/auth";
 import { cn } from "@/lib/utils";
 
 type Tab = "stage" | "owner";
@@ -57,7 +56,6 @@ type Drill = {
   col: { label: string; keys: Set<string> } | null;
 };
 
-const OTHERS = "(others)";
 /** Band accents: a thin rule on the band header, so the two units read apart. */
 const BAND_ACCENT: Record<StageFlowBand, string> = { outreach: "#2F7FE0", pipeline: "#6d5efc" };
 
@@ -74,7 +72,8 @@ const fmtTarget = (n: number) => (Number.isInteger(n) ? String(n) : n.toFixed(1)
 export function StageFlowChart() {
   const [range, setRange] = useState<[string, string]>(() => defaultPeriod());
   const [granularity, setGranularity] = useState<OutreachGranularity>("week");
-  const [owner, setOwner] = useState("all");
+  // The Owner tab looks at one Jobs team member at a time; the Stage tab is the team.
+  const [ownerPick, setOwnerPick] = useSessionState<string | null>("jobsOverview.stageFlow.owner", null);
   // Full time by default, as on the Pipeline tab. Applies to opportunities only.
   const [dealTypes, setDealTypes] = useState<string[]>(["ft"]);
   const [tab, setTab] = useSessionState<Tab>("jobsOverview.stageFlow.tab", "stage");
@@ -88,16 +87,25 @@ export function StageFlowChart() {
     return (email: string | null) => (email ? m.get(email.toLowerCase()) ?? titleCaseEmail(email) : "—");
   }, [staffQ.data]);
 
-  const { data, isLoading, isError } = useStageFlow(range[0], range[1], owner, dealTypeParam(dealTypes));
+  const me = useCurrentUser().data?.email?.toLowerCase() ?? null;
+  // The team list rides on the team-scoped response, so it is there before a
+  // person is picked; keepPreviousData holds it while a person's data loads.
+  const teamQ = useStageFlow(range[0], range[1], "all", dealTypeParam(dealTypes));
   // The Jobs team only (Settings › Targets › Jobs › Team), in its set order.
-  const team = data?.team ?? [];
+  const team = teamQ.data?.team ?? [];
+  // Default to yourself when you're on the team, else the first member.
+  const owner = tab === "owner"
+    ? (ownerPick && team.includes(ownerPick) ? ownerPick : (me && team.includes(me) ? me : team[0] ?? "all"))
+    : "all";
+  const personQ = useStageFlow(range[0], range[1], owner, dealTypeParam(dealTypes));
+  const { data, isLoading, isError } = owner === "all" ? teamQ : personQ;
   const current = data && data.prev_period && data.stage_labels ? data : null;
 
   const tabs = (
     <div className="inline-flex items-center rounded-md border border-border-strong bg-surface p-0.5">
       {([["stage", "Stage"], ["owner", "Owner"]] as const).map(([k, label]) => (
         <button key={k} type="button" onClick={() => setTab(k)}
-          title={k === "stage" ? "Each stage: pool, movement, target and trend" : "Each stage, by Jobs team member"}
+          title={k === "stage" ? "The whole team: pool, activity, target and trend" : "One Jobs team member at a time, against their own targets"}
           className={cn("rounded px-2.5 py-0.5 text-[12px] font-medium transition-colors",
             tab === k ? "bg-accent-soft text-accent" : "text-ink-2 hover:bg-surface-2")}>
           {label}
@@ -114,14 +122,6 @@ export function StageFlowChart() {
         granularity={granularity} onGranularityChange={setGranularity}
         clampToToday
       >
-        <div className="flex items-center gap-2">
-          <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">Owner</span>
-          <select value={owner} onChange={(e) => setOwner(e.target.value)} title="The Jobs team, from Settings › Targets › Jobs"
-            className="h-7 rounded-md border border-border-strong bg-surface px-2 text-[12.5px] text-ink outline-none focus:border-accent">
-            <option value="all">All owners</option>
-            {team.map((email) => <option key={email} value={email}>{nameOf(email)}</option>)}
-          </select>
-        </div>
         <div className="flex items-center gap-2" title="Filters the Pipeline band only: contacts carry no deal type">
           <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">Deal type</span>
           <DealTypeFilter selected={dealTypes} onChange={setDealTypes} />
@@ -133,7 +133,7 @@ export function StageFlowChart() {
           <span className="text-[13px] font-bold text-ink-2">Stage Flow</span>
           {tabs}
           <span className="hidden text-[11.5px] text-ink-4 md:inline">Outreach to Closed Won · click any number for the list</span>
-          {tab === "stage" && (
+          {(
             <select value={byTime ? "time" : "off"} onChange={(e) => setByTime(e.target.value === "time")}
               title="Split the Pool by how long it has sat in the stage"
               className="ml-auto h-7 rounded-md border border-border-strong bg-surface px-2 text-[12px] text-ink outline-none focus:border-accent">
@@ -142,6 +142,9 @@ export function StageFlowChart() {
             </select>
           )}
         </div>
+        {tab === "owner" && team.length > 0 && (
+          <OwnerPicker team={team} selected={owner} nameOf={nameOf} onPick={setOwnerPick} />
+        )}
         {isLoading && !data ? (
           <div className="m-4 h-72 animate-pulse rounded-lg bg-surface-2" />
         ) : isError || !data ? (
@@ -154,16 +157,14 @@ export function StageFlowChart() {
           <div className="m-4 rounded-lg border border-dashed border-border-strong px-4 py-8 text-center text-[12.5px] text-ink-3">
             The backend is older than this page. Restart it (Ctrl+C, then <code>python main.py</code>) and refresh.
           </div>
-        ) : tab === "stage" ? (
-          <StageTable data={current} byTime={byTime} nameOf={nameOf} onDrill={setDrill} />
         ) : (
-          <OwnerTable data={current} team={team} nameOf={nameOf} onDrill={setDrill} />
+          <StageTable data={current} byTime={byTime} nameOf={nameOf} onDrill={setDrill} />
         )}
         {current && (
           <p className="border-t border-border px-4 py-2.5 text-[11px] leading-relaxed text-ink-4">
             Pool is what sits in each stage today. Net New counts each contact or opportunity once per stage it entered
             during the period. Closed Won and Closed Lost count closes that stuck. Targets are weekly, prorated to the
-            period, and follow the Owner filter
+            period; the Owner tab shows each person against their own
             {current.targets_available ? "" : "; per-stage targets arrive with the stage-targets migration, and Converted to opportunity uses the Settings outreach target until then"}.
             Deal type filters the Pipeline band only.
           </p>
@@ -179,8 +180,25 @@ export function StageFlowChart() {
 
 // ── Shared pieces ────────────────────────────────────────────────────────────
 
-// The two headline columns share one soft tint, header to last row.
+// Stage (Pool) and Activity (Net New) each carry their own soft tint, header to
+// last row, so the two kinds of number read apart at a glance.
+const STAGE_ACCENT = "#2F7FE0";
+const ACTIVITY_ACCENT = "#6d5efc";
 const HL = "bg-accent-soft";
+const HL_ACT = "bg-[#6d5efc]/[0.07]";
+
+/** A column-group heading: a coloured rule, the label, and an optional sub-label. */
+function GroupCap({ label, sub, color }: { label: string; sub?: string; color: string }) {
+  return (
+    <div className="flex flex-col items-center gap-1 pb-1">
+      <span className="h-[3px] w-full rounded-full" style={{ background: color, opacity: 0.85 }} />
+      <span className="flex items-baseline gap-1.5">
+        <span className="font-bold" style={{ color }}>{label}</span>
+        {sub && <span className="font-medium normal-case tracking-normal text-ink-4">{sub}</span>}
+      </span>
+    </div>
+  );
+}
 const TH = "whitespace-nowrap px-4 py-2 text-center font-bold align-bottom";
 const SUB = "mt-0.5 block h-3.5 text-[10px] font-normal normal-case tracking-normal text-ink-4";
 const TD = "px-4 py-2.5 text-center tabular-nums";
@@ -250,21 +268,29 @@ function StageTable({ data, byTime, nameOf, onDrill }: {
           {cols.map((c) => <col key={c.key} style={{ width: "6.8%" }} />)}
         </colgroup>
         <thead>
-          {cols.length > 0 && (
-            <tr className="bg-surface-2 text-[10.5px] uppercase tracking-wide text-ink-3">
-              <th colSpan={6} />
-              <th colSpan={cols.length} className="border-l border-border-strong px-2 pt-2 text-center font-bold">
-                <span className="block border-b border-border pb-1">Pool by time in stage</span>
+          {/* Two groups the reader should never confuse: where things sit
+              (Stage, as of today) and what happened (Activity, in the period). */}
+          <tr className="bg-surface-2 text-[10px] uppercase tracking-[0.08em]">
+            <th />
+            <th className={cn("px-3 pt-2.5", HL)}>
+              <GroupCap label="Stage" sub="as of today" color={STAGE_ACCENT} />
+            </th>
+            <th colSpan={4} className="border-l-2 border-border-strong px-3 pt-2.5">
+              <GroupCap label="Activity" sub={shortRange(data.period.from, data.period.to)} color={ACTIVITY_ACCENT} />
+            </th>
+            {cols.length > 0 && (
+              <th colSpan={cols.length} className="border-l border-border-strong px-3 pt-2.5">
+                <GroupCap label="Pool by time in stage" color={STAGE_ACCENT} />
               </th>
-            </tr>
-          )}
+            )}
+          </tr>
           <tr className="bg-surface-2 text-[10.5px] uppercase tracking-wide text-ink-3">
             <th className="py-2 pl-3.5 pr-2 text-left font-bold align-bottom">Stage</th>
             <th className={cn(TH, HL)} title="Sitting in this stage today">
               <span className="block">Pool</span><span className={SUB} />
             </th>
-            <th className={cn(TH, HL)} title="Entered this stage during the period">
-              <span className="block">Net New</span><span className={SUB}>{shortRange(data.period.from, data.period.to)}</span>
+            <th className={cn(TH, HL_ACT, "border-l-2 border-border-strong")} title="Entered this stage during the period">
+              <span className="block">Net New</span><span className={SUB} />
             </th>
             <th className={TH} title="Weekly target, prorated to the period; follows the Owner filter">
               <span className="block">Target</span><span className={SUB}>{scopeLabel}</span>
@@ -311,7 +337,7 @@ function StageTable({ data, byTime, nameOf, onDrill }: {
                           </span>
                         )}
                       </td>
-                      <td className={cn(TD, HL, (row.depth ?? 0) === 0 && "font-semibold")}>
+                      <td className={cn(TD, HL_ACT, "border-l-2 border-border-strong", (row.depth ?? 0) === 0 && "font-semibold")}>
                         {pending ? <span className="text-ink-4">—</span>
                           : <NumButton n={row.moved_in} onClick={() => drillRow("moved")} title={`${row.moved_in} net new in ${row.label}`} />}
                       </td>
@@ -355,102 +381,32 @@ function StageTable({ data, byTime, nameOf, onDrill }: {
   );
 }
 
-// ── Owner tab ────────────────────────────────────────────────────────────────
+// ── Owner tab: pick one person ───────────────────────────────────────────────
 
-function OwnerTable({ data, team, nameOf, onDrill }: {
-  data: StageFlow; team: string[]; nameOf: (e: string | null) => string; onDrill: (d: Drill) => void;
+function initials(name: string) {
+  const parts = name.split(/\s+/).filter(Boolean);
+  return ((parts[0]?.[0] ?? "") + (parts.length > 1 ? parts[parts.length - 1][0] : "")).toUpperCase();
+}
+
+/** One chip per Jobs team member; the table below shows whoever is picked. */
+function OwnerPicker({ team, selected, nameOf, onPick }: {
+  team: string[]; selected: string; nameOf: (e: string | null) => string; onPick: (e: string) => void;
 }) {
-  const teamSet = useMemo(() => new Set(team.map((e) => e.toLowerCase())), [team]);
-  const groupOf = (owner: string | null) => {
-    const e = (owner ?? "").toLowerCase();
-    return teamSet.has(e) ? e : OTHERS;
-  };
-  // Others only earns a column when someone off the team actually holds records.
-  const hasOthers = data.members.some((m) => groupOf(m.owner) === OTHERS) || data.moved.some((m) => groupOf(m.owner) === OTHERS);
-  const groups = [...team.map((e) => ({ key: e.toLowerCase(), label: nameOf(e) })),
-                  ...(hasOthers ? [{ key: OTHERS, label: "Others" }] : [])];
-  const colCount = 3 + groups.length * 2;
-  const cap = "block border-b border-border pb-1 text-[10.5px] font-bold uppercase tracking-wide text-ink-2";
-
-  const cell = (band: StageFlowBand, row: StageFlowRow, kind: "now" | "moved", recs: (StageFlowMember | StageFlowMove)[], who: string) => {
-    const pending = !row.available;
-    if (pending || (kind === "now" && !row.in_now)) return <span className="text-ink-4">—</span>;
-    if (recs.length === 0) return <span className="text-ink-4">·</span>;
-    return (
-      <NumButton n={recs.length} title={`${recs.length} · ${row.label} · ${who}`}
-        onClick={() => onDrill({ kind, band, stages: stagesOf(row), label: row.label,
-          col: { label: `owner: ${who}`, keys: new Set(recs.map(recKey)) } })} />
-    );
-  };
-
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full min-w-[980px] border-collapse">
-        <colgroup>
-          <col style={{ width: "20%" }} />
-          <col style={{ width: "8%" }} /><col style={{ width: "8%" }} />
-          {groups.map((g) => (
-            <Fragment key={g.key}>
-              <col style={{ width: `${64 / groups.length / 2}%` }} /><col style={{ width: `${64 / groups.length / 2}%` }} />
-            </Fragment>
-          ))}
-        </colgroup>
-        <thead>
-          <tr className="bg-surface-2 text-[10.5px] uppercase tracking-wide text-ink-3">
-            <th className="py-2 pl-3.5 pr-2 text-left font-bold align-bottom" rowSpan={2}>Stage</th>
-            <th className={cn("px-3 pt-2 pb-1", HL)} colSpan={2}><span className={cap}>All owners</span></th>
-            {groups.map((g) => (
-              <th key={g.key} className="border-l border-border px-3 pt-2 pb-1" colSpan={2}
-                title={g.key === OTHERS ? "Owned by someone off the Jobs team, or by nobody" : g.key}>
-                <span className={cap}>{g.label}</span>
-              </th>
-            ))}
-          </tr>
-          <tr className="bg-surface-2 text-[10px] uppercase tracking-wide text-ink-4">
-            {[{ key: "all" }, ...groups].map((g, gi) => (
-              <Fragment key={g.key}>
-                <th className={cn("whitespace-nowrap px-3 pb-2 text-center font-semibold", gi === 0 ? HL : "border-l border-border")}>Pool</th>
-                <th className={cn("whitespace-nowrap px-3 pb-2 text-center font-semibold", gi === 0 && HL)}>Net New</th>
-              </Fragment>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {data.bands.map((band) => {
-            const pool = band.rows.filter((r) => (r.depth ?? 0) === 0).reduce((s, r) => s + (r.in_now?.total ?? 0), 0);
-            return (
-              <Fragment key={band.key}>
-                <BandHeader band={band} colSpan={colCount} pool={pool} />
-                {band.rows.map((row) => {
-                  const stages = stagesOf(row);
-                  const inRow = data.members.filter((m) => m.band === band.key && stages.includes(m.stage));
-                  const movedRow = data.moved.filter((m) => m.band === band.key && stages.includes(m.stage));
-                  const strong = (row.depth ?? 0) === 0;
-                  return (
-                    <tr key={row.key}
-                      className={cn("border-b border-border text-[13.5px] transition-colors hover:bg-surface-2/40",
-                        row.children && "border-t border-border-strong")}>
-                      <StageLabel row={row} />
-                      <td className={cn(TD, HL, strong && "font-semibold")}>{cell(band.key, row, "now", inRow, "all owners")}</td>
-                      <td className={cn(TD, HL, strong && "font-semibold")}>{cell(band.key, row, "moved", movedRow, "all owners")}</td>
-                      {groups.map((g) => (
-                        <Fragment key={g.key}>
-                          <td className={cn(TD, "border-l border-border px-3 text-ink-2")}>
-                            {cell(band.key, row, "now", inRow.filter((m) => groupOf(m.owner) === g.key), g.label)}
-                          </td>
-                          <td className={cn(TD, "px-3 text-ink-2")}>
-                            {cell(band.key, row, "moved", movedRow.filter((m) => groupOf(m.owner) === g.key), g.label)}
-                          </td>
-                        </Fragment>
-                      ))}
-                    </tr>
-                  );
-                })}
-              </Fragment>
-            );
-          })}
-        </tbody>
-      </table>
+    <div className="flex flex-wrap items-center gap-2 border-b border-border-strong px-4 py-2.5" role="tablist" aria-label="Jobs team member">
+      {team.map((email) => {
+        const on = email === selected;
+        const name = nameOf(email);
+        return (
+          <button key={email} type="button" role="tab" aria-selected={on} onClick={() => onPick(email)}
+            className={cn("inline-flex items-center gap-2 rounded-full border py-1 pl-1 pr-3 text-[12.5px] font-medium transition-colors",
+              on ? "border-accent/40 bg-accent-soft text-accent" : "border-border-strong bg-surface text-ink-2 hover:border-ink-3")}>
+            <span className={cn("flex h-6 w-6 items-center justify-center rounded-full text-[10.5px] font-bold",
+              on ? "bg-accent text-white" : "bg-surface-2 text-ink-3")}>{initials(name)}</span>
+            {name}
+          </button>
+        );
+      })}
     </div>
   );
 }
