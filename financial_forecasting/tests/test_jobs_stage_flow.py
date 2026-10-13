@@ -309,3 +309,28 @@ def test_contact_owner_comes_from_the_contact_record_first():
     for needle in (CONTACTS_NOW, CONTACT_STAMPS):
         q = next(c[1] for c in conn.calls if needle in c[1])
         assert "COALESCE(c.owner_email, m.owner_email)" in q, needle
+
+
+# ── ids filters behind the drill workbench ────────────────────────────────────
+
+def test_contacts_list_filters_to_ids_and_ignores_scope():
+    conn = FakeConn()
+    c = make_jobs_client(conn)
+    r = c.get("/api/jobs/contacts?ids=24819,15083&limit=5000")
+    assert r.status_code == 200, r.text
+    q, args = next((x[1], x[2]) for x in conn.calls if "c.contact_id = ANY(" in x[1])
+    assert [24819, 15083] in [list(a) if isinstance(a, list) else a for a in args]
+    # The drill asks for exact people, so the jobs-prospect scope doesn't narrow it.
+    assert "c.is_jobs_contact = true" not in q
+    assert c.get("/api/jobs/contacts?ids=1,abc").status_code == 400
+
+
+def test_opportunities_list_filters_to_ids():
+    conn = FakeConn()
+    c = make_jobs_client(conn)
+    oid = "00000009-0000-0000-0000-000000000000"
+    r = c.get(f"/api/jobs/opportunities?ids={oid}&limit=500")
+    assert r.status_code == 200, r.text
+    args = next(x[2] for x in conn.calls if "o.id = ANY(" in x[1])
+    assert any(isinstance(a, list) and str(a[0]) == oid for a in args)
+    assert c.get("/api/jobs/opportunities?ids=not-a-uuid").status_code == 400

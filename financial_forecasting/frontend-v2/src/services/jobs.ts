@@ -208,6 +208,8 @@ export interface OpportunityFilters {
   account_id?: string;
   /** One deal type, or a comma-separated list ("ft,unset"). "unset" = untagged. */
   deal_type?: string;
+  /** Only these opportunities (the Stage Flow drill). An empty list returns none. */
+  ids?: string[];
   limit?: number;
   offset?: number;
 }
@@ -415,6 +417,8 @@ export interface ContactFilters {
   /** Serialized Filter-menu rules — translated to SQL server-side so filters
    *  see the full 47k universe, never just the loaded page. */
   rules?: { field: string; op: string; values: string[] }[];
+  /** Only these contacts (the Stage Flow drill); scope is ignored. An empty list returns none. */
+  ids?: number[];
 }
 
 export interface ConnectedStaff {
@@ -504,6 +508,7 @@ export function useJobsContacts(filters: ContactFilters = {}) {
   if (filters.has_open_roles) params.set("has_open_roles", "true");
   if (filters.scope) params.set("scope", filters.scope);
   if (filters.rules && filters.rules.length > 0) params.set("filters", JSON.stringify(filters.rules));
+  if (filters.ids) params.set("ids", filters.ids.join(","));
   params.set("limit", String(filters.limit ?? 200));
 
   return useQuery<{ data: JobContactWithDeal[]; total: number }>({
@@ -1809,6 +1814,7 @@ export function useJobsOpportunities(filters: OpportunityFilters = {}) {
   if (filters.owner_email) params.set("owner_email",  filters.owner_email);
   if (filters.account_id)  params.set("account_id",   filters.account_id);
   if (filters.deal_type)   params.set("deal_type",    filters.deal_type);
+  if (filters.ids)         params.set("ids",          filters.ids.join(","));
   params.set("limit",  String(filters.limit  ?? 200));
   params.set("offset", String(filters.offset ?? 0));
 

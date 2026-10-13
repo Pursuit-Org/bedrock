@@ -8202,6 +8202,7 @@ async def list_contacts(
     has_open_roles: Optional[bool] = Query(None, description="only contacts whose company has open job postings"),
     scope: str = Query("jobs", pattern="^(jobs|all)$", description="'jobs' = jobs prospects only (default); 'all' = every contact"),
     filter_rules: Optional[str] = Query(None, alias="filters", description="JSON array of {field,op,values} rules — applied in SQL so filters see the full universe, not the loaded page"),
+    ids: Optional[str] = Query(None, description="Comma-separated contact ids: only these (Stage Flow drill)"),
     limit: int = Query(200, le=5000),
     offset: int = Query(0),
     user=Depends(require_auth),
@@ -8213,10 +8214,18 @@ async def list_contacts(
     the full contact universe so any contact can be promoted to a jobs
     prospect from the table.
     """
-    filters = ["c.is_jobs_contact = true"] if scope == "jobs" else ["true"]
+    filters = ["c.is_jobs_contact = true"] if scope == "jobs" and ids is None else ["true"]
     params: list = []
     i = 1
 
+    # A fixed set of contacts (the Overview Stage Flow drill). Scope is ignored:
+    # the caller already chose exactly who it wants, prospect flag or not.
+    if ids is not None:
+        try:
+            id_list = [int(x) for x in ids.split(",") if x.strip()]
+        except ValueError:
+            raise HTTPException(400, "ids must be comma-separated contact ids")
+        filters.append(f"c.contact_id = ANY(${i}::int[])"); params.append(id_list); i += 1
     if stage:
         filters.append(f"c.contact_stage = ${i}"); params.append(stage); i += 1
     if company:
@@ -9009,6 +9018,7 @@ async def list_opportunities(
     owner_email: Optional[str] = Query(None),
     account_id: Optional[str] = Query(None),
     deal_type: Optional[str] = Query(None),
+    ids: Optional[str] = Query(None, description="Comma-separated opportunity ids: only these (Stage Flow drill)"),
     limit: int = Query(200, le=500),
     offset: int = Query(0),
     user=Depends(require_auth),
@@ -9017,6 +9027,13 @@ async def list_opportunities(
     filters = ["o.deleted_at IS NULL"]
     params: list = []
     i = 1
+
+    if ids is not None:
+        try:
+            id_list = [UUID(x.strip()) for x in ids.split(",") if x.strip()]
+        except ValueError:
+            raise HTTPException(400, "ids must be comma-separated opportunity ids")
+        filters.append(f"o.id = ANY(${i}::uuid[])"); params.append(id_list); i += 1
 
     if stage:
         filters.append(f"o.stage = ${i}"); params.append(stage); i += 1

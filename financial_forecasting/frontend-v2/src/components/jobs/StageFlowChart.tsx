@@ -24,7 +24,6 @@
  * disagree with its number.
  */
 import { Fragment, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
 import { format } from "date-fns";
 
 import {
@@ -35,7 +34,7 @@ import {
   type StageFlowBand,
   type StageFlowRow,
 } from "@/services/jobs";
-import { Drawer } from "@/components/ui/Drawer";
+import { StageFlowWorkbench, type WorkbenchRecord } from "@/components/jobs/StageFlowWorkbench";
 import { DeltaChip } from "@/components/jobs/DeltaChip";
 import { PeriodBar, defaultPeriod } from "@/components/jobs/PeriodBar";
 import { DealTypeFilter, dealTypeParam } from "@/pages/jobs/JobsOpportunitiesOverview";
@@ -411,72 +410,34 @@ function OwnerPicker({ team, selected, nameOf, onPick }: {
   );
 }
 
-// ── Drill drawer ─────────────────────────────────────────────────────────────
+// ── Drill: the records behind a number, as a working list ──────────────────
 
 function StageFlowDrill({ drill, data, nameOf, onClose }: {
   drill: Drill; data: StageFlow; nameOf: (e: string | null) => string; onClose: () => void;
 }) {
   const isContacts = drill.band === "outreach";
-  const href = (id: string) => (isContacts ? `/jobs/contacts/${id}` : `/jobs/opportunities/${id}`);
   const stageLabel = (s: string | null) => (s ? data.stage_labels[s] ?? s : "—");
-  // Contact closed spans three stages, so its list says which one each landed in.
-  const multi = drill.stages.length > 1;
   const inCell = (r: { id: string; stage: string }) => drill.col == null || drill.col.keys.has(recKey(r));
 
-  const rows = drill.kind === "now"
+  // Exactly the records the clicked number counted; the workbench fetches
+  // their full rows and keeps this as context (time in stage, when they moved).
+  const records: WorkbenchRecord[] = drill.kind === "now"
     ? data.members
         .filter((m) => m.band === drill.band && drill.stages.includes(m.stage) && inCell(m))
-        .map((m) => ({ key: recKey(m), id: m.id, name: m.name, detail: m.detail, owner: m.owner,
-                       stage: m.stage, from: null as string | null, when: `${m.days}d` }))
+        .map((m) => ({ id: m.id, stage: m.stage, when: `${m.days}d` }))
     : data.moved
         .filter((m) => m.band === drill.band && drill.stages.includes(m.stage) && inCell(m))
-        .map((m) => ({ key: recKey(m), id: m.id, name: m.name, detail: m.detail, owner: m.owner,
-                       stage: m.stage, from: m.from, when: utcDay(m.at) }));
+        .map((m) => ({ id: m.id, stage: m.stage, when: utcDay(m.at), from: m.from }));
+  const n = new Set(records.map((r) => r.id)).size;
 
-  const noun = isContacts ? (rows.length === 1 ? "contact" : "contacts") : (rows.length === 1 ? "opportunity" : "opportunities");
+  const noun = isContacts ? (n === 1 ? "contact" : "contacts") : (n === 1 ? "opportunity" : "opportunities");
   const where = drill.col ? ` · ${drill.col.label}` : "";
   const note = drill.kind === "now"
     ? `In ${drill.label} now${where}`
     : `Net new in ${drill.label} · ${shortRange(data.period.from, data.period.to)}${where}`;
 
   return (
-    <Drawer open onClose={onClose} title={drill.label} subtitle={`${rows.length} ${noun} · ${note}`} width={760}>
-      <div className="flex-1 overflow-auto p-4">
-        {rows.length === 0 ? (
-          <div className="rounded-lg border border-dashed border-border-strong px-4 py-10 text-center text-[12.5px] text-ink-4">
-            Nothing here for this window.
-          </div>
-        ) : (
-          <div className="overflow-hidden rounded-lg border border-border-strong">
-            <table className="w-full text-[12.5px]">
-              <thead>
-                <tr className="bg-surface-2 text-left text-[10px] uppercase tracking-wider text-ink-4">
-                  <th className="px-3 py-2 font-semibold">{isContacts ? "Contact" : "Account"}</th>
-                  <th className="px-2 py-2 font-semibold">{isContacts ? "Company" : "Opportunity"}</th>
-                  {multi && <th className="px-2 py-2 font-semibold">Stage</th>}
-                  {drill.kind === "moved" && <th className="px-2 py-2 font-semibold">From</th>}
-                  <th className="px-2 py-2 font-semibold">Owner</th>
-                  <th className="px-3 py-2 text-right font-semibold">{drill.kind === "now" ? "In stage" : "Moved"}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((r) => (
-                  <tr key={r.key} className="border-t border-border-strong hover:bg-surface-2/50">
-                    <td className="px-3 py-1.5">
-                      <Link to={href(r.id)} className="font-medium text-ink hover:text-accent hover:underline">{r.name || "—"}</Link>
-                    </td>
-                    <td className="max-w-[200px] truncate px-2 py-1.5 text-ink-3">{r.detail || "—"}</td>
-                    {multi && <td className="px-2 py-1.5 text-ink-2">{stageLabel(r.stage)}</td>}
-                    {drill.kind === "moved" && <td className="px-2 py-1.5 text-ink-3">{stageLabel(r.from)}</td>}
-                    <td className="truncate px-2 py-1.5 text-[11.5px] text-ink-3">{nameOf(r.owner)}</td>
-                    <td className="px-3 py-1.5 text-right tabular-nums text-[11.5px] text-ink-4">{r.when}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-    </Drawer>
+    <StageFlowWorkbench band={drill.band} title={drill.label} subtitle={`${n} ${noun} · ${note}`}
+      isPool={drill.kind === "now"} records={records} stageLabel={stageLabel} nameOf={nameOf} onClose={onClose} />
   );
 }

@@ -62,16 +62,16 @@ function relativeDays(iso: string | null | undefined): string {
 }
 
 // ── columns ──────────────────────────────────────────────────────────────────
-type ColKey = "name" | "prospect" | "flag" | "title" | "company" | "tags" | "owner" | "industry" | "last_touch" | "listings" | "tasks" | "connected" | "deal" | "email" | "linkedin";
-const COLUMN_ORDER: ColKey[] = ["name", "prospect", "flag", "title", "company", "tags", "owner", "industry", "last_touch", "listings", "tasks", "connected", "deal", "email", "linkedin"];
-const DEFAULT_VISIBLE: ColKey[] = ["name", "prospect", "flag", "title", "company", "tags", "owner", "connected", "last_touch", "listings"];
-const COL_LABELS: Record<ColKey, string> = {
+export type ColKey = "name" | "prospect" | "flag" | "title" | "company" | "tags" | "owner" | "industry" | "last_touch" | "listings" | "tasks" | "connected" | "deal" | "email" | "linkedin";
+export const COLUMN_ORDER: ColKey[] = ["name", "prospect", "flag", "title", "company", "tags", "owner", "industry", "last_touch", "listings", "tasks", "connected", "deal", "email", "linkedin"];
+export const DEFAULT_VISIBLE: ColKey[] = ["name", "prospect", "flag", "title", "company", "tags", "owner", "connected", "last_touch", "listings"];
+export const COL_LABELS: Record<ColKey, string> = {
   name: "Name", prospect: "Jobs prospect", flag: "Jobs stage", title: "Title", company: "Company", tags: "Tags", owner: "Owner", industry: "Industry",
   last_touch: "Last touch", listings: "Job listings", tasks: "Open tasks", connected: "Connected staff", deal: "Linked deal", email: "Email", linkedin: "LinkedIn",
 };
 // Default pixel widths — user-resizable via drag handles (useColumnWidths),
 // same grid components as the Opportunities table.
-const DEFAULT_WIDTHS: Record<ColKey, number> = {
+export const DEFAULT_WIDTHS: Record<ColKey, number> = {
   name: 190, prospect: 90, flag: 130, title: 150, company: 160, tags: 190, owner: 150, industry: 130, last_touch: 105, listings: 105, tasks: 85, connected: 155, deal: 145, email: 170, linkedin: 60,
 };
 const SORTABLE = new Set<ColKey>(["name", "prospect", "flag", "title", "company", "tags", "owner", "industry", "last_touch", "listings", "tasks"]);
@@ -395,7 +395,10 @@ function NewContactModal({ onClose, initialCompany }: { onClose: () => void; ini
 }
 
 // ── row ──────────────────────────────────────────────────────────────────────
-function ContactRow({ contact, expanded, onOpen, visibleCols, selected, onToggleSelect }: { contact: JobContactWithDeal; expanded: boolean; onOpen: () => void; visibleCols: ColKey[]; selected: boolean; onToggleSelect: () => void }) {
+/** One contact row: the Contacts page's cells, inline editors and expand panel.
+ *  Exported for the Overview Stage Flow drill, which appends its own context
+ *  cells (time in stage, when they moved) through `extraCells`. */
+export function ContactRow({ contact, expanded, onOpen, visibleCols, selected, onToggleSelect, extraCells }: { contact: JobContactWithDeal; expanded: boolean; onOpen: () => void; visibleCols: ColKey[]; selected: boolean; onToggleSelect: () => void; extraCells?: React.ReactNode[] }) {
   const updateMembership = useUpdateJobsMembership();
   const stageChange = useContactStageChange();
   const flagOne = useFlagContactsForJobs();
@@ -520,8 +523,9 @@ function ContactRow({ contact, expanded, onOpen, visibleCols, selected, onToggle
         {visibleCols.map((key, i) => (
           <td key={key} className={cn("overflow-hidden px-3 py-1.5 align-middle", i === 0 && cn("sticky left-0 z-10 group-hover:bg-surface-2", expanded ? "bg-surface-2" : "bg-surface"))} onClick={["flag", "prospect", "owner", "tags"].includes(key) ? (e) => e.stopPropagation() : undefined}>{cells[key]}</td>
         ))}
+        {extraCells?.map((c, i) => <td key={`x${i}`} className="whitespace-nowrap px-3 py-1.5 align-middle text-[12px] text-ink-3">{c}</td>)}
       </tr>
-      {expanded && <tr className="bg-surface-2"><td colSpan={visibleCols.length} className="p-0"><ContactExpandTabs contactId={contact.contact_id} /></td></tr>}
+      {expanded && <tr className="bg-surface-2"><td colSpan={visibleCols.length + (extraCells?.length ?? 0)} className="p-0"><ContactExpandTabs contactId={contact.contact_id} /></td></tr>}
       {/* Rendered outside the cells: a modal can't live inside a <td> in a
           ternary, and only the row you clicked has a pending revisit. */}
       {stageChange.dialog}
