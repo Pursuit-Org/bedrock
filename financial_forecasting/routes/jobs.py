@@ -317,7 +317,8 @@ MEMBERSHIP_STAGE_LABELS = {
     "assigned":                 "Assigned",
     "initial_outreach":         "Initial Outreach",
     "scheduling":               "Scheduling",
-    "call_booked":              "Call Booked",
+    # Labelled "Discovery Call" since 2026-10-13 (Kwame); the stored key is unchanged.
+    "call_booked":              "Discovery Call",
     "converted_to_opportunity": "Converted to Opportunity",
     "revisit":                  "Revisit",
     "not_a_fit":                "Not a Fit",
@@ -2804,7 +2805,7 @@ async def get_funnel(
             ("assigned", "Assigned"),
             ("initial_outreach", "Initial Outreach"),
             ("scheduling", "Scheduling"),
-            ("call_booked", "Call Booked"),
+            ("call_booked", "Discovery Call"),
             ("converted_to_opportunity", "Converted to Opportunity"),
             ("revisit", "Revisit"),
             ("not_a_fit", "Not a Fit"),
@@ -3828,6 +3829,14 @@ _FLOW_CONTACT_CLOSED = [
     ("not_a_fit", "Not a fit"),
 ]
 _FLOW_DEAL_TERMINAL = [("closed_won", "Closed Won"), ("closed_lost", "Closed Lost")]
+# A contact's owner, as the Contacts page shows it: the contact record's owner,
+# else the jobs membership's. The membership owner alone is empty for most
+# contacts (947 of 1,241 on 2026-10-13), which left the Owner filter and tab
+# blank for people the Contacts page shows as owned. Needs `c` and `m` aliases.
+_FLOW_CONTACT_OWNER = "COALESCE(c.owner_email, m.owner_email)"
+# The `from` a Discovery call entry carries when it came from a logged call
+# rather than a stage move; the drawer labels it.
+_FLOW_LOGGED_DISCOVERY = "logged_discovery_call"
 # Stage keys that may carry a weekly stage target (stage-targets migration).
 # Revisit, Not a fit and Closed Lost are outcomes nobody aims for.
 STAGE_FLOW_TARGET_KEYS = (
@@ -3868,13 +3877,13 @@ async def _flow_moved(conn, owner_f, dt_f, p_from, p_to, have_history: bool) -> 
     # Contacts: the Contacts funnel's period rules. The stage stamps, then
     # membership history, one entry per (contact, stage).
     seen: dict = {}
-    srows = await conn.fetch("""
+    srows = await conn.fetch(f"""
         SELECT m.contact_id, c.full_name AS name, c.current_company AS company,
-               m.owner_email AS owner, m.assigned_at, m.first_outreach_at, m.converted_at
+               {_FLOW_CONTACT_OWNER} AS owner, m.assigned_at, m.first_outreach_at, m.converted_at
         FROM bedrock.jobs_contact_membership m
         JOIN public.contacts c ON c.contact_id = m.contact_id
         WHERE m.stage <> 'not_a_fit'
-          AND ($1::text IS NULL OR lower(m.owner_email) = $1)
+          AND ($1::text IS NULL OR lower({_FLOW_CONTACT_OWNER}) = $1)
           AND (m.assigned_at >= $2 AND m.assigned_at < $3
                OR m.first_outreach_at >= $2 AND m.first_outreach_at < $3
                OR m.converted_at >= $2 AND m.converted_at < $3)
@@ -3888,15 +3897,15 @@ async def _flow_moved(conn, owner_f, dt_f, p_from, p_to, have_history: bool) -> 
     from_of: dict = {}
     if have_history:
         try:
-            hrows = await conn.fetch("""
+            hrows = await conn.fetch(f"""
                 SELECT DISTINCT ON (h.contact_id, h.to_stage)
                        h.contact_id, h.from_stage, h.to_stage, h.changed_at,
-                       c.full_name AS name, c.current_company AS company, m.owner_email AS owner
+                       c.full_name AS name, c.current_company AS company, {_FLOW_CONTACT_OWNER} AS owner
                 FROM bedrock.jobs_membership_stage_history h
                 JOIN public.contacts c ON c.contact_id = h.contact_id
                 LEFT JOIN bedrock.jobs_contact_membership m ON m.contact_id = h.contact_id
                 WHERE h.changed_at >= $2 AND h.changed_at < $3
-                  AND ($1::text IS NULL OR lower(m.owner_email) = $1)
+                  AND ($1::text IS NULL OR lower({_FLOW_CONTACT_OWNER}) = $1)
                 ORDER BY h.contact_id, h.to_stage, h.changed_at
             """, owner_f, p_from, p_to)
         except (asyncpg.exceptions.InsufficientPrivilegeError, asyncpg.exceptions.UndefinedTableError):
@@ -3906,6 +3915,28 @@ async def _flow_moved(conn, owner_f, dt_f, p_from, p_to, have_history: bool) -> 
             from_of.setdefault(key, canon_membership_stage(r["from_stage"]))
             if key[1] in contact_keys and key not in seen:
                 seen[key] = (r, r["changed_at"])
+    # A logged Discovery call is a discovery call whether or not anyone moved the
+    # contact's stage (Kwame 2026-10-13), so it counts as Net New in the
+    # Discovery call row too: once per contact, after the stage entries, so a
+    # contact who was moved AND had the call logged still counts once.
+    if await _has_column("bedrock", "activity", "call_kind"):
+        drows = await conn.fetch(f"""
+            SELECT DISTINCT ON (a.participant_public_contact_id)
+                   a.participant_public_contact_id AS contact_id, a.activity_date AS at,
+                   c.full_name AS name, c.current_company AS company, {_FLOW_CONTACT_OWNER} AS owner
+            FROM bedrock.activity a
+            JOIN public.contacts c ON c.contact_id = a.participant_public_contact_id
+            LEFT JOIN bedrock.jobs_contact_membership m ON m.contact_id = c.contact_id
+            WHERE a.deleted_at IS NULL AND a.type IN ('call', 'meeting') AND a.call_kind = 'discovery'
+              AND a.activity_date >= $2 AND a.activity_date < $3 AND {_jobs_relevant('a')}
+              AND ($1::text IS NULL OR lower({_FLOW_CONTACT_OWNER}) = $1)
+            ORDER BY a.participant_public_contact_id, a.activity_date
+        """, owner_f, p_from, p_to)
+        for r in drows:
+            key = (r["contact_id"], "call_booked")
+            if key not in seen:
+                seen[key] = (r, r["at"])
+                from_of[key] = _FLOW_LOGGED_DISCOVERY
     for (cid, stage_key), (r, ts) in seen.items():
         moved.append({
             "band": "outreach", "stage": stage_key, "id": str(cid), "name": r["name"],
@@ -4018,22 +4049,22 @@ async def get_stage_flow(
                   f"{call_booked_stamp}END")
     contact_sql = """
         SELECT m.contact_id, c.full_name AS name, c.current_company AS company,
-               m.owner_email AS owner, m.stage,
+               {owner} AS owner, m.stage,
                COALESCE({hist}{stamp}, m.updated_at) AS entered_stage
         FROM bedrock.jobs_contact_membership m
         JOIN public.contacts c ON c.contact_id = m.contact_id
         WHERE m.stage IN ({stages})
-          AND ($1::text IS NULL OR lower(m.owner_email) = $1)
+          AND ($1::text IS NULL OR lower({owner}) = $1)
     """
     hist_sub = ("(SELECT max(h.changed_at) FROM bedrock.jobs_membership_stage_history h "
                 "WHERE h.contact_id = m.contact_id AND h.to_stage = m.stage), ")
     have_history = True
     try:
-        crows = await conn.fetch(contact_sql.format(hist=hist_sub, stamp=stamp_case, stages=contact_in), owner_f)
+        crows = await conn.fetch(contact_sql.format(hist=hist_sub, stamp=stamp_case, stages=contact_in, owner=_FLOW_CONTACT_OWNER), owner_f)
     except (asyncpg.exceptions.InsufficientPrivilegeError, asyncpg.exceptions.UndefinedTableError):
         have_history = False
         logger.warning("stage-flow: no read on jobs_membership_stage_history — using stage stamps only")
-        crows = await conn.fetch(contact_sql.format(hist="", stamp=stamp_case, stages=contact_in), owner_f)
+        crows = await conn.fetch(contact_sql.format(hist="", stamp=stamp_case, stages=contact_in, owner=_FLOW_CONTACT_OWNER), owner_f)
     for r in crows:
         d = _days(r["entered_stage"])
         members.append({
@@ -4149,7 +4180,8 @@ async def get_stage_flow(
         # The Jobs team (Settings › Targets › Jobs › Team), in its set order: the
         # Owner filter and the Owner tab list these people and nobody else.
         "team": jobs_targets_store.team_emails(),
-        "stage_labels": {**STAGE_LABELS, **{k: lbl for k, lbl in _FLOW_CONTACT_STAGES + _FLOW_CONTACT_CLOSED}},
+        "stage_labels": {**STAGE_LABELS, **{k: lbl for k, lbl in _FLOW_CONTACT_STAGES + _FLOW_CONTACT_CLOSED},
+                         _FLOW_LOGGED_DISCOVERY: "Logged discovery call"},
         "members": members,
         "moved": moved,
     }}

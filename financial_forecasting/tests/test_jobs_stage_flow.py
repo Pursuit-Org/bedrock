@@ -274,3 +274,37 @@ def test_converted_borrows_the_settings_outreach_target():
     assert _rows(d)[("outreach", "call_booked")]["target"] is None
     r, _ = _get({}, owner="a@pursuit.org")
     assert _rows(r.json()["data"])[("outreach", "converted_to_opportunity")]["target_weekly"] == 2
+
+
+DISCOVERY_CALLS = "a.call_kind = 'discovery'"
+
+
+def test_logged_discovery_call_counts_once_in_discovery_call_net_new():
+    conn = FakeConn(
+        vals={"information_schema.columns": 1},
+        lists={
+            DISCOVERY_CALLS: [
+                # logged a discovery call, never moved stage: counts
+                {"contact_id": 7, "at": ago(2), "name": "C7", "company": "Co7", "owner": "a@pursuit.org"},
+                # moved to the stage AND had the call logged: counts once
+                {"contact_id": 8, "at": ago(2), "name": "C8", "company": "Co8", "owner": "a@pursuit.org"},
+            ],
+            CONTACT_HISTORY: [
+                {"contact_id": 8, "from_stage": "initial_outreach", "to_stage": "call_booked", "changed_at": ago(3),
+                 "name": "C8", "company": "Co8", "owner": "a@pursuit.org"},
+            ],
+        })
+    c = make_jobs_client(conn)
+    d = c.get(f"/api/jobs/stage-flow?period_from={P_FROM}&period_to={P_TO}").json()["data"]
+    row = _rows(d)[("outreach", "call_booked")]
+    assert row["label"] == "Discovery call" and row["moved_in"] == 2
+    via = {m["id"]: m["from"] for m in d["moved"] if m["stage"] == "call_booked"}
+    assert via == {"7": "logged_discovery_call", "8": "initial_outreach"}
+    assert d["stage_labels"]["logged_discovery_call"] == "Logged discovery call"
+
+
+def test_contact_owner_comes_from_the_contact_record_first():
+    _, conn = _get({}, owner="kwame@pursuit.org")
+    for needle in (CONTACTS_NOW, CONTACT_STAMPS):
+        q = next(c[1] for c in conn.calls if needle in c[1])
+        assert "COALESCE(c.owner_email, m.owner_email)" in q, needle

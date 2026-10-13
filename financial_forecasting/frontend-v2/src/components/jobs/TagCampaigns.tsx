@@ -28,7 +28,7 @@ import { cn } from "@/lib/utils";
 // Converted → Contacted (initial_outreach only) → On hold → Not yet contacted (grey).
 const STAGE_LEGEND = [
   { label: "Converted", cls: "bg-green-500" },
-  { label: "Call booked", cls: "bg-teal-500" },
+  { label: "Discovery call", cls: "bg-teal-500" },
   { label: "Contacted", cls: "bg-accent" },
   { label: "Revisit", cls: "bg-amber-400" },
   { label: "Not a fit", cls: "bg-rose-300" },
@@ -41,7 +41,7 @@ function FunnelBar({ f }: { f: TagCampaign["funnel"] }) {
   const n = (v: number | undefined) => v ?? 0;
   const parts = [
     { label: "Converted", cls: "bg-green-500", n: n(f.converted) },
-    { label: "Call booked", cls: "bg-teal-500", n: n(f.call_booked) },
+    { label: "Discovery call", cls: "bg-teal-500", n: n(f.call_booked) },
     { label: "Contacted", cls: "bg-accent", n: n(f.contacted) },
     { label: "Revisit", cls: "bg-amber-400", n: n(f.on_hold) },
     { label: "Not a fit", cls: "bg-rose-300", n: n(f.not_a_fit) },

@@ -348,7 +348,8 @@ export const MEMBERSHIP_STAGES: MembershipStage[] = [
 ];
 export const MEMBERSHIP_STAGE_LABELS: Record<MembershipStage, string> = {
   assigned: "Assigned", initial_outreach: "Initial outreach", scheduling: "Scheduling",
-  call_booked: "Call booked",
+  // Labelled "Discovery call" since 2026-10-13; the stored key is unchanged.
+  call_booked: "Discovery call",
   converted_to_opportunity: "Converted to opportunity", revisit: "Revisit", not_a_fit: "Not a fit",
   on_hold: "On hold",
 };
