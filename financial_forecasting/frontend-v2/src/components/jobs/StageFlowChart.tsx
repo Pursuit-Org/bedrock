@@ -25,7 +25,7 @@
  */
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { format } from "date-fns";
-import { ChevronDown, SlidersHorizontal, Zap } from "lucide-react";
+import { ChevronDown, ChevronUp, SlidersHorizontal, Zap } from "lucide-react";
 
 import {
   useJobsStaff,
@@ -87,6 +87,10 @@ export function StageFlowChart() {
   const roleParam = roleTypes.length === ALL_ROLE_TYPES.length ? "all" : roleTypes.join(",");
   const [tab, setTab] = useSessionState<Tab>("jobsOverview.stageFlow.tab", "stage");
   const [byTime, setByTime] = useSessionState<boolean>("jobsOverview.stageFlow.byTime", false);
+  // Which stages have their activity (sends, calls) folded open. Closed by default.
+  const [actOpen, setActOpen] = useSessionState<string[]>("jobsOverview.stageFlow.activityOpen", []);
+  const toggleAct = (stage: string) =>
+    setActOpen(actOpen.includes(stage) ? actOpen.filter((k) => k !== stage) : [...actOpen, stage]);
   const [drill, setDrill] = useState<Drill | null>(null);
 
   const staffQ = useJobsStaff();
@@ -167,6 +171,7 @@ export function StageFlowChart() {
           </div>
         ) : (
           <StageTable data={current} byTime={byTime} nameOf={nameOf} onDrill={setDrill}
+            actOpen={actOpen} onToggleAct={toggleAct}
             pipelineFilter={<PipelineFilter dealTypes={dealTypes} onDealTypes={setDealTypes}
               roleTypes={roleTypes} onRoleTypes={setRoleTypes} />} />
         )}
@@ -176,7 +181,7 @@ export function StageFlowChart() {
             during the period. Closed Won and Closed Lost count closes that stuck. Targets are weekly, prorated to the
             period; the Owner tab shows each person against their own
             {current.targets_available ? "" : "; per-stage targets arrive with the stage-targets migration, and Converted to opportunity uses the Settings outreach target until then"}.
-            Rows marked ⚡ count activity, not contacts: every send or call the team logged in the period, exactly as
+            The ⚡ toggles on Initial outreach and Discovery call open the activity behind them, counted as events, not contacts: every send or call the team logged in the period, exactly as
             Outreach › Activity Pipeline counts it, against the Settings outreach targets.
             The Pipeline band's Filter (deal type, role type) applies to opportunities only.
           </p>
@@ -237,7 +242,7 @@ function BandHeader({ band, colSpan, right }: {
   );
 }
 
-function StageLabel({ row }: { row: StageFlowRow }) {
+function StageLabel({ row, toggle }: { row: StageFlowRow; toggle?: React.ReactNode }) {
   const depth = row.depth ?? 0;
   const pending = !row.available;
   return (
@@ -248,7 +253,25 @@ function StageLabel({ row }: { row: StageFlowRow }) {
       {depth > 0 && <span className="mr-1.5 text-ink-4">↳</span>}
       {row.label}
       {pending && <span className="ml-2 text-[10.5px] uppercase tracking-wide text-ink-4">pending migration</span>}
+      {toggle}
     </td>
+  );
+}
+
+/** The fold on a stage that has activity under it: shows the headline count
+ *  ("29 sends") closed, and opens the activity panel beneath the stage. */
+function ActivityToggle({ lead, open, onToggle }: { lead: StageFlowRow; open: boolean; onToggle: () => void }) {
+  const unit = lead.key === "outreach_sent" ? "sends" : "calls";
+  return (
+    <button type="button" onClick={onToggle} aria-expanded={open}
+      title={open ? "Hide the activity behind this stage" : `Show the ${unit} logged in the period, with targets`}
+      className={cn("ml-2.5 inline-flex items-center gap-1 rounded-full border px-2 py-[1px] align-[1px] text-[11px] font-medium tabular-nums transition-colors",
+        open ? "border-[#6d5efc]/40 bg-[#6d5efc]/[0.12] text-[#5a4bd6]"
+          : "border-[#6d5efc]/25 bg-[#6d5efc]/[0.06] text-[#5a4bd6] hover:bg-[#6d5efc]/[0.12]")}>
+      <Zap size={10.5} aria-hidden />
+      {lead.available ? `${lead.moved_in.toLocaleString()} ${unit}` : "Activity"}
+      {open ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
+    </button>
   );
 }
 
@@ -264,9 +287,9 @@ function NumButton({ n, onClick, title, className }: { n: number; onClick: () =>
 
 // ── Stage tab ────────────────────────────────────────────────────────────────
 
-function StageTable({ data, byTime, nameOf, onDrill, pipelineFilter }: {
+function StageTable({ data, byTime, nameOf, onDrill, pipelineFilter, actOpen, onToggleAct }: {
   data: StageFlow; byTime: boolean; nameOf: (e: string | null) => string; onDrill: (d: Drill) => void;
-  pipelineFilter: React.ReactNode;
+  pipelineFilter: React.ReactNode; actOpen: string[]; onToggleAct: (stage: string) => void;
 }) {
   const cols = byTime ? data.buckets : [];
   // Blank for the team (the default); a person's name when the Owner filter picks one.
@@ -335,9 +358,13 @@ function StageTable({ data, byTime, nameOf, onDrill, pipelineFilter }: {
                     : <span className="text-[11px] tabular-nums text-ink-4">{pool.toLocaleString()} in the pool</span>} />
                 {band.rows.map((row) => {
                   if (row.kind === "activity") {
+                    if (!row.parent || !actOpen.includes(row.parent)) return null;
+                    const sibs = band.rows.filter((r) => r.kind === "activity" && r.parent === row.parent);
                     return <ActivityRow key={row.key} row={row} cols={cols.length}
+                      first={sibs[0] === row} last={sibs[sibs.length - 1] === row}
                       onDrill={() => onDrill({ kind: "activity", band: band.key, stages: [row.key], label: row.label, col: null, activity: row })} />;
                   }
+                  const acts = band.rows.filter((r) => r.kind === "activity" && r.parent === row.key);
                   const stages = stagesOf(row);
                   const inRow = bandMembers.filter((m) => stages.includes(m.stage));
                   const pending = !row.available;
@@ -350,7 +377,9 @@ function StageTable({ data, byTime, nameOf, onDrill, pipelineFilter }: {
                     <tr key={row.key}
                       className={cn("border-b border-border text-[13.5px] transition-colors hover:bg-surface-2/40",
                         row.children && "border-t border-border-strong")}>
-                      <StageLabel row={row} />
+                      <StageLabel row={row} toggle={acts.length > 0 && (
+                        <ActivityToggle lead={acts[0]} open={actOpen.includes(row.key)} onToggle={() => onToggleAct(row.key)} />
+                      )} />
                       <td className={cn(TD, HL)}>
                         {pending || !row.in_now ? <span className="text-ink-4">—</span> : (
                           <span className={cn((row.depth ?? 0) === 0 && "font-semibold")}>
@@ -427,16 +456,28 @@ function ConversionCell({ row, pending, onDrill }: { row: StageFlowRow; pending:
  *  columns as a stage row so the target, gap and trend read across, but a
  *  violet bolt and a lighter weight mark it as a count of events: one contact
  *  emailed three times is 3 here and 1 on the stage row above. */
-function ActivityRow({ row, cols, onDrill }: { row: StageFlowRow; cols: number; onDrill: () => void }) {
+function ActivityRow({ row, cols, first, last, onDrill }: {
+  row: StageFlowRow; cols: number; first: boolean; last: boolean; onDrill: () => void;
+}) {
   const pending = !row.available;
   const unit = row.key === "outreach_sent" ? "sends" : "calls";
   const targetTitle = row.target_weekly != null
     ? `${row.target_weekly} a week, from Settings › Targets › Jobs › Outreach: ${row.target_source_label ?? ""}`
     : `No ${row.target_source_label ?? "outreach"} target set in Settings › Targets › Jobs › Outreach`;
   return (
-    <tr className="border-b border-border text-[12.5px] transition-colors hover:bg-surface-2/40"
+    // A nested panel under its stage: one violet tint across the row and a
+    // violet rule down the left, so it reads as that stage's detail, not as
+    // another stage. Pool is blank: activity has no pool.
+    <tr className={cn("bg-[#6d5efc]/[0.045] text-[12.5px] transition-colors hover:bg-[#6d5efc]/[0.08]",
+        last ? "border-b border-border" : "border-b border-[#6d5efc]/10")}
       title={`Activity: ${unit} logged in the period, as Outreach › Activity Pipeline counts them`}>
-      <td className={cn("py-2 pr-4 text-left", pending ? "text-ink-4" : "text-ink-2")} style={{ paddingLeft: "34px" }}>
+      <td className={cn("py-2 pr-4 text-left", pending ? "text-ink-4" : "text-ink-2")}
+        style={{ paddingLeft: "34px", boxShadow: `inset 3px 0 0 ${ACTIVITY_ACCENT}` }}>
+        {first && (
+          <span className="mb-1 block text-[9.5px] font-semibold uppercase tracking-[0.08em] text-[#5a4bd6]/80">
+            Activity · every {unit === "sends" ? "send" : "call"} logged
+          </span>
+        )}
         <span className="flex items-center gap-1.5 whitespace-nowrap">
           <Zap size={12} className="shrink-0" style={{ color: ACTIVITY_ACCENT }} aria-hidden />
           <span className="font-medium">{row.label}</span>
@@ -448,8 +489,8 @@ function ActivityRow({ row, cols, onDrill }: { row: StageFlowRow; cols: number; 
           </span>
         )}
       </td>
-      <td className={cn(TD, HL, "py-2 text-ink-4")} title="Activity has no pool">·</td>
-      <td className={cn(TD, HL_ACT, "border-l-2 border-border-strong py-2")}>
+      <td className="py-2" title="Activity has no pool" />
+      <td className={cn(TD, "border-l-2 border-border-strong py-2 font-medium")}>
         {pending ? <span className="text-ink-4">—</span>
           : <NumButton n={row.moved_in} onClick={onDrill} title={`${row.moved_in} ${unit} logged`} />}
       </td>
