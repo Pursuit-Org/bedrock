@@ -293,6 +293,38 @@ def test_converted_borrows_the_settings_outreach_target():
 
 
 ACTIVITY = "FROM ev WHERE ts >="
+CONTACTS_NOW_STAGE = "FROM bedrock.jobs_contact_membership WHERE contact_id = ANY"
+DEALS_NOW_STAGE = "FROM bedrock.jobs_opportunity WHERE deleted_at IS NULL AND id = ANY"
+
+
+def test_conversion_is_the_share_of_net_new_now_further_along():
+    d1, d2, d3 = (f"0000000{i}-0000-0000-0000-000000000000" for i in (1, 2, 3))
+    hist = lambda cid, to: {"contact_id": cid, "from_stage": "assigned", "to_stage": to, "changed_at": ago(2),
+                            "name": f"C{cid}", "company": "Co", "owner": "a@pursuit.org"}
+    deal = lambda oid, stage: {"oid": oid, "from_stage": None, "stage": stage, "at": ago(2),
+                               "account_name": "A", "title": "SWE", "owner_email": "a@pursuit.org"}
+    r, conn = _get({
+        CONTACT_HISTORY: [hist(1, "initial_outreach"), hist(2, "initial_outreach"), hist(3, "initial_outreach"),
+                          hist(4, "call_booked")],
+        # now: 1 booked a call (on), 2 still in outreach, 3 is Not a fit (an exit, not progress),
+        # 4 converted (on)
+        CONTACTS_NOW_STAGE: [{"contact_id": 1, "stage": "call_booked"}, {"contact_id": 2, "stage": "initial_outreach"},
+                             {"contact_id": 3, "stage": "not_a_fit"}, {"contact_id": 4, "stage": "converted_to_opportunity"}],
+        DEAL_ENTRIES: [deal(d1, "active_in_discussions"), deal(d2, "active_in_discussions"), deal(d3, "active_in_discussions")],
+        DEALS_NOW_STAGE: [{"id": d1, "stage": "closed_won"}, {"id": d2, "stage": "closed_lost"},
+                          {"id": d3, "stage": "ask_submitted"}],
+    })
+    d = r.json()["data"]
+    rows = _rows(d)
+    assert rows[("outreach", "initial_outreach")]["conversion"] == {"on": 1, "of": 3}
+    assert rows[("outreach", "call_booked")]["conversion"] == {"on": 1, "of": 1}
+    assert rows[("pipeline", "active_in_discussions")]["conversion"] == {"on": 2, "of": 3}
+    # Exits, summaries and activity rows carry none.
+    for k in [("outreach", "not_a_fit"), ("outreach", "contact_closed"), ("pipeline", "closed_won"),
+              ("outreach", "outreach_sent")]:
+        assert rows[k]["conversion"] is None, k
+    now = {m["id"]: (m["now"], m["advanced"]) for m in d["moved"] if m["stage"] == "initial_outreach"}
+    assert now == {"1": ("call_booked", True), "2": ("initial_outreach", False), "3": ("not_a_fit", False)}
 
 
 def _act(metric, cid, n_this, n_prev=0, at_days=2):

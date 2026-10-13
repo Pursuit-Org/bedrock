@@ -47,8 +47,9 @@ import { cn } from "@/lib/utils";
 type Tab = "stage" | "owner";
 
 type Drill = {
-  /** "activity" = the contacts behind an activity row's sends or calls. */
-  kind: "now" | "moved" | "activity";
+  /** "activity" = the contacts behind an activity row's sends or calls;
+   *  "converted" = the Net New now further along. */
+  kind: "now" | "moved" | "activity" | "converted";
   band: StageFlowBand;
   stages: string[];
   label: string;
@@ -135,6 +136,13 @@ export function StageFlowChart() {
         <div className="flex flex-wrap items-center gap-2.5 border-b border-border-strong bg-surface-2 px-4 py-2.5">
           <span className="text-[13px] font-bold text-ink-2">Stage Flow</span>
           {tabs}
+          {tab === "owner" && team.length > 0 && (
+            <select value={owner} onChange={(e) => setOwnerPick(e.target.value)} aria-label="Jobs team member"
+              title="Whose stage flow and targets to show"
+              className="h-7 rounded-md border border-border-strong bg-surface px-2 text-[12px] font-medium text-ink outline-none focus:border-accent">
+              {team.map((email) => <option key={email} value={email}>{nameOf(email)}</option>)}
+            </select>
+          )}
           <span className="hidden text-[11.5px] text-ink-4 md:inline">Outreach to Closed Won · click any number for the list</span>
           {(
             <select value={byTime ? "time" : "off"} onChange={(e) => setByTime(e.target.value === "time")}
@@ -145,9 +153,6 @@ export function StageFlowChart() {
             </select>
           )}
         </div>
-        {tab === "owner" && team.length > 0 && (
-          <OwnerPicker team={team} selected={owner} nameOf={nameOf} onPick={setOwnerPick} />
-        )}
         {isLoading && !data ? (
           <div className="m-4 h-72 animate-pulse rounded-lg bg-surface-2" />
         ) : isError || !data ? (
@@ -263,13 +268,13 @@ function StageTable({ data, byTime, nameOf, onDrill }: {
   const cols = byTime ? data.buckets : [];
   // Blank for the team (the default); a person's name when the Owner filter picks one.
   const scopeLabel = data.target_scope === "team" ? "" : nameOf(data.target_scope);
-  const colCount = 6 + cols.length;
+  const colCount = 7 + cols.length;
   return (
     <div className="overflow-x-auto">
       <table className={cn("w-full border-collapse", byTime ? "min-w-[1080px]" : "min-w-[860px]")}>
         <colgroup>
           <col style={{ width: byTime ? "21%" : "28%" }} />
-          {[0, 1, 2, 3, 4].map((i) => <col key={i} style={{ width: byTime ? "9%" : "14.4%" }} />)}
+          {[0, 1, 2, 3, 4, 5].map((i) => <col key={i} style={{ width: byTime ? "7.5%" : "12%" }} />)}
           {cols.map((c) => <col key={c.key} style={{ width: "6.8%" }} />)}
         </colgroup>
         <thead>
@@ -280,7 +285,7 @@ function StageTable({ data, byTime, nameOf, onDrill }: {
             <th className={cn("px-3 pt-2.5", HL)}>
               <GroupCap label="Stage" sub="as of today" color={STAGE_ACCENT} />
             </th>
-            <th colSpan={4} className="border-l-2 border-border-strong px-3 pt-2.5">
+            <th colSpan={5} className="border-l-2 border-border-strong px-3 pt-2.5">
               <GroupCap label="Activity" sub={shortRange(data.period.from, data.period.to)} color={ACTIVITY_ACCENT} />
             </th>
             {cols.length > 0 && (
@@ -301,6 +306,9 @@ function StageTable({ data, byTime, nameOf, onDrill }: {
               <span className="block">Target</span><span className={SUB}>{scopeLabel}</span>
             </th>
             <th className={TH}><span className="block">Δ to Target</span><span className={SUB} /></th>
+            <th className={TH} title="Of the Net New, the share that is further along today: a later stage, Converted to opportunity, or Closed Won">
+              <span className="block">Conversion</span><span className={SUB}>now further along</span>
+            </th>
             <th className={TH} title="Net New against the period before, same length">
               <span className="block">Trend</span>
               <span className={SUB}>vs {shortRange(data.prev_period.from, data.prev_period.to)}</span>
@@ -362,6 +370,10 @@ function StageTable({ data, byTime, nameOf, onDrill }: {
                         {pending || row.target == null ? <span className="text-ink-4">—</span>
                           : <DeltaChip actual={row.moved_in} target={row.target} />}
                       </td>
+                      <td className={TD}>
+                        <ConversionCell row={row} pending={pending}
+                          onDrill={() => onDrill({ kind: "converted", band: band.key, stages, label: row.label, col: null })} />
+                      </td>
                       <td className={cn(TD, "text-[12.5px]")}>
                         {pending ? <span className="text-ink-4">—</span> : <Trend current={row.moved_in} prior={row.prev_moved_in} />}
                       </td>
@@ -387,6 +399,22 @@ function StageTable({ data, byTime, nameOf, onDrill }: {
         </tbody>
       </table>
     </div>
+  );
+}
+
+/** "40%" with "2 of 5" beneath; the percentage opens the records that moved on. */
+function ConversionCell({ row, pending, onDrill }: { row: StageFlowRow; pending: boolean; onDrill: () => void }) {
+  const c = row.conversion;
+  if (pending || !c || c.of === 0) return <span className="text-ink-4">—</span>;
+  const pct = Math.round((c.on / c.of) * 100);
+  return (
+    <span className="inline-flex flex-col items-center leading-tight">
+      {c.on === 0 ? <span className="text-ink-3">0%</span> : (
+        <button type="button" onClick={onDrill} title={`${c.on} of ${c.of} are further along now: click to list them`}
+          className="tabular-nums text-ink underline-offset-2 hover:text-accent hover:underline">{pct}%</button>
+      )}
+      <span className="text-[10.5px] tabular-nums text-ink-4">{c.on} of {c.of}</span>
+    </span>
   );
 }
 
@@ -427,6 +455,7 @@ function ActivityRow({ row, cols, onDrill }: { row: StageFlowRow; cols: number; 
         {pending || row.target == null ? <span className="text-ink-4">—</span>
           : <DeltaChip actual={row.moved_in} target={row.target} />}
       </td>
+      <td className={cn(TD, "py-2 text-ink-4")}>—</td>
       <td className={cn(TD, "py-2 text-[12px]")}>
         {pending ? <span className="text-ink-4">—</span> : <Trend current={row.moved_in} prior={row.prev_moved_in} />}
       </td>
@@ -434,32 +463,6 @@ function ActivityRow({ row, cols, onDrill }: { row: StageFlowRow; cols: number; 
         <td key={i} className={cn("px-2 py-2", i === 0 && "border-l border-border-strong")} />
       ))}
     </tr>
-  );
-}
-
-// ── Owner tab: pick one person ───────────────────────────────────────────────
-
-/** One button per Jobs team member, styled as the Stage / Owner tabs so the
- *  two read as one control; the table below shows whoever is picked. */
-function OwnerPicker({ team, selected, nameOf, onPick }: {
-  team: string[]; selected: string; nameOf: (e: string | null) => string; onPick: (e: string) => void;
-}) {
-  return (
-    <div className="border-b border-border-strong px-4 py-2">
-      <div className="inline-flex flex-wrap items-center rounded-md border border-border-strong bg-surface p-0.5"
-        role="tablist" aria-label="Jobs team member">
-        {team.map((email) => {
-          const on = email === selected;
-          return (
-            <button key={email} type="button" role="tab" aria-selected={on} onClick={() => onPick(email)}
-              className={cn("rounded px-2.5 py-0.5 text-[12px] font-medium transition-colors",
-                on ? "bg-accent-soft text-accent" : "text-ink-2 hover:bg-surface-2")}>
-              {nameOf(email)}
-            </button>
-          );
-        })}
-      </div>
-    </div>
   );
 }
 
@@ -476,6 +479,18 @@ function StageFlowDrill({ drill, data, nameOf, onClose }: {
   // their full rows and keeps this as context (time in stage, when they moved).
   if (drill.kind === "activity" && drill.activity) {
     return <ActivityDrill drill={drill} row={drill.activity} data={data} nameOf={nameOf} onClose={onClose} />;
+  }
+  if (drill.kind === "converted") {
+    const recs: WorkbenchRecord[] = data.moved
+      .filter((m) => m.band === drill.band && drill.stages.includes(m.stage) && m.advanced)
+      .map((m) => ({ id: m.id, stage: m.stage, when: utcDay(m.at), extra: [utcDay(m.at), stageLabel(m.now ?? null)] }));
+    const k = new Set(recs.map((r) => r.id)).size;
+    const unit = isContacts ? (k === 1 ? "contact" : "contacts") : (k === 1 ? "opportunity" : "opportunities");
+    return (
+      <StageFlowWorkbench band={drill.band} title={drill.label}
+        subtitle={`${k} ${unit} · entered ${drill.label} ${shortRange(data.period.from, data.period.to)} and are further along now`}
+        isPool={false} contextHead={["Net new", "Now"]} records={recs} stageLabel={stageLabel} nameOf={nameOf} onClose={onClose} />
+    );
   }
   const records: WorkbenchRecord[] = drill.kind === "now"
     ? data.members

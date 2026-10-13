@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, Columns3 } from "lucide-react";
+import { Check, ChevronDown, ChevronUp, Columns3 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
@@ -9,6 +9,9 @@ interface ColumnChooserProps<K extends string> {
   visible: K[];
   required?: K[];
   onToggle: (col: K) => void;
+  /** When given, shown columns list in table order with up/down arrows that
+   *  move a column one place left (-1) or right (+1). */
+  onMove?: (col: K, dir: -1 | 1) => void;
 }
 
 /** Column visibility menu, shared by every data grid. Styled check rows
@@ -20,6 +23,7 @@ export function ColumnChooser<K extends string>({
   visible,
   required = [],
   onToggle,
+  onMove,
 }: ColumnChooserProps<K>) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -61,15 +65,17 @@ export function ColumnChooser<K extends string>({
       </button>
 
       {open && (
-        <div className="absolute right-0 top-8 z-50 w-[210px] overflow-hidden rounded-lg border border-border-strong bg-surface shadow-xl">
+        <div className={cn("absolute right-0 top-8 z-50 overflow-hidden rounded-lg border border-border-strong bg-surface shadow-xl",
+          onMove ? "w-[250px]" : "w-[210px]")}>
           <div className="border-b border-border-strong/70 px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-ink-4">
-            Show columns
+            {onMove ? "Show and order columns" : "Show columns"}
           </div>
           <div className="max-h-[320px] overflow-y-auto p-1">
-            {allColumns.map((col) => {
+            {(onMove ? [...visible, ...allColumns.filter((c) => !visible.includes(c))] : allColumns).map((col) => {
               const isReq = required.includes(col);
               const isVisible = visible.includes(col);
-              return (
+              const at = visible.indexOf(col);
+              const toggleBtn = (
                 <button
                   key={col}
                   type="button"
@@ -97,6 +103,26 @@ export function ColumnChooser<K extends string>({
                   </span>
                   {isReq && <span className="text-[9.5px] uppercase tracking-wide text-ink-4">fixed</span>}
                 </button>
+              );
+              if (!onMove) return toggleBtn;
+              return (
+                <div key={col} className="flex items-center gap-0.5">
+                  <div className="min-w-0 flex-1">{toggleBtn}</div>
+                  {isVisible && (
+                    <span className="flex shrink-0 gap-0.5 pr-1">
+                      <button type="button" aria-label={`Move ${labels[col]} left`} disabled={at === 0}
+                        onClick={() => onMove(col, -1)}
+                        className="grid h-5 w-5 place-items-center rounded text-ink-3 hover:bg-surface-2 hover:text-ink disabled:opacity-25">
+                        <ChevronUp size={12} />
+                      </button>
+                      <button type="button" aria-label={`Move ${labels[col]} right`} disabled={at === visible.length - 1}
+                        onClick={() => onMove(col, 1)}
+                        className="grid h-5 w-5 place-items-center rounded text-ink-3 hover:bg-surface-2 hover:text-ink disabled:opacity-25">
+                        <ChevronDown size={12} />
+                      </button>
+                    </span>
+                  )}
+                </div>
               );
             })}
           </div>

@@ -74,7 +74,7 @@ export function StageFlowWorkbench({ band, title, subtitle, isPool, contextHead,
     <Drawer open onClose={onClose} title={title} subtitle={subtitle} width={width}>
       {band === "outreach"
         ? <ContactsList isPool={isPool} contextHead={contextHead} records={records} stageLabel={stageLabel} nameOf={nameOf} />
-        : <OpportunitiesList isPool={isPool} records={records} stageLabel={stageLabel} nameOf={nameOf} />}
+        : <OpportunitiesList isPool={isPool} contextHead={contextHead} records={records} stageLabel={stageLabel} nameOf={nameOf} />}
     </Drawer>
   );
 }
@@ -120,6 +120,14 @@ function ownerOptions(emails: (string | null | undefined)[], nameOf: (e: string 
     .sort((a, b) => a.label.localeCompare(b.label));
 }
 
+/** One place left (-1) or right (+1) among the shown columns. */
+function stepMove<K extends string>(visible: K[], move: (col: K, target: K) => void) {
+  return (col: K, dir: -1 | 1) => {
+    const target = visible[visible.indexOf(col) + dir];
+    if (target) move(col, target);
+  };
+}
+
 const matchesOwner = (owner: string, email: string | null | undefined) =>
   !owner || (owner === "(none)" ? !email : (email ?? "").toLowerCase() === owner);
 
@@ -149,7 +157,7 @@ function ContactsList({ isPool, contextHead, records, stageLabel, nameOf }: {
   }, [records]);
   const ids = useMemo(() => [...byId.keys()], [byId]);
   const q = useJobsContacts({ ids, limit: 5000 });
-  const { visible, toggle } = useColumnVisibility<ColKey>("bedrock-v2:vis:stage-flow-drill-contacts", COLUMN_ORDER, DRILL_CONTACT_COLS);
+  const { visible, toggle, move } = useColumnVisibility<ColKey>("bedrock-v2:vis:stage-flow-drill-contacts", COLUMN_ORDER, DRILL_CONTACT_COLS);
 
   const [search, setSearch] = useState("");
   const [owner, setOwner] = useState("");
@@ -195,7 +203,7 @@ function ContactsList({ isPool, contextHead, records, stageLabel, nameOf }: {
     <div className="flex min-h-0 flex-1 flex-col">
       <Toolbar search={search} onSearch={setSearch} owners={owners} owner={owner} onOwner={setOwner}
         stages={stages} stage={stage} onStage={setStage} shown={rows.length} total={all.length}
-        columns={<ColumnChooser allColumns={COLUMN_ORDER} labels={COL_LABELS} visible={visible} required={["name"]} onToggle={toggle} />} />
+        columns={<ColumnChooser allColumns={COLUMN_ORDER} labels={COL_LABELS} visible={visible} required={["name"]} onToggle={toggle} onMove={stepMove(visible, move)} />} />
       {selected.size > 0 && (
         <div className="flex flex-wrap items-center gap-2 border-b border-border-strong bg-accent-soft px-4 py-2 text-[12.5px]">
           <span className="font-semibold text-accent-ink">{selected.size} selected</span>
@@ -223,7 +231,8 @@ function ContactsList({ isPool, contextHead, records, stageLabel, nameOf }: {
               <tr className="text-[10.5px] uppercase tracking-wider text-ink-3">
                 {visible.map((k, i) => (
                   <th key={k} className={cn("px-3 py-2 font-semibold", i === 0 && "sticky left-0 z-30 bg-surface-2")}>
-                    {i === 0 ? (
+                    {/* Select-all rides with Name, where each row's checkbox is, wherever Name is moved. */}
+                    {k === "name" ? (
                       <span className="flex items-center gap-2">
                         <input type="checkbox" checked={allChecked} onChange={toggleAll} aria-label="Select all"
                           className="h-3.5 w-3.5 accent-[color:var(--accent,#4242EA)]" />
@@ -257,8 +266,9 @@ function ContactsList({ isPool, contextHead, records, stageLabel, nameOf }: {
 
 // ── Opportunities ────────────────────────────────────────────────────────────
 
-function OpportunitiesList({ isPool, records, stageLabel, nameOf }: {
-  isPool: boolean; records: WorkbenchRecord[]; stageLabel: (s: string | null) => string; nameOf: (e: string | null) => string;
+function OpportunitiesList({ isPool, contextHead, records, stageLabel, nameOf }: {
+  isPool: boolean; contextHead?: string[]; records: WorkbenchRecord[];
+  stageLabel: (s: string | null) => string; nameOf: (e: string | null) => string;
 }) {
   const byId = useMemo(() => {
     const m = new Map<string, WorkbenchRecord>();
@@ -267,7 +277,7 @@ function OpportunitiesList({ isPool, records, stageLabel, nameOf }: {
   }, [records]);
   const ids = useMemo(() => [...byId.keys()], [byId]);
   const q = useJobsOpportunities({ ids, limit: 500 });
-  const { visible, toggle } = useColumnVisibility<OppColKey>("bedrock-v2:vis:stage-flow-drill-opps", OPP_COLUMN_ORDER, DRILL_OPP_COLS);
+  const { visible, toggle, move } = useColumnVisibility<OppColKey>("bedrock-v2:vis:stage-flow-drill-opps", OPP_COLUMN_ORDER, DRILL_OPP_COLS);
 
   const [search, setSearch] = useState("");
   const [owner, setOwner] = useState("");
@@ -289,10 +299,11 @@ function OpportunitiesList({ isPool, records, stageLabel, nameOf }: {
   const stages = useMemo(() => [...new Set(all.map((o) => o.stage))]
     .map((s) => ({ value: s, label: STAGE_LABELS[s as JobStage] ?? s })), [all]);
 
-  const extraHead = isPool ? ["In stage"] : ["Net new", "From"];
+  const extraHead = contextHead ?? (isPool ? ["In stage"] : ["Net new", "From"]);
   const extra = (id: string) => {
     const r = byId.get(id);
     if (!r) return [];
+    if (r.extra) return r.extra;
     return isPool ? [r.when] : [r.when, r.from ? stageLabel(r.from) : "—"];
   };
 
@@ -300,7 +311,7 @@ function OpportunitiesList({ isPool, records, stageLabel, nameOf }: {
     <div className="flex min-h-0 flex-1 flex-col">
       <Toolbar search={search} onSearch={setSearch} owners={owners} owner={owner} onOwner={setOwner}
         stages={stages} stage={stage} onStage={setStage} shown={rows.length} total={all.length}
-        columns={<ColumnChooser allColumns={OPP_COLUMN_ORDER} labels={OPP_COL_LABELS} visible={visible} required={["company"]} onToggle={toggle} />} />
+        columns={<ColumnChooser allColumns={OPP_COLUMN_ORDER} labels={OPP_COL_LABELS} visible={visible} required={["company"]} onToggle={toggle} onMove={stepMove(visible, move)} />} />
       {q.isLoading ? <Loading /> : rows.length === 0 ? <Empty text={all.length ? "Nothing matches these filters." : "No opportunities here."} /> : (
         <div className="min-h-0 flex-1 overflow-auto">
           <table className="w-full border-collapse text-left">

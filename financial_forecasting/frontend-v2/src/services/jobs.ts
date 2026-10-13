@@ -3170,6 +3170,9 @@ export interface StageFlowRow {
   breakdown?: { key: string; label: string; n: number }[] | null;
   /** Activity rows: touches counted with no linked contact (not listable). */
   unlinked?: number;
+  /** Of the Net New, how many are further along today. Null on exits,
+   *  summaries and activity rows; absent on older APIs. */
+  conversion?: { on: number; of: number } | null;
   /** False while the database doesn't accept the stage yet (pending migration). */
   available: boolean;
   /** Null on movement-only rows (Closed Won, the off-ramps). */
@@ -3221,6 +3224,9 @@ export interface StageFlowMove {
   at: string;
   /** The stage it came from, where history records one. */
   from: string | null;
+  /** Where it is today, and whether that is further along (Conversion). */
+  now?: string | null;
+  advanced?: boolean;
 }
 
 export interface StageFlow {

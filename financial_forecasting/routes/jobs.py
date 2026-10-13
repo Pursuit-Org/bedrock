@@ -3993,6 +3993,39 @@ async def _flow_moved(conn, owner_f, dt_f, p_from, p_to, have_history: bool) -> 
     return moved
 
 
+# Conversion (Kwame 2026-10-13): of what entered a stage in the period, the
+# share that is further along TODAY. "Further" is a later working stage, or
+# Converted to opportunity for contacts and Closed Won for deals. Revisit,
+# Not a fit and Closed Lost are exits, not progress. Rows not listed here
+# (the closes, summaries, activity) carry no conversion.
+_FLOW_CONTACT_RANK = {k: i for i, k in enumerate(
+    ["assigned", "initial_outreach", "scheduling", "call_booked", "converted_to_opportunity"])}
+_FLOW_DEAL_RANK = {k: i for i, k in enumerate(OPPORTUNITY_STAGES_ACTIVE + ["closed_won"])}
+_FLOW_CONVERTS = {
+    "outreach": [k for k, _ in _FLOW_CONTACT_STAGES],
+    "pipeline": list(OPPORTUNITY_STAGES_ACTIVE),
+}
+
+
+async def _flow_mark_advanced(conn, moved: list) -> None:
+    """Stamp each Net New entry with where the record is now (`now`) and
+    whether that is further along than the stage it entered (`advanced`)."""
+    cids = sorted({int(m["id"]) for m in moved if m["band"] == "outreach"})
+    oids = sorted({m["id"] for m in moved if m["band"] == "pipeline"})
+    now_c = {str(r["contact_id"]): canon_membership_stage(r["stage"]) for r in (await conn.fetch(
+        "SELECT contact_id, stage FROM bedrock.jobs_contact_membership WHERE contact_id = ANY($1::int[])",
+        cids) if cids else [])}
+    now_o = {str(r["id"]): canon_stage(r["stage"]) for r in (await conn.fetch(
+        "SELECT id, stage FROM bedrock.jobs_opportunity WHERE deleted_at IS NULL AND id = ANY($1::uuid[])",
+        oids) if oids else [])}
+    for m in moved:
+        contact = m["band"] == "outreach"
+        now = (now_c if contact else now_o).get(m["id"])
+        rank = _FLOW_CONTACT_RANK if contact else _FLOW_DEAL_RANK
+        m["now"] = now
+        m["advanced"] = (now in rank and m["stage"] in rank and rank[now] > rank[m["stage"]])
+
+
 async def _flow_activity(conn, owner_f, p_from, p_to, span) -> tuple:
     """Sends and calls in [p_from, p_to) and the period before, per (metric,
     contact), from the Activity Pipeline's own event SQL. The Stage tab is the
@@ -4111,6 +4144,7 @@ async def get_stage_flow(
     moved = await _flow_moved(conn, owner_f, dt_f, p_from, p_to, have_history)
     prev = await _flow_moved(conn, owner_f, dt_f, p_from - span, p_from, have_history)
     act_rows, has_call_kind = await _flow_activity(conn, owner_f, p_from, p_to, span)
+    await _flow_mark_advanced(conn, moved)
     moved.sort(key=lambda m: m["at"], reverse=True)
     members.sort(key=lambda m: -m["days"])
 
@@ -4153,6 +4187,10 @@ async def get_stage_flow(
         weekly, source = (None, None) if children else _target(key)
         target = round(weekly * span_days / 7, 1) if weekly is not None else None
         moved_in = _count(moved, band, keys)
+        conversion = None
+        if not children and key in _FLOW_CONVERTS[band]:
+            on = sum(1 for m in moved if m["band"] == band and m["stage"] == key and m.get("advanced"))
+            conversion = {"on": on, "of": moved_in}
         return {
             "key": key, "label": label, "depth": depth, "children": children,
             "available": band != "pipeline" or key in opp_writable or key in ("closed_won", "closed_lost"),
@@ -4169,6 +4207,8 @@ async def get_stage_flow(
             "target": target,
             # Moved in minus target: positive is ahead.
             "delta": round(moved_in - target, 1) if target is not None else None,
+            # Of the Net New, how many are further along today.
+            "conversion": conversion,
         }
 
     # ── Activity rows ────────────────────────────────────────────────────────
@@ -4213,6 +4253,7 @@ async def get_stage_flow(
                            "n": sum(int(r["n_this"] or 0) for r in mine if r["metric"] == m)}
                           for m, lbl in leaves] if len(leaves) > 1 else None,
             "unlinked": sum(int(r["n_this"] or 0) for r in mine if r["contact_id"] is None),
+            "conversion": None,
         }
 
     def _outreach_stage_rows() -> list:
