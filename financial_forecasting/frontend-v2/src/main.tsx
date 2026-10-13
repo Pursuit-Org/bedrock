@@ -45,7 +45,10 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
         // v4 — 2026-08-18: jobs/staff-sourced changed from a flat application
         // array to grouped {company_name, role_title, applications: [...]} —
         // old cached shape has no .applications, crashing render on hydrate.
-        buster: "v4",
+        // v5 — 2026-10-13 (PRO-100): tag-campaigns and their stats/records
+        // replaced `funnel` / `activated_*` / `touches` with the campaign
+        // numbers; an old cached shape crashes the Sankey and Activation card.
+        buster: "v5",
         dehydrateOptions: {
           // Only persist queries that finished successfully — pending /
           // error states carry a state.promise field that doesn't survive

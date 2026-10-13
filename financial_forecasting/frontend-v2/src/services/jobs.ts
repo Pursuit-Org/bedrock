@@ -1341,6 +1341,26 @@ export interface FunnelData {
   last_movement_at: string | null;
   stages: FunnelStage[];
   record_columns: { key: string; label: string }[];
+  /** Conversion between milestones (D11), for contacts and opportunities:
+   *  first stage → interview, then interview → hire. Their rows carry no rate.
+   *  Null for builders, whose rows do. */
+  milestones: FunnelMilestone[] | null;
+}
+
+/** One conversion between milestones. Counts only records that started at
+ *  the earlier one, so it never passes 100%. */
+export interface FunnelMilestone {
+  key: "first_stage_to_interview" | "interview_to_hire";
+  from_label: string;
+  to_label: string;
+  rate: number | null;
+  numerator: number;
+  denominator: number;
+  /** The prior window of equal length; null without a period. */
+  rate_prev: number | null;
+  /** first_stage_to_interview: who reached interview. interview_to_hire:
+   *  every interview, with whether it was hired. */
+  records: Record<string, string | boolean | null>[];
 }
 
 /** Window for period-flow mode. Omit it to get the all-time snapshot (the Exec
@@ -1733,11 +1753,13 @@ export function useOutreachScorecard(granularity: OutreachGranularity, scope: Ou
  *  Outreach tab fetches once per period to build its trend columns, so it was
  *  recomputed several times per page load to answer a question that never
  *  depended on the period. Its own key means one fetch and its own cache. */
-export function useTouchDepth(scope: OutreachScopeKind, owner?: string) {
+/** Every contact in initial outreach, whoever owns them (OUT-10): the queue
+ *  doesn't follow the page's sender scope. `owner` narrows it to one person. */
+export function useTouchDepth(owner?: string) {
   return useQuery<TouchDepth>({
-    queryKey: ["jobs", "outreach-touch-depth", scope, owner ?? ""],
+    queryKey: ["jobs", "outreach-touch-depth", owner ?? ""],
     queryFn: async () => {
-      const p = new URLSearchParams({ scope });
+      const p = new URLSearchParams();
       if (owner) p.set("owner", owner);
       const { data } = await api.get<ApiResponse<TouchDepth>>(`/api/jobs/outreach/touch-depth?${p}`);
       return data.data;
@@ -2090,20 +2112,34 @@ export function useContactTagCatalog() {
   });
 }
 
-export interface TagCampaign {
-  key: string; label: string; slugs: string[]; sort_order: number;
-  contacts: number; accounts: number; in_pipeline: number;
-  owner_email: string | null;
-  /** Disjoint over in_pipeline: every stage plus not_yet (no stage at all).
-   *  call_booked and not_a_fit were added 2026-09 — before that they fell into
-   *  not_yet, reporting worked contacts as never contacted. */
-  funnel: {
-    not_yet: number; assigned: number; contacted: number;
-    call_booked: number; converted: number; not_a_fit: number; on_hold: number;
-  };
+/** One campaign's numbers, by the rules in services/jobs_metrics (PRO-100).
+ *  `contacts` is everyone tagged; every other number counts the PIPELINE
+ *  contacts (those with a pipeline membership), Pursuit staff left out. */
+export interface CampaignNumbers {
+  contacts: number;
+  in_pipeline: number;
+  accounts: number;
+  /** Reached by activity from anyone at Pursuit, ever: the one "contacted". */
+  contacted: number;
+  /** Accounts with at least one contacted contact. */
+  accounts_reached: number;
+  converted: number;
+  /** Of the contacted, % converted to an opportunity. Null with none contacted. */
+  conversion: number | null;
+  /** Every membership stage (on_hold folded into revisit), over in_pipeline. */
+  stages: Partial<Record<MembershipStage, number>>;
+  /** The same stages, for the contacted contacts only. */
+  stages_contacted: Partial<Record<MembershipStage, number>>;
 }
 
-/** Tags as prioritizable outreach campaigns (Performance) — counts + order. */
+export interface TagCampaign extends CampaignNumbers {
+  key: string; label: string; slugs: string[]; sort_order: number;
+  owner_email: string | null;
+  /** The campaign shown by default (D10). The others are past campaigns. */
+  current: boolean;
+}
+
+/** Every campaign with its numbers, in priority order, current and past. */
 export function useTagCampaigns() {
   return useQuery<TagCampaign[]>({
     queryKey: ["jobs", "tag-campaigns"],
@@ -2122,19 +2158,29 @@ export interface TagCampaignContact {
   stage: string | null;
   stage_entered_at: string | null;
   owner: string | null;
-  touches: number;
-  last_touch: string | null;
+  /** The Activation card's rule: any activity from Pursuit, ever. */
+  contacted: boolean;
+  /** Pieces of activity that reached this contact, each once. */
+  activity: number;
+  last_activity: string | null;
 }
-export interface TagCampaignAccount { company: string; contacts: number; contacted: number }
+/** `reached` = contacts at the account that have been contacted. */
+export interface TagCampaignAccount { company: string; contacts: number; reached: number }
+export interface TagCampaignRecords {
+  contacts: TagCampaignContact[];
+  accounts: TagCampaignAccount[];
+  /** Pipeline contacts with no company: not an account. */
+  unassigned: { contacts: number; reached: number };
+}
 
-/** The contacts and accounts behind a campaign's counts. Same slug set and
- *  jobs-prospect gate as /tag-campaigns, so the drills tie to the numbers. */
+/** The contacts and accounts behind a campaign's numbers, by the same rules,
+ *  so a drill always ties to the number that opened it. */
 export function useTagCampaignRecords(key: string | null) {
-  return useQuery<{ contacts: TagCampaignContact[]; accounts: TagCampaignAccount[] }>({
+  return useQuery<TagCampaignRecords>({
     queryKey: ["jobs", "tag-campaign-records", key ?? ""],
     enabled: !!key,
     queryFn: async () => {
-      const { data } = await api.get<ApiResponse<{ contacts: TagCampaignContact[]; accounts: TagCampaignAccount[] }>>(
+      const { data } = await api.get<ApiResponse<TagCampaignRecords>>(
         `/api/jobs/tag-campaigns/${encodeURIComponent(key as string)}/records`);
       return data.data;
     },
@@ -2156,17 +2202,11 @@ export interface TagCampaignStats {
   /** Every catalog slug the campaign aggregates — five for Operation 35. */
   slugs: string[];
   owner_email: string | null;
+  current: boolean;
   period: { from: string; to: string; granularity: CampaignGranularity };
-  /** All-time. Activation is a state, so it never honours the period. */
-  totals: {
-    contacts: number; accounts_all: number;
-    in_pipeline: number; accounts: number; with_email: number;
-    activated_contacts: number; activated_accounts: number;
-    no_stage: number; worked: number;
-    /** Partial: the backend canonicalises on_hold into revisit, so that key
-     *  never comes back. Read through a coalescing helper, not directly. */
-    stages: Partial<Record<MembershipStage, number>>;
-  };
+  /** All-time, the campaign row's own numbers. Contacted is a state, so it
+   *  never honours the period. */
+  totals: CampaignNumbers;
   /** Period-scoped outbound volume. Calendar meetings and hand-logged calls
    *  are one `calls_booked` channel — both are a live conversation that got
    *  booked, and splitting them made the smaller number look like a failure. */
@@ -2273,6 +2313,24 @@ export function useSetTagCampaignOrder() {
       toast.success("Priority saved");
     },
     onError: () => toast.error("Couldn't save priority"),
+  });
+}
+
+/** Make a campaign the current one (D10): the Campaigns tab opens on it, and
+ *  every other campaign becomes a past one. */
+export function useSetCurrentCampaign() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (key: string) => {
+      const { data } = await api.put<ApiResponse<{ key: string }>>("/api/jobs/tag-campaigns/current", { key });
+      return data.data;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["jobs", "tag-campaigns"] });
+      qc.invalidateQueries({ queryKey: ["jobs", "tag-campaign-stats"] });
+      toast.success("Current campaign set");
+    },
+    onError: () => toast.error("Couldn't set the current campaign"),
   });
 }
 

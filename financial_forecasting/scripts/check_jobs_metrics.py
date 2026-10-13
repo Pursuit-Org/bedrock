@@ -83,6 +83,20 @@ async def _interviews(ctx):
         weeks=1, user=None, conn=ctx.conn))
 
 
+async def _prospects_funnel(ctx):
+    from routes import jobs
+    return await ctx.once("prospects_funnel", lambda: jobs.get_funnel(
+        ftype="prospects", deal_type=None, segment=None, period_from=ctx.d_from.isoformat(),
+        period_to=ctx.d_to.isoformat(), owner=None, user=None, conn=ctx.conn))
+
+
+def _milestone(key):
+    async def get(ctx):
+        ms = (await _prospects_funnel(ctx))["data"]["milestones"]
+        return next(m["rate"] for m in ms if m["key"] == key)
+    return get
+
+
 async def _segments(ctx):
     from routes import jobs
     return await ctx.once("segments", lambda: jobs.builder_segments(user=None, conn=ctx.conn))
@@ -137,6 +151,7 @@ CHECKS = [
     Check("closed_lost", "closed_lost", _data(_overview, "summary", "closed_lost")),
     Check("interviews", "interviews", _data(_interviews, "interviews")),
     Check("interview_to_hire", "rate_pct", _data(_interviews, "rate_pct")),
+    Check("milestone_to_interview", "rate_pct", _milestone("first_stage_to_interview")),
 ]
 
 

@@ -312,6 +312,44 @@ def in_window(events: Iterable[Event], start: datetime, end: datetime) -> list[E
     return [e for e in events if start <= e.ts < end]
 
 
+# ── Contacted (PRO-100, Nina 2026-10-13) ─────────────────────────────────────
+# A contact is contacted once anyone at Pursuit has reached them with activity:
+# an email, LinkedIn message, text, intro, call or meeting. A move to Call
+# Booked is a stage change, not activity, so it never makes anyone contacted
+# on its own. The Campaigns row, the Activation card, the Sankey, the drill
+# and Activity depth all read this one rule.
+
+def is_activity(e: Event) -> bool:
+    return e.kind != "call_booked"
+
+
+def conversation(e: Event) -> tuple:
+    """What makes two events one piece of activity for a contact: a calendar
+    meeting someone also logged as a call is that call (PRO-102), so a
+    contact on both is worked once, not twice."""
+    if e.logged_as:
+        return ("call", e.logged_as)
+    if e.kind == "call":
+        return ("call", e.activity_id)
+    return (e.kind, e.activity_id or e.intro_id, e.ts)
+
+
+def activity_by_contact(events: Iterable[Event], contact_ids) -> dict:
+    """contact_id -> (activity count, latest) for the contacts in
+    `contact_ids` that any of `events` reached. A contact absent from the
+    result has not been contacted."""
+    wanted = set(contact_ids)
+    seen: dict = {}
+    for e in events:
+        if not is_activity(e):
+            continue
+        for cid in ({e.contact_id, *e.contact_ids} & wanted):
+            convs, last = seen.get(cid, (set(), None))
+            convs.add(conversation(e))
+            seen[cid] = (convs, e.ts if last is None or e.ts > last else last)
+    return {cid: (len(convs), last) for cid, (convs, last) in seen.items()}
+
+
 @dataclass
 class Counts:
     """Outreach volume for one window."""
@@ -616,20 +654,27 @@ def counted_once_ctes(p_start: str = "$1", p_end: str = "$2", p_senders: str = "
     )"""
 
 
-def depth_sql(p_since: str = "$1", p_senders: str = "$2") -> str:
+def depth_sql(p_since: str = "$1", p_senders: str = "$2", exclude: str = "FALSE") -> str:
     """Activity depth in SQL alone: for each contact sitting in Initial
-    Outreach now, how much activity `p_senders` sent them since `p_since`
-    (call bookings aren't activity). The twin of routes/jobs.py
-    `_touch_depth`. One row per contact: contact_id, owner_email, activity."""
+    Outreach now, whoever owns them, how much activity `p_senders` sent them
+    since `p_since`, each piece once (conversation(); call bookings aren't
+    activity). `exclude` is a predicate on `c` (public.contacts) for contacts
+    left out (Pursuit's own staff). The twin of routes/jobs.py `_touch_depth`.
+    One row per contact: contact_id, owner_email, activity."""
     return f"""
     WITH {counted_once_ctes(p_start=p_since, p_end="NULL", p_senders=p_senders)},
     reached AS (
-      SELECT DISTINCT o.kind, coalesce(o.activity_id::text, o.intro_id::text) AS id, o.ts, x.cid
+      SELECT DISTINCT
+             CASE WHEN o.logged_as IS NOT NULL THEN 'call:' || o.logged_as::text
+                  WHEN o.kind = 'call' THEN 'call:' || o.activity_id::text
+                  ELSE o.kind || ':' || coalesce(o.activity_id::text, o.intro_id::text) || ':' || o.ts::text
+             END AS piece, x.cid
       FROM once o, unnest(o.contact_ids || o.contact_id) x(cid)
       WHERE o.kind <> 'call_booked' AND x.cid IS NOT NULL
     )
     SELECT m.contact_id, m.owner_email,
            (SELECT count(*) FROM reached r WHERE r.cid = m.contact_id) AS activity
     FROM bedrock.jobs_contact_membership m
-    WHERE m.stage = 'initial_outreach'
+    JOIN public.contacts c ON c.contact_id = m.contact_id
+    WHERE m.stage = 'initial_outreach' AND NOT {exclude}
     """

@@ -7,9 +7,11 @@
  * LT_Nick, Staff, Pursuit, Other) and the alumni cohorts are twelve — so the
  * picker offers the campaign, and the backend aggregates its slugs.
  *
- * Two views, one page. No campaign picked shows the prioritised list of every
- * campaign. Picking one shows its detail: activation and the pipeline Sankey,
- * outbound volume, the outreach trend, and the event feed.
+ * Two views, one page. It opens on the CURRENT campaign (D10: Operation 35
+ * today); past campaigns are archived but stay in the picker with their
+ * results. "All campaigns" shows the prioritised list. A campaign's detail:
+ * activation and the pipeline Sankey, outbound volume, the outreach trend, and
+ * the event feed.
  *
  * Which numbers honour the period, because mixing the two would mislead:
  *   * Activation and the pipeline Sankey are ALL-TIME. Activation is a state — a
@@ -17,9 +19,11 @@
  *     it would read as contacts un-activating when you step the window back.
  *   * Outreach volume, the trend and the activity feed honour the period bar.
  *
- * Population note: `contacts` is every tagged contact, while every funnel and
- * outreach number counts only those flagged as jobs prospects (`in_pipeline`).
- * The page labels which is which rather than quietly picking one.
+ * Population note: `contacts` is every tagged contact, while every other
+ * number counts the pipeline contacts (`in_pipeline`: a pipeline membership,
+ * Pursuit staff left out). "Contacted" is one rule everywhere on the page —
+ * the row, Activation, the Sankey and the drills — activity from anyone at
+ * Pursuit (PRO-100).
  */
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
@@ -52,10 +56,9 @@ function pct(n: number, d: number): number | null {
 }
 
 // ── Campaign picker ─────────────────────────────────────────────────────────
-/** Single-select over campaigns, with "All campaigns" as the reset. Pinned
- *  campaigns are listed first under their own heading — with 13 campaigns and
- *  one you open constantly, scrolling past the other twelve every time is the
- *  whole friction. The list rows carry their counts, since sizing a push before
+/** Single-select over campaigns, with "All campaigns" as the reset. The
+ *  current campaign leads (D10), then pinned ones, then past campaigns under
+ *  their own heading: archived, still pickable with their results. The list rows carry their counts, since sizing a push before
  *  you open it is worth a line there, but the closed control shows the name
  *  alone so it stays one line tall and matches the period bar beside it. */
 function CampaignSelect({ campaigns, value, onChange, loading }: {
@@ -70,14 +73,15 @@ function CampaignSelect({ campaigns, value, onChange, loading }: {
 
   // Pinned keep the catalog's priority order among themselves rather than
   // pin-click order: the list is still the team's queue, just filtered.
-  const pinnedRows = campaigns.filter((c) => isPinned(c.key));
-  const restRows = campaigns.filter((c) => !isPinned(c.key));
+  const currentRows = campaigns.filter((c) => c.current);
+  const pinnedRows = campaigns.filter((c) => !c.current && isPinned(c.key));
+  const pastRows = campaigns.filter((c) => !c.current && !isPinned(c.key));
 
   const row = (c: TagCampaign) => (
     <Option
       key={c.key}
       label={c.label}
-      sub={`${c.in_pipeline.toLocaleString()} in pipeline · ${c.accounts.toLocaleString()} accounts${
+      sub={`${c.contacted.toLocaleString()} of ${c.in_pipeline.toLocaleString()} contacted · ${c.accounts.toLocaleString()} accounts${
         c.slugs.length > 1 ? ` · ${c.slugs.length} tags` : ""
       }`}
       selected={value === c.key}
@@ -124,16 +128,22 @@ function CampaignSelect({ campaigns, value, onChange, loading }: {
               selected={value === null}
               onClick={() => { onChange(null); setOpen(false); }}
             />
+            {currentRows.length > 0 && (
+              <>
+                <GroupHeading label="Current" />
+                {currentRows.map(row)}
+              </>
+            )}
             {pinnedRows.length > 0 && (
               <>
                 <GroupHeading label="Pinned" />
                 {pinnedRows.map(row)}
               </>
             )}
-            {restRows.length > 0 && (
+            {pastRows.length > 0 && (
               <>
-                <GroupHeading label={pinnedRows.length > 0 ? "All campaigns" : ""} />
-                {restRows.map(row)}
+                <GroupHeading label="Past campaigns" />
+                {pastRows.map(row)}
               </>
             )}
           </div>
@@ -285,8 +295,8 @@ function ActivationGroup({ label, hint, tone, rows }: {
 /** The contacts behind one Sankey bucket. Sits to the right of the chart and
  *  matches its height, so opening a bucket never reflows the card — it fills
  *  space that was already reserved. Derived from /records rather than a new
- *  endpoint: that response already carries every in-pipeline contact with its
- *  stage, which is exactly what the buckets partition on. */
+ *  endpoint: that response already carries every pipeline contact with its
+ *  stage and whether it was contacted, which is what the buckets split on. */
 function BucketPanel({ campaignKey, bucket, onClose }: {
   campaignKey: string;
   bucket: PipelineBucket;
@@ -295,7 +305,7 @@ function BucketPanel({ campaignKey, bucket, onClose }: {
   const [showAll, setShowAll] = useState(false);
   const { data, isLoading } = useTagCampaignRecords(campaignKey);
   const rows = useMemo(
-    () => (data?.contacts ?? []).filter((c) => inBucket(bucket, c.stage)),
+    () => (data?.contacts ?? []).filter((c) => inBucket(bucket, c)),
     [data?.contacts, bucket],
   );
   const shown = showAll ? rows : rows.slice(0, BUCKET_PAGE);
@@ -595,10 +605,10 @@ function CampaignDetail({ campaignKey, from, to, granularity }: {
           <ActivationGroup
             label="Activated"
             tone="accent"
-            hint="Any activity from Pursuit: an email, call, meeting, text, LinkedIn message or intro."
+            hint="Contacted: any activity from Pursuit, ever (an email, call, meeting, text, LinkedIn message or intro). The same contacts the campaign row and the Sankey call contacted."
             rows={[
-              { n: t.activated_accounts, of: t.accounts, unit: "accounts" },
-              { n: t.activated_contacts, of: t.in_pipeline, unit: "contacts" },
+              { n: t.accounts_reached, of: t.accounts, unit: "accounts" },
+              { n: t.contacted, of: t.in_pipeline, unit: "contacts" },
             ]}
           />
           <div className="flex flex-col gap-2 rounded-xl border border-border-strong bg-surface px-4 py-3.5 lg:col-span-2">
@@ -648,7 +658,12 @@ function campaignDefaultPeriod(): [string, string] {
 
 export function JobsCampaigns() {
   const { data: campaigns = [], isLoading } = useTagCampaigns();
-  const [selected, setSelected] = useState<string | null>(null);
+  // Undefined until someone picks: then the page shows the current campaign
+  // (D10), or the list when none (or several, before the migration) is current.
+  const [picked, setPicked] = useState<string | null | undefined>(undefined);
+  const current = campaigns.filter((c) => c.current);
+  const selected = picked !== undefined ? picked : current.length === 1 ? current[0].key : null;
+  const setSelected = (key: string | null) => setPicked(key);
   const [granularity, setGranularity] = useState<CampaignGranularity>("day");
   const [[from, to], setRange] = useState<[string, string]>(campaignDefaultPeriod);
 
@@ -671,7 +686,13 @@ export function JobsCampaigns() {
           </div>
         ) : null}
       </div>
-      {selected
+      {/* Until the list arrives nobody knows which campaign is current, so wait
+          rather than flash the list and then swap to the campaign. */}
+      {isLoading && picked === undefined ? (
+        <div className="flex items-center gap-2 rounded-2xl border border-border-strong bg-surface px-5 py-8 text-[13px] text-ink-3">
+          <Loader2 size={15} className="animate-spin" /> Loading campaigns…
+        </div>
+      ) : selected
         ? <CampaignDetail campaignKey={selected} from={from} to={to} granularity={granularity} />
         : <Portfolio />}
     </div>

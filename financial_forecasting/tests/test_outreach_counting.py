@@ -352,18 +352,18 @@ def test_by_owner_reads_once_and_splits_by_sender(_clear_overrides, monkeypatch)
 def test_campaign_numbers_use_the_same_activity(_clear_overrides):
     """CMP-06: a campaign counts what Pursuit sent its contacts, per message,
     each send once, no calendar notices; a Call Booked move is not activity."""
-    from routes.jobs import _CAMPAIGN_STAGES
     t = datetime.fromisoformat("2026-09-24T15:00:00+00:00")
+    member = lambda cid, key: {"campaign": "op35", "contact_id": cid, "full_name": f"C{cid}",
+                               "company": key, "account_key": key, "in_pipeline": True,
+                               "stage": "initial_outreach", "owner_email": None,
+                               "stage_entered_at": None}
     conn = FakeConn(
-        rows={"WITH camp AS": {"contacts_all": 3, "accounts_all": 2, "in_pipeline": 2,
-                               "accounts": 1, "with_email": 2, "st_none": 0,
-                               **{f"st_{s}": 0 for s in _CAMPAIGN_STAGES}}},
         lists={
-            "contact_tag_catalog": [{"slug": "op35", "label": "Operation 35",
-                                     "sort_order": 1, "owner_email": None}],
-            "unnest(c.tags)": [{"contact_id": 1, "company": "acme"},
-                               {"contact_id": 2, "company": None}],
-            "org_users": [{"email": "nick@pursuit.org"}],
+            "FROM bedrock.contact_tag_catalog WHERE active": [
+                {"slug": "op35", "label": "Operation 35", "sort_order": 1,
+                 "owner_email": None, "is_current": True}],
+            "SELECT DISTINCT ON (g.campaign": [member(1, "acme"), member(2, None)],
+            "DISTINCT lower(email) AS email": [{"email": "nick@pursuit.org"}],
             EVENTS: [
                 event_row(ts=t, contact_id=1),
                 event_row(ts=t, contact_id=1, activity_id="copy"),          # other mailbox
@@ -377,7 +377,7 @@ def test_campaign_numbers_use_the_same_activity(_clear_overrides):
         "/api/jobs/tag-campaigns/op35/stats?date_from=2026-09-21&date_to=2026-09-27")
     assert r.status_code == 200, r.text
     d = r.json()["data"]
-    assert d["totals"]["activated_contacts"] == 2 and d["totals"]["activated_accounts"] == 1
+    assert d["totals"]["contacted"] == 2 and d["totals"]["accounts_reached"] == 1
     o = d["outreach"]
     assert (o["emails"], o["calls_booked"], o["total"]) == (1, 1, 2)
     assert sum(b["total"] for b in d["trend"]) == 2

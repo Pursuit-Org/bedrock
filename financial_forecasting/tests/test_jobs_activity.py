@@ -90,7 +90,10 @@ def test_opportunities_funnel_follows_owner_filter():
     c = make_jobs_client(conn)
     r = c.get(f"/api/jobs/funnel/opportunities{PERIOD}&owner=k@p.org")
     assert r.status_code == 200, r.text
-    opp_calls = [call for call in conn.calls if "jobs_opportunity o" in call[1]]
+    # The funnel's own reads filter in SQL. Its conversion (D11) reads every
+    # start and application and filters in Python: test_campaign_math covers it.
+    opp_calls = [call for call in conn.calls if "jobs_opportunity o" in call[1]
+                 and "AS first_stage" not in call[1] and "job_applications ja" not in call[1]]
     assert opp_calls
     for _kind, q, args in opp_calls:
         assert "o.owner_email = $" in q, q
@@ -107,8 +110,7 @@ def test_contacts_funnel_counts_not_a_fit():
         {"stage": "not_a_fit", "name": "Ana", "company": "Acme"},
         {"stage": "not_a_fit", "name": "Ben", "company": "Beta"},
         {"stage": "assigned", "name": "Cy", "company": "Gamma"},
-    ]}, rows={"reached_assigned": {"reached_assigned": 3, "reached_outreach": 0,
-                                   "reached_converted": 0}})
+    ]})
     r = make_jobs_client(conn).get("/api/jobs/funnel/prospects")
     assert r.status_code == 200, r.text
     counts = {s["key"]: s["count"] for s in r.json()["data"]["stages"]}

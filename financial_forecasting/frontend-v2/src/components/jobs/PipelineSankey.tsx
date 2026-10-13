@@ -1,21 +1,24 @@
 /**
- * The campaign pipeline as a Sankey: every contact flows left to right and each
- * column splits the one before it.
+ * The campaign pipeline as a Sankey: every pipeline contact flows left to right
+ * and each column splits the one before it.
  *
- *   All contacts → assigned / not assigned
- *                → contacted / awaiting contact
- *                → converted · call booked · in outreach · revisit · not a fit
+ *   In pipeline → contacted / not yet contacted → the stage each one is at
+ *
+ * The buckets and their counts are campaignBuckets.ts (PRO-100): "contacted"
+ * is the campaign row's and the Activation card's rule, so the three agree.
+ * Both branches feed the stage nodes, because stage and contact don't move
+ * together: a contact can be ruled out without a word, or worked and still be
+ * at Assigned.
  *
  * Why a Sankey rather than a stacked bar or a column flowchart: those show the
- * same seven numbers, but neither shows what splits into what. Ribbon width
- * carries the share, so a branch that collapses between columns is visible
- * without reading a single figure.
+ * same numbers, but neither shows what splits into what. Ribbon width carries
+ * the share, so a branch that collapses between columns is visible without
+ * reading a single figure.
  *
  * Layout is recharts', deliberately. It nudges nodes vertically to minimise
- * ribbon crossings, which is why "Assigned" does not sit flush at the top of
- * its column — the position is the library balancing the picture, not the data
- * saying anything. A hand-laid version that pinned the order read worse, so the
- * ordering question is answered by the colours and the labels instead.
+ * ribbon crossings, so a node's position is the library balancing the
+ * picture, not the data saying anything; the ordering question is answered by
+ * the colours and the labels instead.
  *
  * Zero-value branches are dropped, not drawn at zero height. A campaign with
  * nobody at Revisit should not show a Revisit label attached to an invisible
@@ -24,76 +27,31 @@
 import { useMemo } from "react";
 import { Sankey, Tooltip as ReTooltip, ResponsiveContainer, Layer, Rectangle } from "recharts";
 
-import type { TagCampaignStats, MembershipStage } from "@/services/jobs";
+import type { TagCampaignStats } from "@/services/jobs";
+import {
+  BUCKET_LABELS, pipelineCounts, pipelineLinks, type PipelineBucket,
+} from "@/components/jobs/campaignBuckets";
 import { cn } from "@/lib/utils";
 
-/** Bucket ids double as the filter the detail panel applies to the contact
- *  list, so a label and the rows it opens can never mean different things. */
-export type PipelineBucket =
-  | "all" | "assigned" | "unassigned" | "contacted" | "awaiting"
-  | "converted" | "call_booked" | "in_outreach" | "revisit" | "not_a_fit";
+export { BUCKET_LABELS, inBucket, type PipelineBucket } from "@/components/jobs/campaignBuckets";
 
-/** Grey means "no progress claimed" — the whole population, and the two
- *  branches that are waiting rather than advancing. Everything representing a
- *  step forward or a decision gets its own hue, so the eye can follow one
+/** Grey means "no progress claimed": the whole population, the branch nobody
+ *  has contacted, and the queue still waiting at Assigned. Everything that is
+ *  a step forward or a decision gets its own hue, so the eye can follow one
  *  outcome from its ribbon to its label. */
 const GREY = "#9aa1ab";
 const COLORS: Record<PipelineBucket, string> = {
   all: GREY,
-  assigned: "#0ea5e9",
-  unassigned: GREY,
   contacted: "#4242EA",
-  awaiting: GREY,
-  converted: "#16a34a",
+  not_contacted: GREY,
+  assigned: "#0ea5e9",
+  initial_outreach: "#8b5cf6",
+  scheduling: "#2dd4bf",
   call_booked: "#0d9488",
-  in_outreach: "#8b5cf6",
+  converted_to_opportunity: "#16a34a",
   revisit: "#f59e0b",
   not_a_fit: "#fb7185",
 };
-
-const LABELS: Record<PipelineBucket, string> = {
-  all: "All contacts",
-  assigned: "Assigned",
-  unassigned: "Not assigned",
-  contacted: "Contacted",
-  awaiting: "Awaiting contact",
-  converted: "Converted to oppty",
-  call_booked: "Call booked",
-  in_outreach: "In outreach",
-  revisit: "Revisit",
-  not_a_fit: "Not a fit",
-};
-
-export const BUCKET_LABELS = LABELS;
-
-const TERMINALS: { id: PipelineBucket; stage: MembershipStage }[] = [
-  { id: "converted", stage: "converted_to_opportunity" },
-  { id: "call_booked", stage: "call_booked" },
-  { id: "in_outreach", stage: "initial_outreach" },
-  { id: "revisit", stage: "revisit" },
-  { id: "not_a_fit", stage: "not_a_fit" },
-];
-
-/** Counts per bucket, derived once so the chart and the detail panel agree. */
-export function pipelineCounts(stats: TagCampaignStats): Record<PipelineBucket, number> {
-  const st = stats.totals.stages;
-  const all = stats.totals.in_pipeline;
-  const unassigned = stats.totals.no_stage;
-  const assigned = Math.max(0, all - unassigned);
-  const awaiting = st.assigned ?? 0;
-  return {
-    all,
-    assigned,
-    unassigned,
-    contacted: Math.max(0, assigned - awaiting),
-    awaiting,
-    converted: st.converted_to_opportunity ?? 0,
-    call_booked: st.call_booked ?? 0,
-    in_outreach: st.initial_outreach ?? 0,
-    revisit: st.revisit ?? 0,
-    not_a_fit: st.not_a_fit ?? 0,
-  };
-}
 
 /** `bucket` rides on each node so the click handler knows what was clicked —
  *  recharts hands the renderer whatever is on the node object. */
@@ -103,17 +61,8 @@ interface SankeyLink { source: number; target: number; value: number; bucket: Pi
 export function buildPipelineSankey(stats: TagCampaignStats): {
   nodes: SankeyNode[]; links: SankeyLink[];
 } | null {
-  const counts = pipelineCounts(stats);
-
-  const EDGES: { from: PipelineBucket; to: PipelineBucket }[] = [
-    { from: "all", to: "assigned" },
-    { from: "all", to: "unassigned" },
-    { from: "assigned", to: "contacted" },
-    { from: "assigned", to: "awaiting" },
-    ...TERMINALS.map((t) => ({ from: "contacted" as PipelineBucket, to: t.id })),
-  ];
-  const edges = EDGES.filter((e) => counts[e.to] > 0 && counts[e.from] > 0);
-
+  const counts = pipelineCounts(stats.totals);
+  const edges = pipelineLinks(stats.totals);
   if (edges.length === 0) return null;
 
   // Only nodes an edge actually touches, indexed in first-seen order so the
@@ -127,7 +76,7 @@ export function buildPipelineSankey(stats: TagCampaignStats): {
   const links = edges.map((e) => ({
     source: seen(e.from),
     target: seen(e.to),
-    value: counts[e.to],
+    value: e.value,
     bucket: e.to,
     // The ribbon carries the colour of what it feeds, so an outcome reads as
     // one hue from the split that produced it all the way to its label.
@@ -135,7 +84,7 @@ export function buildPipelineSankey(stats: TagCampaignStats): {
   }));
   return {
     nodes: order.map((id) => ({
-      name: LABELS[id], value: counts[id], bucket: id, color: COLORS[id],
+      name: BUCKET_LABELS[id], value: counts[id], bucket: id, color: COLORS[id],
     })),
     links,
   };
@@ -257,21 +206,4 @@ export function PipelineSankey({ stats, height = 300, selected, onSelect }: {
       </p>
     </div>
   );
-}
-
-/** Which contacts belong to a bucket, given a membership stage. Mirrors
- *  pipelineCounts exactly, so a label's number and its list always match. */
-export function inBucket(bucket: PipelineBucket, stage: string | null): boolean {
-  switch (bucket) {
-    case "all": return true;
-    case "unassigned": return stage === null;
-    case "assigned": return stage !== null;
-    case "awaiting": return stage === "assigned";
-    case "contacted": return stage !== null && stage !== "assigned";
-    case "converted": return stage === "converted_to_opportunity";
-    case "call_booked": return stage === "call_booked";
-    case "in_outreach": return stage === "initial_outreach";
-    case "revisit": return stage === "revisit" || stage === "on_hold";
-    case "not_a_fit": return stage === "not_a_fit";
-  }
 }

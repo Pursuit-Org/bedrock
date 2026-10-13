@@ -470,15 +470,16 @@ const TOUCH_COLORS: Record<string, string> = {
   fallback: "#c7c7f5",
 };
 
-function TouchDepthPanel({ scope, owner, nameOf, className }: {
-  scope: OutreachScopeKind;
+/** Every contact in initial outreach, whoever owns them (OUT-10, PRO-100): the
+ *  queue doesn't follow the page's sender scope, only a picked owner. */
+function TouchDepthPanel({ owner, nameOf, className }: {
   owner?: string;
   nameOf: (email: string) => string;
   /** "h-full" when it shares a grid row with Outreach Trends. */
   className?: string;
 }) {
   const [open, setOpen] = useState<string | null>(null);
-  const { data: depth, isLoading } = useTouchDepth(scope, owner);
+  const { data: depth, isLoading } = useTouchDepth(owner);
   const buckets = depth?.buckets ?? [];
   // Recharts drops a zero-value slice anyway, and an empty bucket is still
   // worth reading ("nobody has had 3 touches" is a finding), so the numbers
@@ -492,7 +493,7 @@ function TouchDepthPanel({ scope, owner, nameOf, className }: {
       // meaningless without knowing over what window and for whom. "Right now"
       // is load-bearing: this panel does not follow the period bar.
       desc={depth
-        ? `All ${depth.total} contacts sitting in initial outreach right now, by activity Pursuit sent them in the last ${depth.weeks} weeks`
+        ? `All ${depth.total} contacts sitting in initial outreach right now, whoever owns them, by activity Pursuit sent them in the last ${depth.weeks} weeks`
         : "Loading…"}
       className={className}
     >
@@ -1023,14 +1024,14 @@ function ContactedCell({ r, muted, onOpen, openWhich }: {
       <div className="inline-flex flex-col items-center gap-1">
         <span className="text-[13px] font-semibold">
           {num("contacted", r.contacted.length, muted || !r.contacted.length ? "text-ink-3" : "text-green",
-            `List the ${r.contacted.length} of ${total} reached in this period`)}
+            `List the ${r.contacted.length} of ${total} moved to initial outreach in this period`)}
           <span className="font-normal text-ink-4"> / </span>
           {num("assigned", total, muted ? "text-ink-3" : "text-ink-2",
             `List the ${total} contacts that entered this period`)}
           <span className="ml-1 text-[10.5px] font-normal text-ink-4">({pct}%)</span>
         </span>
         <div className="h-1 w-16 overflow-hidden rounded-full border border-border-strong bg-surface-2"
-          title={`${r.contacted.length} of ${total} contacted in this period`}>
+          title={`${r.contacted.length} of ${total} moved to initial outreach in this period`}>
           <div className="h-full rounded-full bg-green transition-all" style={{ width: `${pct}%` }} />
         </div>
       </div>
@@ -1112,8 +1113,8 @@ function OwnerScorecardTable({ granularity, range, rangeLabel, nameOf, leading, 
                     handed over, for the same window. Calls has no equivalent. */}
                 {i === 0 && (
                   <th className="px-3 pb-2 text-center font-semibold align-bottom"
-                    title="Of the contacts that entered this owner's queue in this period, how many reached initial outreach. Click either number for the list.">
-                    Contacted / assigned
+                    title="Of the contacts that entered this owner's queue in this period, how many moved to initial outreach. A stage count: 'contacted' means activity (PRO-100). Click either number for the list.">
+                    Moved to outreach / assigned
                   </th>
                 )}
               </Fragment>
@@ -1175,14 +1176,14 @@ function OwnerScorecardTable({ granularity, range, rangeLabel, nameOf, leading, 
                           <ContactCellDrill
                             label={openMetric === "assigned"
                               ? `${nameOf(r.owner)} · entered this period`
-                              : `${nameOf(r.owner)} · contacted this period`}
+                              : `${nameOf(r.owner)} · moved to outreach this period`}
                             // "Assigned" is the queue PLUS those already
                             // contacted, so its drill lists both — otherwise
                             // clicking 26 shows 23.
                             contacts={openMetric === "assigned"
                               ? [...acOf(r.owner).assigned, ...acOf(r.owner).contacted]
                               : acOf(r.owner).contacted}
-                            whenLabel={openMetric === "assigned" ? "Entered stage" : "Contacted"}
+                            whenLabel={openMetric === "assigned" ? "Entered stage" : "Moved"}
                           />
                         </div>
                       ) : (
@@ -1216,7 +1217,7 @@ function OwnerScorecardTable({ granularity, range, rangeLabel, nameOf, leading, 
       {undated > 0 && (
         <div className="border-t border-border-strong bg-surface-2 px-4 py-2 text-[11px] text-ink-4"
           title="These contacts have no stage timestamp, so no period can claim them. The stage-history grant fills most of them in.">
-          {undated} contact{undated === 1 ? "" : "s"} without a stage date, not counted under Contacted / assigned
+          {undated} contact{undated === 1 ? "" : "s"} without a stage date, not counted under Moved to outreach / assigned
         </div>
       )}
     </div>
@@ -1510,7 +1511,7 @@ export function JobsOutreach() {
               Depth is always "right now". */}
           <div className="grid grid-cols-1 items-stretch gap-4 lg:grid-cols-2">
             <ActivityTrends scope={scope} owner={owner || undefined} range={range} />
-            <TouchDepthPanel scope={scope} owner={owner || undefined} nameOf={nameOf} className="h-full" />
+            <TouchDepthPanel owner={owner || undefined} nameOf={nameOf} className="h-full" />
           </div>
 
           <OutboundActivityFeed granularity={granularity} scope={scope}

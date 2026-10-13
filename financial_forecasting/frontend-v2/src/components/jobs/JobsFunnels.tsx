@@ -10,6 +10,7 @@ import {
   type FunnelStage,
   type FunnelPeriod,
   type FunnelMovement,
+  type FunnelMilestone,
 } from "@/services/jobs";
 import { cn } from "@/lib/utils";
 import { FUNNEL_NOUN, funnelSubtitle } from "./funnelCopy";
@@ -173,6 +174,7 @@ export function JobsFunnels({ builderSegment, only, period, periodLabel, dealTyp
         isPeriod={isPeriod}
         periodLabel={periodLabel}
         lastMovementAt={data?.last_movement_at ?? null}
+        milestones={data?.milestones ?? null}
         isError={isError}
         errorText={(error as { message?: string } | null)?.message ?? null}
         onRetry={() => refetch()}
@@ -230,6 +232,7 @@ function FunnelCard({
   isPeriod,
   periodLabel,
   lastMovementAt,
+  milestones,
   isError,
   errorText,
   onRetry,
@@ -242,6 +245,9 @@ function FunnelCard({
   isPeriod: boolean;
   periodLabel?: string;
   lastMovementAt: string | null;
+  /** Contacts and opportunities: conversion between milestones (D11), in
+   *  place of a rate per row. Null for builders, whose rows carry one. */
+  milestones: FunnelMilestone[] | null;
   isError: boolean;
   errorText: string | null;
   onRetry: () => void;
@@ -260,6 +266,11 @@ function FunnelCard({
   // An all-zero period is the normal state early in a week, and four empty bars
   // read as a broken render — say so in words instead.
   const allZero = stages.length > 0 && stages.every((s) => s.count === 0);
+  // A rate per row only where the rows are subsets of each other (builders).
+  // Contacts and opportunities convert between milestones instead (D11): a
+  // stage-to-stage ratio read 4% = 2 ÷ 55 on the Overview and 400% when a
+  // backlog cleared.
+  const rowRates = milestones == null;
 
   return (
     <section
@@ -304,10 +315,16 @@ function FunnelCard({
           </span>
           <span className="mt-0.5 block text-[11.5px] text-ink-3">{subtitle}</span>
         </span>
-        {/* Collapsed, the totals still need to be legible at a glance. */}
+        {/* Collapsed, the totals and the conversion still read at a glance. */}
         {collapsed ? (
           <span className="flex-shrink-0 text-[11.5px] text-ink-3">
             {stages.reduce((n, s) => n + s.count, 0)} total
+            {(milestones ?? []).map((m) => (
+              <span key={m.key} className="ml-3 whitespace-nowrap">
+                {m.from_label} → {m.to_label}{" "}
+                <span className="font-semibold text-ink-2">{m.rate != null ? `${m.rate}%` : "—"}</span>
+              </span>
+            ))}
           </span>
         ) : null}
       </button>
@@ -321,17 +338,21 @@ function FunnelCard({
           <span className="flex flex-shrink-0 flex-col">
             <span className="flex gap-2">
               <span className={cn(GROUP_VOLUME, "border-b border-border-strong pb-0.5 text-center text-[9.5px] font-bold uppercase tracking-[.1em] text-ink-3")}>Volume</span>
-              <span className={cn(GROUP_CONVERSION, "border-b border-border-strong pb-0.5 text-center text-[9.5px] font-bold uppercase tracking-[.1em] text-ink-3")}>Conversion</span>
+              {rowRates ? (
+                <span className={cn(GROUP_CONVERSION, "border-b border-border-strong pb-0.5 text-center text-[9.5px] font-bold uppercase tracking-[.1em] text-ink-3")}>Conversion</span>
+              ) : null}
             </span>
             <span className="mt-1 flex gap-2 text-[10px] font-semibold uppercase tracking-wider text-ink-4">
               <span className={cn(GROUP_VOLUME, "flex")}>
                 <span className={cn(COL_COUNT, "flex-shrink-0 text-right")}>#</span>
                 <span className={cn(COL_TREND, "flex-shrink-0 text-right")}>Trend</span>
               </span>
-              <span className={cn(GROUP_CONVERSION, "flex")}>
-                <span className={cn(COL_PCT, "flex-shrink-0 text-right")}>%</span>
-                <span className={cn(COL_TREND, "flex-shrink-0 text-right")}>Trend</span>
-              </span>
+              {rowRates ? (
+                <span className={cn(GROUP_CONVERSION, "flex")}>
+                  <span className={cn(COL_PCT, "flex-shrink-0 text-right")}>%</span>
+                  <span className={cn(COL_TREND, "flex-shrink-0 text-right")}>Trend</span>
+                </span>
+              ) : null}
             </span>
           </span>
         </div>
@@ -449,19 +470,21 @@ function FunnelCard({
                         <PctTrend current={stage.count} prior={stage.count_prev} noun={FUNNEL_NOUN[funnel]} />
                       </span>
                     </span>
-                    <span className={cn(GROUP_CONVERSION, "flex items-center")}>
-                      <span className={cn(COL_PCT, "flex-shrink-0 text-right tabular-nums")}
-                        title={prevLabel && stage.conversion_in != null
-                          ? `${stage.conversion_in}% of what entered ${prevLabel} in this period reached ${stage.label}. Over 100% means more moved forward than arrived — a backlog clearing, since they entered ${prevLabel} earlier.`
-                          : "No prior stage to convert from"}>
-                        {stage.conversion_in != null ? (
-                          <span className="font-mono text-[13px] font-semibold text-ink">{stage.conversion_in}%</span>
-                        ) : <span className="text-ink-4">—</span>}
+                    {rowRates ? (
+                      <span className={cn(GROUP_CONVERSION, "flex items-center")}>
+                        <span className={cn(COL_PCT, "flex-shrink-0 text-right tabular-nums")}
+                          title={prevLabel && stage.conversion_in != null
+                            ? `${stage.conversion_in}% of ${prevLabel} are also ${stage.label}`
+                            : "No prior stage to convert from"}>
+                          {stage.conversion_in != null ? (
+                            <span className="font-mono text-[13px] font-semibold text-ink">{stage.conversion_in}%</span>
+                          ) : <span className="text-ink-4">—</span>}
+                        </span>
+                        <span className={cn(COL_TREND, "flex-shrink-0 text-right")}>
+                          <PtTrend current={stage.conversion_in} prior={stage.conversion_in_prev} />
+                        </span>
                       </span>
-                      <span className={cn(COL_TREND, "flex-shrink-0 text-right")}>
-                        <PtTrend current={stage.conversion_in} prior={stage.conversion_in_prev} />
-                      </span>
-                    </span>
+                    ) : null}
                   </span>
                 </button>
 
@@ -475,7 +498,96 @@ function FunnelCard({
           })}
         </div>
       )}
+
+      {!collapsed && milestones && milestones.length > 0 ? (
+        <MilestoneStrip milestones={milestones} isPeriod={isPeriod} noun={FUNNEL_NOUN[funnel]} />
+      ) : null}
     </section>
+  );
+}
+
+// ── Conversion between milestones (D11) ────────────────────────────────────
+
+/** The funnel's conversion: first stage → interview, then interview → hire.
+ *  Each counts only what started at the earlier milestone, so the number on
+ *  top is always part of the one under it and never passes 100%. Click a
+ *  tile for who is behind it. */
+function MilestoneStrip({ milestones, isPeriod, noun }: {
+  milestones: FunnelMilestone[];
+  isPeriod: boolean;
+  noun: string;
+}) {
+  const [open, setOpen] = useState<string | null>(null);
+  const opened = milestones.find((m) => m.key === open) ?? null;
+  const explain = (m: FunnelMilestone) => m.key === "interview_to_hire"
+    ? `Of the ${m.denominator} builder interviews ${isPeriod ? "in this period" : "recorded"}, ${m.numerator} hired so far. Interview history starts 9/29.`
+    : `Of the ${m.denominator} ${noun} that started at ${m.from_label} ${isPeriod ? "in this period" : "so far"}, ${m.numerator} reached a builder interview. Only what started at ${m.from_label} counts, so it never passes 100%.`;
+  return (
+    <div className="border-t border-border-strong bg-surface-2/30 px-5 py-3">
+      <div className="mb-2 text-[9.5px] font-bold uppercase tracking-[.1em] text-ink-3">Conversion</div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        {milestones.map((m) => (
+          <button key={m.key} type="button" title={explain(m)}
+            onClick={() => setOpen(open === m.key ? null : m.key)}
+            className={cn("flex items-center justify-between gap-3 rounded-lg border bg-surface px-3.5 py-2.5 text-left transition-colors",
+              open === m.key ? "border-accent" : "border-border-strong hover:bg-surface-2/60")}>
+            <span className="min-w-0">
+              <span className="block text-[11.5px] font-semibold text-ink-2">{m.from_label} → {m.to_label}</span>
+              <span className="block text-[11px] text-ink-4 tabular-nums">
+                {m.numerator.toLocaleString()} of {m.denominator.toLocaleString()}
+              </span>
+            </span>
+            <span className="flex flex-shrink-0 items-baseline gap-2">
+              <span className="font-mono text-[18px] font-semibold tabular-nums text-ink">
+                {m.rate != null ? `${m.rate}%` : "—"}
+              </span>
+              {isPeriod ? <PtTrend current={m.rate} prior={m.rate_prev} /> : null}
+            </span>
+          </button>
+        ))}
+      </div>
+      {opened ? <MilestoneRecords m={opened} /> : null}
+    </div>
+  );
+}
+
+function MilestoneRecords({ m }: { m: FunnelMilestone }) {
+  const rows = m.records.slice(0, RECORD_CAP);
+  const extra = m.records.length - rows.length;
+  if (m.records.length === 0) {
+    return <div className="mt-2 text-[12px] text-ink-3">
+      {m.key === "interview_to_hire" ? "No builder interviews in this window." : "Nobody has reached an interview yet."}
+    </div>;
+  }
+  const hire = m.key === "interview_to_hire";
+  return (
+    <div className="mt-2 overflow-hidden rounded border border-border-strong bg-surface">
+      <table className="w-full text-[12px]">
+        <thead>
+          <tr className="border-b border-border-strong bg-surface-2 text-left text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
+            <th className="px-3 py-1.5">{hire ? "Builder" : "Name"}</th>
+            <th className="px-3 py-1.5">{hire ? "Company · role" : "Company"}</th>
+            <th className="px-3 py-1.5">{hire ? "Hired" : "Interview"}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r, i) => (
+            <tr key={i} className="border-t border-border-strong first:border-t-0">
+              <td className="px-3 py-1.5 font-medium text-ink">{String(r.name ?? "—")}</td>
+              <td className="px-3 py-1.5 text-ink-2">
+                {String(r.company ?? "—")}{hire && r.role ? ` · ${String(r.role)}` : ""}
+              </td>
+              <td className="px-3 py-1.5 text-ink-2">
+                {hire ? (r.hired ? "Yes" : "Not yet") : String(r.interview_on ?? "—")}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {extra > 0 ? (
+        <div className="border-t border-border-strong px-3 py-1.5 text-[11px] text-ink-4">+{extra} more</div>
+      ) : null}
+    </div>
   );
 }
 

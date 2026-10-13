@@ -36,7 +36,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Iterable, Mapping, Optional
 from zoneinfo import ZoneInfo
@@ -108,6 +108,7 @@ MEASURES: dict[str, Measure] = {
     "call_discovery":         Measure("employer_outreach", "call_discovery"),
     "call_general":           Measure("employer_outreach", "call_general"),
     "contacted":              Measure("employer_outreach", "contacted"),
+    "moved_to_outreach":      Measure("employer_outreach", "moved_to_outreach"),
     "activity_depth":         Measure("employer_outreach", "activity_depth"),
     "campaign_contacts":      Measure("employer_outreach", "campaign_contacts"),
     "campaign_accounts":      Measure("employer_outreach", "campaign_accounts"),
@@ -127,9 +128,7 @@ MEASURES: dict[str, Measure] = {
     "interviews":             Measure("employer_pipeline", "interviews", "interviews"),
     # Conversion
     "converted_opportunities": Measure("employer_conversion", "contacts_converted"),
-    "contact_cohort_conversion": Measure("employer_conversion", "contact_cohort_conversion"),
-    "stage_flow_conversion":  Measure("employer_conversion", "stage_flow_conversion"),
-    "opportunity_stage_ratio": Measure("employer_conversion", "opportunity_stage_ratio"),
+    "milestone_to_interview": Measure("employer_conversion", "milestone_to_interview", "rate_pct"),
     "campaign_conversion":    Measure("employer_conversion", "campaign_conversion"),
     "interview_to_hire":      Measure("employer_conversion", "interview_to_hire", "rate_pct"),
     # Targets
@@ -142,7 +141,6 @@ MEASURES: dict[str, Measure] = {
 UNSHOWN_MEASURES: dict[str, Measure] = {
     "stalled_contacts":       Measure("employer_pipeline", "stalled_contacts"),
     "stalled_accounts":       Measure("employer_pipeline", "stalled_accounts"),
-    "milestone_to_interview": Measure("employer_conversion", "milestone_to_interview"),
 }
 
 TTL_SECONDS = 60
@@ -321,7 +319,8 @@ def dictionary_depth_sql() -> str:
     now, by how much activity anyone at Pursuit sent them in the last four
     weeks."""
     from services.outreach_counting import depth_sql
-    inner = depth_sql(p_since="(SELECT since FROM w)", p_senders="(SELECT senders FROM w)")
+    inner = depth_sql(p_since="(SELECT since FROM w)", p_senders="(SELECT senders FROM w)",
+                      exclude=internal_contact_sql("c"))
     return (f"WITH w AS (SELECT now() - interval '4 weeks' AS since, {DD_PURSUIT} AS senders)\n"
             "SELECT CASE WHEN activity >= 4 THEN '4+' ELSE activity::text END AS bucket, "
             f"count(*) AS contacts FROM ({inner}) d GROUP BY 1 ORDER BY 1")
@@ -434,6 +433,42 @@ def account_key_sql(col: str) -> str:
     return f"lower(btrim({col}))"
 
 
+def opportunity_links_sql(scope: Optional[str] = None) -> str:
+    """SQL: (opp_id, contact_id) for every contact linked to an opportunity,
+    from the contact (its converted opportunity) or from the opportunity's
+    contact list: pub:<contact_id>, airtable:<id>, or a Salesforce contact id
+    (D15). `scope`, when given, names a relation whose `id` column limits the
+    opportunities. No account fallback: a link is a link."""
+    if scope:
+        opps = f"{scope} os JOIN bedrock.jobs_opportunity o ON o.id = os.id"
+    else:
+        opps = "bedrock.jobs_opportunity o"
+    m_join = (f"JOIN {scope} os ON os.id = m.opportunity_id" if scope
+              else "WHERE m.opportunity_id IS NOT NULL")
+    return f"""
+  SELECT m.opportunity_id AS opp_id, m.contact_id
+  FROM bedrock.jobs_contact_membership m {m_join}
+  UNION
+  SELECT o.id, c.contact_id
+  FROM {opps}
+  CROSS JOIN LATERAL unnest(o.sf_contact_ids) r(ref)
+  JOIN public.contacts c
+    ON c.contact_id = CASE WHEN r.ref ~ '^pub:[0-9]{{1,9}}$' THEN substring(r.ref from 5)::int END
+  UNION
+  SELECT o.id, c.contact_id
+  FROM {opps}
+  CROSS JOIN LATERAL unnest(o.sf_contact_ids) r(ref)
+  JOIN public.contacts c ON c.airtable_id = substring(r.ref from 10)
+  WHERE r.ref LIKE 'airtable:%'
+  UNION
+  SELECT o.id, scl.public_contact_id
+  FROM {opps}
+  CROSS JOIN LATERAL unnest(o.sf_contact_ids) r(ref)
+  JOIN bedrock.sf_contact_link scl ON scl.sf_contact_id = r.ref
+  WHERE r.ref NOT LIKE 'pub:%' AND r.ref NOT LIKE 'airtable:%' AND scl.public_contact_id IS NOT NULL
+"""
+
+
 def activity_scope_ctes(*, opps: str = "TRUE", accounts: Optional[str] = None,
                         activity: Optional[str] = None) -> str:
     """CTEs (no leading WITH) naming whose activity each row is.
@@ -459,30 +494,8 @@ def activity_scope_ctes(*, opps: str = "TRUE", accounts: Optional[str] = None,
     ctes = [f"""opp_scope AS (
   SELECT o.id, {o_key} AS k, o.account_id FROM bedrock.jobs_opportunity o
   WHERE o.deleted_at IS NULL AND (({opps}){acct_opps})
-)""", """opp_links AS (
-  -- Linked from the contact (its converted opportunity) or from the
-  -- opportunity's contact list: pub:<contact_id>, airtable:<id>, or a
-  -- Salesforce contact id.
-  SELECT m.opportunity_id AS opp_id, m.contact_id
-  FROM bedrock.jobs_contact_membership m JOIN opp_scope os ON os.id = m.opportunity_id
-  UNION
-  SELECT os.id, c.contact_id
-  FROM opp_scope os JOIN bedrock.jobs_opportunity o ON o.id = os.id
-  CROSS JOIN LATERAL unnest(o.sf_contact_ids) r(ref)
-  JOIN public.contacts c
-    ON c.contact_id = CASE WHEN r.ref ~ '^pub:[0-9]{1,9}$' THEN substring(r.ref from 5)::int END
-  UNION
-  SELECT os.id, c.contact_id
-  FROM opp_scope os JOIN bedrock.jobs_opportunity o ON o.id = os.id
-  CROSS JOIN LATERAL unnest(o.sf_contact_ids) r(ref)
-  JOIN public.contacts c ON c.airtable_id = substring(r.ref from 10)
-  WHERE r.ref LIKE 'airtable:%'
-  UNION
-  SELECT os.id, scl.public_contact_id
-  FROM opp_scope os JOIN bedrock.jobs_opportunity o ON o.id = os.id
-  CROSS JOIN LATERAL unnest(o.sf_contact_ids) r(ref)
-  JOIN bedrock.sf_contact_link scl ON scl.sf_contact_id = r.ref
-  WHERE r.ref NOT LIKE 'pub:%' AND r.ref NOT LIKE 'airtable:%' AND scl.public_contact_id IS NOT NULL
+)""", f"""opp_links AS (
+  SELECT l.opp_id, l.contact_id FROM ({opportunity_links_sql("opp_scope")}) l
 )""", f"""opp_contacts AS (
   SELECT opp_id, contact_id, true AS linked FROM opp_links
   UNION ALL
@@ -1004,6 +1017,338 @@ def interviews_reference_sql() -> str:
         "       round(100.0 * count(*) FILTER (WHERE stage = 'accepted') / nullif(count(*), 0)) AS rate_pct\n"
         "FROM iv\n"
         "WHERE entered >= (SELECT d_from FROM w) AND entered < (SELECT d_to FROM w)"
+    )
+
+
+# ── Conversion between milestones (D11; PRO-100) ─────────────────────────────
+# Conversion runs between core milestones, anchored on interviews: first stage
+# → interview → hire. A rate counts only records that STARTED at the earlier
+# milestone, by the dates stages changed, so its numerator is always part of
+# its denominator and it can never pass 100%. A contact added straight at
+# Call Booked never started at Assigned, so it is in neither number.
+#
+#   * First stage → interview: of the contacts whose first recorded stage is
+#     Assigned (opportunities: In Discussions) and who started in the period,
+#     the share whose opportunity has a Jobs-team application that entered
+#     interview on or after that start. A contact's opportunities are the ones
+#     linked to it (opportunity_links_sql); there is no account fallback.
+#   * Interview → hire: interviews() above (PRO-117).
+#
+# Stage-to-stage rates (entries ÷ entries, standing count ÷ standing count)
+# are retired: they read 400% when a backlog cleared and 4% = 2 ÷ 55 when they
+# didn't (OVR-09).
+
+FIRST_CONTACT_STAGE = "assigned"
+FIRST_OPPORTUNITY_STAGE = "active_in_discussions"
+
+# Every membership with the stage it started at, when, and its linked
+# opportunities. The first stage is where the earliest history row starts:
+# its from-stage, or its to-stage for a row written on entry (Assigned first
+# among rows written in the same instant, as the July backfill did); with no
+# history, a contact still at Assigned started there when it was assigned.
+# It started at the earlier of that row and the membership's creation.
+CONTACT_STARTS_SQL = f"""
+    WITH first AS (
+      SELECT DISTINCT ON (h.contact_id) h.contact_id,
+             coalesce(h.from_stage, h.to_stage) AS stage, h.changed_at
+      FROM bedrock.jobs_membership_stage_history h
+      WHERE h.to_stage <> 'unflagged'
+      ORDER BY h.contact_id, h.changed_at, (h.to_stage <> 'assigned'), h.id
+    ),
+    links AS ({opportunity_links_sql()}),
+    linked AS (SELECT contact_id, array_agg(opp_id) AS opp_ids FROM links GROUP BY 1)
+    SELECT m.contact_id, c.full_name AS name, c.current_company AS company,
+           lower(coalesce(m.owner_email, '')) AS owner_email,
+           CASE WHEN f.contact_id IS NOT NULL THEN f.stage
+                WHEN m.stage = 'assigned' THEN 'assigned' END AS first_stage,
+           least(f.changed_at, m.assigned_at) AS started_at,
+           coalesce(l.opp_ids, '{{}}') AS opp_ids
+    FROM bedrock.jobs_contact_membership m
+    JOIN public.contacts c ON c.contact_id = m.contact_id
+    LEFT JOIN first f ON f.contact_id = m.contact_id
+    LEFT JOIN linked l ON l.contact_id = m.contact_id
+"""
+
+# Every live opportunity with the stage it was created at: the first history
+# row's from-stage (or its to-stage, for a row written at creation), else its
+# stage now. Created is when it started.
+OPPORTUNITY_STARTS_SQL = """
+    SELECT o.id, o.account_name AS name, o.owner_email, o.deal_type,
+           coalesce((SELECT coalesce(h.from_stage, h.to_stage)
+                       FROM bedrock.jobs_stage_history h
+                      WHERE h.opportunity_id = o.id
+                      ORDER BY h.changed_at, h.id LIMIT 1), o.stage) AS first_stage,
+           o.created_at AS started_at
+    FROM bedrock.jobs_opportunity o
+    WHERE o.deleted_at IS NULL
+"""
+
+
+def interview_by_opportunity(application_rows: Iterable[Mapping]) -> dict:
+    """opportunity id -> the days its Jobs-team applications entered
+    interview, one per application, earliest first. Every one is kept, not
+    just the first: a contact linked to a deal after its first interview
+    still reaches a later one. `application_rows` are
+    INTERVIEW_APPLICATIONS_SQL rows."""
+    out: dict = {}
+    for r in application_rows:
+        opp = r.get("jobs_opportunity_id")
+        d = entered_interview(r.get("stage_history"))
+        if opp is None or d is None:
+            continue
+        out.setdefault(str(opp), []).append(d)
+    return {k: sorted(v) for k, v in out.items()}
+
+
+@dataclass(frozen=True)
+class Milestone:
+    """One conversion between milestones: who started at the earlier one, and
+    which of them reached the later one."""
+    key: str
+    started: list
+    reached: list
+
+    @property
+    def rate(self) -> Optional[int]:
+        return round(100 * len(self.reached) / len(self.started)) if self.started else None
+
+
+def _ny_day(ts: datetime) -> date:
+    return ts.astimezone(NY).date() if ts.tzinfo else ts.date()
+
+
+def first_stage_to_interview(starts: Iterable[Mapping], interviewed: Mapping, *,
+                             first_stage: str, start: Optional[datetime] = None,
+                             end: Optional[datetime] = None) -> Milestone:
+    """Of `starts` (CONTACT_STARTS_SQL or OPPORTUNITY_STARTS_SQL rows) that
+    started at `first_stage` in [start, end) (either bound may be None), the
+    ones whose opportunity entered interview on or after the day they
+    started. `interviewed` is interview_by_opportunity(). A row's
+    opportunities are its `opp_ids`, or itself when it is an opportunity."""
+    started, reached = [], []
+    for r in starts:
+        at = r.get("started_at")
+        fs = (canon_membership_stage(r.get("first_stage")) if "opp_ids" in r
+              else canon_stage(r.get("first_stage")))
+        if at is None or fs != first_stage:
+            continue
+        if (start is not None and at < start) or (end is not None and at >= end):
+            continue
+        started.append(r)
+        opps = r["opp_ids"] if "opp_ids" in r else [r["id"]]
+        days = [d for o in (opps or []) for d in interviewed.get(str(o), [])]
+        on_or_after = [d for d in days if d >= _ny_day(at)]
+        if on_or_after:
+            reached.append({**r, "interview_on": min(on_or_after)})
+    return Milestone("first_stage_to_interview", started, reached)
+
+
+def interview_to_hire(iv: "Interviews", d_from: Optional[date] = None,
+                      d_to: Optional[date] = None) -> Milestone:
+    """Of the interviews in d_from..d_to (New York days, inclusive; all of them
+    when unbounded), the ones whose application is accepted now (PRO-117)."""
+    rows = ([r for _, r in iv.dated] if d_from is None or d_to is None
+            else iv.in_window(d_from, d_to))
+    return Milestone("interview_to_hire", rows, Interviews.hired(rows))
+
+
+def milestone_reference_sql() -> str:
+    """The reference query for First stage → interview, contacts: of contacts
+    that started at Assigned in the dictionary window, the share whose linked
+    opportunity has a Jobs-team application that entered interview on or after
+    that day. The SQL twin of first_stage_to_interview over CONTACT_STARTS_SQL."""
+    return (
+        f"WITH w AS (SELECT {DD_START} AS start_at, {DD_END} AS end_at),\n"
+        f"starts AS ({CONTACT_STARTS_SQL}),\n"
+        "iv AS (                   -- one row per application: every interview counts\n"
+        "  SELECT ja.jobs_opportunity_id AS opp_id,\n"
+        "         (SELECT min(left(e->>'date', 10)::date)\n"
+        "                FROM jsonb_array_elements(coalesce(ja.stage_history, '[]'::jsonb)) e\n"
+        "               WHERE e->>'stage' = 'interview' AND e->>'date' ~ '^\\d{4}-\\d{2}-\\d{2}') AS entered\n"
+        "  FROM public.job_applications ja\n"
+        "  WHERE ja.source_type IN ('Pursuit_referred', 'staff_sourced') AND ja.jobs_opportunity_id IS NOT NULL\n"
+        "),\n"
+        "cohort AS (\n"
+        "  SELECT s.contact_id,\n"
+        "         EXISTS (SELECT 1 FROM iv WHERE iv.opp_id = ANY(s.opp_ids)\n"
+        "                    AND iv.entered >= (s.started_at AT TIME ZONE 'America/New_York')::date) AS reached\n"
+        "  FROM starts s\n"
+        f"  WHERE s.first_stage = '{FIRST_CONTACT_STAGE}'\n"
+        "    AND s.started_at >= (SELECT start_at FROM w) AND s.started_at < (SELECT end_at FROM w)\n"
+        ")\n"
+        "SELECT count(*) AS started, count(*) FILTER (WHERE reached) AS interviewed,\n"
+        "       round(100.0 * count(*) FILTER (WHERE reached) / nullif(count(*), 0)) AS rate_pct\n"
+        "FROM cohort"
+    )
+
+
+# ── Campaigns (D10, D14; PRO-100) ────────────────────────────────────────────
+# A campaign is a curated contact tag (bedrock.contact_tag_catalog), except
+# where one push spans several slugs: the alumni cohorts are one "Fellow
+# Alumni" and the five operation_35_* segments one "Operation 35". A slug
+# belongs to a group when it IS the prefix or starts with prefix + "_", so a
+# future `board_advisors` can never fold into `board`.
+#
+# Only the current campaign shows by default (D10); the others are archived
+# and can still be picked, with their results. `is_current` on the catalog
+# marks it, every slug of the group alike. A retired tag is `active = false`
+# and is not a campaign at all (D14: Tristate SMB Leaders).
+#
+# Who counts (Nina, 10/13):
+#   * in pipeline: the contact has a pipeline membership. The jobs-prospect
+#     flag (contacts.is_jobs_contact) is a different, larger set (Op 35: 449
+#     flagged, 117 members), and every campaign number used to divide by it;
+#   * Pursuit's own staff are never in a campaign (internal_contact_sql);
+#   * contacted: reached by activity (outreach_counting.activity_by_contact);
+#     an account is reached when one of its contacts is;
+#   * conversion: of the contacted contacts, the share converted to an
+#     opportunity.
+
+CAMPAIGN_GROUPS: tuple = (
+    ("alumni", "Fellow Alumni"),
+    ("operation_35", "Operation 35"),
+)
+CAMPAIGN_GROUP_LABELS = dict(CAMPAIGN_GROUPS)
+
+
+def campaign_key(slug: str) -> str:
+    for prefix, _ in CAMPAIGN_GROUPS:
+        if slug == prefix or slug.startswith(prefix + "_"):
+            return prefix
+    return slug
+
+
+def campaign_group_sql(col: str) -> str:
+    """campaign_key as an SQL expression. Underscores inside a prefix are
+    escaped because `_` is LIKE's single-character wildcard."""
+    whens = " ".join(
+        f"WHEN {col} = '{p}' OR {col} LIKE '{p.replace('_', chr(92) + '_')}{chr(92)}_%' THEN '{p}'"
+        for p, _ in CAMPAIGN_GROUPS
+    )
+    return f"(CASE {whens} ELSE {col} END)"
+
+
+def internal_contact_sql(c: str = "c") -> str:
+    """SQL: the contact is Pursuit's own staff, so in no campaign. Their
+    address is a current staffer's (an active org_users login, or an enabled
+    sync_staff mailbox or one of its aliases), or they work at Pursuit and
+    aren't an alumnus (fellows often list Pursuit as their employer). A former
+    staffer's old address doesn't count: Erick Chang, erick@c4q.nyc, is a
+    hiring partner at Uber now. Contact records often have no address at all,
+    which is why the company is read too (David Yang, 10/13)."""
+    return f"""(
+      (lower(btrim(coalesce({c}.current_company, ''))) = 'pursuit'
+       AND NOT EXISTS (SELECT 1 FROM unnest(coalesce({c}.tags, '{{}}'::text[])) it WHERE it LIKE 'alumni%'))
+      -- coalesce: no address is "not staff", never NULL, which NOT would
+      -- turn into dropping the contact from every campaign.
+      OR coalesce(lower(btrim({c}.email)) IN (
+           SELECT lower(o.email) FROM public.org_users o WHERE o.is_active AND o.email IS NOT NULL
+           UNION SELECT lower(s.email) FROM bedrock.sync_staff s WHERE s.enabled AND s.email IS NOT NULL
+           UNION SELECT lower(x) FROM bedrock.sync_staff s, unnest(s.aliases) x
+                  WHERE s.enabled AND x IS NOT NULL), false))"""
+
+
+# Every campaign contact, one row per (campaign, contact): `$1` the active
+# slugs. `in_pipeline` is the membership; staff are left out here, once.
+CAMPAIGN_CONTACTS_SQL = f"""
+    SELECT DISTINCT ON (g.campaign, c.contact_id)
+           g.campaign, c.contact_id, c.full_name, c.current_company AS company,
+           nullif(lower(btrim(coalesce(c.current_company, ''))), '') AS account_key,
+           m.contact_id IS NOT NULL AS in_pipeline,
+           {canon_membership_sql('m.stage')} AS stage, m.owner_email,
+           coalesce(m.converted_at, m.first_outreach_at, m.assigned_at) AS stage_entered_at
+    FROM public.contacts c
+    CROSS JOIN LATERAL (SELECT {campaign_group_sql('t')} AS campaign
+                          FROM unnest(c.tags) t WHERE t = ANY($1::text[])) g
+    LEFT JOIN bedrock.jobs_contact_membership m ON m.contact_id = c.contact_id
+    WHERE NOT {internal_contact_sql('c')}
+    ORDER BY g.campaign, c.contact_id
+"""
+
+
+@dataclass
+class CampaignNumbers:
+    """One campaign's numbers. `contacts` is everyone tagged; every other
+    number is over the in-pipeline contacts."""
+    contacts: int = 0
+    in_pipeline: int = 0
+    accounts: int = 0
+    contacted: int = 0
+    accounts_reached: int = 0
+    converted: int = 0
+    converted_contacted: int = 0
+    stages: dict = field(default_factory=dict)
+    stages_contacted: dict = field(default_factory=dict)
+
+    @property
+    def conversion(self) -> Optional[int]:
+        """Of the contacted contacts, the share converted to an opportunity."""
+        return round(100 * self.converted_contacted / self.contacted) if self.contacted else None
+
+
+def campaign_numbers(rows: Iterable[Mapping], contacted: Iterable[int]) -> CampaignNumbers:
+    """The numbers for one campaign's CAMPAIGN_CONTACTS_SQL rows, given the
+    contacts that have been contacted (activity_by_contact's keys)."""
+    reached = set(contacted)
+    n = CampaignNumbers(stages={s: 0 for s in MEMBERSHIP_STAGES},
+                        stages_contacted={s: 0 for s in MEMBERSHIP_STAGES})
+    accounts, accounts_reached = set(), set()
+    for r in rows:
+        n.contacts += 1
+        if not r["in_pipeline"]:
+            continue
+        n.in_pipeline += 1
+        stage, hit = r["stage"], r["contact_id"] in reached
+        if stage in n.stages:
+            n.stages[stage] += 1
+        if r["account_key"]:
+            accounts.add(r["account_key"])
+        if hit:
+            n.contacted += 1
+            if stage in n.stages_contacted:
+                n.stages_contacted[stage] += 1
+            if r["account_key"]:
+                accounts_reached.add(r["account_key"])
+        if stage == "converted_to_opportunity":
+            n.converted += 1
+            n.converted_contacted += int(hit)
+    n.accounts, n.accounts_reached = len(accounts), len(accounts_reached)
+    return n
+
+
+def campaign_reference_sql() -> str:
+    """The reference query for the campaign measures: per campaign, everyone
+    tagged, the pipeline, its accounts, who has been contacted (by anyone at
+    Pursuit, ever, by outreach_counting's rules) and conversion. The SQL twin
+    of campaign_numbers over CAMPAIGN_CONTACTS_SQL. Archived campaigns are
+    listed too, with `current` saying which is shown by default."""
+    from services.outreach_counting import counted_once_ctes
+    slugs = "(SELECT array_agg(slug) FROM bedrock.contact_tag_catalog WHERE active)"
+    contacts = CAMPAIGN_CONTACTS_SQL.replace("$1::text[]", f"{slugs}::text[]")
+    return (
+        f"WITH w AS (SELECT {DD_PURSUIT} AS senders),\n"
+        f"{counted_once_ctes(p_start='NULL', p_end='NULL', p_senders='(SELECT senders FROM w)')},\n"
+        "reached AS (\n"
+        "  SELECT DISTINCT x.cid FROM once o, unnest(o.contact_ids || o.contact_id) x(cid)\n"
+        "  WHERE o.kind <> 'call_booked' AND x.cid IS NOT NULL\n"
+        "),\n"
+        f"camp AS ({contacts}),\n"
+        "cur AS (\n"
+        f"  SELECT {campaign_group_sql('slug')} AS campaign, bool_or(is_current) AS current\n"
+        "  FROM bedrock.contact_tag_catalog WHERE active GROUP BY 1\n"
+        ")\n"
+        "SELECT p.campaign, cur.current,\n"
+        "       count(*) AS contacts,\n"
+        "       count(*) FILTER (WHERE p.in_pipeline) AS in_pipeline,\n"
+        "       count(DISTINCT p.account_key) FILTER (WHERE p.in_pipeline) AS accounts,\n"
+        "       count(*) FILTER (WHERE p.in_pipeline AND r.cid IS NOT NULL) AS contacted,\n"
+        "       count(DISTINCT p.account_key) FILTER (WHERE p.in_pipeline AND r.cid IS NOT NULL) AS accounts_reached,\n"
+        "       round(100.0 * count(*) FILTER (WHERE p.in_pipeline AND r.cid IS NOT NULL\n"
+        "                                        AND p.stage = 'converted_to_opportunity')\n"
+        "             / nullif(count(*) FILTER (WHERE p.in_pipeline AND r.cid IS NOT NULL), 0)) AS conversion_pct\n"
+        "FROM camp p LEFT JOIN reached r ON r.cid = p.contact_id LEFT JOIN cur USING (campaign)\n"
+        "GROUP BY p.campaign, cur.current\n"
+        "ORDER BY cur.current DESC NULLS LAST, p.campaign"
     )
 
 

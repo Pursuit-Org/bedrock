@@ -310,9 +310,9 @@ def test_every_single_value_number_on_the_tabs_is_checked():
     checked = {c.number for c in check.CHECKS}
     not_single = {"contacts_by_stage", "contacts_entering_stage", "opportunities_by_stage",
                   "opportunities_entering_stage", "time_in_stage", "activity_depth",
-                  "contact_cohort_conversion", "stage_flow_conversion", "opportunity_stage_ratio",
                   "campaign_contacts", "campaign_accounts", "campaign_reached", "campaign_conversion",
-                  "activity_target", "jobs_projection", "contacted", "won_open_tasks"}
+                  "activity_target", "jobs_projection", "contacted", "moved_to_outreach",
+                  "won_open_tasks"}
     assert set(jm.MEASURES) - checked == not_single
 
 

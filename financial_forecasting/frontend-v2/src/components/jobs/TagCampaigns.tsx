@@ -1,9 +1,16 @@
 /**
- * Tag Campaigns — Performance section to prioritize outreach by tag.
- * Lists every tag as a campaign (alumni cohorts merged into "Fellow Alumni")
- * with a funnel bar (untouched → assigned → contacted → converted), contact/
- * account counts, and a staff owner. Drag to reorder priority; the saved order
- * (catalog.sort_order) drives the "Priority" sort on the Contacts page.
+ * Tag Campaigns — the prioritised campaign list.
+ * Every tag is a campaign (alumni cohorts merged into "Fellow Alumni", the
+ * operation_35_* segments into "Operation 35"), with its pipeline by stage,
+ * how many have been contacted, accounts, conversion and a staff owner. The
+ * current campaign leads (D10); past ones sit behind a toggle, kept with their
+ * results. Drag to reorder priority; the saved order (catalog.sort_order)
+ * drives the "Priority" sort on the Contacts page.
+ *
+ * Every number is the campaign's numbers from the backend (PRO-100): the
+ * pipeline is the contacts with a pipeline membership, "contacted" is activity
+ * from anyone at Pursuit, and conversion is converted ÷ contacted — the same
+ * as the campaign's Activation card and Sankey.
  */
 import { useEffect, useState } from "react";
 import { DndContext, closestCenter, PointerSensor, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
@@ -11,8 +18,8 @@ import { SortableContext, verticalListSortingStrategy, useSortable, arrayMove } 
 import { CSS } from "@dnd-kit/utilities";
 import { ChevronDown, GripVertical, Loader2 } from "lucide-react";
 
-import { useTagCampaigns, useSetTagCampaignOrder, useSetCampaignOwner, useStaff,
-  useTagCampaignRecords, MEMBERSHIP_STAGE_LABELS,
+import { useTagCampaigns, useSetTagCampaignOrder, useSetCampaignOwner, useSetCurrentCampaign,
+  useStaff, useTagCampaignRecords, MEMBERSHIP_STAGE_LABELS,
   type TagCampaign, type MembershipStage } from "@/services/jobs";
 import { Link } from "react-router-dom";
 import { relDay } from "@/lib/format";
@@ -20,34 +27,23 @@ import { InlineSelect } from "@/components/ui/InlineEdit";
 import { useSessionState } from "@/lib/useSessionState";
 import { cn } from "@/lib/utils";
 
-// Single funnel bar over the IN-PIPELINE contacts only (those with a stage),
-// worked-first left→right: converted (green) → contacted (accent) → not-yet-
-// contacted (grey, the remaining assigned-but-unworked). Contacts with no
-// membership (not in pipeline) are excluded from the bar entirely.
-// Disjoint stage buckets over the in-pipeline set, worked-first left→right:
-// Converted → Contacted (initial_outreach only) → On hold → Not yet contacted (grey).
-const STAGE_LEGEND = [
-  { label: "Converted", cls: "bg-green-500" },
-  { label: "Call booked", cls: "bg-teal-500" },
-  { label: "Contacted", cls: "bg-accent" },
-  { label: "Revisit", cls: "bg-amber-400" },
-  { label: "Not a fit", cls: "bg-rose-300" },
-  { label: "Assigned", cls: "bg-sky-400" },
-  { label: "No stage", cls: "bg-stone-300" },
+// One bar over the pipeline contacts, every one at exactly one stage, worked
+// first left→right. Nothing is a remainder: Scheduling used to be missing and
+// fell into "No stage".
+const STAGE_BANDS: { stage: MembershipStage; label: string; cls: string }[] = [
+  { stage: "converted_to_opportunity", label: "Converted", cls: "bg-green-500" },
+  { stage: "call_booked", label: "Call booked", cls: "bg-teal-500" },
+  { stage: "scheduling", label: "Scheduling", cls: "bg-teal-300" },
+  { stage: "initial_outreach", label: "In outreach", cls: "bg-accent" },
+  { stage: "revisit", label: "Revisit", cls: "bg-amber-400" },
+  { stage: "not_a_fit", label: "Not a fit", cls: "bg-rose-300" },
+  { stage: "assigned", label: "Assigned", cls: "bg-sky-400" },
 ];
-function FunnelBar({ f }: { f: TagCampaign["funnel"] }) {
-  // Coalesce each field — a stale cached response may carry an older funnel
-  // shape; never let an undefined value crash the bar.
-  const n = (v: number | undefined) => v ?? 0;
-  const parts = [
-    { label: "Converted", cls: "bg-green-500", n: n(f.converted) },
-    { label: "Call booked", cls: "bg-teal-500", n: n(f.call_booked) },
-    { label: "Contacted", cls: "bg-accent", n: n(f.contacted) },
-    { label: "Revisit", cls: "bg-amber-400", n: n(f.on_hold) },
-    { label: "Not a fit", cls: "bg-rose-300", n: n(f.not_a_fit) },
-    { label: "Assigned", cls: "bg-sky-400", n: n(f.assigned) },
-    { label: "No stage", cls: "bg-stone-300", n: n(f.not_yet) },
-  ];
+const STAGE_LEGEND = STAGE_BANDS;
+function FunnelBar({ stages }: { stages: TagCampaign["stages"] | undefined }) {
+  // Coalesce each stage: a stale cached response may carry an older shape;
+  // never let an undefined value crash the bar.
+  const parts = STAGE_BANDS.map((b) => ({ ...b, n: stages?.[b.stage] ?? 0 }));
   const d = parts.reduce((s, p) => s + p.n, 0) || 1;
   return (
     <div className="flex h-3.5 w-full overflow-hidden rounded-full bg-surface-2" title={parts.map((p) => `${p.label}: ${p.n.toLocaleString()}`).join("  ·  ")}>
@@ -56,7 +52,6 @@ function FunnelBar({ f }: { f: TagCampaign["funnel"] }) {
   );
 }
 
-const EMPTY_FUNNEL = { not_yet: 0, assigned: 0, contacted: 0, call_booked: 0, converted: 0, not_a_fit: 0, on_hold: 0 };
 type DrillKind = "contacts" | "accounts" | null;
 
 // ── Campaign picker ─────────────────────────────────────────────────────────
@@ -135,9 +130,9 @@ function Row({ c, rank, staffOptions, drill, onDrill }: {
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: c.key });
   const setOwner = useSetCampaignOwner();
+  const makeCurrent = useSetCurrentCampaign();
   const staffName = (email: string | null) => staffOptions.find((s) => s.value === email)?.label ?? email ?? "—";
-  const f = c.funnel ?? EMPTY_FUNNEL;   // defensive: stale cache may lack funnel
-  const contacted = Math.max(0, f.contacted ?? 0); // initial_outreach only
+  const contacted = c.contacted ?? 0;
   return (
     <div
       ref={setNodeRef}
@@ -148,16 +143,22 @@ function Row({ c, rank, staffOptions, drill, onDrill }: {
     <div className="flex items-center gap-3 px-3 py-2">
       <button type="button" {...attributes} {...listeners} className="cursor-grab touch-none text-ink-4 hover:text-ink-2 active:cursor-grabbing" aria-label={`Reorder ${c.label}`}><GripVertical size={14} /></button>
       <span className="w-5 text-right font-mono text-[11px] text-ink-4">{rank}</span>
-      <span className="w-40 shrink-0 truncate font-medium text-ink" title={c.label}>{c.label}</span>
-      {/* single funnel bar over the in-pipeline contacts only */}
+      <span className="flex w-40 shrink-0 items-center gap-1.5">
+        <span className="min-w-0 truncate font-medium text-ink" title={c.label}>{c.label}</span>
+        {c.current ? (
+          <span className="shrink-0 rounded-full bg-accent-soft px-1.5 py-px text-[9.5px] font-semibold uppercase tracking-wide text-accent"
+            title="The current campaign: the Campaigns tab opens on it">Current</span>
+        ) : null}
+      </span>
+      {/* one bar over the pipeline contacts, by stage */}
       <div className="flex min-w-0 flex-1 items-center gap-2">
-        <FunnelBar f={f} />
+        <FunnelBar stages={c.stages} />
         <button type="button"
           onClick={() => onDrill(drill === "contacts" ? null : "contacts")}
-          title="List the contacts in this campaign, with who's been contacted and when"
-          className={cn("w-24 shrink-0 text-right tabular-nums text-[10.5px] hover:underline",
+          title={`${contacted} of the ${c.in_pipeline} pipeline contacts have had activity from Pursuit. Click to list them.`}
+          className={cn("w-28 shrink-0 text-right tabular-nums text-[10.5px] hover:underline",
             drill === "contacts" ? "text-accent" : "text-ink-3 hover:text-accent")}>
-          {contacted.toLocaleString()}/{c.in_pipeline.toLocaleString()} in pipe
+          {contacted.toLocaleString()}/{c.in_pipeline.toLocaleString()} contacted
         </button>
       </div>
       <button type="button"
@@ -167,11 +168,13 @@ function Row({ c, rank, staffOptions, drill, onDrill }: {
           drill === "accounts" ? "text-accent" : "text-ink-2 hover:text-accent")}>
         {c.accounts.toLocaleString()} <span className="text-ink-4">acct</span>
       </button>
-      {/* conversion = converted / (contacted + converted) — where traction is */}
+      {/* conversion = of the contacted, the share converted (never over 100%) */}
       <span className="w-14 shrink-0 text-right tabular-nums text-[11.5px]"
-        title={`${f.converted} converted of ${contacted + (f.converted ?? 0)} contacted`}>
-        {contacted + (f.converted ?? 0) >= 5
-          ? <span className={cn((f.converted ?? 0) > 0 ? "text-green" : "text-ink-4")}>{Math.round((100 * (f.converted ?? 0)) / (contacted + (f.converted ?? 0)))}%</span>
+        title={c.conversion != null
+          ? `${c.conversion}% of the ${contacted} contacted converted to an opportunity`
+          : "Nobody contacted yet"}>
+        {contacted >= 5 && c.conversion != null
+          ? <span className={cn(c.conversion > 0 ? "text-green" : "text-ink-4")}>{c.conversion}%</span>
           : <span className="text-ink-4">—</span>}
       </span>
       {/* owner */}
@@ -183,6 +186,17 @@ function Row({ c, rank, staffOptions, drill, onDrill }: {
           renderValue={(v) => { const e = (v || c.owner_email) || null; return <span className={cn("truncate text-[12px]", e ? "text-ink-2" : "text-ink-4")}>{e ? staffName(e) : "Set owner"}</span>; }}
           onSave={(v) => new Promise<void>((res, rej) => setOwner.mutate({ key: c.key, owner_email: v || null }, { onSuccess: () => res(), onError: rej }))}
         />
+      </span>
+      {/* Past campaigns can be made current; the current one already is. */}
+      <span className="w-20 shrink-0 text-right">
+        {c.current ? null : (
+          <button type="button" disabled={makeCurrent.isPending}
+            onClick={() => makeCurrent.mutate(c.key)}
+            title="Make this the current campaign: the Campaigns tab will open on it, and the current one becomes a past campaign"
+            className="text-[11px] font-medium text-ink-4 hover:text-accent hover:underline disabled:opacity-50">
+            Make current
+          </button>
+        )}
       </span>
     </div>
     {drill ? <CampaignDrill campaignKey={c.key} kind={drill} label={c.label} /> : null}
@@ -225,6 +239,7 @@ function CampaignDrill({ campaignKey, kind, label }: {
                   <th className="px-3 py-1.5 font-semibold">Contact</th>
                   <th className="px-2 py-1.5 font-semibold">Company</th>
                   <th className="px-2 py-1.5 font-semibold">Reached</th>
+                  <th className="px-2 py-1.5 font-semibold">Stage</th>
                   <th className="px-2 py-1.5 font-semibold">When</th>
                   <th className="px-2 py-1.5 text-right font-semibold">Activity</th>
                   <th className="px-2 py-1.5 text-right font-semibold">Last activity</th>
@@ -241,9 +256,10 @@ function CampaignDrill({ campaignKey, kind, label }: {
           <tbody>
             {kind === "contacts"
               ? (shown as NonNullable<typeof data>["contacts"]).map((r) => {
-                  // "Reached" = past the assigned queue. Anyone still unstaged or
-                  // merely assigned has not been contacted yet.
-                  const reached = r.stage === "initial_outreach" || r.stage === "converted_to_opportunity";
+                  // "Reached" and "Activity" are one rule (PRO-100): activity
+                  // from anyone at Pursuit. The stage is its own column — a
+                  // contact can be at Not a fit untouched, or at Assigned and
+                  // worked.
                   return (
                     <tr key={r.contact_id} className="border-t border-border-strong">
                       <td className="px-3 py-1.5">
@@ -255,15 +271,18 @@ function CampaignDrill({ campaignKey, kind, label }: {
                       <td className="px-2 py-1.5 truncate text-ink-2">{r.company ?? "—"}</td>
                       <td className="px-2 py-1.5">
                         <span className={cn("rounded-full px-1.5 py-0.5 text-[10.5px] font-semibold",
-                          reached ? "bg-green-soft text-green" : "bg-surface-2 text-ink-3")}>
-                          {r.stage ? (MEMBERSHIP_STAGE_LABELS[r.stage as MembershipStage] ?? r.stage) : "Not yet"}
+                          r.contacted ? "bg-green-soft text-green" : "bg-surface-2 text-ink-3")}>
+                          {r.contacted ? "Contacted" : "Not yet"}
                         </span>
                       </td>
-                      <td className="px-2 py-1.5 text-ink-3">{relDay(r.stage_entered_at) ?? "—"}</td>
-                      <td className={cn("px-2 py-1.5 text-right tabular-nums", r.touches > 0 ? "text-ink-2" : "text-ink-4")}>
-                        {r.touches}
+                      <td className="px-2 py-1.5 text-ink-2">
+                        {r.stage ? (MEMBERSHIP_STAGE_LABELS[r.stage as MembershipStage] ?? r.stage) : "—"}
                       </td>
-                      <td className="px-2 py-1.5 text-right tabular-nums text-ink-4">{relDay(r.last_touch) ?? "—"}</td>
+                      <td className="px-2 py-1.5 text-ink-3">{relDay(r.stage_entered_at) ?? "—"}</td>
+                      <td className={cn("px-2 py-1.5 text-right tabular-nums", r.activity > 0 ? "text-ink-2" : "text-ink-4")}>
+                        {r.activity}
+                      </td>
+                      <td className="px-2 py-1.5 text-right tabular-nums text-ink-4">{relDay(r.last_activity) ?? "—"}</td>
                     </tr>
                   );
                 })
@@ -276,11 +295,22 @@ function CampaignDrill({ campaignKey, kind, label }: {
                       </Link>
                     </td>
                     <td className="px-2 py-1.5 text-right tabular-nums text-ink-2">{a.contacts}</td>
-                    <td className={cn("px-2 py-1.5 text-right tabular-nums", a.contacted > 0 ? "text-green" : "text-ink-4")}>
-                      {a.contacted}
+                    <td className={cn("px-2 py-1.5 text-right tabular-nums", a.reached > 0 ? "text-green" : "text-ink-4")}>
+                      {a.reached}
                     </td>
                   </tr>
                 ))}
+            {/* Contacts with no company aren't an account: one line, after them. */}
+            {kind === "accounts" && data?.unassigned && data.unassigned.contacts > 0 ? (
+              <tr className="border-t border-border-strong bg-surface-2/40">
+                <td className="px-3 py-1.5 italic text-ink-3"
+                  title="Pipeline contacts with no company on their record: not counted as an account">
+                  No company (unassigned)
+                </td>
+                <td className="px-2 py-1.5 text-right tabular-nums text-ink-3">{data.unassigned.contacts}</td>
+                <td className="px-2 py-1.5 text-right tabular-nums text-ink-3">{data.unassigned.reached}</td>
+              </tr>
+            ) : null}
           </tbody>
         </table>
         {rows.length > shown.length ? (
@@ -308,9 +338,15 @@ export function TagCampaigns() {
   // and Board" is a lens you keep for a whole review, not a single glance.
   const [picked, setPicked] = useSessionState<string[]>("jobsOutreach.campaigns.picked", []);
   const pickedSet = new Set(picked);
+  // Past campaigns (D10) are archived: listed only when asked for, but a past
+  // campaign picked in the filter shows regardless.
+  const [showPast, setShowPast] = useSessionState<boolean>("jobsOutreach.campaigns.showPast", false);
+  const pastCount = items.filter((i) => !i.current).length;
   // Rows to render. Ranks and reordering still index the FULL list below, so a
   // drag while filtered can never renumber or reshuffle the hidden campaigns.
-  const visible = pickedSet.size === 0 ? items : items.filter((i) => pickedSet.has(i.key));
+  const visible = pickedSet.size
+    ? items.filter((i) => pickedSet.has(i.key))
+    : items.filter((i) => i.current || showPast);
 
   // Sync from server WITHOUT clobbering an in-progress reorder: adopt the
   // server order only on first load or when the set of campaigns changes;
@@ -353,6 +389,11 @@ export function TagCampaigns() {
           <span className="text-[11px] text-ink-4">
             {visible.length} of {items.length} shown · # is the true priority rank
           </span>
+        ) : pastCount > 0 ? (
+          <button type="button" onClick={() => setShowPast(!showPast)}
+            className="text-[11px] font-medium text-accent hover:underline">
+            {showPast ? "Hide past campaigns" : `Show ${pastCount} past campaign${pastCount === 1 ? "" : "s"}`}
+          </button>
         ) : null}
         {/* legend (stage funnel) */}
         <span className="ml-auto flex items-center gap-3 text-[10.5px] text-ink-4">
@@ -363,10 +404,11 @@ export function TagCampaigns() {
         <div className="flex items-center gap-3 border-b border-border-strong bg-surface-2 px-3 py-1.5 text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
           <span className="w-[14px]" /><span className="w-5 text-right">#</span>
           <span className="w-40 shrink-0">Campaign</span>
-          <span className="min-w-0 flex-1">Pipeline funnel (in-pipeline only)</span>
+          <span className="min-w-0 flex-1">Pipeline by stage · contacted</span>
           <span className="w-20 shrink-0 text-right">Accounts</span>
-          <span className="w-14 shrink-0 text-right" title="converted ÷ contacted">Conv.</span>
+          <span className="w-14 shrink-0 text-right" title="Of the contacted, the share converted to an opportunity">Conv.</span>
           <span className="w-36 shrink-0">Owner</span>
+          <span className="w-20 shrink-0" />
         </div>
         {isLoading ? (
           <div className="flex items-center gap-2 px-3 py-6 text-[12.5px] text-ink-3"><Loader2 size={14} className="animate-spin" /> Loading campaigns…</div>
