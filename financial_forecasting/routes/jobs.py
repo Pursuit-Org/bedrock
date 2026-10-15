@@ -2066,9 +2066,17 @@ async def create_builder_activity(
         """
         INSERT INTO public.job_applications
             (builder_id, company_name, role_title, stage, date_applied,
-             source_type, jobs_opportunity_id, jobs_role_id, notes)
+             source_type, jobs_opportunity_id, jobs_role_id, notes, stage_history)
         VALUES ($1, $2, $3, $4, COALESCE($5, CURRENT_DATE),
-                'Pursuit_referred', $6, $7, $8)
+                'Pursuit_referred', $6, $7, $8,
+                -- Seed history with the starting stage: an application logged
+                -- straight in as "interview" and later rejected would otherwise
+                -- lose the interview, since update_builder_activity only
+                -- appends the NEW stage. Same entry shape as that path.
+                jsonb_build_array(jsonb_build_object(
+                    'date', to_char(now(), 'YYYY-MM-DD'), 'stage', $4::varchar,
+                    'notes', NULL, 'changed_by', $9::text
+                )))
         RETURNING job_application_id
         """,
         body.user_id,
@@ -2079,6 +2087,7 @@ async def create_builder_activity(
         opp_id,
         role_id,
         notes,
+        _user_email(user),
     )
     return {"success": True, "data": {"job_application_id": app_id, "stage": body.stage}}
 
@@ -2173,9 +2182,17 @@ async def create_role_application(
         """
         INSERT INTO public.job_applications
             (builder_id, company_name, role_title, stage, date_applied,
-             source_type, jobs_opportunity_id, jobs_role_id, notes)
+             source_type, jobs_opportunity_id, jobs_role_id, notes, stage_history)
         VALUES ($1, $2, $3, $4, COALESCE($5, CURRENT_DATE),
-                'Pursuit_referred', $6, $7, $8)
+                'Pursuit_referred', $6, $7, $8,
+                -- Seed history with the starting stage: an application logged
+                -- straight in as "interview" and later rejected would otherwise
+                -- lose the interview, since update_builder_activity only
+                -- appends the NEW stage. Same entry shape as that path.
+                jsonb_build_array(jsonb_build_object(
+                    'date', to_char(now(), 'YYYY-MM-DD'), 'stage', $4::varchar,
+                    'notes', NULL, 'changed_by', $9::text
+                )))
         RETURNING job_application_id
         """,
         body.user_id,
@@ -2186,6 +2203,7 @@ async def create_role_application(
         role["opportunity_id"],
         role_id,
         notes,
+        _user_email(user),
     )
     return {"success": True, "data": {"job_application_id": app_id, "stage": body.stage}}
 
