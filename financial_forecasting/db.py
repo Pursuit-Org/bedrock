@@ -57,9 +57,14 @@ async def init_db() -> None:
     _log_connection_target(DATABASE_URL)
 
     # Step 1: Create connection pool.
-    # Wrap in wait_for so an unreachable host (e.g. VPN down, remote DB
-    # not accessible from dev laptop) fails in 10 s instead of waiting
-    # for the OS TCP timeout (~75 s), which would stall the entire startup.
+    # Bounded so an unreachable host (VPN down on a laptop) fails in a known
+    # time instead of the OS TCP timeout (~75 s). The bound has to be generous:
+    # a 10 s cap took production down on 2026-10-03 — Cloud Run's first SSL
+    # connections to Cloud SQL ran past it on a cold start, the pool was
+    # abandoned, and because nothing retries, every DB endpoint 503ed for the
+    # life of the instance. 60 s by default; DB_CONNECT_TIMEOUT_SEC overrides
+    # (set it low locally if you want the fast failure back).
+    connect_timeout = float(os.getenv("DB_CONNECT_TIMEOUT_SEC", "60"))
     try:
         _pool = await asyncio.wait_for(
             asyncpg.create_pool(
@@ -70,13 +75,14 @@ async def init_db() -> None:
                 # single DB call blocks all 10 connections indefinitely.
                 command_timeout=30,
             ),
-            timeout=10,
+            timeout=connect_timeout,
         )
         logger.info("PostgreSQL pool created")
     except asyncio.TimeoutError:
-        logger.warning(
-            "PostgreSQL pool creation timed out (10 s) — DB unreachable, "
-            "starting without DB (account statuses will be SF-only)"
+        logger.error(
+            "PostgreSQL pool creation timed out (%.0f s) — starting WITHOUT a "
+            "database: every DB-backed endpoint will return 503 until restart",
+            connect_timeout,
         )
         _pool = None
         _db_init_status = "disconnected"
