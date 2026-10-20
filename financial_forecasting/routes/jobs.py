@@ -2115,7 +2115,12 @@ async def update_builder_activity(
     carried: the array is append-only, so an entry's "from" is simply the
     previous entry's `stage` (verified: 636 of 647 rows have their last entry
     matching the row's current stage), and `date` is the platform's own
-    granularity for when."""
+    granularity for when.
+
+    Any application, linked to an opportunity or not: the Roles board uses
+    this same editor on Builder-Sourced and review-queue rows, which mostly
+    have no opportunity, and a jobs_opportunity_id guard here (left over from
+    when only the Opportunities tab used it) made those saves 404."""
     if body.stage not in VALID_APP_STAGES:
         raise HTTPException(400, f"Invalid stage: {body.stage}")
     result = await conn.execute(
@@ -2127,7 +2132,7 @@ async def update_builder_activity(
                 'notes', NULL, 'changed_by', $3::text
             ),
             updated_at = now()
-        WHERE job_application_id=$2 AND jobs_opportunity_id IS NOT NULL
+        WHERE job_application_id=$2
         """,
         body.stage, app_id, _user_email(user),
     )
