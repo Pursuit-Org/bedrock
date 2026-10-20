@@ -85,8 +85,8 @@ const APP_STAGE_STYLES: Record<string, string> = {
 };
 
 /** Inline stage editor — used anywhere an application's stage badge shows up
- *  on the Roles board (Pursuit-Supported nested applications, Staff-Sourced,
- *  Builder-Sourced), so a status change is a straight select instead of
+ *  on the Roles board (Pursuit-Supported nested applications, its review
+ *  queue, Builder-Sourced), so a status change is a straight select instead of
  *  needing to open the opportunity/activity log first. Colored per stage to
  *  keep the same at-a-glance read as the static badges elsewhere. */
 function StageSelect({ appId, stage }: { appId: number; stage: string | null }) {
@@ -257,12 +257,12 @@ function BuilderSourcedRow({
               <>
                 <button
                   type="button"
-                  title="Staff actually sourced this — it just never got tagged that way"
+                  title="Staff actually sourced this — moves it to the Pursuit-Supported review queue"
                   onClick={() => markStaffSourced.mutate(a.job_application_id!)}
                   disabled={markStaffSourced.isPending}
                   className="text-[11.5px] text-ink-3 hover:text-ink-2 disabled:opacity-50"
                 >
-                  → Staff-Sourced
+                  → Pursuit
                 </button>
                 <button
                   type="button"
@@ -339,7 +339,10 @@ function BuilderSourcedColumn({
   );
 }
 
-// ── Staff-Sourced queue — grouped by (company, role_title): several
+// ── Review queue (top of Pursuit-Supported) — staff-sourced applications
+//    with no Bedrock role yet. Was its own Staff-Sourced column until
+//    2026-10-20; folded in so the board is two even columns. Grouped by
+//    (company, role_title): several
 //    applicants often share the same not-yet-formalized role, so it reads
 //    like Pursuit-Supported — role/company header, nested applicants —
 //    instead of one disconnected row per application. The group-level
@@ -469,44 +472,41 @@ function StaffSourcedGroupRow({
   );
 }
 
-function StaffSourcedColumn({
+function ReviewQueue({
   onCreateOpportunity,
 }: {
   onCreateOpportunity: (g: StaffSourcedGroup) => void;
 }) {
-  const { data, isLoading } = useStaffSourcedApplications();
+  const { data } = useStaffSourcedApplications();
+  // Same storage key as the old Staff-Sourced column, so earlier dismissals stick.
   const [dismissed, dismiss] = usePersistedDismissed("staff-sourced");
   const groups = (data ?? [])
     .map((g) => ({ ...g, applications: g.applications.filter((a) => !dismissed.has(a.job_application_id)) }))
     .filter((g) => g.applications.length > 0);
   const totalApplicants = groups.reduce((n, g) => n + g.applications.length, 0);
 
+  // Usually empty — show nothing rather than an empty box above the roles.
+  if (groups.length === 0) return null;
+
   return (
-    <div className="flex min-w-0 flex-col gap-3">
+    <div className="flex flex-col gap-2">
       <div className="flex items-center justify-between">
         <span className="text-[10.5px] uppercase tracking-wider text-ink-4">
-          Staff-Sourced
-          <span className="ml-2 font-normal normal-case text-ink-4">· last 30 days</span>
+          Review queue
+          <span className="ml-2 font-normal normal-case text-ink-4">· staff-sourced, no role yet · last 30 days</span>
         </span>
         <span className="text-[11px] text-ink-4">{totalApplicants}</span>
       </div>
-
-      {isLoading ? (
-        <span className="text-[12px] text-ink-4">Loading…</span>
-      ) : groups.length === 0 ? (
-        <span className="text-[12px] text-ink-4">No staff-sourced applications waiting on a role in the last 30 days.</span>
-      ) : (
-        <ul className="flex flex-col divide-y divide-border-strong rounded-md border border-border-strong">
-          {groups.map((g) => (
-            <StaffSourcedGroupRow
-              key={`${g.company_name}::${g.role_title}`}
-              g={g}
-              onCreateOpportunity={onCreateOpportunity}
-              onDismiss={dismiss}
-            />
-          ))}
-        </ul>
-      )}
+      <ul className="flex flex-col divide-y divide-border-strong rounded-md border border-border-strong">
+        {groups.map((g) => (
+          <StaffSourcedGroupRow
+            key={`${g.company_name}::${g.role_title}`}
+            g={g}
+            onCreateOpportunity={onCreateOpportunity}
+            onDismiss={dismiss}
+          />
+        ))}
+      </ul>
     </div>
   );
 }
@@ -641,7 +641,7 @@ interface AddRolePrefill {
   /** When set, the newly-created role is auto-linked to every application id
    *  here on success — closes the loop for unmatched application(s) that had
    *  no opportunity to attach to until now, no separate confirm step needed.
-   *  Usually one id (Builder-Sourced); can be several when a Staff-Sourced
+   *  Usually one id (Builder-Sourced); can be several when a review-queue
    *  candidate role has multiple applicants sharing the same company+title. */
   linkApplicationIds?: number[];
 }
@@ -1322,7 +1322,7 @@ export function RolesBoard() {
 
   return (
     <div className="flex flex-col gap-3">
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[2fr_1fr_1fr]">
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <div className="flex min-w-0 flex-col gap-3">
           <div className="flex items-center justify-between">
             <span className="text-[10.5px] uppercase tracking-wider text-ink-4">
@@ -1337,6 +1337,16 @@ export function RolesBoard() {
               <Plus size={12} /> Add role
             </button>
           </div>
+
+          <ReviewQueue
+            onCreateOpportunity={(g: StaffSourcedGroup) =>
+              openAddRole({
+                companyName: g.company_name ?? "",
+                roleTitle: g.role_title ?? undefined,
+                linkApplicationIds: g.applications.map((a) => a.job_application_id),
+              })
+            }
+          />
 
           {rolesQ.isLoading ? (
             <span className="text-[12px] text-ink-4">Loading…</span>
@@ -1354,16 +1364,6 @@ export function RolesBoard() {
             </DndContext>
           )}
         </div>
-
-        <StaffSourcedColumn
-          onCreateOpportunity={(g: StaffSourcedGroup) =>
-            openAddRole({
-              companyName: g.company_name ?? "",
-              roleTitle: g.role_title ?? undefined,
-              linkApplicationIds: g.applications.map((a) => a.job_application_id),
-            })
-          }
-        />
 
         <BuilderSourcedColumn
           onCreateOpportunity={(a) =>

@@ -677,7 +677,7 @@ export function useMarkApplicationStaffSourced() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["jobs", "staff-sourced"] });
       qc.invalidateQueries({ queryKey: ["jobs", "builder-sourced"] });
-      toast.success("Moved to Staff-Sourced");
+      toast.success("Moved to the Pursuit review queue");
     },
     onError: () => toast.error("Failed to reclassify"),
   });
