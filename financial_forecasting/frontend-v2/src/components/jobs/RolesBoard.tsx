@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { apiErrorMessage, parseEstimatedJobs } from "@/lib/estimatedJobs";
 import { toast } from "sonner";
-import { Plus, X, Check, ChevronDown, ChevronRight, GripVertical } from "lucide-react";
+import { Plus, X, Check, ChevronDown, ChevronRight, GripVertical, CalendarPlus, Pencil } from "lucide-react";
 import { DndContext, closestCenter, PointerSensor, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
 import { SortableContext, verticalListSortingStrategy, useSortable, arrayMove } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { cn } from "@/lib/utils";
-import { fmtDate } from "@/lib/format";
+import { fmtDate, fmtDateShort } from "@/lib/format";
 import { useBuilders, useCreateOpportunity, STAGES_ORDERED, STAGE_LABELS, type Builder, type JobStage } from "@/services/jobs";
 import { NewAccountDialog } from "@/components/jobs/NewAccountDialog";
 import {
@@ -25,12 +25,22 @@ import {
   useUnlinkApplication,
   useUpdateBuilderActivity,
   useUpdateRole,
+  useApplicationInterviews,
+  useCreateInterview,
+  useUpdateInterview,
+  useDeleteInterview,
+  useInterviewStats,
   APP_STAGE_OPTIONS,
+  INTERVIEW_TYPES,
   type AppStage,
+  type Interview,
+  type InterviewBody,
   type RolesBoardRole,
   type Commitment,
   type UnmatchedApplication,
   type StaffSourcedGroup,
+  type StaffSourcedApplicant,
+  type RolesBoardApplication,
 } from "@/services/jobsOpps2";
 
 // ── Shared display helpers (small lookup tables kept local to this board,
@@ -84,12 +94,19 @@ const APP_STAGE_STYLES: Record<string, string> = {
   withdrawn: "bg-stone-100 text-stone-500",
 };
 
+/** "Interviewing · Round 2" once a round is logged — the stage stays a plain
+ *  stage, the round is just the application's interview count. */
+function appStageLabel(stage: string | null, interviewCount = 0): string {
+  const label = APP_STAGE_LABELS[stage ?? ""] ?? stage ?? "—";
+  return stage === "interview" && interviewCount >= 1 ? `${label} · Round ${interviewCount}` : label;
+}
+
 /** Inline stage editor — used anywhere an application's stage badge shows up
  *  on the Roles board (Pursuit-Supported nested applications, Staff-Sourced,
  *  Builder-Sourced), so a status change is a straight select instead of
  *  needing to open the opportunity/activity log first. Colored per stage to
  *  keep the same at-a-glance read as the static badges elsewhere. */
-function StageSelect({ appId, stage }: { appId: number; stage: string | null }) {
+function StageSelect({ appId, stage, interviewCount = 0 }: { appId: number; stage: string | null; interviewCount?: number }) {
   const update = useUpdateBuilderActivity("");
   return (
     <select
@@ -103,9 +120,274 @@ function StageSelect({ appId, stage }: { appId: number; stage: string | null }) 
       title="Update status"
     >
       {APP_STAGE_OPTIONS.map((s) => (
-        <option key={s.value} value={s.value}>{s.label}</option>
+        <option key={s.value} value={s.value}>
+          {s.value === "interview" ? appStageLabel(s.value, interviewCount) : s.label}
+        </option>
       ))}
     </select>
+  );
+}
+
+// ── Interview rounds — read/written straight to public.interviews, the same
+//    rows Pathfinder shows builders, so a round logged here is the round. ────
+
+// Local calendar date, not toISOString's UTC one — after 8pm ET that's already
+// tomorrow, which would default the form a day late and mislabel tonight's
+// round as "scheduled".
+function today(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+/** Compact toggle for an application's rounds panel: a calendar icon, plus the
+ *  count once there is one. Lives in each applicant's action cluster. */
+function InterviewRoundsButton({
+  count,
+  latestType,
+  latestDate,
+  open,
+  onClick,
+}: {
+  count: number;
+  latestType: string | null;
+  latestDate: string | null;
+  open: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={
+        count > 0
+          ? `Round ${count}${latestType ? ` · ${latestType}` : ""}${latestDate ? ` · ${fmtDate(latestDate)}` : ""} — see / log interviews`
+          : "Log interview"
+      }
+      className={cn(
+        "flex items-center gap-0.5 text-[11px] transition-colors",
+        open ? "text-accent" : "text-ink-4 hover:text-ink-2",
+      )}
+    >
+      <CalendarPlus size={12} />
+      {count > 0 && <span className="font-mono text-[10.5px]">{count}</span>}
+    </button>
+  );
+}
+
+function InterviewForm({
+  initial,
+  submitLabel,
+  pending,
+  onSubmit,
+  onCancel,
+}: {
+  initial?: Interview;
+  submitLabel: string;
+  pending: boolean;
+  onSubmit: (body: InterviewBody) => void;
+  onCancel: () => void;
+}) {
+  const [date, setDate] = useState(initial?.date ?? today());
+  const [type, setType] = useState(initial?.type ?? "");
+  const [title, setTitle] = useState(initial?.title ?? "");
+  const [interviewer, setInterviewer] = useState(initial?.interviewer_name ?? "");
+
+  function submit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!date || !type) return;
+    onSubmit({ date, type, title: title.trim() || null, interviewer_name: interviewer.trim() || null });
+  }
+
+  const field =
+    "w-full rounded border border-border-strong bg-surface px-2 py-1 text-[11.5px] text-ink-2 placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40";
+  return (
+    <form onSubmit={submit} className="flex flex-col gap-2">
+      <div className="grid grid-cols-2 gap-2">
+        <label className="flex flex-col gap-0.5">
+          {/* No max — a scheduled round is logged ahead of time. */}
+          <span className="text-[10px] font-medium text-ink-4">Date</span>
+          <input type="date" required value={date} onChange={(e) => setDate(e.target.value)} className={field} />
+        </label>
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[10px] font-medium text-ink-4">Type</span>
+          <select required value={type} onChange={(e) => setType(e.target.value)} className={field}>
+            <option value="" disabled>Select…</option>
+            {/* A Pathfinder-logged round could predate the shared list — keep it selectable. */}
+            {type && !(INTERVIEW_TYPES as readonly string[]).includes(type) && <option value={type}>{type}</option>}
+            {INTERVIEW_TYPES.map((t) => (
+              <option key={t} value={t}>{t}</option>
+            ))}
+          </select>
+        </label>
+        <input
+          type="text"
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          placeholder="Title (optional)"
+          className={field}
+        />
+        <input
+          type="text"
+          value={interviewer}
+          onChange={(e) => setInterviewer(e.target.value)}
+          placeholder="Interviewer (optional)"
+          className={field}
+        />
+      </div>
+      <div className="flex items-center gap-3">
+        <button
+          type="submit"
+          disabled={!date || !type || pending}
+          className="flex items-center gap-1.5 rounded bg-accent px-2.5 py-1 text-[11.5px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+        >
+          {pending ? <Spinner /> : <Check size={12} />}
+          {submitLabel}
+        </button>
+        <button type="button" onClick={onCancel} className="text-[11.5px] text-ink-3 hover:text-ink-2">
+          Cancel
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function InterviewRoundRow({
+  iv,
+  appId,
+  onEdit,
+}: {
+  iv: Interview;
+  appId: number;
+  onEdit: () => void;
+}) {
+  const remove = useDeleteInterview(appId);
+  const upcoming = iv.date !== null && iv.date > today();
+  const detail = [iv.title, iv.interviewer_name].filter(Boolean).join(" · ");
+  return (
+    <li className="flex items-center gap-2">
+      <span className="shrink-0 font-mono text-[10.5px] text-ink-4">R{iv.round}</span>
+      <span className="min-w-0 flex-1 truncate text-[11.5px] text-ink-2" title={detail || undefined}>
+        {fmtDateShort(iv.date)} · {iv.type ?? "—"}
+        {detail && <span className="text-ink-4"> · {detail}</span>}
+        {upcoming && <span className="ml-1 text-[10px] text-amber-700">scheduled</span>}
+      </span>
+      <button
+        type="button"
+        onClick={onEdit}
+        title="Edit round"
+        className="shrink-0 text-ink-4 hover:text-ink-2 transition-colors"
+      >
+        <Pencil size={11} />
+      </button>
+      <button
+        type="button"
+        title="Delete round — the application's stage is left as is"
+        onClick={() => {
+          if (window.confirm(`Delete round ${iv.round ?? ""} (${fmtDate(iv.date)})?`)) remove.mutate(iv.interview_id);
+        }}
+        disabled={remove.isPending}
+        className="shrink-0 text-ink-4 hover:text-red-500 transition-colors disabled:opacity-50"
+      >
+        <X size={12} />
+      </button>
+    </li>
+  );
+}
+
+/** Rounds logged for one application (oldest first, numbered) with inline
+ *  edit/delete, plus "+ Log interview". Opens straight into the form when
+ *  nothing's logged yet — the toggle that opened it was the log action. */
+function InterviewRoundsPanel({ appId, count }: { appId: number; count: number }) {
+  const q = useApplicationInterviews(appId);
+  const create = useCreateInterview(appId);
+  const update = useUpdateInterview(appId);
+  const [adding, setAdding] = useState(count === 0);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const rounds = q.data ?? [];
+
+  return (
+    <div className="flex flex-col gap-1.5 rounded-md border border-border-strong bg-surface-2/40 p-2.5">
+      {q.isLoading ? (
+        <span className="text-[11px] text-ink-4">Loading…</span>
+      ) : rounds.length > 0 ? (
+        <ul className="flex flex-col gap-1">
+          {rounds.map((iv) =>
+            editingId === iv.interview_id ? (
+              <li key={iv.interview_id}>
+                <InterviewForm
+                  initial={iv}
+                  submitLabel="Save"
+                  pending={update.isPending}
+                  onSubmit={(body) =>
+                    update.mutate({ interviewId: iv.interview_id, ...body }, { onSuccess: () => setEditingId(null) })
+                  }
+                  onCancel={() => setEditingId(null)}
+                />
+              </li>
+            ) : (
+              <InterviewRoundRow key={iv.interview_id} iv={iv} appId={appId} onEdit={() => setEditingId(iv.interview_id)} />
+            ),
+          )}
+        </ul>
+      ) : !adding ? (
+        <span className="text-[11px] text-ink-4">No interviews logged yet.</span>
+      ) : null}
+      {adding ? (
+        <InterviewForm
+          submitLabel={`Log round ${rounds.length + 1}`}
+          pending={create.isPending}
+          onSubmit={(body) => create.mutate(body, { onSuccess: () => setAdding(false) })}
+          onCancel={() => setAdding(false)}
+        />
+      ) : (
+        <button
+          type="button"
+          onClick={() => setAdding(true)}
+          className="self-start text-[11.5px] text-accent hover:underline"
+        >
+          + Log interview
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** Board-header stat line: rounds this week, a tiny bar per week for the last
+ *  8 (by interview date, Monday-start), and the all-time totals. */
+function InterviewStatsLine() {
+  const { data } = useInterviewStats(8);
+  if (!data) return null;
+  const peak = Math.max(1, ...data.weeks.map((w) => w.count));
+  const recent = data.weeks.reduce((n, w) => n + w.count, 0);
+  return (
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11.5px] text-ink-3">
+      <span className="text-[10.5px] uppercase tracking-wider text-ink-4">Interviews</span>
+      <span>
+        <span className="font-medium text-ink">{data.this_week}</span> this week
+      </span>
+      <span className="text-ink-4">·</span>
+      <span className="flex h-3 items-end gap-[2px]" aria-hidden>
+        {data.weeks.map((w, i) => (
+          <span
+            key={w.week_start}
+            title={`Week of ${fmtDateShort(w.week_start)}: ${w.count}`}
+            className={cn(
+              "w-[4px] rounded-sm",
+              w.count === 0 ? "bg-border-strong" : i === data.weeks.length - 1 ? "bg-accent" : "bg-accent/50",
+            )}
+            style={{ height: `${Math.max(2, Math.round((w.count / peak) * 12))}px` }}
+          />
+        ))}
+      </span>
+      <span title={data.weeks.map((w) => `${fmtDateShort(w.week_start)}: ${w.count}`).join("\n")}>
+        <span className="font-medium text-ink">{recent}</span> in last 8 wks
+      </span>
+      <span className="text-ink-4">·</span>
+      <span>
+        {data.total} all-time across {data.builders} {data.builders === 1 ? "builder" : "builders"}
+        {data.scheduled > 0 && <span className="text-ink-4"> · {data.scheduled} scheduled</span>}
+      </span>
+    </div>
   );
 }
 
@@ -174,6 +456,7 @@ function BuilderSourcedRow({
   const markStaffSourced = useMarkApplicationStaffSourced();
   const [expanded, setExpanded] = useState(false);
   const [addingApp, setAddingApp] = useState(false);
+  const [showRounds, setShowRounds] = useState(false);
   return (
     <li className="flex flex-col px-3 py-2.5">
       <button
@@ -202,7 +485,7 @@ function BuilderSourcedRow({
             APP_STAGE_STYLES[a.stage ?? ""] ?? "bg-stone-100 text-stone-500",
           )}
         >
-          {APP_STAGE_LABELS[a.stage ?? ""] ?? a.stage ?? "—"}
+          {appStageLabel(a.stage, a.interview_count)}
         </span>
       </button>
 
@@ -220,7 +503,18 @@ function BuilderSourcedRow({
             )}
           </span>
           <div className="flex flex-wrap items-center gap-3">
-            {a.job_application_id !== null && <StageSelect appId={a.job_application_id} stage={a.stage} />}
+            {a.job_application_id !== null && (
+              <>
+                <StageSelect appId={a.job_application_id} stage={a.stage} interviewCount={a.interview_count} />
+                <InterviewRoundsButton
+                  count={a.interview_count}
+                  latestType={a.latest_interview_type}
+                  latestDate={a.latest_interview_date}
+                  open={showRounds}
+                  onClick={() => setShowRounds((v) => !v)}
+                />
+              </>
+            )}
             {a.jobs_role_id ? (
               <>
                 <button
@@ -274,6 +568,9 @@ function BuilderSourcedRow({
               </>
             )}
           </div>
+          {showRounds && a.job_application_id !== null && (
+            <InterviewRoundsPanel appId={a.job_application_id} count={a.interview_count} />
+          )}
           {addingApp && a.jobs_role_id && (
             <AddApplicationForm roleId={a.jobs_role_id} onClose={() => setAddingApp(false)} />
           )}
@@ -437,34 +734,55 @@ function StaffSourcedGroupRow({
           )}
           <ul className="flex flex-col divide-y divide-border-strong rounded-md border border-border-strong">
             {g.applications.map((a) => (
-              <li key={a.job_application_id} className="flex flex-col gap-1 px-3 py-1.5">
-                <span className="truncate text-[12px] text-ink">
-                  {a.builder}
-                  {a.already_linked && (
-                    <span
-                      className="ml-1.5 text-[10px] text-ink-4"
-                      title="Already linked to the suggested role via a different application — excluded from Confirm match"
-                    >
-                      (already linked)
-                    </span>
-                  )}
-                </span>
-                <div className="flex flex-wrap items-center gap-2">
-                  <StageSelect appId={a.job_application_id} stage={a.stage} />
-                  <span className="font-mono text-[10.5px] text-ink-4">{fmtDate(a.updated_at)}</span>
-                  <button
-                    type="button"
-                    onClick={() => onDismiss(a.job_application_id)}
-                    className="text-[11px] text-ink-3 hover:text-ink-2"
-                  >
-                    Dismiss
-                  </button>
-                </div>
-              </li>
+              <StaffSourcedApplicantRow key={a.job_application_id} a={a} onDismiss={onDismiss} />
             ))}
           </ul>
         </div>
       )}
+    </li>
+  );
+}
+
+function StaffSourcedApplicantRow({
+  a,
+  onDismiss,
+}: {
+  a: StaffSourcedApplicant;
+  onDismiss: (id: number) => void;
+}) {
+  const [showRounds, setShowRounds] = useState(false);
+  return (
+    <li className="flex flex-col gap-1 px-3 py-1.5">
+      <span className="truncate text-[12px] text-ink">
+        {a.builder}
+        {a.already_linked && (
+          <span
+            className="ml-1.5 text-[10px] text-ink-4"
+            title="Already linked to the suggested role via a different application — excluded from Confirm match"
+          >
+            (already linked)
+          </span>
+        )}
+      </span>
+      <div className="flex flex-wrap items-center gap-2">
+        <StageSelect appId={a.job_application_id} stage={a.stage} interviewCount={a.interview_count} />
+        <InterviewRoundsButton
+          count={a.interview_count}
+          latestType={a.latest_interview_type}
+          latestDate={a.latest_interview_date}
+          open={showRounds}
+          onClick={() => setShowRounds((v) => !v)}
+        />
+        <span className="font-mono text-[10.5px] text-ink-4">{fmtDate(a.updated_at)}</span>
+        <button
+          type="button"
+          onClick={() => onDismiss(a.job_application_id)}
+          className="text-[11px] text-ink-3 hover:text-ink-2"
+        >
+          Dismiss
+        </button>
+      </div>
+      {showRounds && <InterviewRoundsPanel appId={a.job_application_id} count={a.interview_count} />}
     </li>
   );
 }
@@ -1093,6 +1411,50 @@ function groupSeats(roles: RolesBoardRole[]): RolesBoardRole[][] {
   return groups;
 }
 
+// One applicant under a Pursuit-Supported role: name left, stage + rounds +
+// date + remove right, with the rounds panel opening underneath.
+function RoleApplicantRow({
+  a,
+  onUnlink,
+  unlinking,
+}: {
+  a: RolesBoardApplication;
+  onUnlink: () => void;
+  unlinking: boolean;
+}) {
+  const [showRounds, setShowRounds] = useState(false);
+  return (
+    <li className="flex flex-col gap-1.5 px-3 py-1.5">
+      <div className="flex items-center gap-2">
+        <span className="min-w-0 flex-1 truncate text-[12px] text-ink" title={a.builder}>{a.builder}</span>
+        <div className="flex shrink-0 items-center gap-2">
+          <StageSelect appId={a.job_application_id} stage={a.stage} interviewCount={a.interview_count} />
+          <InterviewRoundsButton
+            count={a.interview_count}
+            latestType={a.latest_interview_type}
+            latestDate={a.latest_interview_date}
+            open={showRounds}
+            onClick={() => setShowRounds((v) => !v)}
+          />
+          <span className="font-mono text-[10.5px] text-ink-4">{fmtDate(a.updated_at)}</span>
+          <button
+            type="button"
+            title="Remove from this role (doesn't delete the application, just unlinks it)"
+            onClick={() => {
+              if (window.confirm(`Remove ${a.builder} from this role?`)) onUnlink();
+            }}
+            disabled={unlinking}
+            className="text-ink-4 hover:text-red-500 transition-colors disabled:opacity-50"
+          >
+            <X size={12} />
+          </button>
+        </div>
+      </div>
+      {showRounds && <InterviewRoundsPanel appId={a.job_application_id} count={a.interview_count} />}
+    </li>
+  );
+}
+
 // One row per req. `seats` is normally a single role; when a req has several
 // identical openings they share this row, and every action applies to all of
 // them — closing "Software Engineer" closes the whole req, not one seat of it.
@@ -1170,7 +1532,8 @@ function RoleBoardRow({ seats }: { seats: RolesBoardRole[] }) {
           {applications.length === 0 ? (
             <span className="text-[11.5px] text-ink-4">No builder applications matched to this role yet.</span>
           ) : (
-            /* One line per applicant: name left, stage + date + remove right.
+            /* One line per applicant (see RoleApplicantRow): name left, stage +
+               rounds + date + remove right, rounds panel opening underneath.
                The name is min-w-0/flex-1/truncate and the actions shrink-0, so a
                long name ellipsises instead of pushing the controls out of the
                column. An earlier one-line version let the fixed-width actions
@@ -1178,26 +1541,12 @@ function RoleBoardRow({ seats }: { seats: RolesBoardRole[] }) {
                the two-line stack was working around. */
             <ul className="flex flex-col divide-y divide-border-strong rounded-md border border-border-strong">
               {applications.map((a) => (
-                <li key={a.job_application_id} className="flex items-center gap-2 px-3 py-1.5">
-                  <span className="min-w-0 flex-1 truncate text-[12px] text-ink" title={a.builder}>{a.builder}</span>
-                  <div className="flex shrink-0 items-center gap-2">
-                    <StageSelect appId={a.job_application_id} stage={a.stage} />
-                    <span className="font-mono text-[10.5px] text-ink-4">{fmtDate(a.updated_at)}</span>
-                    <button
-                      type="button"
-                      title="Remove from this role (doesn't delete the application, just unlinks it)"
-                      onClick={() => {
-                        if (window.confirm(`Remove ${a.builder} from this role?`)) {
-                          unlinkApplication.mutate(a.job_application_id);
-                        }
-                      }}
-                      disabled={unlinkApplication.isPending}
-                      className="text-ink-4 hover:text-red-500 transition-colors disabled:opacity-50"
-                    >
-                      <X size={12} />
-                    </button>
-                  </div>
-                </li>
+                <RoleApplicantRow
+                  key={a.job_application_id}
+                  a={a}
+                  onUnlink={() => unlinkApplication.mutate(a.job_application_id)}
+                  unlinking={unlinkApplication.isPending}
+                />
               ))}
             </ul>
           )}
@@ -1322,6 +1671,7 @@ export function RolesBoard() {
 
   return (
     <div className="flex flex-col gap-3">
+      <InterviewStatsLine />
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-[2fr_1fr_1fr]">
         <div className="flex min-w-0 flex-col gap-3">
           <div className="flex items-center justify-between">

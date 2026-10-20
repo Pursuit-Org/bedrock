@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
+import { apiErrorMessage } from "@/lib/estimatedJobs";
 
 /**
  * Invalidate every query family whose data depends on an opportunity's
@@ -451,7 +452,16 @@ export function useAdvanceBuilderStage() {
 
 // ── Roles board (Placement > Roles — every role, every account) ────────────────
 
-export interface RolesBoardApplication {
+/** Interview-round rollup carried on every Roles-board application, from
+ *  public.interviews (shared with Pathfinder). The latest round's number is
+ *  the count — rounds are numbered by date order, never stored. */
+export interface InterviewRollup {
+  interview_count: number;
+  latest_interview_date: string | null;
+  latest_interview_type: string | null;
+}
+
+export interface RolesBoardApplication extends InterviewRollup {
   job_application_id: number;
   builder: string;
   stage: string | null;
@@ -531,7 +541,7 @@ export function useCreateRoleApplication(roleId: string) {
   });
 }
 
-export interface UnmatchedApplication {
+export interface UnmatchedApplication extends InterviewRollup {
   /** Null for a builder-sourced role flagged before anyone has applied to it —
    *  the row still needs to render (with just an Unmark action), it just has
    *  no application to link a key/dismiss/confirm action to. */
@@ -598,7 +608,7 @@ export function useConfirmMatch() {
   });
 }
 
-export interface StaffSourcedApplicant {
+export interface StaffSourcedApplicant extends InterviewRollup {
   job_application_id: number;
   builder: string | null;
   stage: string | null;
@@ -761,5 +771,134 @@ export function useUnlinkApplication() {
       toast.success("Removed from role");
     },
     onError: () => toast.error("Couldn't remove"),
+  });
+}
+
+// ── Interview rounds (public.interviews — the platform's table, shared with
+//    Pathfinder, so rounds logged on either side show on both) ──────────────
+
+/** Same list, same spelling, as the platform's interview picker
+ *  (JobApplicationDetailModal.jsx) — the backend rejects anything else. */
+export const INTERVIEW_TYPES = [
+  "Phone Screen", "Technical", "Behavioral", "Final Round", "Panel", "Take Home", "Culture Fit",
+] as const;
+
+export interface Interview {
+  interview_id: number;
+  job_application_id: number;
+  /** Ordinal by (date, interview_id) within the application — derived. */
+  round: number | null;
+  date: string | null;
+  type: string | null;
+  title: string | null;
+  interviewer_name: string | null;
+  interviewer_email: string | null;
+  content_type: string | null;
+  feedback: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface InterviewBody {
+  date: string;
+  type: string;
+  title?: string | null;
+  interviewer_name?: string | null;
+}
+
+export interface InterviewStats {
+  weeks: { week_start: string; count: number }[];
+  this_week: number;
+  /** Rounds dated today or earlier; future-dated ones are `scheduled`. */
+  total: number;
+  builders: number;
+  scheduled: number;
+}
+
+/** Every family that shows a round count or an interview-driven stage. A new
+ *  round can also move an applied application to Interviewing, so the stage
+ *  readers (pipeline, funnel, builders) refetch too — same set as a stage edit. */
+function invalidateInterviewDependents(qc: QueryClient, appId: number) {
+  qc.invalidateQueries({ queryKey: ["jobs", "interviews", appId] });
+  qc.invalidateQueries({ queryKey: ["jobs", "interview-stats"] });
+  qc.invalidateQueries({ queryKey: ["jobs", "roles-board"] });
+  qc.invalidateQueries({ queryKey: ["jobs", "builder-sourced"] });
+  qc.invalidateQueries({ queryKey: ["jobs", "staff-sourced"] });
+  invalidateOppDependents(qc, [["jobs", "builders"]]);
+}
+
+/** Logged rounds for one application, oldest first. Fetched only once the
+ *  rounds panel is opened (it mounts on open) — the board's rows already
+ *  carry the count. */
+export function useApplicationInterviews(appId: number) {
+  return useQuery<Interview[]>({
+    queryKey: ["jobs", "interviews", appId],
+    queryFn: async () => {
+      const { data } = await api.get<ApiResponse<Interview[]>>(`/api/jobs/job-applications/${appId}/interviews`);
+      return data.data;
+    },
+    staleTime: 15_000,
+  });
+}
+
+// Write errors carry the server's own text: until the DB grant lands the 503
+// says interview logging isn't enabled yet, which beats a bare "failed".
+export function useCreateInterview(appId: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (body: InterviewBody) => {
+      const { data } = await api.post<ApiResponse<{ interview: Interview; interview_count: number; stage_advanced: boolean }>>(
+        `/api/jobs/job-applications/${appId}/interviews`,
+        body,
+      );
+      return data.data;
+    },
+    onSuccess: (res) => {
+      invalidateInterviewDependents(qc, appId);
+      const round = res.interview.round ? `Round ${res.interview.round}` : "Interview";
+      toast.success(res.stage_advanced ? `${round} logged — moved to Interviewing` : `${round} logged`);
+    },
+    onError: (e: unknown) => toast.error(apiErrorMessage(e, "Failed to log interview")),
+  });
+}
+
+export function useUpdateInterview(appId: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ interviewId, ...body }: { interviewId: number } & Partial<InterviewBody>) => {
+      const { data } = await api.patch<ApiResponse<Interview>>(`/api/jobs/interviews/${interviewId}`, body);
+      return data.data;
+    },
+    onSuccess: () => {
+      invalidateInterviewDependents(qc, appId);
+      toast.success("Interview updated");
+    },
+    onError: (e: unknown) => toast.error(apiErrorMessage(e, "Update failed")),
+  });
+}
+
+export function useDeleteInterview(appId: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (interviewId: number) => {
+      await api.delete(`/api/jobs/interviews/${interviewId}`);
+    },
+    onSuccess: () => {
+      invalidateInterviewDependents(qc, appId);
+      toast.success("Interview removed");
+    },
+    onError: (e: unknown) => toast.error(apiErrorMessage(e, "Couldn't remove interview")),
+  });
+}
+
+/** Rounds per ISO week (by interview date) for the Roles board header. */
+export function useInterviewStats(weeks = 8) {
+  return useQuery<InterviewStats>({
+    queryKey: ["jobs", "interview-stats", weeks],
+    queryFn: async () => {
+      const { data } = await api.get<ApiResponse<InterviewStats>>(`/api/jobs/interviews/stats?weeks=${weeks}`);
+      return data.data;
+    },
+    staleTime: 60_000,
   });
 }

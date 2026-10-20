@@ -1656,6 +1656,35 @@ async def hire_into_role(
     return {"success": True, "data": {"role": _role_dict(updated), "employment_record_id": new_id, "sf_sync": sf_sync}}
 
 
+# Per-application interview rollup for every Roles-board payload, read from
+# public.interviews — the platform's own table, which Pathfinder writes too, so
+# a round logged on either side shows on both. The round number isn't stored
+# anywhere: it's the interview's ordinal by (date, interview_id) within its
+# application, so the latest round's number is simply the count. Scheduled
+# (future-dated) rounds count — "Round 3" on Thursday means round 3 is booked.
+# Expects the application aliased `ja`; a LEFT JOINed-null ja yields count 0.
+_INTERVIEW_ROLLUP_LATERAL = """
+    LEFT JOIN LATERAL (
+        SELECT count(*)::int AS interview_count,
+               (array_agg(i.date ORDER BY i.date DESC NULLS LAST, i.interview_id DESC))[1]
+                   AS latest_interview_date,
+               (array_agg(i.type ORDER BY i.date DESC NULLS LAST, i.interview_id DESC))[1]
+                   AS latest_interview_type
+        FROM public.interviews i
+        WHERE i.job_application_id = ja.job_application_id
+    ) iv ON true
+"""
+
+
+def _interview_rollup(r) -> dict:
+    """The rollup columns as the board's application dicts carry them."""
+    return {
+        "interview_count": r["interview_count"] or 0,
+        "latest_interview_date": r["latest_interview_date"].isoformat() if r["latest_interview_date"] else None,
+        "latest_interview_type": r["latest_interview_type"],
+    }
+
+
 @router.get("/roles/board")
 async def roles_board(
     user=Depends(require_auth),
@@ -1691,9 +1720,11 @@ async def roles_board(
                         THEN NULLIF(trim(split_part(ja.notes, ':', 1)), '') END,
                    'Builder #' || ja.builder_id
                ) AS builder,
-               ja.stage, ja.date_applied, ja.updated_at
+               ja.stage, ja.date_applied, ja.updated_at,
+               iv.interview_count, iv.latest_interview_date, iv.latest_interview_type
         FROM public.job_applications ja
         LEFT JOIN LATERAL bedrock.builder_by_id(ja.builder_id) b ON true
+        """ + _INTERVIEW_ROLLUP_LATERAL + """
         WHERE ja.jobs_role_id IS NOT NULL
         ORDER BY ja.date_applied DESC NULLS LAST
         """
@@ -1706,6 +1737,7 @@ async def roles_board(
             "stage": a["stage"],
             "date_applied": a["date_applied"].isoformat() if a["date_applied"] else None,
             "updated_at": a["updated_at"].isoformat() if a["updated_at"] else None,
+            **_interview_rollup(a),
         })
 
     # Applications belong to the req, not to the one opening they were matched
@@ -2109,8 +2141,25 @@ async def update_builder_activity(
     granularity for when."""
     if body.stage not in VALID_APP_STAGES:
         raise HTTPException(400, f"Invalid stage: {body.stage}")
-    result = await conn.execute(
-        """
+    result = await _set_application_stage(
+        conn, app_id, body.stage, _user_email(user),
+        only_where="jobs_opportunity_id IS NOT NULL",
+    )
+    if result == "UPDATE 0":
+        raise HTTPException(404, "Application not found")
+    return {"success": True, "data": {"job_application_id": app_id, "stage": body.stage}}
+
+
+async def _set_application_stage(conn, app_id: int, stage: str, who: Optional[str], *, only_where: str) -> str:
+    """The one write path for an application's stage: sets it and appends the
+    platform-shaped {date, stage, notes, changed_by} entry to stage_history
+    (see update_builder_activity for why that shape). `only_where` is a fixed
+    SQL guard chosen by the caller — never user input — e.g. the inline editor
+    only touches opportunity-linked rows, while logging an interview only
+    advances rows that haven't reached interview yet. Returns the execute
+    status ("UPDATE 0" when the guard excluded the row)."""
+    return await conn.execute(
+        f"""
         UPDATE public.job_applications
         SET stage = $1::varchar,
             stage_history = COALESCE(stage_history, '[]'::jsonb) || jsonb_build_object(
@@ -2118,13 +2167,10 @@ async def update_builder_activity(
                 'notes', NULL, 'changed_by', $3::text
             ),
             updated_at = now()
-        WHERE job_application_id=$2 AND jobs_opportunity_id IS NOT NULL
+        WHERE job_application_id=$2 AND ({only_where})
         """,
-        body.stage, app_id, _user_email(user),
+        stage, app_id, who,
     )
-    if result == "UPDATE 0":
-        raise HTTPException(404, "Application not found")
-    return {"success": True, "data": {"job_application_id": app_id, "stage": body.stage}}
 
 
 class RoleApplicationCreate(BaseModel):
@@ -2294,10 +2340,12 @@ async def builder_sourced_applications(
             WHERE o.deleted_at IS NULL
               AND NOT (r.filled_by_user_id IS NOT NULL AND COALESCE(r.is_trial, false) = false)
         )
-        SELECT * FROM combined
+        SELECT ja.*, iv.interview_count, iv.latest_interview_date, iv.latest_interview_type
+        FROM combined ja
+        """ + _INTERVIEW_ROLLUP_LATERAL + """
         ORDER BY
-          CASE WHEN stage IN ('interview', 'offer', 'accepted') THEN 0 ELSE 1 END,
-          date_applied DESC
+          CASE WHEN ja.stage IN ('interview', 'offer', 'accepted') THEN 0 ELSE 1 END,
+          ja.date_applied DESC
         """,
         days,
     )
@@ -2350,6 +2398,7 @@ async def _annotate_suggested_matches(conn, rows) -> list[dict]:
             "stage": r["stage"],
             "jobs_role_id": str(r["jobs_role_id"]) if r["jobs_role_id"] else None,
             "suggested_match": None,
+            **_interview_rollup(r),
         }
         if r["jobs_role_id"] is None:
             app_account_key = _acct_nkey(r["company_name"])
@@ -2408,9 +2457,11 @@ async def staff_sourced_applications(
                    CASE WHEN ja.notes LIKE '%:%'
                         THEN NULLIF(trim(split_part(ja.notes, ':', 1)), '') END,
                    'Builder #' || ja.builder_id
-               ) AS builder
+               ) AS builder,
+               iv.interview_count, iv.latest_interview_date, iv.latest_interview_type
         FROM public.job_applications ja
         LEFT JOIN LATERAL bedrock.builder_by_id(ja.builder_id) b ON true
+        """ + _INTERVIEW_ROLLUP_LATERAL + """
         WHERE ja.jobs_role_id IS NULL
           AND ja.source_type IN ('Pursuit_referred', 'staff_sourced')
           AND ja.date_applied >= (CURRENT_DATE - $1::int * INTERVAL '1 day')
@@ -2436,6 +2487,7 @@ async def staff_sourced_applications(
             "stage": r["stage"],
             "date_applied": r["date_applied"].isoformat() if r["date_applied"] else None,
             "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None,
+            **_interview_rollup(r),
         })
 
     roles = await conn.fetch(
@@ -2593,6 +2645,313 @@ async def unlink_job_application_role(
     if result == "UPDATE 0":
         raise HTTPException(404, "Application not found")
     return {"success": True, "data": {"job_application_id": app_id, "unlinked": True}}
+
+
+# ── Interview rounds (public.interviews) ──────────────────────────────────────
+# public.interviews is the platform's table, not Bedrock's: Pathfinder writes it
+# from the builder's own applications page and from the staff admin modal
+# (server/queries/pathfinderInterviews.js, pathfinderAdmin.createInterviewAdmin).
+# Bedrock reads and writes the same rows rather than keeping its own copy, so a
+# round logged on either side is one record both see. Writes therefore match
+# the platform's shape exactly: the same columns, `type` from the same picker
+# list, content_type from the same four values, created_at = now() on insert
+# and updated_at = now() on edit. Round numbers are derived (ordinal by date,
+# then interview_id), never stored — see _INTERVIEW_ROLLUP_LATERAL.
+#
+# Bedrock's DB roles only have SELECT on this table until Jac grants
+# INSERT/UPDATE/DELETE (+ USAGE on interviews_interview_id_seq). Until then the
+# write routes return a 503 saying so instead of a bare 500.
+
+# Mirrors INTERVIEW_TYPES in the platform's JobApplicationDetailModal.jsx —
+# keep the two lists identical or one side starts writing types the other's
+# picker can't show.
+INTERVIEW_TYPES = ["Phone Screen", "Technical", "Behavioral", "Final Round", "Panel", "Take Home", "Culture Fit"]
+# The platform's content_type select values (same modal).
+INTERVIEW_CONTENT_TYPES = {"technical", "behavioral", "hr", "case_study"}
+# Stages an application can sit at before anyone's interviewed. Logging a round
+# on one of these moves it to 'interview'; later stages (screen/oa included —
+# they're already interview-track) are left exactly as they are.
+_PRE_INTERVIEW_STAGES = ("prospect", "applied")
+
+_INTERVIEW_WRITE_PENDING = "Interview logging isn't enabled yet (database permission pending)"
+_INTERVIEW_COLUMNS = ("date", "type", "title", "interviewer_name", "interviewer_email", "content_type", "feedback")
+
+
+class InterviewCreate(BaseModel):
+    # `date` is the platform's column name, but a pydantic field literally
+    # named `date` shadows the `date` type in its own annotation — alias it.
+    model_config = {"populate_by_name": True}
+    interview_date:    date = Field(..., alias="date")
+    type:              str
+    title:             Optional[str] = None
+    interviewer_name:  Optional[str] = None
+    interviewer_email: Optional[str] = None
+    content_type:      Optional[str] = None
+    feedback:          Optional[str] = None
+
+
+class InterviewUpdate(BaseModel):
+    """Partial: only fields actually sent are written, so an edit can clear
+    title/interviewer back to null (the platform's COALESCE update can't)."""
+    model_config = {"populate_by_name": True}
+    interview_date:    Optional[date] = Field(None, alias="date")
+    type:              Optional[str] = None
+    title:             Optional[str] = None
+    interviewer_name:  Optional[str] = None
+    interviewer_email: Optional[str] = None
+    content_type:      Optional[str] = None
+    feedback:          Optional[str] = None
+
+
+def _clean_text(v: Optional[str]) -> Optional[str]:
+    """Blank → NULL, as the platform's admin insert does (`title || null`)."""
+    if v is None:
+        return None
+    v = v.strip()
+    return v or None
+
+
+def _validate_interview_fields(type_: Optional[str], content_type: Optional[str], email: Optional[str]) -> None:
+    if type_ is not None and type_ not in INTERVIEW_TYPES:
+        raise HTTPException(400, f"Invalid interview type: {type_}")
+    if content_type is not None and content_type not in INTERVIEW_CONTENT_TYPES:
+        raise HTTPException(400, f"Invalid content type: {content_type}")
+    # Same check as the platform's isValidEmail (optional, but well-formed if given).
+    if email and not re.match(r"^[^\s@]+@[^\s@]+\.[^\s@]+$", email):
+        raise HTTPException(400, "Invalid email format")
+
+
+def _interview_dict(r, round_number: Optional[int] = None) -> dict:
+    return {
+        "interview_id":      r["interview_id"],
+        "job_application_id": r["job_application_id"],
+        "round":             round_number,
+        "date":              r["date"].isoformat() if r["date"] else None,
+        "type":              r["type"],
+        "title":             r["title"],
+        "interviewer_name":  r["interviewer_name"],
+        "interviewer_email": r["interviewer_email"],
+        "content_type":      r["content_type"],
+        "feedback":          r["feedback"],
+        "created_at":        r["created_at"].isoformat() if r["created_at"] else None,
+        "updated_at":        r["updated_at"].isoformat() if r["updated_at"] else None,
+    }
+
+
+async def _list_interviews(conn, app_id: int) -> list[dict]:
+    """Every round on one application, oldest first, each numbered by its
+    ordinal — the same order the board's rollup counts in."""
+    rows = await conn.fetch(
+        """
+        SELECT interview_id, job_application_id, date, type, title,
+               interviewer_name, interviewer_email, content_type, feedback,
+               created_at, updated_at
+        FROM public.interviews
+        WHERE job_application_id = $1
+        ORDER BY date ASC NULLS LAST, interview_id ASC
+        """,
+        app_id,
+    )
+    return [_interview_dict(r, i + 1) for i, r in enumerate(rows)]
+
+
+async def _require_application(conn, app_id: int):
+    app = await conn.fetchrow(
+        "SELECT job_application_id, stage FROM public.job_applications WHERE job_application_id = $1",
+        app_id,
+    )
+    if not app:
+        raise HTTPException(404, "Application not found")
+    return app
+
+
+@router.get("/job-applications/{app_id}/interviews")
+async def list_application_interviews(
+    app_id: int,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Logged interview rounds for one application (Bedrock- or Pathfinder-
+    logged alike), oldest first with `round` = 1, 2, 3 …"""
+    await _require_application(conn, app_id)
+    return {"success": True, "data": await _list_interviews(conn, app_id)}
+
+
+@router.post("/job-applications/{app_id}/interviews")
+async def create_application_interview(
+    app_id: int,
+    body: InterviewCreate,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Log an interview round. Future dates are fine — a scheduled round is
+    still a round. If the application hasn't reached interview yet (stage
+    null/prospect/applied) it moves to 'interview' through the same
+    stage_history-appending write as the inline stage editor, in the same
+    transaction, so a failed insert never leaves a half-advanced stage."""
+    _validate_interview_fields(body.type, body.content_type, body.interviewer_email)
+    app = await _require_application(conn, app_id)
+    try:
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                """
+                INSERT INTO public.interviews (
+                    job_application_id, date, type, title,
+                    interviewer_name, interviewer_email, content_type, feedback, created_at
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+                RETURNING *
+                """,
+                app_id, body.interview_date, body.type, _clean_text(body.title),
+                _clean_text(body.interviewer_name), _clean_text(body.interviewer_email),
+                body.content_type, _clean_text(body.feedback),
+            )
+            stage_advanced = False
+            if app["stage"] is None or app["stage"] in _PRE_INTERVIEW_STAGES:
+                # Re-checked in the WHERE, not just trusted from the read above,
+                # so a concurrent stage change past applied isn't clobbered.
+                result = await _set_application_stage(
+                    conn, app_id, "interview", _user_email(user),
+                    only_where="stage IS NULL OR stage IN ('prospect', 'applied')",
+                )
+                stage_advanced = result != "UPDATE 0"
+    except asyncpg.exceptions.InsufficientPrivilegeError:
+        raise HTTPException(503, _INTERVIEW_WRITE_PENDING)
+    interviews = await _list_interviews(conn, app_id)
+    created = next((i for i in interviews if i["interview_id"] == row["interview_id"]), _interview_dict(row))
+    return {"success": True, "data": {
+        "interview": created,
+        "interview_count": len(interviews),
+        "stage_advanced": stage_advanced,
+    }}
+
+
+@router.patch("/interviews/{interview_id}")
+async def update_interview(
+    interview_id: int,
+    body: InterviewUpdate,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Edit a logged round. Only the fields sent are written; date and type
+    can be changed but not cleared (the platform requires both)."""
+    sent = body.model_fields_set
+    values = {
+        "date": body.interview_date, "type": body.type,
+        "title": _clean_text(body.title), "interviewer_name": _clean_text(body.interviewer_name),
+        "interviewer_email": _clean_text(body.interviewer_email),
+        "content_type": body.content_type, "feedback": _clean_text(body.feedback),
+    }
+    field_for = {"date": "interview_date"}
+    updates = {col: values[col] for col in _INTERVIEW_COLUMNS if field_for.get(col, col) in sent}
+    if not updates:
+        raise HTTPException(400, "Nothing to update")
+    if "date" in updates and updates["date"] is None:
+        raise HTTPException(400, "Date is required")
+    if "type" in updates and updates["type"] is None:
+        raise HTTPException(400, "Type is required")
+    _validate_interview_fields(updates.get("type"), updates.get("content_type"), updates.get("interviewer_email"))
+
+    # Column names come from the fixed _INTERVIEW_COLUMNS whitelist, never the body.
+    sets = ", ".join(f"{col} = ${i}" for i, col in enumerate(updates, start=2))
+    try:
+        row = await conn.fetchrow(
+            f"""
+            UPDATE public.interviews
+            SET {sets}, updated_at = NOW()
+            WHERE interview_id = $1
+            RETURNING *
+            """,
+            interview_id, *updates.values(),
+        )
+    except asyncpg.exceptions.InsufficientPrivilegeError:
+        raise HTTPException(503, _INTERVIEW_WRITE_PENDING)
+    if not row:
+        raise HTTPException(404, "Interview not found")
+    # A date edit can reorder rounds, so the number comes from a fresh list.
+    interviews = await _list_interviews(conn, row["job_application_id"])
+    updated = next((i for i in interviews if i["interview_id"] == interview_id), _interview_dict(row))
+    return {"success": True, "data": updated}
+
+
+@router.delete("/interviews/{interview_id}")
+async def delete_interview(
+    interview_id: int,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Remove a logged round (e.g. logged twice, or it never happened). The
+    application's stage is left alone — un-logging a round isn't a stage call."""
+    try:
+        row = await conn.fetchrow(
+            "DELETE FROM public.interviews WHERE interview_id = $1 RETURNING interview_id, job_application_id",
+            interview_id,
+        )
+    except asyncpg.exceptions.InsufficientPrivilegeError:
+        raise HTTPException(503, _INTERVIEW_WRITE_PENDING)
+    if not row:
+        raise HTTPException(404, "Interview not found")
+    return {"success": True, "data": {"interview_id": interview_id, "job_application_id": row["job_application_id"], "deleted": True}}
+
+
+@router.get("/interviews/stats")
+async def interview_stats(
+    weeks: int = Query(8, ge=1, le=52),
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Interview volume for the Roles board header: rounds per ISO week (Monday
+    start, by interview date — not when it was logged) for the last `weeks`
+    weeks including this one, plus all-time totals. "This week" counts rounds
+    scheduled for later this week too; the all-time totals count only rounds
+    dated today or earlier, with future-dated ones reported as `scheduled`.
+    Same test-data exclusions as the Builder-/Staff-Sourced queues. Weeks run
+    on New York dates, as the projection does."""
+    today = datetime.now(_PROJECTION_TZ).date()
+    this_week = today - timedelta(days=today.weekday())
+    first_week = this_week - timedelta(weeks=weeks - 1)
+    # Shared FROM/WHERE: interviews on real builders' applications only.
+    base = """
+        FROM public.interviews i
+        JOIN public.job_applications ja ON ja.job_application_id = i.job_application_id
+        LEFT JOIN LATERAL bedrock.builder_by_id(ja.builder_id) b ON true
+        WHERE i.date IS NOT NULL
+          AND COALESCE(ja.notes, '') NOT ILIKE '%seeded for platform demo%'
+          AND COALESCE(ja.notes, '') NOT ILIKE '%smoke test%'
+          AND (b.email IS NULL OR b.email NOT ILIKE '%+auto-testing%')
+    """
+    by_week = await conn.fetch(
+        f"""
+        -- Plain date arithmetic to the ISO Monday: date_trunc('week', date)
+        -- would round-trip through timestamptz in the session's time zone.
+        SELECT i.date - (extract(isodow FROM i.date)::int - 1) AS week_start, count(*)::int AS n
+        {base}
+          AND i.date >= $1 AND i.date < $2
+        GROUP BY 1
+        """,
+        first_week, this_week + timedelta(weeks=1),
+    )
+    totals = await conn.fetchrow(
+        f"""
+        SELECT count(*) FILTER (WHERE i.date <= $1)::int AS total,
+               count(DISTINCT ja.builder_id) FILTER (WHERE i.date <= $1)::int AS builders,
+               count(*) FILTER (WHERE i.date > $1)::int AS scheduled
+        {base}
+        """,
+        today,
+    )
+    counts = {r["week_start"]: r["n"] for r in by_week}
+    series = []
+    for k in range(weeks):
+        wk = first_week + timedelta(weeks=k)
+        series.append({"week_start": wk.isoformat(), "count": counts.get(wk, 0)})
+    return {"success": True, "data": {
+        "weeks": series,
+        "this_week": series[-1]["count"],
+        "total": (totals["total"] if totals else 0) or 0,
+        "builders": (totals["builders"] if totals else 0) or 0,
+        "scheduled": (totals["scheduled"] if totals else 0) or 0,
+    }}
 
 
 # ── Job-ready (L3+) pool ───────────────────────────────────────────────────────

@@ -45,7 +45,8 @@ def _role_row(rid, **ov):
 def _app_row(app_id, role_id, builder, day):
     return {"job_application_id": app_id, "jobs_role_id": role_id, "builder": builder,
             "stage": "interview", "date_applied": date(2026, 9, day),
-            "updated_at": date(2026, 9, day)}
+            "updated_at": date(2026, 9, day),
+            "interview_count": 0, "latest_interview_date": None, "latest_interview_type": None}
 
 
 def _board(roles, apps):
