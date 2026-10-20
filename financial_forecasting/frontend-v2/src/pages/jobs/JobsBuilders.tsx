@@ -37,15 +37,16 @@ type SortDir = "asc" | "desc";
 // ── Columns ───────────────────────────────────────────────────────────────────
 type ReadyKey = "lookbook" | "linkedin" | "github" | "cv" | "mock";
 type ColKey =
-  | "name" | "status" | "coach" | "applications" | "interviews" | "placements" | "readiness"
+  | "name" | "status" | "coach" | "applications" | "interviews" | "placements" | "pt_count" | "deployments" | "readiness"
   | ArrayKey | RatingKey | `ready_${ReadyKey}` | TriKey
-  | "degree" | "university" | "graduation_year" | "geo_preference";
+  | "degree" | "university" | "graduation_year" | "min_salary"
+  | "current_location" | "open_to_relocate" | "relocation_notes";
 
 const READY_KEYS: ReadyKey[] = ["lookbook", "linkedin", "github", "cv", "mock"];
 
 const COLUMN_ORDER: ColKey[] = [
-  "name", "status", "coach", "applications", "interviews", "placements", "readiness",
-  "target_functions", "target_industries", "preferred_modes", "geo_preference",
+  "name", "status", "coach", "applications", "interviews", "placements", "pt_count", "deployments", "readiness",
+  "target_functions", "target_industries", "preferred_modes", "current_location", "open_to_relocate", "relocation_notes", "min_salary",
   ...BUILDER_RATING_FIELDS.map(([k]) => k),
   ...READY_KEYS.map((k) => `ready_${k}` as const),
   "applying_regularly", "networking_regularly",
@@ -53,16 +54,17 @@ const COLUMN_ORDER: ColKey[] = [
 ];
 
 const DEFAULT_VISIBLE: ColKey[] = [
-  "name", "status", "coach", "applications", "interviews", "placements", "readiness",
-  "target_functions", "target_industries", "preferred_modes", "geo_preference",
+  "name", "status", "coach", "applications", "interviews", "placements", "pt_count", "deployments", "readiness",
+  "target_functions", "target_industries", "preferred_modes", "current_location", "open_to_relocate", "relocation_notes", "min_salary",
   ...BUILDER_RATING_FIELDS.map(([k]) => k),
 ];
 
 const COL_LABELS: Record<ColKey, string> = {
   name: "Builder", status: "Status", coach: "Coach",
-  applications: "Apps", interviews: "Interviews", placements: "Placements", readiness: "Readiness",
+  applications: "Apps", interviews: "Interviews", placements: "Placements", pt_count: "PT gigs", deployments: "Deployments", readiness: "Readiness",
   target_functions: "Target function", target_industries: "Target industry", preferred_modes: "Work mode",
-  geo_preference: "Preferred location",
+  current_location: "Current location", open_to_relocate: "Open to relocating",
+  relocation_notes: "Relocation notes", min_salary: "Min salary",
   ...(Object.fromEntries(BUILDER_RATING_FIELDS) as Record<RatingKey, string>),
   ready_lookbook: "Lookbook ready", ready_linkedin: "LinkedIn ready", ready_github: "GitHub ready",
   ready_cv: "CV ready", ready_mock: "Mock interview done",
@@ -71,7 +73,7 @@ const COL_LABELS: Record<ColKey, string> = {
   languages: "Languages", certifications: "Certifications",
 };
 
-const RIGHT_ALIGNED = new Set<ColKey>(["applications", "interviews", "placements", "readiness"]);
+const RIGHT_ALIGNED = new Set<ColKey>(["applications", "interviews", "placements", "pt_count", "deployments", "readiness"]);
 const isReady = (k: ColKey): k is `ready_${ReadyKey}` => k.startsWith("ready_");
 
 // ── Filters ───────────────────────────────────────────────────────────────────
@@ -80,14 +82,16 @@ const isReady = (k: ColKey): k is `ready_${ReadyKey}` => k.startsWith("ready_");
 const tagKey = (v: string) => v.replace(/,/g, "");
 const tagJoin = (vs: string[] | null | undefined) => (vs ?? []).map(tagKey).join(",");
 
-type Field = "status" | ArrayKey | RatingKey | `ready_${ReadyKey}` | TriKey | "degree" | "university" | "graduation_year" | "geo_preference";
+type Field = "status" | ArrayKey | RatingKey | `ready_${ReadyKey}` | TriKey | "degree" | "university" | "graduation_year" | "current_location" | "open_to_relocate" | "relocation_notes";
 
 const FILTERABLE: Record<Field, FieldMeta<BuilderBoardRow>> = {
   status: { label: "Status", type: "select", getValue: (b) => b.status },
   target_functions: { label: "Target function", type: "tags", getValue: (b) => tagJoin(b.profile.target_functions) },
   target_industries: { label: "Target industry", type: "tags", getValue: (b) => tagJoin(b.profile.target_industries) },
   preferred_modes: { label: "Work mode", type: "tags", getValue: (b) => tagJoin(b.profile.preferred_modes) },
-  geo_preference: { label: "Preferred location", type: "text", getValue: (b) => b.profile.geo_preference ?? "" },
+  current_location: { label: "Current location", type: "text", getValue: (b) => b.profile.current_location ?? "" },
+  open_to_relocate: { label: "Open to relocating", type: "select", getValue: (b) => triValue(b.profile.open_to_relocate) },
+  relocation_notes: { label: "Relocation notes", type: "text", getValue: (b) => b.profile.relocation_notes ?? "" },
   ...(Object.fromEntries(BUILDER_RATING_FIELDS.map(([k, label]) => [
     k, { label, type: "select", getValue: (b: BuilderBoardRow) => b.profile[k] ?? "" },
   ])) as Record<RatingKey, FieldMeta<BuilderBoardRow>>),
@@ -197,13 +201,18 @@ export function JobsBuilders() {
         case "applications": return b.counts.applications;
         case "interviews": return b.counts.interviews;
         case "placements": return b.counts.placements;
+        case "pt_count": return b.pt_count;
+        case "deployments": return b.deployments;
         case "readiness": return b.readiness.complete;
         case "graduation_year": return p.graduation_year ?? -1;
+        case "min_salary": return p.min_salary ?? -1;
         case "applying_regularly":
         case "networking_regularly": return p[sortKey] == null ? -1 : p[sortKey] ? 1 : 0;
         case "degree":
         case "university":
-        case "geo_preference": return (p[sortKey] ?? "~").toLowerCase();
+        case "current_location":
+        case "relocation_notes": return (p[sortKey] ?? "~").toLowerCase();
+        case "open_to_relocate": return p.open_to_relocate == null ? -1 : p.open_to_relocate ? 1 : 0;
       }
       if (isRating(sortKey)) return BUILDER_RATING_OPTIONS.indexOf(p[sortKey] as never);
       if (isReady(sortKey)) return b.readiness[sortKey.slice(6) as ReadyKey] ? 1 : 0;
@@ -396,8 +405,20 @@ function BuilderTable({
       case "status": return <StatusChip status={b.status} overridden={b.status_overridden} />;
       case "coach": return <span className="text-ink-2">{b.coach ?? "—"}</span>;
       case "applications": return <span className="font-mono tabular-nums text-ink-2">{b.counts.applications}</span>;
-      case "interviews": return <span className="font-mono tabular-nums text-ink-2">{b.counts.interviews}</span>;
+      case "interviews": return (
+        <span className="font-mono tabular-nums text-ink-2">
+          {b.counts.interviews}
+          {b.counts.interviews_active > 0 && <span className="ml-1 font-sans text-[11px] text-[var(--green)]">· {b.counts.interviews_active} active</span>}
+        </span>
+      );
       case "placements": return <span className="font-mono tabular-nums text-ink-2">{b.counts.placements}</span>;
+      case "pt_count": return (
+        <span className="font-mono tabular-nums text-ink-2">
+          {b.pt_count}
+          {b.pt_active > 0 && <span className="ml-1 font-sans text-[11px] text-[var(--green)]">· {b.pt_active} active</span>}
+        </span>
+      );
+      case "deployments": return <span className="font-mono tabular-nums text-ink-2">{b.deployments}</span>;
       case "readiness": return <Readiness complete={b.readiness.complete} total={b.readiness.total} />;
       default: return undefined;
     }
