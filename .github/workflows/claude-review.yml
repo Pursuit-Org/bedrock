@@ -1,0 +1,57 @@
+name: Claude Code Review
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+concurrency:
+  group: claude-review-${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  id-token: write
+  # The action's github_ci MCP server reads workflow-run status to report on CI.
+  # Without this it logs a 403 on GET /actions/runs and skips installing that
+  # server, so the reviewer cannot see whether the PR's other checks passed.
+  actions: read
+
+jobs:
+  claude-review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Prepare PR diff
+        env:
+          REVIEW_BASE_REF: ${{ github.base_ref }}
+          REVIEW_DIFF_DIR: ${{ runner.temp }}/claude-review
+        run: |
+          mkdir -p "$REVIEW_DIFF_DIR"
+          git --no-pager diff --no-ext-diff --no-textconv "origin/$REVIEW_BASE_REF...HEAD" > "$REVIEW_DIFF_DIR/pr.diff"
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          track_progress: true
+          show_full_output: true
+          prompt: |
+            Read and follow AGENTS.md and REVIEW.md.
+            The PR diff is at `${{ runner.temp }}/claude-review/pr.diff`.
+            Publish the result by updating the Claude tracking comment.
+          # Restricted mode ignores repository settings/hooks; Claude can only inspect files
+          # and use the Action's comment/CI tools. The workflow prepares the diff beforehand.
+          # The opus alias follows Claude Code's recommended Opus version for the provider.
+          claude_args: >-
+            --model opus --max-turns 80 --restricted --permission-mode dontAsk
+            --add-dir "${{ runner.temp }}/claude-review" --strict-mcp-config
+            --tools Read,Glob,Grep,ToolSearch
+            --allowedTools Read,Glob,Grep,mcp__github_comment__update_claude_comment
+            --disallowedTools Bash,Edit,Write,NotebookEdit,Skill,Agent,mcp__github_file_ops__*
