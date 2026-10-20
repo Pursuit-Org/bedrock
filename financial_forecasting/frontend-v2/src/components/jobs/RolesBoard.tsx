@@ -32,6 +32,7 @@ import {
   useInterviewStats,
   APP_STAGE_OPTIONS,
   INTERVIEW_TYPES,
+  interviewTypeLabel,
   type AppStage,
   type Interview,
   type InterviewBody,
@@ -95,10 +96,10 @@ const APP_STAGE_STYLES: Record<string, string> = {
 };
 
 /** "Interviewing · Round 2" once a round is logged — the stage stays a plain
- *  stage, the round is just the application's interview count. */
-function appStageLabel(stage: string | null, interviewCount = 0): string {
+ *  stage; `round` is the application's highest round (latest_round). */
+function appStageLabel(stage: string | null, round: number | null = null): string {
   const label = APP_STAGE_LABELS[stage ?? ""] ?? stage ?? "—";
-  return stage === "interview" && interviewCount >= 1 ? `${label} · Round ${interviewCount}` : label;
+  return stage === "interview" && round != null && round >= 1 ? `${label} · Round ${round}` : label;
 }
 
 /** Inline stage editor — used anywhere an application's stage badge shows up
@@ -106,7 +107,7 @@ function appStageLabel(stage: string | null, interviewCount = 0): string {
  *  Builder-Sourced), so a status change is a straight select instead of
  *  needing to open the opportunity/activity log first. Colored per stage to
  *  keep the same at-a-glance read as the static badges elsewhere. */
-function StageSelect({ appId, stage, interviewCount = 0 }: { appId: number; stage: string | null; interviewCount?: number }) {
+function StageSelect({ appId, stage, round = null }: { appId: number; stage: string | null; round?: number | null }) {
   const update = useUpdateBuilderActivity("");
   return (
     <select
@@ -121,7 +122,7 @@ function StageSelect({ appId, stage, interviewCount = 0 }: { appId: number; stag
     >
       {APP_STAGE_OPTIONS.map((s) => (
         <option key={s.value} value={s.value}>
-          {s.value === "interview" ? appStageLabel(s.value, interviewCount) : s.label}
+          {s.value === "interview" ? appStageLabel(s.value, round) : s.label}
         </option>
       ))}
     </select>
@@ -140,27 +141,31 @@ function today(): string {
 }
 
 /** Compact toggle for an application's rounds panel: a calendar icon, plus the
- *  count once there is one. Lives in each applicant's action cluster. */
+ *  number of interviews logged once there are any. Lives in each applicant's
+ *  action cluster; the tooltip names the highest round. */
 function InterviewRoundsButton({
   count,
+  latestRound,
   latestType,
   latestDate,
   open,
   onClick,
 }: {
   count: number;
+  latestRound: number | null;
   latestType: string | null;
   latestDate: string | null;
   open: boolean;
   onClick: () => void;
 }) {
+  const typeLabel = interviewTypeLabel(latestType);
   return (
     <button
       type="button"
       onClick={onClick}
       title={
         count > 0
-          ? `Round ${count}${latestType ? ` · ${latestType}` : ""}${latestDate ? ` · ${fmtDate(latestDate)}` : ""} — see / log interviews`
+          ? `Round ${latestRound ?? count}${typeLabel ? ` · ${typeLabel}` : ""}${latestDate ? ` · ${fmtDate(latestDate)}` : ""} · ${count} logged — see / log interviews`
           : "Log interview"
       }
       className={cn(
@@ -174,35 +179,67 @@ function InterviewRoundsButton({
   );
 }
 
+/** Log / edit one round. Round and type are optional: a blank round is
+ *  numbered by date order, a blank type is stored as plain "Interview". */
 function InterviewForm({
   initial,
+  defaultRound,
   submitLabel,
   pending,
   onSubmit,
   onCancel,
 }: {
   initial?: Interview;
+  /** Prefill for a new round: the application's highest round + 1. */
+  defaultRound?: number;
   submitLabel: string;
   pending: boolean;
   onSubmit: (body: InterviewBody) => void;
   onCancel: () => void;
 }) {
+  const initialRound = initial ? initial.round : defaultRound;
   const [date, setDate] = useState(initial?.date ?? today());
-  const [type, setType] = useState(initial?.type ?? "");
+  const [round, setRound] = useState(initialRound != null ? String(initialRound) : "");
+  const [type, setType] = useState(interviewTypeLabel(initial?.type) ?? "");
   const [title, setTitle] = useState(initial?.title ?? "");
   const [interviewer, setInterviewer] = useState(initial?.interviewer_name ?? "");
 
+  const roundNum = round.trim() ? parseInt(round, 10) : null;
+  const roundValid = roundNum === null || (Number.isInteger(roundNum) && roundNum >= 1);
+
   function submit(e: React.FormEvent) {
     e.preventDefault();
-    if (!date || !type) return;
-    onSubmit({ date, type, title: title.trim() || null, interviewer_name: interviewer.trim() || null });
+    if (!date || !roundValid) return;
+    const body: InterviewBody = {
+      date,
+      type: type || null,
+      round_number: roundNum,
+      title: title.trim() || null,
+      interviewer_name: interviewer.trim() || null,
+    };
+    // Editing a round that's only date-numbered without touching its number:
+    // leave it date-numbered rather than pinning today's ordinal onto it.
+    if (initial && initial.round_number === null && roundNum === initial.round) delete body.round_number;
+    onSubmit(body);
   }
 
   const field =
     "w-full rounded border border-border-strong bg-surface px-2 py-1 text-[11.5px] text-ink-2 placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40";
   return (
     <form onSubmit={submit} className="flex flex-col gap-2">
-      <div className="grid grid-cols-2 gap-2">
+      <div className="grid grid-cols-[3.5rem_1fr_1fr] gap-2">
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[10px] font-medium text-ink-4">Round</span>
+          <input
+            type="number"
+            min={1}
+            step={1}
+            value={round}
+            onChange={(e) => setRound(e.target.value)}
+            title="Which interview this is — leave blank to number it by date"
+            className={cn(field, !roundValid && "border-red")}
+          />
+        </label>
         <label className="flex flex-col gap-0.5">
           {/* No max — a scheduled round is logged ahead of time. */}
           <span className="text-[10px] font-medium text-ink-4">Date</span>
@@ -210,8 +247,8 @@ function InterviewForm({
         </label>
         <label className="flex flex-col gap-0.5">
           <span className="text-[10px] font-medium text-ink-4">Type</span>
-          <select required value={type} onChange={(e) => setType(e.target.value)} className={field}>
-            <option value="" disabled>Select…</option>
+          <select value={type} onChange={(e) => setType(e.target.value)} className={field}>
+            <option value="">—</option>
             {/* A Pathfinder-logged round could predate the shared list — keep it selectable. */}
             {type && !(INTERVIEW_TYPES as readonly string[]).includes(type) && <option value={type}>{type}</option>}
             {INTERVIEW_TYPES.map((t) => (
@@ -219,6 +256,8 @@ function InterviewForm({
             ))}
           </select>
         </label>
+      </div>
+      <div className="grid grid-cols-2 gap-2">
         <input
           type="text"
           value={title}
@@ -237,7 +276,7 @@ function InterviewForm({
       <div className="flex items-center gap-3">
         <button
           type="submit"
-          disabled={!date || !type || pending}
+          disabled={!date || !roundValid || pending}
           className="flex items-center gap-1.5 rounded bg-accent px-2.5 py-1 text-[11.5px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
         >
           {pending ? <Spinner /> : <Check size={12} />}
@@ -263,11 +302,18 @@ function InterviewRoundRow({
   const remove = useDeleteInterview(appId);
   const upcoming = iv.date !== null && iv.date > today();
   const detail = [iv.title, iv.interviewer_name].filter(Boolean).join(" · ");
+  const typeLabel = interviewTypeLabel(iv.type);
   return (
     <li className="flex items-center gap-2">
-      <span className="shrink-0 font-mono text-[10.5px] text-ink-4">R{iv.round}</span>
+      <span
+        className="shrink-0 font-mono text-[10.5px] text-ink-4"
+        title={iv.round_number === null ? "Numbered by date — no round entered" : undefined}
+      >
+        R{iv.round}
+      </span>
       <span className="min-w-0 flex-1 truncate text-[11.5px] text-ink-2" title={detail || undefined}>
-        {fmtDateShort(iv.date)} · {iv.type ?? "—"}
+        {fmtDateShort(iv.date)}
+        {typeLabel && <> · {typeLabel}</>}
         {detail && <span className="text-ink-4"> · {detail}</span>}
         {upcoming && <span className="ml-1 text-[10px] text-amber-700">scheduled</span>}
       </span>
@@ -294,16 +340,19 @@ function InterviewRoundRow({
   );
 }
 
-/** Rounds logged for one application (oldest first, numbered) with inline
+/** Rounds logged for one application (in round order) with inline
  *  edit/delete, plus "+ Log interview". Opens straight into the form when
  *  nothing's logged yet — the toggle that opened it was the log action. */
-function InterviewRoundsPanel({ appId, count }: { appId: number; count: number }) {
+function InterviewRoundsPanel({ appId, count, latestRound }: { appId: number; count: number; latestRound: number | null }) {
   const q = useApplicationInterviews(appId);
   const create = useCreateInterview(appId);
   const update = useUpdateInterview(appId);
   const [adding, setAdding] = useState(count === 0);
   const [editingId, setEditingId] = useState<number | null>(null);
   const rounds = q.data ?? [];
+  // Next round = highest so far + 1 (from the list once loaded, else the
+  // board's rollup — same rule either way).
+  const nextRound = (rounds.length ? Math.max(...rounds.map((r) => r.round ?? 0)) : (latestRound ?? 0)) + 1;
 
   return (
     <div className="flex flex-col gap-1.5 rounded-md border border-border-strong bg-surface-2/40 p-2.5">
@@ -334,7 +383,9 @@ function InterviewRoundsPanel({ appId, count }: { appId: number; count: number }
       ) : null}
       {adding ? (
         <InterviewForm
-          submitLabel={`Log round ${rounds.length + 1}`}
+          key={nextRound}
+          defaultRound={nextRound}
+          submitLabel="Log interview"
           pending={create.isPending}
           onSubmit={(body) => create.mutate(body, { onSuccess: () => setAdding(false) })}
           onCancel={() => setAdding(false)}
@@ -485,7 +536,7 @@ function BuilderSourcedRow({
             APP_STAGE_STYLES[a.stage ?? ""] ?? "bg-stone-100 text-stone-500",
           )}
         >
-          {appStageLabel(a.stage, a.interview_count)}
+          {appStageLabel(a.stage, a.latest_round)}
         </span>
       </button>
 
@@ -505,9 +556,10 @@ function BuilderSourcedRow({
           <div className="flex flex-wrap items-center gap-3">
             {a.job_application_id !== null && (
               <>
-                <StageSelect appId={a.job_application_id} stage={a.stage} interviewCount={a.interview_count} />
+                <StageSelect appId={a.job_application_id} stage={a.stage} round={a.latest_round} />
                 <InterviewRoundsButton
                   count={a.interview_count}
+                  latestRound={a.latest_round}
                   latestType={a.latest_interview_type}
                   latestDate={a.latest_interview_date}
                   open={showRounds}
@@ -569,7 +621,7 @@ function BuilderSourcedRow({
             )}
           </div>
           {showRounds && a.job_application_id !== null && (
-            <InterviewRoundsPanel appId={a.job_application_id} count={a.interview_count} />
+            <InterviewRoundsPanel appId={a.job_application_id} count={a.interview_count} latestRound={a.latest_round} />
           )}
           {addingApp && a.jobs_role_id && (
             <AddApplicationForm roleId={a.jobs_role_id} onClose={() => setAddingApp(false)} />
@@ -765,9 +817,10 @@ function StaffSourcedApplicantRow({
         )}
       </span>
       <div className="flex flex-wrap items-center gap-2">
-        <StageSelect appId={a.job_application_id} stage={a.stage} interviewCount={a.interview_count} />
+        <StageSelect appId={a.job_application_id} stage={a.stage} round={a.latest_round} />
         <InterviewRoundsButton
           count={a.interview_count}
+          latestRound={a.latest_round}
           latestType={a.latest_interview_type}
           latestDate={a.latest_interview_date}
           open={showRounds}
@@ -782,7 +835,7 @@ function StaffSourcedApplicantRow({
           Dismiss
         </button>
       </div>
-      {showRounds && <InterviewRoundsPanel appId={a.job_application_id} count={a.interview_count} />}
+      {showRounds && <InterviewRoundsPanel appId={a.job_application_id} count={a.interview_count} latestRound={a.latest_round} />}
     </li>
   );
 }
@@ -1428,9 +1481,10 @@ function RoleApplicantRow({
       <div className="flex items-center gap-2">
         <span className="min-w-0 flex-1 truncate text-[12px] text-ink" title={a.builder}>{a.builder}</span>
         <div className="flex shrink-0 items-center gap-2">
-          <StageSelect appId={a.job_application_id} stage={a.stage} interviewCount={a.interview_count} />
+          <StageSelect appId={a.job_application_id} stage={a.stage} round={a.latest_round} />
           <InterviewRoundsButton
             count={a.interview_count}
+            latestRound={a.latest_round}
             latestType={a.latest_interview_type}
             latestDate={a.latest_interview_date}
             open={showRounds}
@@ -1450,7 +1504,7 @@ function RoleApplicantRow({
           </button>
         </div>
       </div>
-      {showRounds && <InterviewRoundsPanel appId={a.job_application_id} count={a.interview_count} />}
+      {showRounds && <InterviewRoundsPanel appId={a.job_application_id} count={a.interview_count} latestRound={a.latest_round} />}
     </li>
   );
 }

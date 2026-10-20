@@ -1658,28 +1658,62 @@ async def hire_into_role(
 
 # Per-application interview rollup for every Roles-board payload, read from
 # public.interviews — the platform's own table, which Pathfinder writes too, so
-# a round logged on either side shows on both. The round number isn't stored
-# anywhere: it's the interview's ordinal by (date, interview_id) within its
-# application, so the latest round's number is simply the count. Scheduled
+# a round logged on either side shows on both.
+#
+# Round numbers: staff enter one when logging (interviews.round_number, added by
+# db/migrations/2026-10-20-interviews-round-number.sql). Rows without one —
+# anything Pathfinder logged, and every row from before — fall back to their
+# ordinal by (date, interview_id) within the application. That ordinal counts
+# ALL the application's rows, numbered or not, so an unnumbered row sits where
+# its date puts it. The application's "latest round" is the HIGHEST effective
+# round, not the most recent date: staff entering "3" means the builder is on
+# round 3 even if the earlier rounds were never logged (count 1, Round 3), and a
+# later Pathfinder row with no number can't drag the badge backwards. Ties go
+# to the later-dated row, which also supplies latest date/type. Scheduled
 # (future-dated) rounds count — "Round 3" on Thursday means round 3 is booked.
-# Expects the application aliased `ja`; a LEFT JOINed-null ja yields count 0.
-_INTERVIEW_ROLLUP_LATERAL = """
+#
+# Expects the application aliased `ja` (a LEFT JOINed-null ja yields count 0),
+# and goes into a query as the /*INTERVIEW_ROLLUP*/ marker — run it through
+# _fetch_with_interview_rollup, which falls back to date-order rounds only
+# until the migration is applied.
+_EFFECTIVE_ROUND = "COALESCE(i.round_number, {derived})"
+_DERIVED_ROUND = "row_number() OVER (ORDER BY i.date ASC NULLS LAST, i.interview_id ASC)"
+_INTERVIEW_ROLLUP_TEMPLATE = """
     LEFT JOIN LATERAL (
         SELECT count(*)::int AS interview_count,
-               (array_agg(i.date ORDER BY i.date DESC NULLS LAST, i.interview_id DESC))[1]
+               max(r.eff)::int AS latest_round,
+               (array_agg(r.date ORDER BY r.eff DESC, r.date DESC NULLS LAST, r.interview_id DESC))[1]
                    AS latest_interview_date,
-               (array_agg(i.type ORDER BY i.date DESC NULLS LAST, i.interview_id DESC))[1]
+               (array_agg(r.type ORDER BY r.eff DESC, r.date DESC NULLS LAST, r.interview_id DESC))[1]
                    AS latest_interview_type
-        FROM public.interviews i
-        WHERE i.job_application_id = ja.job_application_id
+        FROM (
+            SELECT i.interview_id, i.date, i.type, {round_expr} AS eff
+            FROM public.interviews i
+            WHERE i.job_application_id = ja.job_application_id
+        ) r
     ) iv ON true
 """
+_INTERVIEW_ROLLUP_LATERAL = _INTERVIEW_ROLLUP_TEMPLATE.format(
+    round_expr=_EFFECTIVE_ROUND.format(derived=_DERIVED_ROUND))
+_INTERVIEW_ROLLUP_LATERAL_DERIVED = _INTERVIEW_ROLLUP_TEMPLATE.format(round_expr=_DERIVED_ROUND)
+_ROLLUP_MARKER = "/*INTERVIEW_ROLLUP*/"
+
+
+async def _fetch_with_interview_rollup(conn, sql: str, *args):
+    """conn.fetch with the rollup spliced in at _ROLLUP_MARKER. Until the
+    round_number migration lands the column doesn't exist; then the board
+    still loads, numbering every round by date order."""
+    try:
+        return await conn.fetch(sql.replace(_ROLLUP_MARKER, _INTERVIEW_ROLLUP_LATERAL), *args)
+    except asyncpg.exceptions.UndefinedColumnError:
+        return await conn.fetch(sql.replace(_ROLLUP_MARKER, _INTERVIEW_ROLLUP_LATERAL_DERIVED), *args)
 
 
 def _interview_rollup(r) -> dict:
     """The rollup columns as the board's application dicts carry them."""
     return {
         "interview_count": r["interview_count"] or 0,
+        "latest_round": r["latest_round"],
         "latest_interview_date": r["latest_interview_date"].isoformat() if r["latest_interview_date"] else None,
         "latest_interview_type": r["latest_interview_type"],
     }
@@ -1706,7 +1740,8 @@ async def roles_board(
         ORDER BY (r.status = 'cancelled'), (s.sort_position IS NULL) DESC, s.sort_position, r.updated_at DESC
         """
     )
-    apps = await conn.fetch(
+    apps = await _fetch_with_interview_rollup(
+        conn,
         """
         SELECT ja.job_application_id, ja.jobs_role_id,
                COALESCE(
@@ -1721,10 +1756,10 @@ async def roles_board(
                    'Builder #' || ja.builder_id
                ) AS builder,
                ja.stage, ja.date_applied, ja.updated_at,
-               iv.interview_count, iv.latest_interview_date, iv.latest_interview_type
+               iv.interview_count, iv.latest_round, iv.latest_interview_date, iv.latest_interview_type
         FROM public.job_applications ja
         LEFT JOIN LATERAL bedrock.builder_by_id(ja.builder_id) b ON true
-        """ + _INTERVIEW_ROLLUP_LATERAL + """
+        /*INTERVIEW_ROLLUP*/
         WHERE ja.jobs_role_id IS NOT NULL
         ORDER BY ja.date_applied DESC NULLS LAST
         """
@@ -2138,26 +2173,28 @@ async def update_builder_activity(
     carried: the array is append-only, so an entry's "from" is simply the
     previous entry's `stage` (verified: 636 of 647 rows have their last entry
     matching the row's current stage), and `date` is the platform's own
-    granularity for when."""
+    granularity for when.
+
+    Any application, linked to an opportunity or not: the Roles board uses
+    this same editor on Builder-Sourced and review-queue rows, which mostly
+    have no opportunity, and a jobs_opportunity_id guard here (left over from
+    when only the Opportunities tab used it) made those saves 404."""
     if body.stage not in VALID_APP_STAGES:
         raise HTTPException(400, f"Invalid stage: {body.stage}")
-    result = await _set_application_stage(
-        conn, app_id, body.stage, _user_email(user),
-        only_where="jobs_opportunity_id IS NOT NULL",
-    )
+    result = await _set_application_stage(conn, app_id, body.stage, _user_email(user))
     if result == "UPDATE 0":
         raise HTTPException(404, "Application not found")
     return {"success": True, "data": {"job_application_id": app_id, "stage": body.stage}}
 
 
-async def _set_application_stage(conn, app_id: int, stage: str, who: Optional[str], *, only_where: str) -> str:
+async def _set_application_stage(conn, app_id: int, stage: str, who: Optional[str], *,
+                                 only_where: str = "true") -> str:
     """The one write path for an application's stage: sets it and appends the
     platform-shaped {date, stage, notes, changed_by} entry to stage_history
-    (see update_builder_activity for why that shape). `only_where` is a fixed
-    SQL guard chosen by the caller — never user input — e.g. the inline editor
-    only touches opportunity-linked rows, while logging an interview only
-    advances rows that haven't reached interview yet. Returns the execute
-    status ("UPDATE 0" when the guard excluded the row)."""
+    (see update_builder_activity for why that shape). `only_where` is an
+    optional fixed SQL guard chosen by the caller — never user input — e.g.
+    logging an interview only advances rows that haven't reached interview
+    yet. Returns the execute status ("UPDATE 0" when no row matched)."""
     return await conn.execute(
         f"""
         UPDATE public.job_applications
@@ -2280,7 +2317,8 @@ async def builder_sourced_applications(
     self-sourced lead as a Bedrock opportunity once it reaches that stage,
     to avoid cluttering the pipeline with every speculative application a
     builder happens to log."""
-    rows = await conn.fetch(
+    rows = await _fetch_with_interview_rollup(
+        conn,
         """
         WITH combined AS (
             SELECT ja.job_application_id, ja.builder_id, ja.company_name, ja.role_title,
@@ -2340,9 +2378,9 @@ async def builder_sourced_applications(
             WHERE o.deleted_at IS NULL
               AND NOT (r.filled_by_user_id IS NOT NULL AND COALESCE(r.is_trial, false) = false)
         )
-        SELECT ja.*, iv.interview_count, iv.latest_interview_date, iv.latest_interview_type
+        SELECT ja.*, iv.interview_count, iv.latest_round, iv.latest_interview_date, iv.latest_interview_type
         FROM combined ja
-        """ + _INTERVIEW_ROLLUP_LATERAL + """
+        /*INTERVIEW_ROLLUP*/
         ORDER BY
           CASE WHEN ja.stage IN ('interview', 'offer', 'accepted') THEN 0 ELSE 1 END,
           ja.date_applied DESC
@@ -2448,7 +2486,8 @@ async def staff_sourced_applications(
     builders both applying to "Silna — AI Deployment Analyst"), and showing
     each as its own disconnected row obscured that — mirrors the Pursuit-
     Supported board's role-with-nested-applicants shape instead."""
-    rows = await conn.fetch(
+    rows = await _fetch_with_interview_rollup(
+        conn,
         """
         SELECT ja.job_application_id, ja.builder_id, ja.company_name, ja.role_title,
                ja.date_applied, ja.stage, ja.updated_at,
@@ -2458,10 +2497,10 @@ async def staff_sourced_applications(
                         THEN NULLIF(trim(split_part(ja.notes, ':', 1)), '') END,
                    'Builder #' || ja.builder_id
                ) AS builder,
-               iv.interview_count, iv.latest_interview_date, iv.latest_interview_type
+               iv.interview_count, iv.latest_round, iv.latest_interview_date, iv.latest_interview_type
         FROM public.job_applications ja
         LEFT JOIN LATERAL bedrock.builder_by_id(ja.builder_id) b ON true
-        """ + _INTERVIEW_ROLLUP_LATERAL + """
+        /*INTERVIEW_ROLLUP*/
         WHERE ja.jobs_role_id IS NULL
           AND ja.source_type IN ('Pursuit_referred', 'staff_sourced')
           AND ja.date_applied >= (CURRENT_DATE - $1::int * INTERVAL '1 day')
@@ -2653,19 +2692,31 @@ async def unlink_job_application_role(
 # (server/queries/pathfinderInterviews.js, pathfinderAdmin.createInterviewAdmin).
 # Bedrock reads and writes the same rows rather than keeping its own copy, so a
 # round logged on either side is one record both see. Writes therefore match
-# the platform's shape exactly: the same columns, `type` from the same picker
-# list, content_type from the same four values, created_at = now() on insert
-# and updated_at = now() on edit. Round numbers are derived (ordinal by date,
-# then interview_id), never stored — see _INTERVIEW_ROLLUP_LATERAL.
+# the platform's shape: the same columns, created_at = now() on insert and
+# updated_at = now() on edit, content_type from the same four values.
 #
-# Bedrock's DB roles only have SELECT on this table until Jac grants
-# INSERT/UPDATE/DELETE (+ USAGE on interviews_interview_id_seq). Until then the
-# write routes return a 503 saying so instead of a bare 500.
+# Two Bedrock additions the platform doesn't make: staff enter the round number
+# (round_number, nullable — see _INTERVIEW_ROLLUP_TEMPLATE for how unnumbered
+# rows are numbered), and type is optional — the column is NOT NULL, so "no
+# type" is stored as the plain "Interview".
+#
+# Two things Jac has to apply before writes work: the round_number migration
+# (db/migrations/2026-10-20-interviews-round-number.sql) and INSERT/UPDATE/
+# DELETE (+ USAGE on interviews_interview_id_seq) for Bedrock's roles, which
+# only have SELECT today. Until then the write routes return a 503 naming
+# which one is missing instead of a bare 500, and reads number every round by
+# date order.
 
-# Mirrors INTERVIEW_TYPES in the platform's JobApplicationDetailModal.jsx —
-# keep the two lists identical or one side starts writing types the other's
-# picker can't show.
-INTERVIEW_TYPES = ["Phone Screen", "Technical", "Behavioral", "Final Round", "Panel", "Take Home", "Culture Fit"]
+# The platform's picker list (JobApplicationDetailModal.jsx INTERVIEW_TYPES),
+# plus two round kinds the jobs team logs that it doesn't have. The platform
+# doesn't validate type, so the extra two are safe to write.
+INTERVIEW_TYPES = [
+    "Phone Screen", "Technical", "Behavioral", "Final Round", "Panel", "Take Home", "Culture Fit",
+    "Super Day", "Work Trial",
+]
+# What a round with no type picked is stored as (interviews.type is NOT NULL).
+# The UI shows these as just "Round N".
+INTERVIEW_TYPE_DEFAULT = "Interview"
 # The platform's content_type select values (same modal).
 INTERVIEW_CONTENT_TYPES = {"technical", "behavioral", "hr", "case_study"}
 # Stages an application can sit at before anyone's interviewed. Logging a round
@@ -2674,7 +2725,9 @@ INTERVIEW_CONTENT_TYPES = {"technical", "behavioral", "hr", "case_study"}
 _PRE_INTERVIEW_STAGES = ("prospect", "applied")
 
 _INTERVIEW_WRITE_PENDING = "Interview logging isn't enabled yet (database permission pending)"
-_INTERVIEW_COLUMNS = ("date", "type", "title", "interviewer_name", "interviewer_email", "content_type", "feedback")
+_INTERVIEW_ROUND_PENDING = "Round numbers aren't enabled yet (database change pending)"
+_INTERVIEW_COLUMNS = ("date", "type", "round_number", "title", "interviewer_name",
+                      "interviewer_email", "content_type", "feedback")
 
 
 class InterviewCreate(BaseModel):
@@ -2682,7 +2735,9 @@ class InterviewCreate(BaseModel):
     # named `date` shadows the `date` type in its own annotation — alias it.
     model_config = {"populate_by_name": True}
     interview_date:    date = Field(..., alias="date")
-    type:              str
+    type:              Optional[str] = None
+    # Which round this is, as staff enter it. Null = number it by date order.
+    round_number:      Optional[int] = Field(None, ge=1)
     title:             Optional[str] = None
     interviewer_name:  Optional[str] = None
     interviewer_email: Optional[str] = None
@@ -2692,10 +2747,11 @@ class InterviewCreate(BaseModel):
 
 class InterviewUpdate(BaseModel):
     """Partial: only fields actually sent are written, so an edit can clear
-    title/interviewer back to null (the platform's COALESCE update can't)."""
+    title/interviewer/round back to null (the platform's COALESCE update can't)."""
     model_config = {"populate_by_name": True}
     interview_date:    Optional[date] = Field(None, alias="date")
     type:              Optional[str] = None
+    round_number:      Optional[int] = Field(None, ge=1)
     title:             Optional[str] = None
     interviewer_name:  Optional[str] = None
     interviewer_email: Optional[str] = None
@@ -2711,8 +2767,13 @@ def _clean_text(v: Optional[str]) -> Optional[str]:
     return v or None
 
 
+def _interview_type(v: Optional[str]) -> str:
+    """Picked type, or the stored default when none was picked."""
+    return _clean_text(v) or INTERVIEW_TYPE_DEFAULT
+
+
 def _validate_interview_fields(type_: Optional[str], content_type: Optional[str], email: Optional[str]) -> None:
-    if type_ is not None and type_ not in INTERVIEW_TYPES:
+    if type_ is not None and type_ != INTERVIEW_TYPE_DEFAULT and type_ not in INTERVIEW_TYPES:
         raise HTTPException(400, f"Invalid interview type: {type_}")
     if content_type is not None and content_type not in INTERVIEW_CONTENT_TYPES:
         raise HTTPException(400, f"Invalid content type: {content_type}")
@@ -2721,11 +2782,15 @@ def _validate_interview_fields(type_: Optional[str], content_type: Optional[str]
         raise HTTPException(400, "Invalid email format")
 
 
-def _interview_dict(r, round_number: Optional[int] = None) -> dict:
+def _interview_dict(r, derived_round: Optional[int] = None) -> dict:
+    """`round` is what to display: the entered round_number, else the
+    date-order ordinal. `round_number` is the raw entered value (null when
+    the round is only derived), so an edit form can tell the two apart."""
     return {
         "interview_id":      r["interview_id"],
         "job_application_id": r["job_application_id"],
-        "round":             round_number,
+        "round":             r["round_number"] or derived_round,
+        "round_number":      r["round_number"],
         "date":              r["date"].isoformat() if r["date"] else None,
         "type":              r["type"],
         "title":             r["title"],
@@ -2738,21 +2803,29 @@ def _interview_dict(r, round_number: Optional[int] = None) -> dict:
     }
 
 
+_LIST_INTERVIEWS_SQL = """
+    SELECT interview_id, job_application_id, date, type, round_number, title,
+           interviewer_name, interviewer_email, content_type, feedback,
+           created_at, updated_at
+    FROM public.interviews
+    WHERE job_application_id = $1
+    ORDER BY date ASC NULLS LAST, interview_id ASC
+"""
+
+
 async def _list_interviews(conn, app_id: int) -> list[dict]:
-    """Every round on one application, oldest first, each numbered by its
-    ordinal — the same order the board's rollup counts in."""
-    rows = await conn.fetch(
-        """
-        SELECT interview_id, job_application_id, date, type, title,
-               interviewer_name, interviewer_email, content_type, feedback,
-               created_at, updated_at
-        FROM public.interviews
-        WHERE job_application_id = $1
-        ORDER BY date ASC NULLS LAST, interview_id ASC
-        """,
-        app_id,
-    )
-    return [_interview_dict(r, i + 1) for i, r in enumerate(rows)]
+    """Every round on one application, in round order (then date). The derived
+    ordinal counts every row by date, numbered or not — same rule as the
+    board's rollup, so the panel and the badge always agree."""
+    try:
+        rows = await conn.fetch(_LIST_INTERVIEWS_SQL, app_id)
+    except asyncpg.exceptions.UndefinedColumnError:
+        # round_number migration not applied yet: every round is date-ordered.
+        rows = await conn.fetch(_LIST_INTERVIEWS_SQL.replace("round_number,", "NULL::int AS round_number,"), app_id)
+    out = [_interview_dict(r, i + 1) for i, r in enumerate(rows)]
+    # Stable sort, so equal rounds stay in date order.
+    out.sort(key=lambda d: d["round"])
+    return out
 
 
 async def _require_application(conn, app_id: int):
@@ -2772,7 +2845,7 @@ async def list_application_interviews(
     conn=Depends(get_db),
 ):
     """Logged interview rounds for one application (Bedrock- or Pathfinder-
-    logged alike), oldest first with `round` = 1, 2, 3 …"""
+    logged alike), in round order, each with its display `round`."""
     await _require_application(conn, app_id)
     return {"success": True, "data": await _list_interviews(conn, app_id)}
 
@@ -2785,24 +2858,26 @@ async def create_application_interview(
     conn=Depends(get_db),
 ):
     """Log an interview round. Future dates are fine — a scheduled round is
-    still a round. If the application hasn't reached interview yet (stage
-    null/prospect/applied) it moves to 'interview' through the same
-    stage_history-appending write as the inline stage editor, in the same
-    transaction, so a failed insert never leaves a half-advanced stage."""
-    _validate_interview_fields(body.type, body.content_type, body.interviewer_email)
+    still a round. Type and round number are optional. If the application
+    hasn't reached interview yet (stage null/prospect/applied) it moves to
+    'interview' through the same stage_history-appending write as the inline
+    stage editor, in the same transaction, so a failed insert never leaves a
+    half-advanced stage."""
+    type_ = _interview_type(body.type)
+    _validate_interview_fields(type_, body.content_type, body.interviewer_email)
     app = await _require_application(conn, app_id)
     try:
         async with conn.transaction():
             row = await conn.fetchrow(
                 """
                 INSERT INTO public.interviews (
-                    job_application_id, date, type, title,
+                    job_application_id, date, type, round_number, title,
                     interviewer_name, interviewer_email, content_type, feedback, created_at
                 )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
                 RETURNING *
                 """,
-                app_id, body.interview_date, body.type, _clean_text(body.title),
+                app_id, body.interview_date, type_, body.round_number, _clean_text(body.title),
                 _clean_text(body.interviewer_name), _clean_text(body.interviewer_email),
                 body.content_type, _clean_text(body.feedback),
             )
@@ -2817,6 +2892,8 @@ async def create_application_interview(
                 stage_advanced = result != "UPDATE 0"
     except asyncpg.exceptions.InsufficientPrivilegeError:
         raise HTTPException(503, _INTERVIEW_WRITE_PENDING)
+    except asyncpg.exceptions.UndefinedColumnError:
+        raise HTTPException(503, _INTERVIEW_ROUND_PENDING)
     interviews = await _list_interviews(conn, app_id)
     created = next((i for i in interviews if i["interview_id"] == row["interview_id"]), _interview_dict(row))
     return {"success": True, "data": {
@@ -2833,11 +2910,12 @@ async def update_interview(
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
-    """Edit a logged round. Only the fields sent are written; date and type
-    can be changed but not cleared (the platform requires both)."""
+    """Edit a logged round. Only the fields sent are written. Date can be
+    changed but not cleared; clearing type stores the default "Interview";
+    clearing round_number hands the round back to date-order numbering."""
     sent = body.model_fields_set
     values = {
-        "date": body.interview_date, "type": body.type,
+        "date": body.interview_date, "type": _interview_type(body.type), "round_number": body.round_number,
         "title": _clean_text(body.title), "interviewer_name": _clean_text(body.interviewer_name),
         "interviewer_email": _clean_text(body.interviewer_email),
         "content_type": body.content_type, "feedback": _clean_text(body.feedback),
@@ -2848,8 +2926,6 @@ async def update_interview(
         raise HTTPException(400, "Nothing to update")
     if "date" in updates and updates["date"] is None:
         raise HTTPException(400, "Date is required")
-    if "type" in updates and updates["type"] is None:
-        raise HTTPException(400, "Type is required")
     _validate_interview_fields(updates.get("type"), updates.get("content_type"), updates.get("interviewer_email"))
 
     # Column names come from the fixed _INTERVIEW_COLUMNS whitelist, never the body.
@@ -2866,9 +2942,11 @@ async def update_interview(
         )
     except asyncpg.exceptions.InsufficientPrivilegeError:
         raise HTTPException(503, _INTERVIEW_WRITE_PENDING)
+    except asyncpg.exceptions.UndefinedColumnError:
+        raise HTTPException(503, _INTERVIEW_ROUND_PENDING)
     if not row:
         raise HTTPException(404, "Interview not found")
-    # A date edit can reorder rounds, so the number comes from a fresh list.
+    # A date or round edit can reorder rounds, so the number comes from a fresh list.
     interviews = await _list_interviews(conn, row["job_application_id"])
     updated = next((i for i in interviews if i["interview_id"] == interview_id), _interview_dict(row))
     return {"success": True, "data": updated}

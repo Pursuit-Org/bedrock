@@ -2,9 +2,11 @@
 
 public.interviews is the platform's table — Pathfinder writes it too — so these
 pin the write shape to the platform's (same columns, same type list, created_at
-on insert, updated_at on edit), the derived round numbering, the stage nudge
-into 'interview', the 503 while Bedrock's roles still lack write grants, and
-the rollup fields the board's three application payloads now carry.
+on insert, updated_at on edit), round numbering (staff-entered round_number, else
+the date-order ordinal), the stage nudge into 'interview', the 503s while the
+grants / round_number migration are pending, the date-order fallback for reads
+before the migration, and the rollup fields the board's three application
+payloads now carry.
 
 FakeConn only (no get_pool()), so this module runs in CI.
 """
@@ -27,9 +29,9 @@ def _clear():
     app.dependency_overrides.clear()
 
 
-def _iv(iid, day, type_="Behavioral", app_id=42, **ov):
+def _iv(iid, day, type_="Behavioral", app_id=42, round_number=None, **ov):
     row = {"interview_id": iid, "job_application_id": app_id, "date": date(2026, 10, day),
-           "type": type_, "title": None, "interviewer_name": None, "interviewer_email": None,
+           "type": type_, "round_number": round_number, "title": None, "interviewer_name": None, "interviewer_email": None,
            "content_type": None, "feedback": None,
            "created_at": datetime(2026, 10, 1, 12), "updated_at": None}
     row.update(ov)
@@ -49,6 +51,23 @@ class DeniedConn(FakeConn):
         return await super().fetchrow(query, *args)
 
 
+class NoRoundColumnConn(FakeConn):
+    """public.interviews before the round_number migration: any statement that
+    names the column fails the way Postgres does."""
+    def _check(self, kind, query, args):
+        if "round_number" in query and "NULL::int AS round_number" not in query:
+            self.calls.append((kind, query, args))
+            raise asyncpg.exceptions.UndefinedColumnError('column "round_number" does not exist')
+
+    async def fetch(self, query, *args):
+        self._check("fetch", query, args)
+        return await super().fetch(query, *args)
+
+    async def fetchrow(self, query, *args):
+        self._check("fetchrow", query, args)
+        return await super().fetchrow(query, *args)
+
+
 # ── list ─────────────────────────────────────────────────────────────────────
 
 def test_list_numbers_rounds_by_date_order():
@@ -61,6 +80,35 @@ def test_list_numbers_rounds_by_date_order():
     data = r.json()["data"]
     assert [(d["interview_id"], d["round"]) for d in data] == [(7, 1), (3, 2), (9, 3)]
     assert data[0]["date"] == "2026-10-02"
+    assert data[0]["round_number"] is None
+
+
+def test_list_mixes_entered_and_derived_rounds():
+    """Entered numbers win; unnumbered rows keep their date-order ordinal
+    (counted over every row), and the list comes back in round order."""
+    conn = FakeConn(
+        rows={APP_LOOKUP: {"job_application_id": 42, "stage": "interview"}},
+        lists={LIST_SQL: [
+            _iv(1, 2),                       # Pathfinder, unnumbered -> derived 1
+            _iv(2, 9, round_number=3),       # staff skipped ahead: "round 3"
+            _iv(3, 16),                      # later Pathfinder row -> derived 3
+            _iv(4, 20, round_number=2),      # staff backfilled round 2 late
+        ]},
+    )
+    data = make_jobs_client(conn).get("/api/jobs/job-applications/42/interviews").json()["data"]
+    assert [(d["interview_id"], d["round"]) for d in data] == [(1, 1), (4, 2), (2, 3), (3, 3)]
+    assert [d["round_number"] for d in data] == [None, 2, 3, None]
+
+
+def test_list_before_migration_falls_back_to_date_order():
+    conn = NoRoundColumnConn(
+        rows={APP_LOOKUP: {"job_application_id": 42, "stage": "interview"}},
+        lists={LIST_SQL: [_iv(7, 2), _iv(3, 9)]},
+    )
+    r = make_jobs_client(conn).get("/api/jobs/job-applications/42/interviews")
+    assert r.status_code == 200, r.text
+    assert [d["round"] for d in r.json()["data"]] == [1, 2]
+    assert conn.ran("NULL::int AS round_number")
 
 
 def test_list_404s_for_unknown_application():
@@ -82,15 +130,16 @@ def _create_conn(stage, existing=None, stage_result="UPDATE 1"):
 def test_create_writes_the_platform_shape():
     conn = _create_conn("interview", existing=[_iv(5, 3)])
     r = make_jobs_client(conn).post("/api/jobs/job-applications/42/interviews", json={
-        "date": "2026-10-20", "type": "Technical", "title": "  Round 2 w/ eng ", "interviewer_name": "",
+        "date": "2026-10-20", "type": "Technical", "round_number": 2,
+        "title": "  Round 2 w/ eng ", "interviewer_name": "",
     })
     assert r.status_code == 200, r.text
     insert = [c for c in conn.calls if "INSERT INTO public.interviews" in c[1]][0]
     # same column list and created_at = NOW() as pathfinderInterviews.createInterview
-    assert "job_application_id, date, type, title,\n                    interviewer_name, interviewer_email, content_type, feedback, created_at" in insert[1]
+    assert "job_application_id, date, type, round_number, title,\n                    interviewer_name, interviewer_email, content_type, feedback, created_at" in insert[1]
     assert "NOW()" in insert[1]
     # blanks become NULL, text is trimmed
-    assert insert[2] == (42, date(2026, 10, 20), "Technical", "Round 2 w/ eng", None, None, None, None)
+    assert insert[2] == (42, date(2026, 10, 20), "Technical", 2, "Round 2 w/ eng", None, None, None, None)
     data = r.json()["data"]
     assert data["interview"]["round"] == 2
     assert data["interview_count"] == 2
@@ -122,6 +171,25 @@ def test_create_leaves_later_stages_alone(stage):
     assert not conn.executed("UPDATE public.job_applications")
 
 
+@pytest.mark.parametrize("type_", [None, "", "  "])
+def test_create_without_a_type_stores_interview(type_):
+    """interviews.type is NOT NULL, so "no type" is the plain default."""
+    conn = _create_conn("interview")
+    body = {"date": "2026-10-20"} if type_ is None else {"date": "2026-10-20", "type": type_}
+    r = make_jobs_client(conn).post("/api/jobs/job-applications/42/interviews", json=body)
+    assert r.status_code == 200, r.text
+    insert = [c for c in conn.calls if "INSERT INTO public.interviews" in c[1]][0]
+    assert insert[2][2] == "Interview"
+    assert insert[2][3] is None  # no round entered -> numbered by date order
+
+
+@pytest.mark.parametrize("type_", ["Super Day", "Work Trial", "Culture Fit"])
+def test_create_accepts_added_types(type_):
+    r = make_jobs_client(_create_conn("interview")).post(
+        "/api/jobs/job-applications/42/interviews", json={"date": "2026-10-20", "type": type_})
+    assert r.status_code == 200, r.text
+
+
 def test_create_allows_future_dates():
     future = (date.today() + timedelta(days=30)).isoformat()
     r = make_jobs_client(_create_conn("interview")).post(
@@ -131,8 +199,8 @@ def test_create_allows_future_dates():
 
 @pytest.mark.parametrize("body,status", [
     ({"type": "Behavioral"}, 422),                                     # no date
-    ({"date": "2026-10-20"}, 422),                                     # no type
-    ({"date": "2026-10-20", "type": "Vibes check"}, 400),              # not a platform type
+    ({"date": "2026-10-20", "round_number": 0}, 422),                  # rounds start at 1
+    ({"date": "2026-10-20", "type": "Vibes check"}, 400),              # not an allowed type
     ({"date": "2026-10-20", "type": "Technical", "content_type": "x"}, 400),
     ({"date": "2026-10-20", "type": "Technical", "interviewer_email": "nope"}, 400),
 ])
@@ -161,6 +229,15 @@ def test_create_without_grant_is_a_clear_503_and_leaves_stage_alone():
     assert not conn.executed("UPDATE public.job_applications")
 
 
+def test_create_before_migration_is_a_clear_503():
+    conn = NoRoundColumnConn(rows={APP_LOOKUP: {"job_application_id": 42, "stage": "applied"}})
+    r = make_jobs_client(conn).post("/api/jobs/job-applications/42/interviews",
+                                    json={"date": "2026-10-20", "round_number": 1})
+    assert r.status_code == 503
+    assert r.json()["detail"] == "Round numbers aren't enabled yet (database change pending)"
+    assert not conn.executed("UPDATE public.job_applications")
+
+
 # ── update ───────────────────────────────────────────────────────────────────
 
 def test_update_writes_only_sent_fields_and_can_clear_them():
@@ -176,12 +253,31 @@ def test_update_writes_only_sent_fields_and_can_clear_them():
     assert r.json()["data"]["round"] == 2
 
 
-@pytest.mark.parametrize("body", [{}, {"date": None}, {"type": None}, {"type": "Lunch"}])
+@pytest.mark.parametrize("body", [{}, {"date": None}, {"type": "Lunch"}])
 def test_update_rejects_bad_bodies(body):
     conn = FakeConn()
     r = make_jobs_client(conn).patch("/api/jobs/interviews/3", json=body)
     assert r.status_code == 400
     assert not conn.ran("UPDATE public.interviews")
+
+
+def test_update_round_number_and_clearing_type():
+    conn = FakeConn(
+        rows={"UPDATE public.interviews": _iv(3, 12, "Interview", round_number=4)},
+        lists={LIST_SQL: [_iv(3, 12, "Interview", round_number=4)]},
+    )
+    r = make_jobs_client(conn).patch("/api/jobs/interviews/3", json={"type": None, "round_number": 4})
+    assert r.status_code == 200, r.text
+    call = [c for c in conn.calls if "UPDATE public.interviews" in c[1]][0]
+    assert "SET type = $2, round_number = $3, updated_at = NOW()" in call[1]
+    assert call[2] == (3, "Interview", 4)
+    assert r.json()["data"]["round"] == 4
+
+
+def test_update_round_before_migration_is_a_clear_503():
+    r = make_jobs_client(NoRoundColumnConn()).patch("/api/jobs/interviews/3", json={"round_number": 2})
+    assert r.status_code == 503
+    assert r.json()["detail"] == "Round numbers aren't enabled yet (database change pending)"
 
 
 def test_update_404s_for_unknown_interview():
@@ -255,12 +351,13 @@ def test_stats_weeks_param():
 
 # ── board payloads carry the rollup ──────────────────────────────────────────
 
-ROLLUP = {"interview_count": 3, "latest_interview_date": date(2026, 10, 16),
+ROLLUP = {"interview_count": 3, "latest_round": 4, "latest_interview_date": date(2026, 10, 16),
           "latest_interview_type": "Final Round"}
 
 
 def _assert_rollup(app):
     assert app["interview_count"] == 3
+    assert app["latest_round"] == 4
     assert app["latest_interview_date"] == "2026-10-16"
     assert app["latest_interview_type"] == "Final Round"
 
@@ -273,7 +370,9 @@ def test_builder_sourced_rows_carry_interview_rollup():
     r = make_jobs_client(conn).get("/api/jobs/job-applications/builder-sourced")
     assert r.status_code == 200, r.text
     _assert_rollup(r.json()["data"][0])
-    assert conn.ran("FROM public.interviews i")
+    # highest effective round: entered number, else the date-order ordinal
+    assert conn.ran("COALESCE(i.round_number, row_number() OVER (ORDER BY i.date ASC NULLS LAST, i.interview_id ASC))")
+    assert conn.ran("max(r.eff)::int AS latest_round")
 
 
 def test_staff_sourced_rows_carry_interview_rollup():
@@ -299,11 +398,29 @@ def test_roles_board_applications_carry_interview_rollup():
     _assert_rollup(r.json()["data"][0]["applications"][0])
 
 
-def test_inline_stage_editor_keeps_its_opportunity_guard():
-    """Refactored onto _set_application_stage — the guard must survive."""
+def test_board_before_migration_falls_back_to_date_order_rounds():
+    from tests.test_jobs_roles_board import ROLE1, _role_row
+    app_row = {"job_application_id": 1, "jobs_role_id": ROLE1, "builder": "Ann", "stage": "interview",
+               "date_applied": date(2026, 9, 1), "updated_at": None, **ROLLUP}
+    conn = NoRoundColumnConn(lists={
+        "LEFT JOIN jobs_analytics.role_sort_order": [_role_row(ROLE1)],
+        "FROM public.job_applications ja": [app_row],
+    })
+    r = make_jobs_client(conn).get("/api/jobs/roles/board")
+    assert r.status_code == 200, r.text
+    _assert_rollup(r.json()["data"][0]["applications"][0])
+    retry = [q for q in conn.queries("fetch") if "FROM public.job_applications ja" in q][-1]
+    assert "round_number" not in retry
+    assert "row_number() OVER" in retry
+
+
+def test_inline_stage_editor_saves_any_application():
+    """Refactored onto _set_application_stage, without the old
+    jobs_opportunity_id guard (unlinked Builder-/Staff-Sourced rows 404'd)."""
     conn = FakeConn(vals={"UPDATE public.job_applications": "UPDATE 1"})
     r = make_jobs_client(conn).patch("/api/jobs/builder-activity/42", json={"stage": "offer"})
     assert r.status_code == 200, r.text
     (call,) = conn.executed("UPDATE public.job_applications")
-    assert "AND (jobs_opportunity_id IS NOT NULL)" in call[1]
+    assert "jobs_opportunity_id" not in call[1]
+    assert "WHERE job_application_id=$2 AND (true)" in call[1]
     assert call[2] == ("offer", 42, "tester@pursuit.org")

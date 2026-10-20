@@ -453,10 +453,13 @@ export function useAdvanceBuilderStage() {
 // ── Roles board (Placement > Roles — every role, every account) ────────────────
 
 /** Interview-round rollup carried on every Roles-board application, from
- *  public.interviews (shared with Pathfinder). The latest round's number is
- *  the count — rounds are numbered by date order, never stored. */
+ *  public.interviews (shared with Pathfinder). */
 export interface InterviewRollup {
   interview_count: number;
+  /** Highest round logged: each round's staff-entered number, else its
+   *  date-order ordinal. Null when nothing's logged. Not always the count —
+   *  "Round 3" with only round 3 logged is one interview. */
+  latest_round: number | null;
   latest_interview_date: string | null;
   latest_interview_type: string | null;
 }
@@ -777,17 +780,31 @@ export function useUnlinkApplication() {
 // ── Interview rounds (public.interviews — the platform's table, shared with
 //    Pathfinder, so rounds logged on either side show on both) ──────────────
 
-/** Same list, same spelling, as the platform's interview picker
- *  (JobApplicationDetailModal.jsx) — the backend rejects anything else. */
+/** The platform's interview picker list (JobApplicationDetailModal.jsx),
+ *  same spelling, plus Super Day and Work Trial — the backend rejects
+ *  anything else. Type is optional. */
 export const INTERVIEW_TYPES = [
   "Phone Screen", "Technical", "Behavioral", "Final Round", "Panel", "Take Home", "Culture Fit",
+  "Super Day", "Work Trial",
 ] as const;
+
+/** What a round with no type picked is stored as (the column is NOT NULL).
+ *  Shown as just "Round N", with no type label. */
+export const INTERVIEW_TYPE_DEFAULT = "Interview";
+
+/** The type to show, or null for an untyped round. */
+export function interviewTypeLabel(type: string | null | undefined): string | null {
+  return type && type !== INTERVIEW_TYPE_DEFAULT ? type : null;
+}
 
 export interface Interview {
   interview_id: number;
   job_application_id: number;
-  /** Ordinal by (date, interview_id) within the application — derived. */
+  /** What to display: round_number when staff entered one, else the round's
+   *  ordinal by (date, interview_id) within the application. */
   round: number | null;
+  /** The staff-entered number, null when the round is only date-derived. */
+  round_number: number | null;
   date: string | null;
   type: string | null;
   title: string | null;
@@ -801,7 +818,10 @@ export interface Interview {
 
 export interface InterviewBody {
   date: string;
-  type: string;
+  /** Omit / null for no type — stored as INTERVIEW_TYPE_DEFAULT. */
+  type?: string | null;
+  /** Null = number it by date order. */
+  round_number?: number | null;
   title?: string | null;
   interviewer_name?: string | null;
 }
@@ -827,7 +847,7 @@ function invalidateInterviewDependents(qc: QueryClient, appId: number) {
   invalidateOppDependents(qc, [["jobs", "builders"]]);
 }
 
-/** Logged rounds for one application, oldest first. Fetched only once the
+/** Logged rounds for one application, in round order. Fetched only once the
  *  rounds panel is opened (it mounts on open) — the board's rows already
  *  carry the count. */
 export function useApplicationInterviews(appId: number) {
