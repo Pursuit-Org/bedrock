@@ -943,7 +943,10 @@ export interface ListWhyEntry {
   notes: string[];
 }
 
-/** Every list's note, in one call: the words are static (services/jobs_lists). */
+/** Every list's note, in one call (services/jobs_lists). The words only
+ *  change with a deploy, but the query cache outlives page loads (main.tsx
+ *  persists it), so it must go stale: Infinity kept a list added later
+ *  without its note. */
 export function useListsWhy() {
   return useQuery<Record<string, ListWhyEntry>>({
     queryKey: ["jobs", "lists-why"],
@@ -951,7 +954,7 @@ export function useListsWhy() {
       const { data } = await api.get<ApiResponse<Record<string, ListWhyEntry>>>("/api/jobs/lists/why");
       return data.data;
     },
-    staleTime: Infinity,
+    staleTime: 10 * 60_000,
   });
 }
 

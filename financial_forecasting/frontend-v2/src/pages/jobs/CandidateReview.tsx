@@ -19,6 +19,7 @@ import {
   usePromoteCandidate, useDismissCandidate, useBulkDismissCandidates, useBulkRestoreCandidates, useSetCandidateAccount, useMergeContacts, useJobsAccountNames, useCandidateOwners,
   type JobCandidate,
 } from "@/services/jobs";
+import { ListWhy } from "@/components/jobs/ListWhy";
 
 /** Short display label for a staff owner email (e.g. "avni@pursuit.org" -> "Avni"). */
 const ownerLabel = (email: string) => {
@@ -302,12 +303,18 @@ function Suggest({ label, onClick }: { label: string; onClick: () => void }) {
   );
 }
 
-function Section({ title, count, action, children }: { title: string; count?: number; action?: React.ReactNode; children: React.ReactNode }) {
+function Section({ title, count, why, action, children }: {
+  title: string; count?: number;
+  /** The list's key in services/jobs_lists.py, for its "Why these?" (PRO-105). */
+  why?: string;
+  action?: React.ReactNode; children: React.ReactNode;
+}) {
   return (
     <div className="flex flex-col gap-3">
       <div className="flex items-baseline gap-2">
         <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">{title}</span>
         {count != null && <span className="text-[11px] tabular-nums text-ink-4">{count}</span>}
+        {why ? <ListWhy listKey={why} /> : null}
         {action && <div className="ml-auto self-center">{action}</div>}
       </div>
       {children}
@@ -445,7 +452,8 @@ export function CandidatesZone({ defaultOwner }: { defaultOwner?: string } = {})
     </div>
   );
   return (
-    <Section title={dismissedView ? "Dismissed candidates" : "Candidates to review"} count={cands.length} action={controls}>
+    <Section title={dismissedView ? "Dismissed candidates" : "Candidates to review"} count={cands.length}
+      why="candidates" action={controls}>
       <div className="flex flex-col overflow-hidden rounded-lg border border-border-strong bg-surface">
         {isLoading ? (
           <div className="px-3 py-8 text-center text-[12.5px] text-ink-3">Loading…</div>

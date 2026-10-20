@@ -32,7 +32,9 @@ def test_every_list_says_who_order_cap_and_dates(key):
 def test_every_list_the_frontend_asks_for_has_words():
     asked = set()
     for f in FRONTEND.rglob("*.tsx"):
-        asked |= set(re.findall(r'listKey="([a-z_]+)"', f.read_text(encoding="utf-8")))
+        text = f.read_text(encoding="utf-8")
+        asked |= set(re.findall(r'listKey="([a-z_]+)"', text))
+        asked |= set(re.findall(r'\bwhy="([a-z_]+)"', text))
     assert asked, "no ListWhy in the frontend"
     assert asked <= set(jobs_lists.LISTS), asked - set(jobs_lists.LISTS)
 
@@ -43,3 +45,13 @@ def test_the_page_reads_them_in_one_call():
     d = r.json()["data"]
     assert set(d) == set(jobs_lists.LISTS)
     assert d["replied_needs_decision"]["key"] == "replied_needs_decision"
+
+
+def test_every_list_note_is_shown_somewhere():
+    """A note no page asks for is a list that lost its button."""
+    asked = set()
+    for f in FRONTEND.rglob("*.tsx"):
+        text = f.read_text(encoding="utf-8")
+        asked |= set(re.findall(r'listKey="([a-z_]+)"', text))
+        asked |= set(re.findall(r'\bwhy="([a-z_]+)"', text))
+    assert set(jobs_lists.LISTS) <= asked, set(jobs_lists.LISTS) - asked

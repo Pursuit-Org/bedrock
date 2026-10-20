@@ -142,7 +142,7 @@ Linear: https://linear.app/pursuit-org/issue/PRO-105 · Branch: `integration/job
   - Fix the nested-button cards (icon as a sibling, not a child).
   - Label every row date ("assigned 3d ago", "replied 2d ago", "last activity …").
   - Fix "replied today ago".
-- [ ] **7. Frontend: wire Phase 2** (if decision 3 says so).
+- [x] **7. Frontend: wire Phase 2** (if decision 3 says so).
 - [x] **8. Verify.**
   - pytest; `tsc -b`; `node --test "tests/**/*.test.ts"`. On Windows, `npm test`'s single-quoted glob finds 0 tests.
   - Run the app and screenshot each tab with a popover open.
@@ -177,3 +177,23 @@ Checked in the app against live data (WSL clone, read-only database user), each 
 Not checked locally: the contacts and opportunities funnels and the interviews panel. Locally they fail with "permission denied for function builder_by_id", because the read-only user can't run that function. The code is from PRO-117 and the production role should be able to run it.
 
 For Jac: the dictionary app's saves fail (nothing saved since 9/17). After the import, pin the five new concept ids in `jobs_metrics.CONCEPTS`.
+
+## Review (10/20, Phase 2)
+
+"Why these?" on Contacts, Accounts, the Pipeline table, Placement (Pursuit-Supported, Staff-Sourced and Builder-Sourced roles; the Builders board), My Network and Candidates. The notes are in `services/jobs_lists.py`, and a test fails if a note isn't shown on any page.
+
+- Avni's questions, answered in the notes:
+  - My Network: the "Expect a response" and "Hiring fit" ratings are saved per person (`bedrock.connection_status`). Only that page reads them, for its columns, filters and sorts. They don't change the order, the P1/P2 bands or any other page.
+  - Candidates: the nightly sync takes people who emailed or met any synced mailbox and aren't contacts yet. They become candidates when warm (in touch in the last 90 days, or 3+ messages). This covers all mail, not only Jobs mail.
+- Fixed where the page contradicted its note:
+  - Accounts' default sort was the status in alphabetical order. It now uses the server's rank: Pursuing, Stewarding, Re-activating, Activating, and so on.
+  - Pipeline's "N this wk" chip now reads "N in 7 days", which is what it counts.
+- Dates:
+  - Placement application dates read "updated <date>", since they show the last edit and not the application date.
+  - Accounts "Last activity" shows the exact date on hover.
+- Fixed a Phase 1 bug: the notes were cached in the browser forever, so a note added later never appeared. They now refresh after 10 minutes.
+- Checked in the app on live data: every note opens with its words on Contacts, Accounts, Pipeline, Placement › Roles, My Network and Candidates.
+  - Accounts now sorts Pursuing first.
+  - Pipeline shows "in 7 days" and no "this wk".
+- Not seen locally: the Builders board. Its endpoint needs a database permission the read-only user doesn't have. The note sits beside the status counts, which show once the board loads.
+- Not covered: the tabs inside expanded rows (Activity, Opportunities, Contacts and so on on Contacts and Accounts). They're details of one record, not lists of the page.

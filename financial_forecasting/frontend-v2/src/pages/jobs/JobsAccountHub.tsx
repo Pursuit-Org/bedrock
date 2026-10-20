@@ -39,6 +39,7 @@ import {
   useJobsAccounts, useJobsStaff, useUpdateJobsAccount,
   type JobsAccount, type JobsAccountStatus, type JobsStaff,
 } from "@/services/jobs";
+import { ListWhy } from "@/components/jobs/ListWhy";
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 function relativeDays(iso: string | null): string {
@@ -88,7 +89,9 @@ const totalHired = (a: JobsAccount) => (a.builders_hired ?? 0) + (a.fellows_hire
 function extract(a: JobsAccount, key: ColKey): string | number {
   switch (key) {
     case "account":       return a.account.toLowerCase();
-    case "status":        return a.account_status;
+    // The server's rank (Pursuing first), not the label: alphabetically the
+    // default sort put Activating and Deprioritized on top (PRO-105).
+    case "status":        return statusRank(a.account_status);
     case "owner":         return a.owner_email ?? "";
     // Sort by the band's lower bound, not the label — alphabetically "1001-5000"
     // sorts before "51-200", which is not what anyone means by sorting on size.
@@ -131,6 +134,10 @@ const GROUP_OPTIONS = [
   { value: "has_opps", label: "Group by Has opportunities" },
 ];
 const STATUSES: JobsAccountStatus[] = ["Pursuing", "Stewarding", "Re-activating", "Activating", "Prospect", "Dormant", "Deprioritized", "On Hold"];
+const statusRank = (s: JobsAccountStatus) => {
+  const i = STATUSES.indexOf(s);
+  return i < 0 ? STATUSES.length : i;
+};
 const YESNO = [{ value: "yes", label: "Yes" }, { value: "no", label: "No" }];
 
 interface JobsAccountsView {
@@ -206,7 +213,12 @@ function AccountRow({
       return <span className="inline-flex items-center gap-1 text-[12px] text-ink-2" title={title}><UserCheck size={11} className="text-green" />{total}</span>;
     })(),
     deal_types: (() => { const d = dealTypesOf(account); return d.length ? <span className="truncate text-[11.5px] text-ink-3">{d.map((t) => DEAL_TYPE_LABELS[t as keyof typeof DEAL_TYPE_LABELS] ?? t).join(", ")}</span> : <span className="text-ink-4">—</span>; })(),
-    last_activity: <span className="whitespace-nowrap text-[11.5px] text-ink-4">{relativeDays(account.last_activity_at ?? null)}</span>,
+    last_activity: (
+      <span className="whitespace-nowrap text-[11.5px] text-ink-4"
+        title={account.last_activity_at ? `Last activity ${new Date(account.last_activity_at).toLocaleDateString()}` : "No activity"}>
+        {relativeDays(account.last_activity_at ?? null)}
+      </span>
+    ),
   };
   return (
     <Fragment>
@@ -351,6 +363,7 @@ export function JobsAccountHub({ initialQuery }: { initialQuery?: string } = {})
           <option value="all">All accounts</option>
         </select>
         <span className="shrink-0 whitespace-nowrap font-mono text-[12px] text-ink-4" title={isLoading ? undefined : `${totals.opps} opportunities · ${totals.contacts} contacts`}>{isLoading ? "…" : `${filtered.length.toLocaleString()} account${filtered.length === 1 ? "" : "s"}`}</span>
+        <ListWhy listKey="accounts" className="shrink-0" />
         <div className="ml-auto flex shrink-0 items-center gap-2">
           <ColumnChooser allColumns={COLUMN_ORDER} labels={COL_LABELS} visible={visibleCols} required={["account"]} onToggle={toggleCol} />
           <SavedViewsPicker<JobsAccountsView>

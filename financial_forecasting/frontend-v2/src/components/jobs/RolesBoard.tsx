@@ -33,6 +33,7 @@ import {
   type UnmatchedApplication,
   type StaffSourcedGroup,
 } from "@/services/jobsOpps2";
+import { ListWhy } from "@/components/jobs/ListWhy";
 
 // ── Shared display helpers (small lookup tables kept local to this board,
 //    mirroring the existing convention in OppBuilderActivity.tsx of
@@ -217,7 +218,7 @@ function BuilderSourcedRow({
                 {a.suggested_match.confidence === "exact" ? "exact match" : "likely match"}
               </>
             ) : (
-              fmtDate(a.updated_at)
+              `updated ${fmtDate(a.updated_at)}`
             )}
           </span>
           <div className="flex flex-wrap items-center gap-3">
@@ -316,6 +317,7 @@ function BuilderSourcedColumn({
           <span className="ml-2 font-normal normal-case text-ink-4">
             · last 30 days
           </span>
+          <ListWhy listKey="roles_builder_sourced" className="ml-1" />
         </span>
         <span className="text-[11px] text-ink-4">{all.length}</span>
       </div>
@@ -452,7 +454,7 @@ function StaffSourcedGroupRow({
                 </span>
                 <div className="flex flex-wrap items-center gap-2">
                   <StageSelect appId={a.job_application_id} stage={a.stage} />
-                  <span className="font-mono text-[10.5px] text-ink-4">{fmtDate(a.updated_at)}</span>
+                  <span className="font-mono text-[10.5px] text-ink-4">updated {fmtDate(a.updated_at)}</span>
                   <button
                     type="button"
                     onClick={() => onDismiss(a.job_application_id)}
@@ -488,6 +490,7 @@ function StaffSourcedColumn({
         <span className="text-[10.5px] uppercase tracking-wider text-ink-4">
           Staff-Sourced
           <span className="ml-2 font-normal normal-case text-ink-4">· last 30 days</span>
+          <ListWhy listKey="roles_staff_sourced" className="ml-1" />
         </span>
         <span className="text-[11px] text-ink-4">{totalApplicants}</span>
       </div>
@@ -1193,7 +1196,7 @@ function RoleBoardRow({ seats }: { seats: RolesBoardRole[] }) {
                   <span className="min-w-0 flex-1 truncate text-[12px] text-ink" title={a.builder}>{a.builder}</span>
                   <div className="flex shrink-0 items-center gap-2">
                     <StageSelect appId={a.job_application_id} stage={a.stage} />
-                    <span className="font-mono text-[10.5px] text-ink-4">{fmtDate(a.updated_at)}</span>
+                    <span className="font-mono text-[10.5px] text-ink-4">updated {fmtDate(a.updated_at)}</span>
                     <button
                       type="button"
                       title="Remove from this role (doesn't delete the application, just unlinks it)"
@@ -1339,6 +1342,7 @@ export function RolesBoard() {
             <span className="text-[10.5px] uppercase tracking-wider text-ink-4">
               Pursuit-Supported
               <span className="ml-2 font-normal normal-case text-ink-4">· drag the grip to reorder</span>
+              <ListWhy listKey="roles_pursuit_supported" className="ml-1" />
             </span>
             <button
               type="button"

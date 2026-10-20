@@ -30,6 +30,7 @@ import {
   type BuilderEditableField, type BuilderListKey as ArrayKey,
   type BuilderRatingKey as RatingKey, type BuilderTriKey as TriKey,
 } from "@/components/jobs/BuilderFieldEditor";
+import { ListWhy } from "@/components/jobs/ListWhy";
 
 type ViewMode = "table" | "board";
 type SortDir = "asc" | "desc";
@@ -316,6 +317,7 @@ export function JobsBuilders() {
               <span className="font-mono font-semibold tabular-nums">{statusCounts[s] ?? 0}</span>
             </span>
           ))}
+          <ListWhy listKey="builders_board" className="self-center" />
         </div>
       ) : null}
 

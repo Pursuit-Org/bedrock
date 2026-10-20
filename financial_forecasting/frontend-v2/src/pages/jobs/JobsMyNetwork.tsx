@@ -27,10 +27,14 @@ import {
   AddFilterButton, FilterChip, describeRule, ruleApplies,
   type FieldMeta, type FilterRule,
 } from "@/pages/cleanup/Filters";
+import { ListWhy } from "@/components/jobs/ListWhy";
 
 // ── Section label + bordered panel (same shell as the Jobs Home zones) ───────
-function Section({ title, count, action, children }: {
-  title: string; count?: number; action?: React.ReactNode; children: React.ReactNode;
+function Section({ title, count, why, action, children }: {
+  title: string; count?: number;
+  /** The list's key in services/jobs_lists.py, for its "Why these?" (PRO-105). */
+  why?: string;
+  action?: React.ReactNode; children: React.ReactNode;
 }) {
   return (
     <div className="flex flex-col gap-3">
@@ -38,6 +42,7 @@ function Section({ title, count, action, children }: {
         <div className="flex items-baseline gap-2">
           <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">{title}</span>
           {count != null && <span className="text-[11px] tabular-nums text-ink-4">{count}</span>}
+          {why ? <ListWhy listKey={why} /> : null}
         </div>
         {action}
       </div>
@@ -515,6 +520,7 @@ function MyNetworkZone({ scope }: { scope: NetworkScope }) {
   return (
     <Section
       title={scope === "pursuit" ? "Tagged contacts" : "Connections"}
+      why="my_network"
       // Show "matched of total" the moment a filter narrows anything, so the
       // count can never be mistaken for the whole network.
       count={filtering ? undefined : data?.total}

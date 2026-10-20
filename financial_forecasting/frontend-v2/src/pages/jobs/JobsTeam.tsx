@@ -112,7 +112,7 @@ function StatusChip({ stage }: { stage: JobStage }) {
 }
 
 /** Row indicator: shows recent (trailing-7d) activity so the team can spot which
- *  accounts moved this week at a glance. */
+ *  accounts moved lately at a glance. Says "7 days": it isn't the calendar week. */
 function RecentActivityDot({ recent, last }: { recent: number | undefined; last: string | null | undefined }) {
   if (!recent || recent <= 0) return null;
   return (
@@ -121,7 +121,7 @@ function RecentActivityDot({ recent, last }: { recent: number | undefined; last:
       title={last ? `Last activity ${fmtRelative(last)}` : "Recent activity"}
     >
       <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-      {recent} this wk
+      {recent} in 7 days
     </span>
   );
 }
@@ -1198,6 +1198,7 @@ function ContactsTab({
 // JobsHome and JobsOpportunitiesOverview already import it from here.
 export { stageOptionsFor, useOppStageOptions } from "@/lib/oppStageOptions";
 import { useOppStageOptions, useGatedStageOptions } from "@/lib/oppStageOptions";
+import { ListWhy } from "@/components/jobs/ListWhy";
 
 // Structured closed-lost reasons (drives the "why deals die" analysis).
 // The combined vocabulary (Kwame 2026-08-05): the seven already in use plus the
@@ -2396,6 +2397,7 @@ export function JobsTeam() {
         <span className="font-mono text-[12px] text-ink-4">
           {isLoading ? "…" : `${filtered.length} opportunit${filtered.length === 1 ? "y" : "ies"}`}
         </span>
+        <ListWhy listKey="pipeline_table" />
         <div className="ml-auto flex items-center gap-2">
           <ColumnChooser
             allColumns={OPP_COLUMN_ORDER}

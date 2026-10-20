@@ -48,6 +48,7 @@ import {
   type JobStage, type JobContactWithDeal, type ContactSearchResult, type ContactCreateBody, type MembershipStage,
   exportJobsRows,
 } from "@/services/jobs";
+import { ListWhy } from "@/components/jobs/ListWhy";
 
 // ── last touch: most recent jobs-relevant activity date ───────────────────────
 function relativeDays(iso: string | null | undefined): string {
@@ -825,6 +826,7 @@ export function JobsContacts({ initialQuery, initialContactId, initialConnectedO
         <span className="whitespace-nowrap font-mono text-[12px] text-ink-4">{isLoading ? "…" : universeTruncated
           ? `${filtered.length.toLocaleString()} of ${serverTotal.toLocaleString()} contacts`
           : `${filtered.length.toLocaleString()} contact${filtered.length === 1 ? "" : "s"}`}</span>
+        <ListWhy listKey="contacts" />
         <div className="ml-auto flex items-center gap-2">
           <ColumnChooser allColumns={COLUMN_ORDER} labels={COL_LABELS} visible={visibleCols} required={["name"]} onToggle={toggleCol} />
           <SavedViewsPicker<JobsContactsView> scopeKey="jobs-contacts" currentFilters={{ query, rules, visibleCols, groupBy, sort }} onLoad={(v) => { setQuery(v.query ?? ""); setRules(v.rules ?? []); const g = v.groupBy ?? ""; setGroupBy(g); setGroupExceptions(EMPTY); setGroupMode(g === ACCOUNT_GROUP ? "collapsed" : "expanded"); if (v.visibleCols?.length) replaceVisibleCols(v.visibleCols); if (v.sort) setSort(v.sort); }} />
