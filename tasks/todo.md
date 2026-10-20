@@ -111,3 +111,21 @@ PRs 2, 4✓, 8✓, 9, 10✓ ship independently.
 ## Future Considerations
 
 - **Pipeline Cleanup Tool**: Build a dedicated cleanup/hygiene feature for stale opportunities (past close date or no updates in 30+ days). Removed from Overview dashboard — belongs as its own tool, not on the main dashboard.
+
+## Email chains: latest-message logging + Last activity (2026-10-20)
+
+Plan: `~/.claude/plans/i-want-to-address-goofy-owl.md`. Branch `claude/bedrock-email-logging-analysis-beb8f0`.
+Root cause: gmail-sync stores one row per thread dated/headlined by its FIRST message; replies were captured
+(e.g. Dell "Pursuit Concept Note Submission" = 15 msgs, last Oct 19) but invisible. SF "Last activity" never sees Gmail.
+
+- [x] Migration `migrations/2026-10-20-activity-email-thread-latest.sql` (additive)
+- [x] gmail_sync: latest-human headline, recency columns, per-message to/cc, richer-copy dedup, label + watermark hardening
+- [x] email_message_index: recipients + is_automated, upsert + prune
+- [x] API: feeds sort by COALESCE(last_message_at, activity_date); per-message payload (quote-stripped, newest 20)
+- [x] services/last_activity.py → `bedrock_last_activity_at` on /api/salesforce/accounts + /contacts
+- [x] Frontend: thread row (badge, latest sender, per-message expand); lastActivityDate()/daysSince() on Contact/Account pages
+- [x] Pre-migration read fallback (feeds + last-activity degrade, never 500)
+- [x] Tests: tests/test_email_thread_latest.py (29), frontend-v2/tests/lastActivity.test.ts
+- [ ] Apply migration + run scripts/backfill_email_thread_latest.py (needs owner creds)
+- [x] Local verification + hand-off link to Youssef (approved 2026-10-20); PR opened for Jac
+- Follow-ups: account status chip + Jobs "Last touch" → last_activity service; SF write-back (out of scope)

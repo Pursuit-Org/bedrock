@@ -853,7 +853,8 @@ async def get_accounts(
             # `v3` — bumped whenever a field joins a projection (v2:
             # SecondaryAccountOwner__c, v3: Philanthropy__c on light) so
             # pre-deploy cached rows aren't served.
-            f"accounts:v3:{limit or 'all'}:"
+            # v4: bedrock_last_activity_at.
+            f"accounts:v4:{limit or 'all'}:"
             f"{'light' if use_light else 'full'}:"
             f"{'active' if active_only else 'any'}"
         )
@@ -941,10 +942,15 @@ async def get_accounts(
                 status_complete = False
                 logger.warning(f"Failed to derive account_status; serving without it: {ex}")
 
+        # Recency from Bedrock's own activity (Gmail replies included), which
+        # SF's LastActivityDate never sees. Attached on the active_only
+        # pre-paint too — the list's Last-activity filter reads it.
+        recency_complete = await _attach_bedrock_last_activity(records, "account")
+
         # A response with partial statuses is served, not cached: caching
         # it would pin the degraded answer for CACHE_TTL_ACCOUNTS for every
         # user, long after the database is back.
-        if status_complete:
+        if status_complete and recency_complete:
             cache.set(cache_key, records, CACHE_TTL_ACCOUNTS)
         return records
 
@@ -953,6 +959,44 @@ async def get_accounts(
     except Exception as e:
         logger.error(f"Error fetching accounts: {e}")
         raise sf_http_error(e, "records")
+
+
+_CONTACT_EMAIL_FIELDS = (
+    "Email", "npe01__WorkEmail__c", "npe01__HomeEmail__c", "npe01__AlternateEmail__c",
+)
+
+
+async def _attach_bedrock_last_activity(records: list, kind: str) -> bool:
+    """Attach `bedrock_last_activity_at` (ISO string or None) to SF account or
+    contact rows — see services/last_activity.py for what counts. Returns
+    False when the bedrock DB was unavailable (field left None) so callers
+    don't cache the degraded response."""
+    from db import get_pool
+    from services.last_activity import last_activity_for_accounts, last_activity_for_contacts
+
+    if not records:
+        return True
+    latest: dict = {}
+    ok = True
+    try:
+        pool = get_pool()
+        if pool is None:
+            raise RuntimeError("DB pool unavailable")
+        async with pool.acquire() as conn:
+            if kind == "account":
+                latest = await last_activity_for_accounts(conn, (r.get("Id") for r in records))
+            else:
+                latest = await last_activity_for_contacts(
+                    conn,
+                    ((r.get("Id"), [r.get(f) for f in _CONTACT_EMAIL_FIELDS]) for r in records),
+                )
+    except Exception as ex:  # noqa: BLE001
+        ok = False
+        logger.warning(f"bedrock last-activity unavailable for {kind}s; serving SF dates only: {ex}")
+    for r in records:
+        dt = latest.get(r.get("Id"))
+        r["bedrock_last_activity_at"] = dt.isoformat() if dt else None
+    return ok
 
 
 async def _attach_account_status(accounts: list, salesforce) -> bool:
@@ -1106,7 +1150,8 @@ async def get_contacts(
             return []
         use_light = fields == "light"
         cache_key = (
-            f"contacts:{account_id}:{limit or 'all'}:"
+            # v2: bedrock_last_activity_at.
+            f"contacts:v2:{account_id}:{limit or 'all'}:"
             f"{'light' if use_light else 'full'}:"
             f"{'active' if active_only else 'any'}"
         )
@@ -1188,7 +1233,8 @@ async def get_contacts(
 
         result = await salesforce.query_all(query)
         contacts = result.get("records", [])
-        cache.set(cache_key, contacts, CACHE_TTL_ACCOUNTS)
+        if await _attach_bedrock_last_activity(contacts, "contact"):
+            cache.set(cache_key, contacts, CACHE_TTL_ACCOUNTS)
         return contacts
 
     except HTTPException:

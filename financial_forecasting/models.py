@@ -202,6 +202,12 @@ class Activity(BaseModel):
     meeting_attendees: Optional[List[Dict[str, Any]]] = None
     meeting_location: Optional[str] = None
     attachments: Optional[List[Dict[str, Any]]] = None
+    # gmail-sync threads: the row is dated to its first message; these track the
+    # latest human (non-automated) message so feeds can sort by recency.
+    last_message_at: Optional[datetime] = None
+    last_message_from: Optional[str] = None
+    message_count: Optional[int] = None
+    email_messages: Optional[List[Dict[str, Any]]] = None
     logged_by: Optional[str] = None
     owner_id: Optional[str] = None
     sf_last_modified: Optional[datetime] = None

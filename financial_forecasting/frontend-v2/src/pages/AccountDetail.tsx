@@ -20,6 +20,7 @@ import { Tag } from "@/components/ui/Tag";
 import { Tooltip } from "@/components/ui/Tooltip";
 import { accountStatusVariant } from "@/lib/accountStatus";
 import { fmtDate, fmtMoney, fmtMoneyFull, initials, toExternalHref } from "@/lib/format";
+import { lastActivityDate } from "@/lib/lastActivity";
 import { useCollapsible } from "@/lib/collapsible";
 import { isLost, isOpen, isWon, SF_STAGE_OPTIONS, stageStatus } from "@/lib/stages";
 import { rankByQuery, searchMatcher } from "@/lib/search";
@@ -179,7 +180,7 @@ export function AccountDetailPage() {
   };
 
   const closedCount = account.npo02__NumberOfClosedOpps__c ?? 0;
-  const lastActivity = account.Last_Activity_Date__c ?? account.LastActivityDate ?? null;
+  const lastActivity = lastActivityDate(account);
 
   // Lifetime is computed from wonOpps so it matches the History chart
   // and "Awarded" section line-by-line.
@@ -651,7 +652,7 @@ export function AccountDetailPage() {
                     ) : null}
                   </td>
                   <td className="mono px-5 py-2.5 text-right text-[11.5px] text-ink-3">
-                    {fmtDate(c.Last_Activity_Date__c ?? c.LastActivityDate)}
+                    {fmtDate(lastActivityDate(c))}
                   </td>
                   <td className="px-5 py-2.5 text-[12.5px]">
                     {toExternalHref(c.LinkedIn_URL__c) ? (

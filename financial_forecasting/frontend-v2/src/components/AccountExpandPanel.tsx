@@ -13,6 +13,7 @@ import { SortableHeader } from "@/components/ui/SortableHeader";
 import { StageChip } from "@/components/ui/StageChip";
 import { Tag } from "@/components/ui/Tag";
 import { fmtDate, fmtMoney, initials } from "@/lib/format";
+import { lastActivityDate } from "@/lib/lastActivity";
 import { sortBy, useSort } from "@/lib/sort";
 import { SF_STAGE_OPTIONS, stageStatus } from "@/lib/stages";
 import { useStageChangeGate } from "@/lib/useStageChangeGate";
@@ -494,7 +495,7 @@ function AccountContacts({ accountId }: { accountId: string }) {
                     ) : null}
                   </td>
                   <td className="mono px-3 py-1.5 text-right text-[11px] text-ink-3">
-                    {fmtDate(c.Last_Activity_Date__c ?? c.LastActivityDate)}
+                    {fmtDate(lastActivityDate(c))}
                   </td>
                 </tr>
               ))}

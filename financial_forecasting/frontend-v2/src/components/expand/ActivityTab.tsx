@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { ChevronDown, ChevronRight, Search, X } from "lucide-react";
 
 import { ActivitySourceIcon } from "@/components/ActivitySourceIcon";
+import { ThreadMessages, threadView } from "@/components/ActivityTimeline";
 import { useActivities, type ActivityFilters } from "@/services/activities";
 import { useAccounts } from "@/services/accounts";
 import { useContacts } from "@/services/contacts";
@@ -181,8 +182,11 @@ function ActivityRow({
 }) {
   const [open, setOpen] = useState(false);
   const [showFull, setShowFull] = useState(false);
+  const [showAllMessages, setShowAllMessages] = useState(false);
+  const thread = useMemo(() => threadView(a), [a]);
 
-  const dateStr = fmtDate(a.occurred_at ?? a.activity_date ?? a.created_at ?? null);
+  // An email thread is as recent as its latest reply, not its first message.
+  const dateStr = fmtDate(a.last_message_at ?? a.occurred_at ?? a.activity_date ?? a.created_at ?? null);
   const subject = cleanEmailText(a.subject ?? a.email_snippet) || "(no subject)";
 
   const contextName =
@@ -201,6 +205,7 @@ function ActivityRow({
   const cleanedSnippet = cleanEmailText(a.email_snippet);
 
   const hasDetail =
+    !!thread ||
     !!(a.description && a.description !== a.subject) ||
     !!cleanedBody ||
     !!cleanedSnippet ||
@@ -229,8 +234,15 @@ function ActivityRow({
           <ActivitySourceIcon source={a.source} type={a.type} size={15} />
         </span>
         <span className="min-w-0 flex-1">
-          <span className="block truncate text-[12.5px] text-ink" title={subject}>
-            {subject}
+          <span className="flex min-w-0 items-baseline gap-1.5">
+            <span className="truncate text-[12.5px] text-ink" title={subject}>
+              {subject}
+            </span>
+            {thread && thread.total > 1 ? (
+              <span className="mono flex-shrink-0 text-[10.5px] text-ink-3" title={`${thread.total} messages in this thread`}>
+                · {thread.total}
+              </span>
+            ) : null}
           </span>
           {contextName ? (
             <span className="block truncate text-[10.5px] text-ink-3">
@@ -253,7 +265,16 @@ function ActivityRow({
               {a.meeting_location ? <span>{a.meeting_location}</span> : null}
             </div>
           ) : null}
-          {a.description && a.description !== a.subject ? (
+          {thread ? (
+            <div className="text-ink-2">
+              <ThreadMessages
+                thread={thread}
+                needle=""
+                showAll={showAllMessages}
+                onShowAll={() => setShowAllMessages(true)}
+              />
+            </div>
+          ) : a.description && a.description !== a.subject ? (
             <p className="whitespace-pre-wrap text-[12px] text-ink-2">
               {a.description}
             </p>

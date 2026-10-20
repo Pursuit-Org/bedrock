@@ -93,6 +93,10 @@ export interface SfAccount {
 
   Total_Revenue_Generated__c?: number | null;
   Last_Activity_Date__c?: string | null;
+  /** Bedrock-computed: latest real email message on the account's threads, or
+   *  other logged activity (backend services/last_activity.py). Read via
+   *  lastActivityDate(), which merges it with the SF fields. */
+  bedrock_last_activity_at?: string | null;
   Drive_Strategy_Folder_URL__c?: string | null;
 }
 
@@ -213,6 +217,10 @@ export interface SfContact {
   LastActivityDate?: string | null;
   Last_Activity_Date__c?: string | null;
   Days_Since_Last_Activity__c?: number | null;
+  /** Bedrock-computed: latest real email message the contact was on, or other
+   *  logged activity (backend services/last_activity.py). Read via
+   *  lastActivityDate(), which merges it with the SF fields. */
+  bedrock_last_activity_at?: string | null;
   Preferred_Name__c?: string | null;
   Pronouns__c?: string | null;
   LinkedIn_URL__c?: string | null;
@@ -271,6 +279,18 @@ export interface SfTask {
 /**
  * Bedrock activity (matches routes/activities.py shape).
  */
+/** One message of a gmail-sync thread, newest-capped and quote-stripped by the API. */
+export interface BedrockEmailMessage {
+  message_id?: string | null;
+  from: string;
+  to?: string[] | null;
+  cc?: string[] | null;
+  sent_at?: string | null;
+  snippet?: string | null;
+  body_text?: string | null;
+  attachment_count?: number;
+}
+
 export interface BedrockActivity {
   id: string;
   type: string;
@@ -280,7 +300,13 @@ export interface BedrockActivity {
   email_snippet?: string | null;
   email_body_text?: string | null;
   occurred_at?: string | null;
+  /** Gmail threads: dated to their FIRST message. */
   activity_date?: string | null;
+  /** Gmail threads: latest human (non-automated) message — feeds sort by this. */
+  last_message_at?: string | null;
+  last_message_from?: string | null;
+  message_count?: number | null;
+  email_messages?: BedrockEmailMessage[] | null;
   created_at?: string | null;
   opportunity_id?: string | null;
   account_id?: string | null;

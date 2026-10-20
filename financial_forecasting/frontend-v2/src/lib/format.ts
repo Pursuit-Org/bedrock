@@ -81,7 +81,7 @@ export function fmtMoneyFull(
  * stored. Datetime strings (with a "T") still go through the normal
  * Date parser, since for those the time-of-day matters.
  */
-function parseDateForDisplay(iso: string): Date {
+export function parseDateForDisplay(iso: string): Date {
   const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
   if (dateOnly) {
     const [, y, m, d] = dateOnly;

@@ -41,8 +41,28 @@ function cleanEmailText(raw: string): string {
 }
 
 function activityTimestamp(a: BedrockActivity): string | null {
-  return a.activity_date ?? a.occurred_at ?? a.created_at ?? null;
+  // An email thread is as recent as its latest reply, not its first message.
+  return a.last_message_at ?? a.activity_date ?? a.occurred_at ?? a.created_at ?? null;
 }
+
+/** "Avery Landrum <avery@dell.org>" → "Avery Landrum"; bare address → address. */
+function senderName(from: string | null | undefined): string {
+  if (!from) return "";
+  const name = from.replace(/<[^>]*>/, "").replace(/"/g, "").trim();
+  return name || from.replace(/[<>]/g, "").trim();
+}
+
+/** Newest-first thread messages (the API already drops reminder bots and
+ *  caps to the newest N) and the one the row headline should show. */
+export function threadView(a: BedrockActivity) {
+  const msgs = a.email_messages ?? [];
+  if (msgs.length === 0) return null;
+  const newestFirst = [...msgs].reverse();
+  const total = Math.max(a.message_count ?? 0, msgs.length);
+  return { newestFirst, headline: newestFirst[0], total };
+}
+
+const THREAD_INITIAL_MESSAGES = 3;
 
 // ── Quick filter chips ─────────────────────────────────────────────────────
 
@@ -725,9 +745,15 @@ function ActivityRow({
   // Manual expand only — search no longer auto-opens rows.
   const [expanded, setExpanded] = useState(false);
   const [showFull, setShowFull] = useState(false);
+  const [showAllMessages, setShowAllMessages] = useState(false);
+  const thread = useMemo(() => threadView(a), [a]);
   const rawBody = a.email_body_text ?? a.email_snippet ?? a.description ?? "";
-  const hasBody = rawBody.trim().length > 0;
-  const body = hasBody ? cleanEmailText(rawBody) : "";
+  const hasBody = rawBody.trim().length > 0 || !!thread;
+  const body = rawBody.trim() ? cleanEmailText(rawBody) : "";
+  // Collapsed preview follows the latest message, not the thread's opener.
+  const headlineText = thread
+    ? cleanEmailText(thread.headline.snippet || thread.headline.body_text || "")
+    : body;
   const date = fmtDate(activityTimestamp(a));
   // Meetings often have no body but still carry useful detail (location,
   // duration, Fireflies notes if logged on the SF Event description).
@@ -765,12 +791,25 @@ function ActivityRow({
             <ActivitySourceIcon source={a.source} type={a.type} size={16} />
           </span>
           <div className="min-w-0 flex-1">
-            <div className="truncate text-[13px] font-medium text-ink">
-              {highlightMatches(a.subject ?? "(no subject)", needle)}
+            <div className="flex min-w-0 items-baseline gap-1.5">
+              <span className="truncate text-[13px] font-medium text-ink">
+                {highlightMatches(a.subject ?? "(no subject)", needle)}
+              </span>
+              {thread && thread.total > 1 ? (
+                <span
+                  className="mono flex-shrink-0 text-[11px] text-ink-3"
+                  title={`${thread.total} messages in this thread`}
+                >
+                  · {thread.total}
+                </span>
+              ) : null}
             </div>
             {hasBody && !expanded ? (
               <div className="line-clamp-1 text-[12px] text-ink-3">
-                {highlightMatches(body, needle)}
+                {thread ? (
+                  <span className="text-ink-2">{senderName(thread.headline.from)}: </span>
+                ) : null}
+                {highlightMatches(headlineText, needle)}
               </div>
             ) : null}
             {a.owner_email ? (
@@ -833,7 +872,14 @@ function ActivityRow({
               ) : null}
             </div>
           ) : null}
-          {hasBody ? (
+          {thread ? (
+            <ThreadMessages
+              thread={thread}
+              needle={needle}
+              showAll={showAllMessages}
+              onShowAll={() => setShowAllMessages(true)}
+            />
+          ) : hasBody ? (
             <>
               <div className="whitespace-pre-wrap break-words">
                 {highlightMatches(
@@ -866,5 +912,66 @@ function ActivityRow({
         </div>
       ) : null}
     </li>
+  );
+}
+
+export function ThreadMessages({
+  thread,
+  needle,
+  showAll,
+  onShowAll,
+}: {
+  thread: NonNullable<ReturnType<typeof threadView>>;
+  needle: string;
+  showAll: boolean;
+  onShowAll: () => void;
+}) {
+  const visible = showAll
+    ? thread.newestFirst
+    : thread.newestFirst.slice(0, THREAD_INITIAL_MESSAGES);
+  const hiddenLoaded = thread.newestFirst.length - visible.length;
+  // Messages older than the API's newest-N cap aren't in the payload at all.
+  const notLoaded = thread.total - thread.newestFirst.length;
+  return (
+    <ol className="space-y-3">
+      {visible.map((m, i) => {
+        const text = cleanEmailText(m.body_text || m.snippet || "");
+        return (
+          <li
+            key={m.message_id ?? i}
+            className={cn(i > 0 && "border-t border-border-strong pt-3")}
+          >
+            <div className="mb-1 flex items-baseline justify-between gap-3 text-[11.5px]">
+              <span className="truncate font-medium text-ink">{senderName(m.from)}</span>
+              <span className="mono flex-shrink-0 text-ink-3">{fmtDate(m.sent_at ?? null)}</span>
+            </div>
+            <div className="whitespace-pre-wrap break-words">
+              {text ? highlightMatches(text, needle) : <span className="italic text-ink-4">No text</span>}
+            </div>
+            {m.attachment_count ? (
+              <div className="mt-1 text-[11px] text-ink-3">
+                {m.attachment_count} attachment{m.attachment_count === 1 ? "" : "s"}
+              </div>
+            ) : null}
+          </li>
+        );
+      })}
+      {hiddenLoaded > 0 ? (
+        <li>
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onShowAll(); }}
+            className="text-[11.5px] text-accent hover:underline"
+          >
+            Show {hiddenLoaded} earlier message{hiddenLoaded === 1 ? "" : "s"}
+          </button>
+        </li>
+      ) : null}
+      {(showAll || hiddenLoaded === 0) && notLoaded > 0 ? (
+        <li className="text-[11px] italic text-ink-4">
+          {notLoaded} older message{notLoaded === 1 ? "" : "s"} not shown
+        </li>
+      ) : null}
+    </ol>
   );
 }
