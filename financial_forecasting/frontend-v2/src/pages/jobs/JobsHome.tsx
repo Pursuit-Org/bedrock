@@ -440,12 +440,17 @@ function OppTableRow({ o, needs, expanded, onToggle, showOwner, resolveName, onR
   // Keep in sync with DealRow.saveStage (JobsTeam.tsx) — same modal gating.
   function saveStage(stage: JobStage) {
     if (stage === o.stage) return Promise.resolve();
+    // Closed Lost saves with its reason, from the modal (PRO-110).
+    if (stage === "closed_lost") {
+      onClosedLost({ id: o.id, account_name: o.account_name });
+      // The cell keeps the current stage: the modal makes the move.
+      return Promise.reject(new Error("Stage change cancelled"));
+    }
     return new Promise<void>((resolve, reject) => {
       updateOpp.mutate({ id: o.id, stage }, {
         onSuccess: () => {
           const isPlacementType = o.deal_type === "ft" || o.deal_type === "pt_contract";
           if (stage === "closed_won" && isPlacementType) onRecordPlacements({ id: o.id, account_name: o.account_name, deal_type: o.deal_type });
-          else if (stage === "closed_lost") onClosedLost({ id: o.id, account_name: o.account_name });
           else if (stage === "active_opportunity_confirmed" && (o.num_roles ?? 0) === 0) onCommittedRoles({ id: o.id, account_name: o.account_name });
           resolve();
         },

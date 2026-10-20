@@ -14,6 +14,7 @@ import { JobsComments } from "@/components/jobs/JobsComments";
 import { JobsTasks } from "@/components/jobs/JobsTasks";
 import { initials, LogActivityForm } from "@/components/jobs/ProspectAccountExpandPanel";
 import { RequestIntroDialog } from "@/components/jobs/RequestIntroDialog";
+import { ClosedLostModal } from "@/components/jobs/ClosedLostModal";
 import { RowExpandPanel } from "@/components/RowExpandPanel";
 import { InlineSelect, InlineText } from "@/components/ui/InlineEdit";
 import { cn } from "@/lib/utils";
@@ -131,9 +132,23 @@ export function EditableOppRow({ opp }: { opp: OppRowData }) {
   // Gated on the live CHECK constraint: STAGES_ORDERED carries the 2026-09-21
   // stages, which the database rejects until that migration is applied.
   const stageOptions = useOppStageOptions(opp.stage);
+  // Closed Lost saves with its reason, from the modal (PRO-110).
+  const [closingLost, setClosingLost] = useState(false);
   const save = (field: string, val: unknown) => update.mutateAsync({ id: opp.id, [field]: val }).then(() => undefined);
+  const saveStage = (v: JobStage) => {
+    if (v === "closed_lost" && opp.stage !== "closed_lost") {
+      setClosingLost(true);
+      // The cell keeps the current stage: the modal makes the move.
+      return Promise.reject(new Error("Stage change cancelled"));
+    }
+    return save("stage", v);
+  };
   return (
     <div className="flex items-center gap-2.5 rounded-md border border-border-strong/70 bg-surface px-3 py-2">
+      {closingLost ? (
+        <ClosedLostModal deal={{ id: opp.id, account_name: opp.title || "this opportunity" }}
+          onClose={() => setClosingLost(false)} />
+      ) : null}
       <Briefcase size={13} className="shrink-0 text-ink-4" />
       <span className="min-w-0 flex-1">
         <InlineText value={opp.title ?? null} placeholder={oppRoleLabel(opp)} onSave={(v) => save("title", v)} className="text-[12.5px] font-medium text-ink" />
@@ -142,7 +157,7 @@ export function EditableOppRow({ opp }: { opp: OppRowData }) {
         <InlineSelect<string> value={opp.deal_type ?? null} options={DEAL_TYPE_OPTIONS} emptyLabel="type" onSave={(v) => save("deal_type", v || null)} />
       </span>
       <span onClick={(e) => e.stopPropagation()} className="shrink-0">
-        <InlineSelect<JobStage> value={opp.stage} options={stageOptions} renderValue={(v) => <DealStagePill stage={(v ?? opp.stage) as JobStage} />} onSave={(v) => save("stage", v)} />
+        <InlineSelect<JobStage> value={opp.stage} options={stageOptions} renderValue={(v) => <DealStagePill stage={(v ?? opp.stage) as JobStage} />} onSave={saveStage} />
       </span>
       <Link to={jobsOpportunityPath(opp.id)} state={jobsRef} className="shrink-0 text-ink-4 hover:text-accent" title="Open opportunity"><ExternalLink size={12} /></Link>
     </div>

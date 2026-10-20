@@ -3,7 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { CLOSED_LOST_LABELS, closedLostLabel, untitledOppHeading } from "../src/components/jobs/oppLabels.ts";
+import { CLOSED_LOST_LABELS, PRIORITY_OPTIONS, closedLostLabel, untitledOppHeading } from "../src/components/jobs/oppLabels.ts";
 
 test("closed-lost reasons render as words (PLN-03)", () => {
   assert.equal(closedLostLabel("no_response"), "Went cold");
@@ -25,4 +25,12 @@ test("an untitled opportunity is named by its account (PLN-03)", () => {
   assert.equal(untitledOppHeading("Airbnb"), "Airbnb opportunity");
   assert.equal(untitledOppHeading("  "), "Untitled opportunity");
   assert.equal(untitledOppHeading(null), "Untitled opportunity");
+});
+
+test("P1 is stored as 5 on every priority picker (PRO-110)", () => {
+  assert.equal(PRIORITY_OPTIONS.find((o) => o.label.startsWith("P1"))?.value, "5");
+  assert.equal(PRIORITY_OPTIONS.find((o) => o.label.startsWith("P5"))?.value, "1");
+  // No page keeps its own list: the opportunity page stored 1 for "P1".
+  const page = readFileSync(fileURLToPath(new URL("../src/pages/jobs/JobsOpportunityDetail.tsx", import.meta.url)), "utf8");
+  assert.ok(!/PRIORITY_OPTIONSs*=/.test(page));
 });

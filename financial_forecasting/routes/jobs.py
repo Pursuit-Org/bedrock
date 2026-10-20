@@ -346,6 +346,9 @@ class OpportunityCreate(BaseModel):
     # How many jobs the deal is expected to yield. Optional; the projection
     # reads it until roles are actually created on the deal.
     estimated_jobs: Optional[int] = Field(None, ge=0, le=999)
+    # Only when created already Closed Lost, which then needs a reason (PRO-110).
+    closed_lost_reason: Optional[str] = None
+    closed_lost_note: Optional[str] = None
     note: Optional[str] = None  # note for initial stage history entry
 
 
@@ -378,6 +381,41 @@ class OpportunityUpdate(BaseModel):
     # Column arrives with the 2026-08-05 migration; writes are skipped until then
     # rather than 42703-ing the whole update.
     tags: Optional[list[str]] = None
+    # Slow but active (PRO-110): the owner says it is alive though nothing has
+    # happened for weeks. Sent together; both null clears the mark. Columns
+    # arrive with the 2026-10-20 migration.
+    slow_reason: Optional[str] = None
+    slow_check_again: Optional[date] = None
+
+
+_CLOSED_LOST_REASON_KEYS = {k for k, _ in CLOSED_LOST_REASONS}
+SLOW_MIGRATION = "2026-10-20-opportunity-slow-but-active.sql"
+
+
+def _check_lost_reason(reason: Optional[str], required: bool) -> None:
+    """Closed Lost says why (PRO-110: 12 of 88 lost opportunities had no
+    reason on 10/20, so the Thursday view couldn't say why deals were lost).
+    Required when an opportunity moves to Closed Lost or its reason is cleared;
+    older lost opportunities without one can still be edited otherwise."""
+    if reason and reason not in _CLOSED_LOST_REASON_KEYS:
+        raise HTTPException(400, f"Unknown lost reason: {reason!r}")
+    if required and not reason:
+        raise HTTPException(400, "Closed Lost needs a reason: pick why it was lost")
+
+
+def _slow_mark(reason: Optional[str], check_again: Optional[date]) -> Optional[tuple[str, date]]:
+    """The slow-but-active mark to store, or None to clear it. A reason and a
+    check-again date that isn't in the past are both required to set it."""
+    if reason is None and check_again is None:
+        return None
+    reason = (reason or "").strip()
+    if not reason:
+        raise HTTPException(400, "Slow but active needs a reason: say why it's still alive")
+    if check_again is None:
+        raise HTTPException(400, "Slow but active needs a date to check again")
+    if check_again < datetime.now(jobs_metrics.NY).date():
+        raise HTTPException(400, "The check-again date can't be in the past")
+    return reason, check_again
 
 
 def _check_job_type(job_type: str) -> None:
@@ -3514,6 +3552,102 @@ async def opportunities_projection(
     }}
 
 
+async def _open_opportunity_rows(conn, owner_f: Optional[str], dt_f: Optional[list],
+                                 ref: datetime, *, detail: bool = False):
+    """The opportunities open as of `ref`, each with its `last_movement`: the
+    latest of its creation, a stage change and jobs-related activity on it or
+    its contacts (jobs_metrics.activity_scope_ctes, PRO-101), all before `ref`.
+    The Pipeline overview and the Thursday view (PRO-110) read this one set.
+
+    `detail` adds what the Thursday view shows per opportunity: its title,
+    relationship owner, slow-but-active mark (NULLs until the 2026-10-20
+    migration), and the type and sender of its last activity."""
+    scope = jobs_metrics.activity_scope_ctes(
+        opps="o.created_at < $3::timestamptz AND (o.closed_at IS NULL OR o.closed_at >= $3::timestamptz)",
+        activity=f"{jobs_metrics.external_activity_sql('a')} AND a.activity_date < $3::timestamptz")
+    # Stalled leaves out what an owner marked slow but active, so every view
+    # reads the mark (NULL until the 2026-10-20 migration).
+    has_slow = await _has_column("bedrock", "jobs_opportunity", "slow_reason")
+    extra = ("o.slow_reason, o.slow_check_again," if has_slow else
+             "NULL::text AS slow_reason, NULL::date AS slow_check_again,")
+    if detail:
+        # The sender of an email is email_from; logged_by on a synced email is
+        # the mailbox it was synced from. Anything else was logged by a person.
+        last = r"""opp_last AS (
+            SELECT DISTINCT ON (t.opp_id) t.opp_id, t.at, a.type AS touch_type,
+                   CASE WHEN a.type = 'email' AND a.email_from IS NOT NULL
+                        THEN substring(a.email_from from '[^<\s]+@[^>\s]+')
+                        ELSE coalesce(nullif(a.logged_by, ''), a.email_from) END AS touch_by
+            FROM opp_touches t JOIN bedrock.activity a ON a.id = t.activity_id
+            ORDER BY t.opp_id, t.at DESC
+        )"""
+        marked_by = ("o.slow_marked_by, o.slow_marked_at," if has_slow else
+                     "NULL::text AS slow_marked_by, NULL::timestamptz AS slow_marked_at,")
+        extra += f"""
+               o.title, o.relationship_owner, {marked_by} ol.touch_type, ol.touch_by,"""
+    else:
+        last = """opp_last AS (
+            SELECT opp_id, max(at) AS at FROM opp_touches GROUP BY opp_id
+        )"""
+    return await conn.fetch(f"""
+        WITH {scope},
+        {last}, base AS (
+        SELECT o.id, o.account_name, o.stage, o.deal_type, o.segment, o.owner_email,
+               o.priority, o.created_at, {extra}
+               COALESCE((SELECT max(h.changed_at) FROM bedrock.jobs_stage_history h
+                         WHERE h.opportunity_id = o.id AND h.to_stage = o.stage),
+                        o.created_at) AS entered_stage,
+               -- No history row for the current stage (pre-tracking / imported
+               -- opps): the age below is time SINCE CREATION, not time in stage.
+               (SELECT max(h.changed_at) FROM bedrock.jobs_stage_history h
+                 WHERE h.opportunity_id = o.id AND h.to_stage = o.stage) IS NULL
+                 AS stage_from_created,
+               -- clamped to the as-of instant (in `scope`) so activity logged
+               -- AFTER a selected past week doesn't un-stall that week's view
+               ol.at AS last_touch,
+               (SELECT max(h.changed_at) FROM bedrock.jobs_stage_history h
+                WHERE h.opportunity_id = o.id AND h.changed_at < $3::timestamptz) AS last_stage_change
+        FROM bedrock.jobs_opportunity o
+        LEFT JOIN opp_last ol ON ol.opp_id = o.id
+        WHERE o.deleted_at IS NULL
+          AND o.created_at < $3::timestamptz
+          AND (o.closed_at IS NULL OR o.closed_at >= $3::timestamptz)
+          AND ({_OPP_INSET} OR (o.closed_at IS NOT NULL AND o.closed_at >= $3::timestamptz))
+          AND ($1::text IS NULL OR o.owner_email = $1)
+          AND {_deal_type_sql('o.deal_type', 2)}
+        )
+        SELECT base.*,
+               GREATEST(created_at, last_stage_change, last_touch) AS last_movement
+        FROM base
+    """, owner_f, dt_f, ref)
+
+
+async def _closed_in_window_rows(conn, owner_f: Optional[str], dt_f: Optional[list],
+                                 win_start: datetime, ref: datetime, to_stage: str):
+    """Opportunities whose LATEST stage change before `ref` moved them into
+    `to_stage`, inside [win_start, ref). Counting every history row that ever
+    touched closed_won counted a misclick reverted seconds later (RXR's
+    full-time deal, 2026-09-21) as a win. Anchoring to the latest change before
+    `ref` keeps past weeks honest too: a deal won then and reopened later still
+    counts for that week."""
+    return await conn.fetch(f"""
+        SELECT id, account_name, stage, owner_email, deal_type, closed_lost_reason, at FROM (
+            SELECT DISTINCT ON (h.opportunity_id)
+                   o.id, o.account_name, o.stage, o.owner_email, o.deal_type, o.closed_lost_reason,
+                   h.to_stage, h.changed_at AS at
+            FROM bedrock.jobs_stage_history h
+            JOIN bedrock.jobs_opportunity o ON o.id = h.opportunity_id
+            WHERE h.changed_at < $3::timestamptz
+              AND o.deleted_at IS NULL
+              AND ($1::text IS NULL OR o.owner_email = $1)
+              AND {_deal_type_sql('o.deal_type', 2)}
+            ORDER BY h.opportunity_id, h.changed_at DESC
+        ) last_change
+        WHERE to_stage = $5 AND at >= $4::timestamptz
+        ORDER BY at DESC
+    """, owner_f, dt_f, ref, win_start, to_stage)
+
+
 @router.get("/opportunities/overview")
 async def opportunities_overview(
     owner: Optional[str] = Query(None),
@@ -3581,42 +3715,7 @@ async def opportunities_overview(
     # read called deals with live threads stalled. `last_movement` adds stage
     # changes and creation on top: the "nothing has happened here" clock that
     # Stalled measures.
-    scope = jobs_metrics.activity_scope_ctes(
-        opps="o.created_at < $3::timestamptz AND (o.closed_at IS NULL OR o.closed_at >= $3::timestamptz)",
-        activity=f"{jobs_metrics.external_activity_sql('a')} AND a.activity_date < $3::timestamptz")
-    rows = await conn.fetch(f"""
-        WITH {scope},
-        opp_last AS (
-            SELECT opp_id, max(at) AS at FROM opp_touches GROUP BY opp_id
-        ), base AS (
-        SELECT o.id, o.account_name, o.stage, o.deal_type, o.segment, o.owner_email,
-               o.priority, o.created_at,
-               COALESCE((SELECT max(h.changed_at) FROM bedrock.jobs_stage_history h
-                         WHERE h.opportunity_id = o.id AND h.to_stage = o.stage),
-                        o.created_at) AS entered_stage,
-               -- No history row for the current stage (pre-tracking / imported
-               -- opps): the age below is time SINCE CREATION, not time in stage.
-               (SELECT max(h.changed_at) FROM bedrock.jobs_stage_history h
-                 WHERE h.opportunity_id = o.id AND h.to_stage = o.stage) IS NULL
-                 AS stage_from_created,
-               -- clamped to the as-of instant (in `scope`) so activity logged
-               -- AFTER a selected past week doesn't un-stall that week's view
-               ol.at AS last_touch,
-               (SELECT max(h.changed_at) FROM bedrock.jobs_stage_history h
-                WHERE h.opportunity_id = o.id AND h.changed_at < $3::timestamptz) AS last_stage_change
-        FROM bedrock.jobs_opportunity o
-        LEFT JOIN opp_last ol ON ol.opp_id = o.id
-        WHERE o.deleted_at IS NULL
-          AND o.created_at < $3::timestamptz
-          AND (o.closed_at IS NULL OR o.closed_at >= $3::timestamptz)
-          AND ({_OPP_INSET} OR (o.closed_at IS NOT NULL AND o.closed_at >= $3::timestamptz))
-          AND ($1::text IS NULL OR o.owner_email = $1)
-          AND {_deal_type_sql('o.deal_type', 2)}
-        )
-        SELECT base.*,
-               GREATEST(created_at, last_stage_change, last_touch) AS last_movement
-        FROM base
-    """, owner_f, dt_f, ref)
+    rows = await _open_opportunity_rows(conn, owner_f, dt_f, ref)
 
     # Week-over-week, anchored to `ref` (Sat–Sat): net-new = opportunities created
     # in the selected week; prev = the prior 7-day window; moved-to-committed =
@@ -3646,22 +3745,7 @@ async def opportunities_overview(
     # Anchoring to the latest change before `ref` keeps past weeks honest too: a
     # deal that was won then and reopened later still counts for that week.
     async def _closed_in_window(to_stage: str):
-        return await conn.fetch(f"""
-            SELECT id, account_name, stage, owner_email, at FROM (
-                SELECT DISTINCT ON (h.opportunity_id)
-                       o.id, o.account_name, o.stage, o.owner_email,
-                       h.to_stage, h.changed_at AS at
-                FROM bedrock.jobs_stage_history h
-                JOIN bedrock.jobs_opportunity o ON o.id = h.opportunity_id
-                WHERE h.changed_at < $3::timestamptz
-                  AND o.deleted_at IS NULL
-                  AND ($1::text IS NULL OR o.owner_email = $1)
-                  AND {_deal_type_sql('o.deal_type', 2)}
-                ORDER BY h.opportunity_id, h.changed_at DESC
-            ) last_change
-            WHERE to_stage = $5 AND at >= $4::timestamptz
-            ORDER BY at DESC
-        """, owner_f, dt_f, ref, win_start, to_stage)
+        return await _closed_in_window_rows(conn, owner_f, dt_f, win_start, ref, to_stage)
 
     won_rows = await _closed_in_window("closed_won")
     moved_committed = len(won_rows)
@@ -3704,7 +3788,8 @@ async def opportunities_overview(
     # don't count. One rule (services/jobs_metrics) for the card, its drill and
     # the Stalled status below, which used to be three: 6 weeks, 14 days, 21.
     def _stalled(r) -> bool:
-        return jobs_metrics.is_stalled("opportunity", r["last_movement"], age_ref)
+        return jobs_metrics.opportunity_state(
+            r["last_movement"], r.get("slow_reason"), r.get("slow_check_again"), age_ref)[0] == "stalled"
 
     stalled = 0
     # Every active-set member, flat, carrying the keys each panel groups by
@@ -3941,6 +4026,263 @@ async def opportunities_overview(
             # `at` is the earliest open task's deadline.
             "won_open_tasks": [_drill_row(r, r["at"]) for r in won_open_rows],
         },
+    }}
+
+
+# ── Thursday Pipeline (PRO-110) ──────────────────────────────────────────────
+# What's stuck, why, and what leadership can unblock: the Thursday meeting's
+# view (Dave). Full-time by default, part-time and contract as a toggle (Avni,
+# Kwame); "all" adds every other type and the opportunities with none.
+# Read-only: the page links to each opportunity to change it.
+
+THURSDAY_DEAL_TYPES: dict[str, Optional[list]] = {"ft": ["ft"], "pt_contract": ["pt_contract"], "all": None}
+# Why opportunities were lost, and conversion between milestones, look back
+# this many days from the end of the window.
+THURSDAY_LOOKBACK_DAYS = 180
+_LOST_REASON_LABELS = dict(CLOSED_LOST_REASONS)
+
+
+@router.get("/opportunities/thursday")
+async def opportunities_thursday(
+    deal_type: str = Query("ft", description="ft (default), pt_contract, or all"),
+    start: Optional[str] = Query(None, description="First day (YYYY-MM-DD, New York), inclusive. Defaults to this calendar week."),
+    end: Optional[str] = Query(None, description="Last day (YYYY-MM-DD, New York), inclusive."),
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """The Thursday Pipeline view. States (active, stalled, slow but active)
+    are read as of the window's end, or now for the week in progress; "this
+    week" counts what happened in the window; lost reasons and conversion look
+    back THURSDAY_LOOKBACK_DAYS from its end."""
+    if deal_type not in THURSDAY_DEAL_TYPES:
+        raise HTTPException(400, f"Unknown opportunity type: {deal_type!r}")
+    dt_f = THURSDAY_DEAL_TYPES[deal_type]
+    if (start is None) != (end is None):
+        raise HTTPException(400, "Send both start and end, or neither")
+    d_from, d_to = (start, end) if start else jobs_metrics.meeting_week("thursday")
+    try:
+        win_start, ref = jobs_metrics.date_window(d_from, d_to)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    # States are never read in the future: the week in progress is as of now.
+    age_ref = min(ref, datetime.now(jobs_metrics.NY))
+    lookback_start = jobs_metrics.ny_midnight(
+        jobs_metrics.parse_date(d_to) + timedelta(days=1 - THURSDAY_LOOKBACK_DAYS))
+    slow_enabled = await _has_column("bedrock", "jobs_opportunity", "slow_reason")
+
+    def _iso(v):
+        return v.isoformat() if v is not None else None
+
+    def _days(v):
+        return None if v is None else max(0, (age_ref - v).days)
+
+    def _stage(s):
+        c = canon_stage(s)
+        return c, STAGE_LABELS.get(c, s)
+
+    # ── Every open opportunity, with its state ──
+    opps = []
+    for r in await _open_opportunity_rows(conn, None, dt_f, ref, detail=True):
+        state, lapsed = jobs_metrics.opportunity_state(
+            r["last_movement"], r["slow_reason"], r["slow_check_again"], age_ref)
+        stage, stage_label = _stage(r["stage"])
+        opps.append({
+            "opportunity_id": str(r["id"]),
+            "account": r["account_name"],
+            "account_key": (r["account_name"] or "").strip().lower(),
+            "title": r["title"],
+            "deal_type": r["deal_type"],
+            "stage": stage, "stage_label": stage_label,
+            "owner": r["owner_email"],
+            "relationship_owner": r["relationship_owner"] or None,
+            "priority": r["priority"] if r["priority"] in (1, 2, 3, 4, 5) else None,
+            "days_in_stage": _days(r["entered_stage"]) or 0,
+            "stage_from_created": bool(r["stage_from_created"]),
+            "idle_days": _days(r["last_movement"]),
+            "last_movement": _iso(r["last_movement"]),
+            "last_stage_change": _iso(r["last_stage_change"]),
+            "last_activity": ({"at": _iso(r["last_touch"]), "type": r["touch_type"], "by": r["touch_by"]}
+                              if r["last_touch"] else None),
+            "state": state,
+            "slow": ({"reason": r["slow_reason"], "check_again": _iso(r["slow_check_again"]),
+                      "marked_by": r["slow_marked_by"], "marked_at": _iso(r["slow_marked_at"]),
+                      "lapsed": lapsed} if r["slow_reason"] else None),
+        })
+    by_state = {s: [o for o in opps if o["state"] == s] for s in jobs_metrics.OPPORTUNITY_STATES}
+    stalled = sorted(by_state["stalled"], key=lambda o: -(o["idle_days"] or 0))
+    slow = sorted(by_state["slow"], key=lambda o: o["slow"]["check_again"])
+
+    # ── Priority: what the team picked to talk through (decided 10/2) ──
+    # Stored 5 = P1. Where it stands is the latest comment on it; there are no
+    # blocker or ask fields for now.
+    priority = sorted((o for o in opps if o["priority"]),
+                      key=lambda o: (-o["priority"], -(o["idle_days"] or 0)))
+    notes = {}
+    if priority:
+        notes = {r["parent_id"]: r for r in await conn.fetch("""
+            SELECT DISTINCT ON (parent_id) parent_id, content, author_email, created_at
+            FROM bedrock.jobs_comment
+            WHERE parent_type = 'opportunity' AND parent_id = ANY($1::text[])
+            ORDER BY parent_id, created_at DESC
+        """, [o["opportunity_id"] for o in priority])}
+
+    def _note(o):
+        n = notes.get(o["opportunity_id"])
+        return {"text": n["content"], "by": n["author_email"], "at": _iso(n["created_at"])} if n else None
+
+    priority = [{**o, "latest_note": _note(o)} for o in priority]
+
+    # ── This week ──
+    def _event(r, detail, actor=None):
+        return {"opportunity_id": str(r["id"]), "account": r["account_name"], "owner": r["owner_email"],
+                "deal_type": r["deal_type"], "actor": actor or r["owner_email"],
+                "detail": detail, "at": _iso(r["at"])}
+
+    new_rows = await conn.fetch(f"""
+        SELECT o.id, o.account_name, o.stage, o.owner_email, o.deal_type, o.created_at AS at
+        FROM bedrock.jobs_opportunity o
+        WHERE o.deleted_at IS NULL
+          AND o.created_at >= $2::timestamptz AND o.created_at < $3::timestamptz
+          AND {_deal_type_sql('o.deal_type', 1)}
+        ORDER BY o.created_at DESC
+    """, dt_f, win_start, ref)
+    move_rows = await conn.fetch(f"""
+        SELECT o.id, o.account_name, o.owner_email, o.deal_type,
+               h.from_stage, h.to_stage, h.changed_at AS at, h.changed_by AS actor
+        FROM bedrock.jobs_stage_history h
+        JOIN bedrock.jobs_opportunity o ON o.id = h.opportunity_id
+        WHERE o.deleted_at IS NULL AND h.from_stage IS NOT NULL
+          AND h.changed_at >= $2::timestamptz AND h.changed_at < $3::timestamptz
+          AND {_deal_type_sql('o.deal_type', 1)}
+        ORDER BY h.changed_at DESC
+    """, dt_f, win_start, ref)
+    moves, asks = [], []
+    for r in move_rows:
+        (frm, frm_label), (to, to_label) = _stage(r["from_stage"]), _stage(r["to_stage"])
+        if frm == to:  # a retired name folded into the stage it already was
+            continue
+        moves.append(_event(r, f"{frm_label} → {to_label}", r["actor"]))
+        if to == "ask_submitted":
+            asks.append(_event(r, f"Ask sent (from {frm_label})", r["actor"]))
+    won_rows = await _closed_in_window_rows(conn, None, dt_f, win_start, ref, "closed_won")
+    lost_rows = await _closed_in_window_rows(conn, None, dt_f, win_start, ref, "closed_lost")
+
+    def _reason(key):
+        return _LOST_REASON_LABELS.get(key, key) if key else "No reason given"
+
+    week = {
+        "new": [_event(r, _stage(r["stage"])[1]) for r in new_rows],
+        "moves": moves,
+        "won": [_event(r, "Closed Won") for r in won_rows],
+        "lost": [_event(r, f"Reason: {_reason(r['closed_lost_reason'])}") for r in lost_rows],
+        "asks": asks,
+    }
+
+    # ── Accounts (D9): open opportunities rolled up by account ──
+    # Stalled (D3): no contact at the account touched and no opportunity there
+    # moved in 6+ weeks. Every opportunity at the account counts, whatever its
+    # type; only accounts with an open opportunity of the selected type are
+    # listed. A person should confirm before calling a whole account stalled
+    # (Avni).
+    keys = sorted({o["account_key"] for o in opps if o["account_key"]})
+    acct_last = {}
+    if keys:
+        scope = jobs_metrics.activity_scope_ctes(
+            opps="FALSE", accounts="{k} IN (SELECT k FROM open_keys)",
+            activity=f"{jobs_metrics.external_activity_sql('a')} AND a.activity_date < $1::timestamptz")
+        acct_last = {r["k"]: r for r in await conn.fetch(f"""
+            WITH open_keys AS (SELECT DISTINCT unnest($2::text[]) AS k),
+            {scope},
+            touched AS (SELECT k, max(at) AS at FROM account_touches GROUP BY k),
+            moved AS (
+              SELECT lower(btrim(o.account_name)) AS k, max(h.changed_at) AS at
+              FROM bedrock.jobs_stage_history h JOIN bedrock.jobs_opportunity o ON o.id = h.opportunity_id
+              WHERE o.deleted_at IS NULL AND h.changed_at < $1::timestamptz
+                AND lower(btrim(o.account_name)) IN (SELECT k FROM open_keys)
+              GROUP BY 1
+            )
+            SELECT ok.k, t.at AS last_touch, mv.at AS last_move
+            FROM open_keys ok LEFT JOIN touched t USING (k) LEFT JOIN moved mv USING (k)
+        """, ref, keys)}
+    accounts = []
+    for k in keys:
+        mine = [o for o in opps if o["account_key"] == k]
+        r = acct_last.get(k) or {}
+        touch, move = r.get("last_touch"), r.get("last_move")
+        last = max((v for v in (touch, move) if v is not None), default=None)
+        accounts.append({
+            "account_key": k, "account": mine[0]["account"],
+            "state": "stalled" if jobs_metrics.is_stalled("account", last, age_ref) else "active",
+            "last_contact_touch": _iso(touch), "last_opportunity_move": _iso(move),
+            "idle_days": _days(last),
+            "opportunity_ids": [o["opportunity_id"] for o in mine],
+        })
+    stalled_accounts = sorted((a for a in accounts if a["state"] == "stalled"),
+                              key=lambda a: -(a["idle_days"] if a["idle_days"] is not None else 10**6))
+
+    # ── Why opportunities were lost, and conversion ──
+    lost_lookback = await _closed_in_window_rows(conn, None, dt_f, lookback_start, ref, "closed_lost")
+    reasons: dict = {}
+    for r in lost_lookback:
+        reasons.setdefault(r["closed_lost_reason"] or None, []).append(
+            _event(r, _reason(r["closed_lost_reason"])))
+    lost_reasons = sorted(
+        ({"key": k, "label": _reason(k), "count": len(v), "rows": v} for k, v in reasons.items()),
+        key=lambda g: (g["key"] is None, -g["count"]))
+    milestones = await _funnel_milestones(conn, "opportunities", (lookback_start, ref), dt_f, None)
+
+    # ── What each number means (PRO-97) ──
+    # Records ride in this response: each number's list is named by `drill`.
+    filters = {"deal_type": deal_type}
+    drill = lambda key: {"endpoint": None, "drill": key}
+    week_win = (win_start, ref)
+    definitions = {
+        "open": jobs_metrics.define("opportunities_open", value=len(opps), as_of=age_ref,
+                                    filters=filters, records=drill("open")),
+        "active": jobs_metrics.define("opportunities_active", value=len(by_state["active"]), as_of=age_ref,
+                                      filters=filters, records=drill("active")),
+        "stalled": jobs_metrics.define("stalled_opportunities", value=len(stalled), as_of=age_ref,
+                                       filters=filters, records=drill("stalled")),
+        "slow": jobs_metrics.define("opportunities_slow", value=len(slow), as_of=age_ref,
+                                    filters=filters, records=drill("slow")),
+        "new": jobs_metrics.define("opportunities_new", value=len(week["new"]), window=week_win,
+                                   filters=filters, records=drill("new")),
+        "moves": jobs_metrics.define("opportunity_stage_moves", value=len(moves), window=week_win,
+                                     filters=filters, records=drill("moves")),
+        "won": jobs_metrics.define("closed_won", value=len(week["won"]), window=week_win,
+                                   filters=filters, records=drill("won")),
+        "lost": jobs_metrics.define("closed_lost", value=len(week["lost"]), window=week_win,
+                                    filters=filters, records=drill("lost")),
+        "asks": jobs_metrics.define("asks_sent", value=len(asks), window=week_win,
+                                    filters=filters, records=drill("asks")),
+        "stalled_accounts": jobs_metrics.define(
+            "stalled_opportunity_accounts", value=len(stalled_accounts), as_of=age_ref,
+            filters={**filters, "accounts": "with an open opportunity of this type"},
+            records=drill("stalled_accounts")),
+        "lost_reasons": jobs_metrics.define("lost_reasons", value=len(lost_lookback),
+                                            window=(lookback_start, ref), filters=filters,
+                                            records=drill("lost_reasons")),
+    }
+
+    return {"success": True, "data": {
+        "deal_type": deal_type,
+        "window": {"start": str(d_from), "end": str(d_to)},
+        "as_of": _iso(age_ref),
+        "lookback": {"start": _iso(lookback_start), "days": THURSDAY_LOOKBACK_DAYS},
+        "slow_enabled": slow_enabled,
+        "summary": {"open": len(opps), "active": len(by_state["active"]),
+                    "stalled": len(stalled), "slow": len(slow),
+                    "accounts": len(accounts), "stalled_accounts": len(stalled_accounts)},
+        "opportunities": sorted(opps, key=lambda o: (o["account_key"], o["title"] or "")),
+        "priority": priority,
+        "stalled": stalled,
+        "slow": slow,
+        "week": week,
+        "accounts": accounts,
+        "stalled_accounts": stalled_accounts,
+        "lost_reasons": lost_reasons,
+        "milestones": milestones,
+        "definitions": definitions,
     }}
 
 
@@ -8795,6 +9137,7 @@ async def create_opportunity(
         raise HTTPException(400, f"Invalid likelihood: {body.likelihood}")
     if body.target_close_date is None:
         raise HTTPException(400, "target_close_date is required")
+    _check_lost_reason(body.closed_lost_reason, required=body.stage == "closed_lost")
     # Creating an opportunity means picking its contacts (D15, decided 10/2), so
     # its activity and its conversions can be found.
     if not [r for r in body.sf_contact_ids if r and r.strip()]:
@@ -8818,10 +9161,11 @@ async def create_opportunity(
                 account_id, account_name, stage, deal_type,
                 title, description, salary_expected, num_roles, likelihood,
                 source, owner_email, relationship_owner, sf_contact_ids, builder_ids, follow_up_date,
-                target_close_date, closed_at{', estimated_jobs' if store_est else ''}
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,
+                target_close_date, closed_lost_reason, closed_lost_note,
+                closed_at{', estimated_jobs' if store_est else ''}
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,
                       -- created already closed: it closed today (PRO-101)
-                      CASE WHEN $3 IN ('closed_won', 'closed_lost') THEN now() END{', $17' if store_est else ''})
+                      CASE WHEN $3 IN ('closed_won', 'closed_lost') THEN now() END{', $19' if store_est else ''})
             RETURNING id
             """,
             body.account_id, body.account_name, body.stage, body.deal_type,
@@ -8829,6 +9173,8 @@ async def create_opportunity(
             body.source, body.owner_email, body.relationship_owner,
             body.sf_contact_ids, body.builder_ids, body.follow_up_date,
             body.target_close_date,
+            body.closed_lost_reason if body.stage == "closed_lost" else None,
+            body.closed_lost_note if body.stage == "closed_lost" else None,
             *([body.estimated_jobs] if store_est else []),
         )
         await conn.execute(
@@ -8954,16 +9300,30 @@ async def update_opportunity(
 
     user_email = user.get("email") if isinstance(user, dict) else getattr(user, "email", None)
     stage_changed = body.stage and body.stage != existing["stage"]
+    fields_set = body.model_fields_set
+
+    reason_sent = "closed_lost_reason" in fields_set
+    _check_lost_reason(
+        body.closed_lost_reason if reason_sent else existing.get("closed_lost_reason"),
+        required=(body.stage or existing["stage"]) == "closed_lost"
+                 and (bool(stage_changed) or reason_sent))
 
     sets = []
     params: list = []
     i = 1
 
+    if fields_set & {"slow_reason", "slow_check_again"}:
+        if not await _has_column("bedrock", "jobs_opportunity", "slow_reason"):
+            raise HTTPException(409, f"Slow but active needs migration {SLOW_MIGRATION}")
+        mark = _slow_mark(body.slow_reason, body.slow_check_again)
+        for col, val in zip(("slow_reason", "slow_check_again", "slow_marked_by", "slow_marked_at"),
+                            (*mark, user_email, datetime.now(timezone.utc)) if mark else (None,) * 4):
+            sets.append(f"{col} = ${i}"); params.append(val); i += 1
+
     # An explicitly-sent null must CLEAR the column (e.g. unassigning an owner),
     # so key off model_fields_set rather than `val is not None` — otherwise a
     # null is indistinguishable from "field omitted" and is silently dropped.
     # `stage` is NOT NULL, so it can never be cleared this way.
-    fields_set = body.model_fields_set
     for field in ("stage", "deal_type", "title", "description", "salary_expected",
                   "num_roles", "likelihood",
                   "source", "owner_email", "relationship_owner", "sf_contact_ids", "builder_ids",

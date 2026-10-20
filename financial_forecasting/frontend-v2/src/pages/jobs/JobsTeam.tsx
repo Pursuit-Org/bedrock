@@ -34,7 +34,8 @@ import { ActivitySourceIcon } from "@/components/ActivitySourceIcon";
 import { CompanyPicker } from "@/components/jobs/CompanyPicker";
 import { ContactRefsPicker, type PickedContact } from "@/components/jobs/ContactRefsPicker";
 import { jobsOpportunityPath } from "@/components/jobs/jobsEntity";
-import { closedLostLabel } from "@/components/jobs/oppLabels";
+import { PRIORITY_OPTIONS, closedLostLabel } from "@/components/jobs/oppLabels";
+import { SlowButActive } from "@/components/jobs/SlowButActive";
 import { OppRolesSection } from "@/components/jobs/OppRolesSection";
 import { OppLogActivityForm } from "@/components/jobs/OppLogActivityForm";
 import { OppBuilderActivity } from "@/components/jobs/OppBuilderActivity";
@@ -586,14 +587,6 @@ const LIKELIHOOD_OPTIONS: { value: Likelihood; label: string }[] = [
   { value: "high",   label: "High" },
 ];
 
-const PRIORITY_OPTIONS: { value: string; label: string }[] = [
-  { value: "5", label: "P1 — Highest" },
-  { value: "4", label: "P2 — High" },
-  { value: "3", label: "P3 — Medium" },
-  { value: "2", label: "P4 — Low" },
-  { value: "1", label: "P5 — Lowest" },
-];
-
 const SEGMENT_OPTIONS: { value: string; label: string }[] = [
   { value: "vc_pe",      label: "VC / PE" },
   { value: "enterprise", label: "Enterprise" },
@@ -714,6 +707,11 @@ function DealContextStrip({ deal }: { deal: JobsOpportunity }) {
         <InlineText value={deal.intro_by} placeholder="—" onSave={(v) => patch({ intro_by: v || null })} />
       </Field>
       <DealTags deal={deal} />
+      {!deal.stage.startsWith("closed") ? (
+        <Field label="Slow but active">
+          <SlowButActive opp={deal} />
+        </Field>
+      ) : null}
       {isClosedLost ? (
         <Field label="Closed-lost reason">
           <span className="text-[12px] text-ink-2">
@@ -1195,31 +1193,11 @@ function ContactsTab({
 
 // Moved to lib/oppStageOptions so components/jobs/* can use it without
 // closing an import cycle back through this file. Re-exported because
-// JobsHome and JobsOpportunitiesOverview already import it from here.
+// JobsHome already imports it from here.
 export { stageOptionsFor, useOppStageOptions } from "@/lib/oppStageOptions";
 import { useOppStageOptions, useGatedStageOptions } from "@/lib/oppStageOptions";
 import { ListWhy } from "@/components/jobs/ListWhy";
 
-// Structured closed-lost reasons (drives the "why deals die" analysis).
-// The combined vocabulary (Kwame 2026-08-05): the seven already in use plus the
-// four from the stage simplification, rather than replacing one list with the
-// other. `revisit` is the interesting one — picking it asks for a date and files
-// a task, which is how "come back to this" survives being closed lost.
-// Offered reasons, trimmed 2026-08-05: "Went cold / no response" overlapped
-// Not responsive, and "Timing / not now" overlapped Revisit later — which is the
-// same thing with a date attached. "Hired elsewhere" dropped too. The retired
-// values stay in CLOSED_LOST_LABELS and in the database CHECK, because four live
-// rows still carry them; they render, they just can't be chosen again.
-const CLOSED_LOST_REASONS: { value: string; label: string }[] = [
-  { value: "budget",          label: "No budget" },
-  { value: "not_a_fit",       label: "Not a fit" },
-  { value: "role_cancelled",  label: "Role cancelled" },
-  { value: "not_interested",  label: "Not interested" },
-  { value: "not_selected",    label: "Not selected" },
-  { value: "not_responsive",  label: "Not responsive" },
-  { value: "revisit",         label: "Revisit later" },
-  { value: "other",           label: "Other" },
-];
 
 const DEAL_TYPE_OPTIONS: { value: DealType; label: string }[] = (
   Object.entries(DEAL_TYPE_LABELS) as [DealType, string][]
@@ -1350,6 +1328,13 @@ function DealRow({
   const oppStageOptions = useOppStageOptions(deal.stage);
   function saveStage(stage: JobStage) {
     if (stage === deal.stage) return Promise.resolve();
+    // Closed Lost needs its reason in the same save (PRO-110): the modal saves
+    // both, and cancelling it leaves the stage as it was.
+    if (stage === "closed_lost") {
+      onClosedLost({ id: deal.id, account_name: deal.account_name });
+      // The cell keeps the current stage: the modal makes the move.
+      return Promise.reject(new Error("Stage change cancelled"));
+    }
     return new Promise<void>((resolve, reject) => {
       updateOpp.mutate(
         { id: deal.id, stage },
@@ -1357,8 +1342,6 @@ function DealRow({
           onSuccess: () => {
             if (stage === "closed_won" && isPlacementType) {
               onRecordPlacements({ id: deal.id, account_name: deal.account_name, deal_type: deal.deal_type });
-            } else if (stage === "closed_lost") {
-              onClosedLost({ id: deal.id, account_name: deal.account_name });
             } else if (stage === "active_opportunity_confirmed" && (deal.num_roles ?? 0) === 0) {
               onCommittedRoles({ id: deal.id, account_name: deal.account_name });
             }
@@ -2097,119 +2080,10 @@ export function PlacementsModal({
   );
 }
 
-// ── Closed-lost reason modal ──────────────────────────────────────────────────
-
-export function ClosedLostModal({
-  deal,
-  onClose,
-}: {
-  deal: { id: string; account_name: string };
-  onClose: () => void;
-}) {
-  const [reason, setReason] = useState("");
-  const [note, setNote] = useState("");
-  // Revisit is the one reason that isn't an ending — it needs a date, or it's
-  // just Closed Lost with extra steps. Defaults a month out so the common case
-  // is one click.
-  const [revisitDate, setRevisitDate] = useState(() => {
-    const d = new Date(); d.setMonth(d.getMonth() + 1);
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-  });
-  const isRevisit = reason === "revisit";
-  const updateOpp = useUpdateOpportunity();
-
-  function save() {
-    updateOpp.mutate(
-      {
-        id: deal.id,
-        closed_lost_reason: reason || null,
-        closed_lost_note: note.trim() || null,
-        // Reuses follow_up_date — the column that already exists for exactly
-        // this. The backend turns it into a jobs_task for the deal's owner.
-        ...(isRevisit ? { follow_up_date: revisitDate } : {}),
-      },
-      { onSuccess: () => onClose() },
-    );
-  }
-
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/30"
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
-    >
-      <div className="w-full max-w-sm rounded-xl border border-border-strong bg-surface shadow-xl">
-        <div className="flex items-center justify-between border-b border-border-strong px-5 py-4">
-          <h2 className="text-[15px] font-semibold text-ink">Why did {deal.account_name} fall through?</h2>
-          <button type="button" onClick={onClose} className="text-ink-3 hover:text-ink" aria-label="Close">
-            <X size={16} />
-          </button>
-        </div>
-        <div className="flex flex-col gap-3 px-5 py-4">
-          <div className="flex flex-col gap-1">
-            <label className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">Reason</label>
-            <select
-              value={reason}
-              onChange={(e) => setReason(e.target.value)}
-              autoFocus
-              className="w-full rounded-md border border-border-strong bg-surface px-3 py-2 text-[13px] text-ink focus:outline-none focus:ring-1 focus:ring-accent/40"
-            >
-              <option value="">— select —</option>
-              {CLOSED_LOST_REASONS.map((r) => (
-                <option key={r.value} value={r.value}>{r.label}</option>
-              ))}
-            </select>
-          </div>
-          {isRevisit && (
-            <div className="flex flex-col gap-1 rounded-lg border border-accent/40 bg-accent-soft px-3 py-2">
-              <label className="text-[11px] font-semibold uppercase tracking-wider text-accent">
-                Come back to this on
-              </label>
-              <input
-                type="date"
-                value={revisitDate}
-                onChange={(e) => { if (e.target.value) setRevisitDate(e.target.value); }}
-                className="w-full rounded-md border border-border-strong bg-surface px-3 py-2 text-[13px] text-ink focus:outline-none focus:ring-1 focus:ring-accent/40"
-              />
-              <span className="text-[11px] text-accent">
-                Files a task for the opportunity's owner on that date.
-              </span>
-            </div>
-          )}
-          <div className="flex flex-col gap-1">
-            <label className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">
-              Note <span className="text-red">*</span>
-            </label>
-            <textarea
-              rows={3}
-              value={note}
-              onChange={(e) => setNote(e.target.value)}
-              placeholder={isRevisit
-                ? "Who to check back with, and why — e.g. \"check with Jane Doe once budget resets in Q1\""
-                : "Context — what happened, who said what…"}
-              className="w-full resize-none rounded-md border border-border-strong bg-surface px-3 py-2 text-[13px] text-ink placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
-            />
-          </div>
-        </div>
-        <div className="flex items-center justify-end gap-3 border-t border-border-strong px-5 py-3">
-          <button type="button" onClick={onClose} className="text-[13px] font-medium text-ink-3 hover:text-ink">
-            Skip
-          </button>
-          <button
-            type="button"
-            onClick={save}
-            // Reason AND note are both required now: a bare reason code loses the
-            // one thing worth keeping, which is what actually happened.
-            disabled={updateOpp.isPending || !reason || !note.trim()}
-            title={!reason ? "Pick a reason" : !note.trim() ? "Add a note — it's required" : undefined}
-            className="rounded-lg bg-accent px-4 py-2 text-[13px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
-          >
-            {updateOpp.isPending ? "Saving…" : "Save reason"}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
+// The closed-lost reason modal lives in components/jobs (PRO-110); re-exported
+// for the pages that import it from here.
+import { ClosedLostModal } from "@/components/jobs/ClosedLostModal";
+export { ClosedLostModal };
 
 // ── Main component ────────────────────────────────────────────────────────────
 

@@ -528,7 +528,7 @@ function FunnelCard({
  *  Each counts only what started at the earlier milestone, so the number on
  *  top is always part of the one under it and never passes 100%. Click a
  *  tile for who is behind it. */
-function MilestoneStrip({ milestones, isPeriod, noun }: {
+export function MilestoneStrip({ milestones, isPeriod, noun }: {
   milestones: FunnelMilestone[];
   isPeriod: boolean;
   noun: string;

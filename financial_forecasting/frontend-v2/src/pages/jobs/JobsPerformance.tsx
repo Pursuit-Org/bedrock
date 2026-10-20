@@ -7,7 +7,7 @@ import { cn } from "@/lib/utils";
 import { JobsLeadership } from "./JobsLeadership";
 import { JobsCampaigns } from "./JobsCampaigns";
 import { JobsOutreach } from "./JobsOutreach";
-import { JobsOpportunitiesOverview } from "./JobsOpportunitiesOverview";
+import { JobsThursdayPipeline } from "./JobsThursdayPipeline";
 
 type TabKey = "exec" | "campaigns" | "outreach" | "pipeline" | "placement";
 
@@ -30,7 +30,7 @@ const TAB_META: Record<TabKey, { title: string; subtitle: string }> = {
     subtitle: "Each tag as a prioritized outreach push — who owns it, how far it's been worked, and what's left.",
   },
   outreach: { title: "Outreach", subtitle: "The Monday meeting: last week against target, who's behind, and where outreach is stuck." },
-  pipeline: { title: "Pipeline", subtitle: "The employer opportunity pipeline — volume, conversion and where it's stuck." },
+  pipeline: { title: "Pipeline", subtitle: "The Thursday meeting: what's stuck, why, and what leadership can unblock." },
   placement: { title: "Placement", subtitle: "Placement performance reporting." },
 };
 
@@ -96,7 +96,7 @@ export function JobsPerformancePage() {
         {activeTab === "exec" && <JobsLeadership />}
         {activeTab === "campaigns" && <JobsCampaigns />}
         {activeTab === "outreach" && <JobsOutreach />}
-        {activeTab === "pipeline" && <JobsOpportunitiesOverview />}
+        {activeTab === "pipeline" && <JobsThursdayPipeline />}
         {activeTab === "placement" && (
           <ComingSoon
             title="Placement metrics"

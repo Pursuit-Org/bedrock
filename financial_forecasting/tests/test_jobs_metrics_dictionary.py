@@ -424,6 +424,8 @@ def test_every_single_value_number_on_the_tabs_is_checked():
                   "campaign_contacts", "campaign_accounts", "campaign_reached", "campaign_conversion",
                   "activity_target", "jobs_projection", "contacted",
                   "won_open_tasks",
+                  # One row per lost reason (PRO-110).
+                  "lost_reasons",
                   # One row per campaign and owner (PRO-106).
                   "stuck_assigned", "stuck_reached", "stuck_call_booked"}
     assert set(jm.MEASURES) - checked == not_single

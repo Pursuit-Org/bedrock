@@ -64,7 +64,9 @@ LISTS: dict[str, dict] = {
         "dates": ["\"Last\" is the latest email, call, meeting, LinkedIn message or text on the "
                   "opportunity, with its contacts, or on its account."],
         "notes": ["Needs attention is wider than Stalled: 21 days in one stage flags an opportunity "
-                  "even when it has recent activity."],
+                  "even when it has recent activity.",
+                  "An opportunity its owner marked slow but active isn't stalled until its "
+                  "check-again date passes (PRO-110)."],
     },
     # routes/jobs.py interview_pipeline.
     "roles": {
@@ -139,33 +141,72 @@ LISTS: dict[str, dict] = {
                   "is waiting yet (D6), so the rest say \"No reason recorded\".",
                   "It covers every week of the campaign, so it doesn't follow the period."],
     },
-    # Pipeline tab ────────────────────────────────────────────────────────────
-    # JobsOpportunitiesOverview OwnerWalkthrough over list_opportunities + needs_attention.
-    "opportunities_set": {
-        "title": "Opportunities Set",
-        "who": ("Open opportunities (not closed or on hold) for the owner and type picked, in bands by "
-                "priority, or by owner."),
-        "order": "By last update within a band; the Stalled band by longest in stage.",
-        "cap": "None.",
-        "dates": ["\"Activity\" is the last activity; a flagged row shows its days in stage instead, "
-                  "in amber."],
-        "notes": [
-            "The Stalled band (by owner) is the opportunities flagged Needs attention that aren't P1 or "
-            "P2: 21 days or more in a stage, or 4 weeks without movement. It isn't the Stalled card's "
-            "rule, and a P3+ opportunity in it is listed again under P3+.",
-            "The flags are read at the end of the period picked.",
-        ],
+    # Thursday Pipeline tab (PRO-110) ───────────────────────────────────────
+    # routes/jobs.py opportunities_thursday.
+    "thursday_priority": {
+        "title": "Priority opportunities to discuss",
+        "who": ("Open opportunities of the type picked that their owner has given a Priority, the field the "
+                "team already sets on the few to talk through on Thursday (decided 10/2). By owner."),
+        "order": "P1 first, then the longest without movement.",
+        "cap": "Three per owner are shown; Show all lists the rest.",
+        "dates": ["\"Where it stands\" is the latest comment on the opportunity, with its date."],
+        "notes": ["There are no Blocker or Ask fields for now, and nothing is sent to leadership "
+                  "automatically (decided 10/2)."],
     },
-    # routes/jobs.py opportunities_overview recent_activity.
-    "recent_activity": {
-        "title": "Recent Activity",
-        "who": ("Opportunities added in the period, and every stage move, win and loss in it, for the "
-                "owner and type picked (each opportunity's owner and type today)."),
-        "order": "Wins, then moves, then new, then losses; newest first within each.",
-        "cap": "Five are shown; Show more lists the rest.",
-        "dates": ["The date is when it was added or moved."],
-        "notes": ["An opportunity that moved twice is listed twice.",
-                  "A close that was reverted reads as a move, not a win or a loss."],
+    "thursday_week": {
+        "title": "This week",
+        "who": ("Opportunities of the type picked that were created, moved stage, won, lost or had an ask "
+                "sent in the period."),
+        "order": "Newest first.",
+        "cap": "None.",
+        "dates": ["The date is when it was created or moved."],
+        "notes": ["An ask sent is a move into Ask Submitted; there is no separate proposal record.",
+                  "Won and lost count the latest close in the period, so a close that was reverted "
+                  "reads as a move.",
+                  "An opportunity that moved twice is listed twice under Stage moves."],
+    },
+    "thursday_stalled": {
+        "title": "Stalled",
+        "who": ("Open opportunities of the type picked with no movement for 4+ weeks (D3): no stage move and "
+                "no email, call, meeting, LinkedIn message or text on the opportunity, with its contacts "
+                "(anyone at its account when none are linked), or on its account. Not marked slow but "
+                "active, or marked with a check-again date that has passed."),
+        "order": "Longest without movement first.",
+        "cap": "None.",
+        "dates": ["\"Last\" is the latest activity, with who sent or logged it."],
+        "notes": ["Comments don't count as activity.",
+                  "Read as of the end of the period, or now for the week in progress."],
+    },
+    "thursday_slow": {
+        "title": "Slow but active",
+        "who": ("Open opportunities of the type picked that the owner marked slow but active, with a reason "
+                "and a check-again date that hasn't passed."),
+        "order": "Soonest check-again date first.",
+        "cap": "None.",
+        "dates": ["\"Check again\" is the date the owner set; after it the mark lapses."],
+        "notes": ["The owner sets it on the opportunity's page or in the Pipeline grid.",
+                  "Once the date passes, a quiet opportunity reads as stalled again, with the old reason."],
+    },
+    "thursday_stalled_accounts": {
+        "title": "Stalled accounts",
+        "who": ("Accounts with an open opportunity of the type picked where no contact was touched and no "
+                "opportunity moved for 6+ weeks (D3). Every opportunity at the account counts, whatever "
+                "its type."),
+        "order": "Longest without movement first.",
+        "cap": "None.",
+        "dates": ["\"Last contact touch\" and \"last move\" are the latest anywhere at the account."],
+        "notes": ["Accounts are matched by name until the duplicate merges (PRO-101) give them ids.",
+                  "A person should confirm before calling a whole account stalled (Avni)."],
+    },
+    "thursday_open": {
+        "title": "All open opportunities",
+        "who": "Every open opportunity of the type picked, by account (D9).",
+        "order": "By account name; within an account, stalled first.",
+        "cap": "None.",
+        "dates": ["\"Last activity\" is the latest email, call, meeting, LinkedIn message or text on the "
+                  "opportunity or its contacts."],
+        "notes": ["Owner and relationship owner are shown as recorded. Credit for shared work is "
+                  "deferred (D13)."],
     },
     # Campaigns tab ───────────────────────────────────────────────────────────
     # routes/jobs.py tag_campaigns (CAMPAIGN_CONTACTS_SQL in services/jobs_metrics).

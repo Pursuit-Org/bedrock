@@ -28,7 +28,7 @@ import {
   type TouchDepthBucket,
 } from "@/services/jobs";
 import { JobsFunnels } from "@/components/jobs/JobsFunnels";
-import { Panel } from "./JobsOpportunitiesOverview";
+import { Panel } from "@/components/jobs/Panel";
 import { ActivityTrends } from "@/components/jobs/ActivityTrends";
 import { ActivityFeed } from "@/components/jobs/ActivityFeed";
 import { DrillList } from "@/components/jobs/DrillList";

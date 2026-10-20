@@ -3466,11 +3466,12 @@ WHERE o.deleted_at IS NULL AND o.created_at >= (SELECT start_at FROM w) AND o.cr
 
 ### Stalled opportunities (`stalled_opportunities`, draft)
 
-Open opportunities with no movement for more than 4 weeks (D3): no stage change, and no external activity logged on the opportunity, with its contacts (or, when none are linked, anyone at its account), or on its Salesforce account. Comments and notes don't count.
+Open opportunities with no movement for more than 4 weeks (D3): no stage change, and no external activity logged on the opportunity, with its contacts (or, when none are linked, anyone at its account), or on its Salesforce account. Comments and notes don't count. Opportunities an owner marked slow but active are not stalled until their check-again date passes (PRO-110).
 
 - Counts: Open opportunities with no movement for 4+ weeks
 - Divided by: Open opportunities
 - Date: as of the end of the window
+- Caveat: Reads slow_reason and slow_check_again from migration 2026-10-20-opportunity-slow-but-active.sql; run it before running this query.
 
 <details><summary>Reference query</summary>
 
@@ -3556,7 +3557,8 @@ open_set AS (
     AND (o.closed_at IS NULL OR o.closed_at >= (SELECT end_at FROM w))
     AND (o.stage IN ('active_in_discussions', 'ask_submitted', 'active_opportunity_confirmed', 'builder_submitted', 'builder_interviewing', 'offer_contracting', 'lead_submitted', 'initial_outreach', 'reviewing_builders', 'active_builder_interview') OR (o.closed_at IS NOT NULL AND o.closed_at >= (SELECT end_at FROM w)))
 )
-SELECT count(*) FILTER (WHERE last_movement < least((SELECT end_at FROM w), now()) - interval '4 weeks') AS stalled_opportunities,
+SELECT count(*) FILTER (WHERE last_movement < least((SELECT end_at FROM w), now()) - interval '4 weeks'
+                         AND NOT (open_set.slow_reason IS NOT NULL AND open_set.slow_check_again >= (least((SELECT end_at FROM w), now()) AT TIME ZONE 'America/New_York')::date)) AS stalled_opportunities,
        count(*) AS opportunities_open
 FROM open_set
 ```
@@ -3744,12 +3746,377 @@ SELECT count(*) AS closed_lost FROM (
 
 </details>
 
+### Active opportunities (`opportunities_active`, draft)
+
+Open opportunities that moved in the last 4 weeks: a stage change or external activity on them or their contacts, or created. Not marked slow but active. Open = active + stalled + slow but active (PRO-110).
+
+- Counts: Open opportunities that moved in the last 4 weeks
+- Divided by: Open opportunities
+- Date: as of the end of the window
+- Caveat: Reads slow_reason and slow_check_again from migration 2026-10-20-opportunity-slow-but-active.sql.
+
+<details><summary>Reference query</summary>
+
+```sql
+WITH w AS (SELECT ((coalesce(nullif(current_setting('dd.window_from', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 7))::timestamp AT TIME ZONE 'America/New_York') AS start_at, (((coalesce(nullif(current_setting('dd.window_to', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 1) + 1))::timestamp AT TIME ZONE 'America/New_York') AS end_at),
+opp_scope AS (
+  SELECT o.id, lower(btrim(o.account_name)) AS k, o.account_id FROM bedrock.jobs_opportunity o
+  WHERE o.deleted_at IS NULL AND ((o.created_at < (SELECT end_at FROM w) AND (o.closed_at IS NULL OR o.closed_at >= (SELECT end_at FROM w))))
+),
+opp_links AS (
+  SELECT l.opp_id, l.contact_id FROM (
+  SELECT m.opportunity_id AS opp_id, m.contact_id
+  FROM bedrock.jobs_contact_membership m JOIN opp_scope os ON os.id = m.opportunity_id
+  UNION
+  SELECT o.id, c.contact_id
+  FROM opp_scope os JOIN bedrock.jobs_opportunity o ON o.id = os.id
+  CROSS JOIN LATERAL unnest(o.sf_contact_ids) r(ref)
+  JOIN public.contacts c
+    ON c.contact_id = CASE WHEN r.ref ~ '^pub:[0-9]{1,9}$' THEN substring(r.ref from 5)::int END
+  UNION
+  SELECT o.id, c.contact_id
+  FROM opp_scope os JOIN bedrock.jobs_opportunity o ON o.id = os.id
+  CROSS JOIN LATERAL unnest(o.sf_contact_ids) r(ref)
+  JOIN public.contacts c ON c.airtable_id = substring(r.ref from 10)
+  WHERE r.ref LIKE 'airtable:%'
+  UNION
+  SELECT o.id, scl.public_contact_id
+  FROM opp_scope os JOIN bedrock.jobs_opportunity o ON o.id = os.id
+  CROSS JOIN LATERAL unnest(o.sf_contact_ids) r(ref)
+  JOIN bedrock.sf_contact_link scl ON scl.sf_contact_id = r.ref
+  WHERE r.ref NOT LIKE 'pub:%' AND r.ref NOT LIKE 'airtable:%' AND scl.public_contact_id IS NOT NULL
+) l
+),
+opp_contacts AS (
+  SELECT opp_id, contact_id, true AS linked FROM opp_links
+  UNION ALL
+  -- No linked contacts: everyone at the opportunity's account.
+  SELECT os.id, c.contact_id, false
+  FROM opp_scope os JOIN public.contacts c ON lower(btrim(c.current_company)) = os.k
+  WHERE os.k <> '' AND NOT EXISTS (SELECT 1 FROM opp_links l WHERE l.opp_id = os.id)
+),
+scope_contacts AS (SELECT contact_id FROM opp_contacts),
+contact_touches AS (
+  SELECT a.participant_public_contact_id AS contact_id, a.id AS activity_id, a.activity_date AS at
+  FROM bedrock.activity a
+  WHERE a.participant_public_contact_id IN (SELECT contact_id FROM scope_contacts)
+    AND (a.deleted_at IS NULL AND a.type IN ('email', 'call', 'meeting', 'linkedin', 'text') AND (coalesce(a.jobs_relevance_override, CASE WHEN a.type IN ('email','meeting') THEN a.jobs_relevance ELSE 'jobs' END) = 'jobs')) AND a.activity_date < (SELECT end_at FROM w)
+  UNION
+  -- Calendar rows carry attendees, not a participant link.
+  SELECT c.contact_id, a.id, a.activity_date
+  FROM bedrock.activity a,
+       jsonb_array_elements(coalesce(a.meeting_attendees, '[]'::jsonb)) att
+  JOIN public.contacts c ON lower(c.email) = lower(att->>'email')
+  WHERE a.source = 'calendar-sync' AND (a.deleted_at IS NULL AND a.type IN ('email', 'call', 'meeting', 'linkedin', 'text') AND (coalesce(a.jobs_relevance_override, CASE WHEN a.type IN ('email','meeting') THEN a.jobs_relevance ELSE 'jobs' END) = 'jobs')) AND a.activity_date < (SELECT end_at FROM w)
+    AND c.contact_id IN (SELECT contact_id FROM scope_contacts)
+),
+opp_touches AS (
+  SELECT os.id AS opp_id, a.id AS activity_id, a.activity_date AS at
+  FROM opp_scope os JOIN bedrock.activity a ON a.jobs_opportunity_id = os.id
+  WHERE (a.deleted_at IS NULL AND a.type IN ('email', 'call', 'meeting', 'linkedin', 'text') AND (coalesce(a.jobs_relevance_override, CASE WHEN a.type IN ('email','meeting') THEN a.jobs_relevance ELSE 'jobs' END) = 'jobs')) AND a.activity_date < (SELECT end_at FROM w)
+  UNION
+  SELECT os.id, a.id, a.activity_date
+  FROM opp_scope os JOIN bedrock.activity a ON a.account_id = os.account_id
+  WHERE os.account_id LIKE '001%' AND (a.deleted_at IS NULL AND a.type IN ('email', 'call', 'meeting', 'linkedin', 'text') AND (coalesce(a.jobs_relevance_override, CASE WHEN a.type IN ('email','meeting') THEN a.jobs_relevance ELSE 'jobs' END) = 'jobs')) AND a.activity_date < (SELECT end_at FROM w)
+  UNION
+  SELECT oc.opp_id, t.activity_id, t.at
+  FROM opp_contacts oc JOIN contact_touches t ON t.contact_id = oc.contact_id
+),
+opp_last AS (
+  SELECT opp_id, max(at) AS at FROM opp_touches GROUP BY opp_id
+),
+open_set AS (
+  -- Opportunities open at the end of the window.
+  SELECT o.*,
+         greatest(o.created_at,
+                  (SELECT max(h.changed_at) FROM bedrock.jobs_stage_history h
+                    WHERE h.opportunity_id = o.id AND h.changed_at < (SELECT end_at FROM w)),
+                  ol.at) AS last_movement
+  FROM bedrock.jobs_opportunity o
+  LEFT JOIN opp_last ol ON ol.opp_id = o.id
+  WHERE o.deleted_at IS NULL
+    AND o.created_at < (SELECT end_at FROM w)
+    AND (o.closed_at IS NULL OR o.closed_at >= (SELECT end_at FROM w))
+    AND (o.stage IN ('active_in_discussions', 'ask_submitted', 'active_opportunity_confirmed', 'builder_submitted', 'builder_interviewing', 'offer_contracting', 'lead_submitted', 'initial_outreach', 'reviewing_builders', 'active_builder_interview') OR (o.closed_at IS NOT NULL AND o.closed_at >= (SELECT end_at FROM w)))
+)
+SELECT count(*) FILTER (WHERE NOT (open_set.slow_reason IS NOT NULL AND open_set.slow_check_again >= (least((SELECT end_at FROM w), now()) AT TIME ZONE 'America/New_York')::date)
+                          AND last_movement >= least((SELECT end_at FROM w), now()) - interval '4 weeks') AS opportunities_active,
+       count(*) FILTER (WHERE (open_set.slow_reason IS NOT NULL AND open_set.slow_check_again >= (least((SELECT end_at FROM w), now()) AT TIME ZONE 'America/New_York')::date)) AS opportunities_slow,
+       count(*) AS opportunities_open
+FROM open_set
+```
+
+</details>
+
+### Slow but active opportunities (`opportunities_slow`, draft)
+
+Open opportunities the owner marked slow but active, with a reason and a check-again date that hasn't passed (Avni, 10/2). After that date the mark lapses: the opportunity is stalled again if it is still quiet (PRO-110).
+
+- Counts: Open opportunities marked slow but active, check-again date not passed
+- Divided by: Open opportunities
+- Date: as of the end of the window
+- Caveat: Reads slow_reason and slow_check_again from migration 2026-10-20-opportunity-slow-but-active.sql.
+
+<details><summary>Reference query</summary>
+
+```sql
+WITH w AS (SELECT ((coalesce(nullif(current_setting('dd.window_from', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 7))::timestamp AT TIME ZONE 'America/New_York') AS start_at, (((coalesce(nullif(current_setting('dd.window_to', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 1) + 1))::timestamp AT TIME ZONE 'America/New_York') AS end_at),
+opp_scope AS (
+  SELECT o.id, lower(btrim(o.account_name)) AS k, o.account_id FROM bedrock.jobs_opportunity o
+  WHERE o.deleted_at IS NULL AND ((o.created_at < (SELECT end_at FROM w) AND (o.closed_at IS NULL OR o.closed_at >= (SELECT end_at FROM w))))
+),
+opp_links AS (
+  SELECT l.opp_id, l.contact_id FROM (
+  SELECT m.opportunity_id AS opp_id, m.contact_id
+  FROM bedrock.jobs_contact_membership m JOIN opp_scope os ON os.id = m.opportunity_id
+  UNION
+  SELECT o.id, c.contact_id
+  FROM opp_scope os JOIN bedrock.jobs_opportunity o ON o.id = os.id
+  CROSS JOIN LATERAL unnest(o.sf_contact_ids) r(ref)
+  JOIN public.contacts c
+    ON c.contact_id = CASE WHEN r.ref ~ '^pub:[0-9]{1,9}$' THEN substring(r.ref from 5)::int END
+  UNION
+  SELECT o.id, c.contact_id
+  FROM opp_scope os JOIN bedrock.jobs_opportunity o ON o.id = os.id
+  CROSS JOIN LATERAL unnest(o.sf_contact_ids) r(ref)
+  JOIN public.contacts c ON c.airtable_id = substring(r.ref from 10)
+  WHERE r.ref LIKE 'airtable:%'
+  UNION
+  SELECT o.id, scl.public_contact_id
+  FROM opp_scope os JOIN bedrock.jobs_opportunity o ON o.id = os.id
+  CROSS JOIN LATERAL unnest(o.sf_contact_ids) r(ref)
+  JOIN bedrock.sf_contact_link scl ON scl.sf_contact_id = r.ref
+  WHERE r.ref NOT LIKE 'pub:%' AND r.ref NOT LIKE 'airtable:%' AND scl.public_contact_id IS NOT NULL
+) l
+),
+opp_contacts AS (
+  SELECT opp_id, contact_id, true AS linked FROM opp_links
+  UNION ALL
+  -- No linked contacts: everyone at the opportunity's account.
+  SELECT os.id, c.contact_id, false
+  FROM opp_scope os JOIN public.contacts c ON lower(btrim(c.current_company)) = os.k
+  WHERE os.k <> '' AND NOT EXISTS (SELECT 1 FROM opp_links l WHERE l.opp_id = os.id)
+),
+scope_contacts AS (SELECT contact_id FROM opp_contacts),
+contact_touches AS (
+  SELECT a.participant_public_contact_id AS contact_id, a.id AS activity_id, a.activity_date AS at
+  FROM bedrock.activity a
+  WHERE a.participant_public_contact_id IN (SELECT contact_id FROM scope_contacts)
+    AND (a.deleted_at IS NULL AND a.type IN ('email', 'call', 'meeting', 'linkedin', 'text') AND (coalesce(a.jobs_relevance_override, CASE WHEN a.type IN ('email','meeting') THEN a.jobs_relevance ELSE 'jobs' END) = 'jobs')) AND a.activity_date < (SELECT end_at FROM w)
+  UNION
+  -- Calendar rows carry attendees, not a participant link.
+  SELECT c.contact_id, a.id, a.activity_date
+  FROM bedrock.activity a,
+       jsonb_array_elements(coalesce(a.meeting_attendees, '[]'::jsonb)) att
+  JOIN public.contacts c ON lower(c.email) = lower(att->>'email')
+  WHERE a.source = 'calendar-sync' AND (a.deleted_at IS NULL AND a.type IN ('email', 'call', 'meeting', 'linkedin', 'text') AND (coalesce(a.jobs_relevance_override, CASE WHEN a.type IN ('email','meeting') THEN a.jobs_relevance ELSE 'jobs' END) = 'jobs')) AND a.activity_date < (SELECT end_at FROM w)
+    AND c.contact_id IN (SELECT contact_id FROM scope_contacts)
+),
+opp_touches AS (
+  SELECT os.id AS opp_id, a.id AS activity_id, a.activity_date AS at
+  FROM opp_scope os JOIN bedrock.activity a ON a.jobs_opportunity_id = os.id
+  WHERE (a.deleted_at IS NULL AND a.type IN ('email', 'call', 'meeting', 'linkedin', 'text') AND (coalesce(a.jobs_relevance_override, CASE WHEN a.type IN ('email','meeting') THEN a.jobs_relevance ELSE 'jobs' END) = 'jobs')) AND a.activity_date < (SELECT end_at FROM w)
+  UNION
+  SELECT os.id, a.id, a.activity_date
+  FROM opp_scope os JOIN bedrock.activity a ON a.account_id = os.account_id
+  WHERE os.account_id LIKE '001%' AND (a.deleted_at IS NULL AND a.type IN ('email', 'call', 'meeting', 'linkedin', 'text') AND (coalesce(a.jobs_relevance_override, CASE WHEN a.type IN ('email','meeting') THEN a.jobs_relevance ELSE 'jobs' END) = 'jobs')) AND a.activity_date < (SELECT end_at FROM w)
+  UNION
+  SELECT oc.opp_id, t.activity_id, t.at
+  FROM opp_contacts oc JOIN contact_touches t ON t.contact_id = oc.contact_id
+),
+opp_last AS (
+  SELECT opp_id, max(at) AS at FROM opp_touches GROUP BY opp_id
+),
+open_set AS (
+  -- Opportunities open at the end of the window.
+  SELECT o.*,
+         greatest(o.created_at,
+                  (SELECT max(h.changed_at) FROM bedrock.jobs_stage_history h
+                    WHERE h.opportunity_id = o.id AND h.changed_at < (SELECT end_at FROM w)),
+                  ol.at) AS last_movement
+  FROM bedrock.jobs_opportunity o
+  LEFT JOIN opp_last ol ON ol.opp_id = o.id
+  WHERE o.deleted_at IS NULL
+    AND o.created_at < (SELECT end_at FROM w)
+    AND (o.closed_at IS NULL OR o.closed_at >= (SELECT end_at FROM w))
+    AND (o.stage IN ('active_in_discussions', 'ask_submitted', 'active_opportunity_confirmed', 'builder_submitted', 'builder_interviewing', 'offer_contracting', 'lead_submitted', 'initial_outreach', 'reviewing_builders', 'active_builder_interview') OR (o.closed_at IS NOT NULL AND o.closed_at >= (SELECT end_at FROM w)))
+)
+SELECT count(*) FILTER (WHERE NOT (open_set.slow_reason IS NOT NULL AND open_set.slow_check_again >= (least((SELECT end_at FROM w), now()) AT TIME ZONE 'America/New_York')::date)
+                          AND last_movement >= least((SELECT end_at FROM w), now()) - interval '4 weeks') AS opportunities_active,
+       count(*) FILTER (WHERE (open_set.slow_reason IS NOT NULL AND open_set.slow_check_again >= (least((SELECT end_at FROM w), now()) AT TIME ZONE 'America/New_York')::date)) AS opportunities_slow,
+       count(*) AS opportunities_open
+FROM open_set
+```
+
+</details>
+
+### Stage moves and asks sent (`opportunity_stage_moves`, draft)
+
+Stage moves logged in the window: every move between two different stages, retired names read as the stage they became, won and lost included. Asks sent are the moves into Ask Submitted; there is no separate proposal record (PRO-110).
+
+- Divided by: n/a (count)
+- Date: in the week (Mon–Sun, New York)
+
+<details><summary>Reference query</summary>
+
+```sql
+WITH w AS (SELECT ((coalesce(nullif(current_setting('dd.window_from', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 7))::timestamp AT TIME ZONE 'America/New_York') AS start_at, (((coalesce(nullif(current_setting('dd.window_to', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 1) + 1))::timestamp AT TIME ZONE 'America/New_York') AS end_at),
+moves AS (
+  SELECT h.opportunity_id, (CASE h.from_stage WHEN 'initial_outreach' THEN 'active_in_discussions' WHEN 'lead_submitted' THEN 'active_in_discussions' WHEN 'reviewing_builders' THEN 'builder_submitted' WHEN 'active_builder_interview' THEN 'builder_submitted' WHEN 'on_hold_not_interested' THEN 'closed_lost' WHEN 'on_hold_not_responsive' THEN 'closed_lost' WHEN 'on_hold_not_selected' THEN 'closed_lost' ELSE h.from_stage END) AS from_stage, (CASE h.to_stage WHEN 'initial_outreach' THEN 'active_in_discussions' WHEN 'lead_submitted' THEN 'active_in_discussions' WHEN 'reviewing_builders' THEN 'builder_submitted' WHEN 'active_builder_interview' THEN 'builder_submitted' WHEN 'on_hold_not_interested' THEN 'closed_lost' WHEN 'on_hold_not_responsive' THEN 'closed_lost' WHEN 'on_hold_not_selected' THEN 'closed_lost' ELSE h.to_stage END) AS to_stage
+  FROM bedrock.jobs_stage_history h JOIN bedrock.jobs_opportunity o ON o.id = h.opportunity_id
+  WHERE o.deleted_at IS NULL AND h.from_stage IS NOT NULL
+    AND h.changed_at >= (SELECT start_at FROM w) AND h.changed_at < (SELECT end_at FROM w)
+)
+SELECT count(*) FILTER (WHERE from_stage <> to_stage) AS stage_moves,
+       count(*) FILTER (WHERE from_stage <> to_stage AND to_stage = 'ask_submitted') AS asks_sent
+FROM moves
+```
+
+</details>
+
+### Stalled accounts with open opportunities (`stalled_opportunity_accounts`, draft)
+
+Accounts with an open opportunity where no contact was touched and no opportunity moved for more than 6 weeks (D3). Every opportunity at the account counts, whatever its type. A person should confirm before calling a whole account stalled (Avni). The Thursday view's cut of Stalled accounts (PRO-110).
+
+- Counts: Accounts with an open opportunity, quiet for 6+ weeks
+- Divided by: Accounts with an open opportunity
+- Date: as of the end of the window
+
+<details><summary>Reference query</summary>
+
+```sql
+WITH w AS (SELECT ((coalesce(nullif(current_setting('dd.window_from', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 7))::timestamp AT TIME ZONE 'America/New_York') AS start_at, (((coalesce(nullif(current_setting('dd.window_to', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 1) + 1))::timestamp AT TIME ZONE 'America/New_York') AS end_at),
+open_keys AS (
+  SELECT DISTINCT lower(btrim(o.account_name)) AS k FROM bedrock.jobs_opportunity o
+  WHERE o.deleted_at IS NULL AND btrim(coalesce(o.account_name, '')) <> ''
+    AND o.created_at < (SELECT end_at FROM w) AND (o.closed_at IS NULL OR o.closed_at >= (SELECT end_at FROM w))
+    AND (o.stage IN ('active_in_discussions', 'ask_submitted', 'active_opportunity_confirmed', 'builder_submitted', 'builder_interviewing', 'offer_contracting', 'lead_submitted', 'initial_outreach', 'reviewing_builders', 'active_builder_interview') OR (o.closed_at IS NOT NULL AND o.closed_at >= (SELECT end_at FROM w)))
+),
+opp_scope AS (
+  SELECT o.id, lower(btrim(o.account_name)) AS k, o.account_id FROM bedrock.jobs_opportunity o
+  WHERE o.deleted_at IS NULL AND ((FALSE) OR (lower(btrim(o.account_name)) IN (SELECT k FROM open_keys)))
+),
+opp_links AS (
+  SELECT l.opp_id, l.contact_id FROM (
+  SELECT m.opportunity_id AS opp_id, m.contact_id
+  FROM bedrock.jobs_contact_membership m JOIN opp_scope os ON os.id = m.opportunity_id
+  UNION
+  SELECT o.id, c.contact_id
+  FROM opp_scope os JOIN bedrock.jobs_opportunity o ON o.id = os.id
+  CROSS JOIN LATERAL unnest(o.sf_contact_ids) r(ref)
+  JOIN public.contacts c
+    ON c.contact_id = CASE WHEN r.ref ~ '^pub:[0-9]{1,9}$' THEN substring(r.ref from 5)::int END
+  UNION
+  SELECT o.id, c.contact_id
+  FROM opp_scope os JOIN bedrock.jobs_opportunity o ON o.id = os.id
+  CROSS JOIN LATERAL unnest(o.sf_contact_ids) r(ref)
+  JOIN public.contacts c ON c.airtable_id = substring(r.ref from 10)
+  WHERE r.ref LIKE 'airtable:%'
+  UNION
+  SELECT o.id, scl.public_contact_id
+  FROM opp_scope os JOIN bedrock.jobs_opportunity o ON o.id = os.id
+  CROSS JOIN LATERAL unnest(o.sf_contact_ids) r(ref)
+  JOIN bedrock.sf_contact_link scl ON scl.sf_contact_id = r.ref
+  WHERE r.ref NOT LIKE 'pub:%' AND r.ref NOT LIKE 'airtable:%' AND scl.public_contact_id IS NOT NULL
+) l
+),
+opp_contacts AS (
+  SELECT opp_id, contact_id, true AS linked FROM opp_links
+  UNION ALL
+  -- No linked contacts: everyone at the opportunity's account.
+  SELECT os.id, c.contact_id, false
+  FROM opp_scope os JOIN public.contacts c ON lower(btrim(c.current_company)) = os.k
+  WHERE os.k <> '' AND NOT EXISTS (SELECT 1 FROM opp_links l WHERE l.opp_id = os.id)
+),
+account_contacts AS (
+  SELECT lower(btrim(c.current_company)) AS k, c.contact_id FROM public.contacts c
+  WHERE btrim(coalesce(c.current_company, '')) <> '' AND lower(btrim(c.current_company)) IN (SELECT k FROM open_keys)
+),
+scope_contacts AS (SELECT contact_id FROM opp_contacts UNION SELECT contact_id FROM account_contacts),
+contact_touches AS (
+  SELECT a.participant_public_contact_id AS contact_id, a.id AS activity_id, a.activity_date AS at
+  FROM bedrock.activity a
+  WHERE a.participant_public_contact_id IN (SELECT contact_id FROM scope_contacts)
+    AND (a.deleted_at IS NULL AND a.type IN ('email', 'call', 'meeting', 'linkedin', 'text') AND (coalesce(a.jobs_relevance_override, CASE WHEN a.type IN ('email','meeting') THEN a.jobs_relevance ELSE 'jobs' END) = 'jobs')) AND a.activity_date < (SELECT end_at FROM w)
+  UNION
+  -- Calendar rows carry attendees, not a participant link.
+  SELECT c.contact_id, a.id, a.activity_date
+  FROM bedrock.activity a,
+       jsonb_array_elements(coalesce(a.meeting_attendees, '[]'::jsonb)) att
+  JOIN public.contacts c ON lower(c.email) = lower(att->>'email')
+  WHERE a.source = 'calendar-sync' AND (a.deleted_at IS NULL AND a.type IN ('email', 'call', 'meeting', 'linkedin', 'text') AND (coalesce(a.jobs_relevance_override, CASE WHEN a.type IN ('email','meeting') THEN a.jobs_relevance ELSE 'jobs' END) = 'jobs')) AND a.activity_date < (SELECT end_at FROM w)
+    AND c.contact_id IN (SELECT contact_id FROM scope_contacts)
+),
+opp_touches AS (
+  SELECT os.id AS opp_id, a.id AS activity_id, a.activity_date AS at
+  FROM opp_scope os JOIN bedrock.activity a ON a.jobs_opportunity_id = os.id
+  WHERE (a.deleted_at IS NULL AND a.type IN ('email', 'call', 'meeting', 'linkedin', 'text') AND (coalesce(a.jobs_relevance_override, CASE WHEN a.type IN ('email','meeting') THEN a.jobs_relevance ELSE 'jobs' END) = 'jobs')) AND a.activity_date < (SELECT end_at FROM w)
+  UNION
+  SELECT os.id, a.id, a.activity_date
+  FROM opp_scope os JOIN bedrock.activity a ON a.account_id = os.account_id
+  WHERE os.account_id LIKE '001%' AND (a.deleted_at IS NULL AND a.type IN ('email', 'call', 'meeting', 'linkedin', 'text') AND (coalesce(a.jobs_relevance_override, CASE WHEN a.type IN ('email','meeting') THEN a.jobs_relevance ELSE 'jobs' END) = 'jobs')) AND a.activity_date < (SELECT end_at FROM w)
+  UNION
+  SELECT oc.opp_id, t.activity_id, t.at
+  FROM opp_contacts oc JOIN contact_touches t ON t.contact_id = oc.contact_id
+),
+account_touches AS (
+  SELECT ac.k, t.activity_id, t.at
+  FROM account_contacts ac JOIN contact_touches t ON t.contact_id = ac.contact_id
+  UNION
+  SELECT os.k, t.activity_id, t.at
+  FROM opp_scope os JOIN opp_touches t ON t.opp_id = os.id
+  WHERE os.k <> '' AND os.k IN (SELECT k FROM open_keys)
+),
+touched AS (SELECT k, max(at) AS at FROM account_touches GROUP BY k),
+moved AS (
+  SELECT lower(btrim(o.account_name)) AS k, max(h.changed_at) AS at
+  FROM bedrock.jobs_stage_history h JOIN bedrock.jobs_opportunity o ON o.id = h.opportunity_id
+  WHERE o.deleted_at IS NULL AND h.changed_at < (SELECT end_at FROM w)
+  GROUP BY 1
+)
+SELECT count(*) FILTER (WHERE greatest(t.at, mv.at) IS NULL
+                          OR greatest(t.at, mv.at) < least((SELECT end_at FROM w), now()) - interval '6 weeks')
+         AS stalled_accounts,
+       count(*) AS accounts_with_open_opportunities
+FROM open_keys ok LEFT JOIN touched t USING (k) LEFT JOIN moved mv USING (k)
+```
+
+</details>
+
+### Why opportunities were lost (`lost_reasons`, draft)
+
+Opportunities closed lost in the 180 days up to the end of the window, by lost reason. A close reverted later doesn't count. The reason is required on Closed Lost from PRO-110; older ones may have none (12 of 88 on 10/20).
+
+- Divided by: n/a (count by reason)
+- Date: in the 180 days up to the window's end
+
+<details><summary>Reference query</summary>
+
+```sql
+WITH w AS (SELECT ((coalesce(nullif(current_setting('dd.window_from', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 7))::timestamp AT TIME ZONE 'America/New_York') AS start_at, (((coalesce(nullif(current_setting('dd.window_to', true), '')::date, date_trunc('week', now() AT TIME ZONE 'America/New_York')::date - 1) + 1))::timestamp AT TIME ZONE 'America/New_York') AS end_at),
+last_change AS (
+  SELECT DISTINCT ON (h.opportunity_id) h.opportunity_id, h.to_stage, h.changed_at
+  FROM bedrock.jobs_stage_history h JOIN bedrock.jobs_opportunity o ON o.id = h.opportunity_id
+  WHERE o.deleted_at IS NULL AND h.changed_at < (SELECT end_at FROM w)
+  ORDER BY h.opportunity_id, h.changed_at DESC
+)
+SELECT coalesce(o.closed_lost_reason, '(none)') AS reason, count(*) AS opportunities_lost
+FROM last_change lc JOIN bedrock.jobs_opportunity o ON o.id = lc.opportunity_id
+WHERE lc.to_stage = 'closed_lost'
+  AND lc.changed_at >= (((SELECT end_at FROM w) AT TIME ZONE 'America/New_York')
+                        - interval '180 days') AT TIME ZONE 'America/New_York'
+GROUP BY 1 ORDER BY 2 DESC
+```
+
+</details>
+
 ### Won, with open tasks (`won_open_tasks`, draft)
 
 Closed Won opportunities that still have a task not marked Completed.
 
 - Divided by: n/a (count)
 - Date: as of today
+- Caveat: Retired from the Thursday Pipeline view by PRO-110 (Kwame); Jobs Home still shows it.
 
 <details><summary>Reference query</summary>
 

@@ -6,7 +6,7 @@ import { AlertTriangle, Loader2, Mail, Calendar } from "lucide-react";
 
 import { Drawer } from "@/components/ui/Drawer";
 // Same card wrapper as Targeting Mix — see the Panel note at the return below.
-import { Panel } from "@/pages/jobs/JobsOpportunitiesOverview";
+import { Panel } from "@/components/jobs/Panel";
 import { MetricInfo } from "./MetricInfo";
 import {
   useActivityTrends, useActivityTrendDetail, useVolumeTrends,

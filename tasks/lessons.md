@@ -3,6 +3,12 @@
 > Updated after every correction or mistake. Patterns to avoid repeating.
 > Review at session start.
 
+## 2026-10-20 — PRO-110 Thursday Pipeline (2 lessons)
+
+1. **The local dev backend reads prod with a read-only login that can't run `builder_by_id`.** Anything that calls `_funnel_milestones` (or `INTERVIEW_APPLICATIONS_SQL`) 500s locally, even though prod works. The backend's output goes to a pipe owned by an earlier session, so `/tmp/bedrock-backend.log` is empty. **Rule**: to see a route's real error, call the route function from a script in the WSL clone (`.venv/bin/python`, `await db.init_db()`, then the handler with a pool connection). Nothing can be written from the browser locally; don't plan a browser test that saves.
+
+2. **A gated stage change must reject with `Error("Stage change cancelled")`, not resolve.** `InlineSelect` keeps an optimistic value after a resolved save, so the cell showed "Closed — Lost" behind the reason modal and after Cancel. A rejection with that exact message clears the value silently. **Rule**: when a picker hands a change to a modal, reject with that message, and check the cell after Cancel in the browser.
+
 ## 2026-10-20 — PRO-106 Monday Outreach (2 lessons)
 
 1. **Copying into the served clone with `sed … > file` can leave Vite caching an empty module.** The redirect truncates the file first; Vite's watcher fired on the empty file, cached an empty transform under its `?t=` stamp, and the Pipeline tab went blank ("does not provide an export named jobsAccountPath") even after the file was whole again. **Rule**: write to a temp file and `mv` it into place, then confirm the served size (`curl -s localhost:4200/src/<file> | wc -c`) for every copied file before opening the browser.

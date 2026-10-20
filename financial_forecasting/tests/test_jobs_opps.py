@@ -77,7 +77,8 @@ def test_create_opportunity_stores_date_and_estimate(monkeypatch):
     assert r.status_code == 200, r.text
     q, args = _insert_call(conn)[1:]
     assert "estimated_jobs" in q
-    assert str(args[15]) == "2026-12-15" and args[16] == 3
+    # $16 is the date, $17/$18 the lost reason and note (only when created lost)
+    assert str(args[15]) == "2026-12-15" and args[16] is None and args[18] == 3
 
 
 def test_create_without_an_estimate_still_works_before_migration():
@@ -92,7 +93,7 @@ def test_create_without_an_estimate_still_works_before_migration():
         "sf_contact_ids": ["pub:5"]})
     assert r.status_code == 200, r.text
     q, args = _insert_call(conn)[1:]
-    assert "estimated_jobs" not in q and len(args) == 16
+    assert "estimated_jobs" not in q and len(args) == 18
 
 
 def test_create_refuses_an_estimate_before_migration():

@@ -130,6 +130,13 @@ MEASURES: dict[str, Measure] = {
     "closed_won":             Measure("employer_pipeline", "closed_won"),
     "closed_lost":            Measure("employer_pipeline", "closed_lost"),
     "won_open_tasks":         Measure("employer_pipeline", "won_open_tasks"),
+    # Thursday Pipeline (PRO-110)
+    "opportunities_active":   Measure("employer_pipeline", "opportunities_active"),
+    "opportunities_slow":     Measure("employer_pipeline", "opportunities_slow"),
+    "opportunity_stage_moves": Measure("employer_pipeline", "opportunity_stage_moves", "stage_moves"),
+    "asks_sent":              Measure("employer_pipeline", "opportunity_stage_moves", "asks_sent"),
+    "stalled_opportunity_accounts": Measure("employer_pipeline", "stalled_opportunity_accounts", "stalled_accounts"),
+    "lost_reasons":           Measure("employer_pipeline", "lost_reasons", "opportunities_lost"),
     "time_in_stage":          Measure("employer_pipeline", "time_in_stage"),
     "interviews":             Measure("employer_pipeline", "interviews", "interviews"),
     # Conversion
@@ -721,7 +728,8 @@ FROM last"""
     if entity == "opportunities":
         end = "(SELECT end_at FROM w)"
         return dictionary_open_opportunities_sql(open_opp_stages) + f"""
-SELECT count(*) FILTER (WHERE last_movement < least({end}, now()) - interval '4 weeks') AS stalled_opportunities,
+SELECT count(*) FILTER (WHERE last_movement < least({end}, now()) - interval '4 weeks'
+                         AND NOT {slow_open_sql('open_set', f'least({end}, now())')}) AS stalled_opportunities,
        count(*) AS opportunities_open
 FROM open_set"""
     if entity == "accounts":
@@ -768,6 +776,35 @@ def is_stalled(entity: str, last_activity: Optional[datetime], as_of: datetime) 
 
 def stalled_label(entity: str) -> str:
     return f"No activity in {STALLED_AFTER[entity].days // 7}+ weeks"
+
+
+# ── Slow but active (PRO-110) ────────────────────────────────────────────────
+# An owner can mark an open opportunity "slow but active": it is alive though
+# nothing has happened for weeks (enterprise hiring, Pharma Logistics; Avni,
+# 10/2). The mark carries a reason and a check-again date. Until that date it
+# reads as slow, whatever the activity. After it, the mark lapses: the
+# opportunity is stalled again if it is still quiet (shown with the old reason),
+# active if something happened (Nina, 10/20).
+
+OPPORTUNITY_STATES = ("active", "stalled", "slow")
+
+
+def opportunity_state(last_movement: Optional[datetime], slow_reason: Optional[str],
+                      slow_check_again: Optional[date], as_of: datetime) -> tuple[str, bool]:
+    """(state, lapsed) for an open opportunity as of `as_of`. `lapsed` is True
+    when it carries a slow-but-active mark whose check-again date has passed."""
+    marked = bool(slow_reason) and slow_check_again is not None
+    if marked and slow_check_again >= as_of.astimezone(NY).date():
+        return "slow", False
+    state = "stalled" if is_stalled("opportunity", last_movement, as_of) else "active"
+    return state, marked
+
+
+def slow_open_sql(alias: str = "o", as_of: str = "now()") -> str:
+    """SQL twin of opportunity_state's slow test: marked, and the check-again
+    date (a New York date) hasn't passed as of `as_of`."""
+    return (f"({alias}.slow_reason IS NOT NULL AND {alias}.slow_check_again >= "
+            f"({as_of} AT TIME ZONE 'America/New_York')::date)")
 
 
 # ── The stage map ────────────────────────────────────────────────────────────
@@ -1829,6 +1866,95 @@ OUTCOME_SELECTS = {
 def dictionary_outcome_sql(cut: str) -> str:
     """The reference query for one outcome measure."""
     return f"{PLACED_CTES}\n{OUTCOME_SELECTS[cut]}"
+
+
+def dictionary_opportunity_state_sql(open_opp_stages: Iterable[str]) -> str:
+    """The reference query for Active and Slow but active opportunities
+    (PRO-110), from the same open set as Stalled: slow is the owner's mark
+    until its check-again date; active is anything else that moved in the
+    last 4 weeks. Open = active + stalled + slow."""
+    end = "(SELECT end_at FROM w)"
+    as_of = f"least({end}, now())"
+    slow = slow_open_sql("open_set", as_of)
+    return dictionary_open_opportunities_sql(open_opp_stages) + f"""
+SELECT count(*) FILTER (WHERE NOT {slow}
+                          AND last_movement >= {as_of} - interval '4 weeks') AS opportunities_active,
+       count(*) FILTER (WHERE {slow}) AS opportunities_slow,
+       count(*) AS opportunities_open
+FROM open_set"""
+
+
+def dictionary_stage_moves_sql() -> str:
+    """The reference query for stage moves and asks sent in the window
+    (PRO-110): every logged move between two different stages (retired names
+    read as the stage they became); an ask is a move into Ask Submitted."""
+    canon_from, canon_to = canon_stage_sql("h.from_stage"), canon_stage_sql("h.to_stage")
+    return f"""WITH w AS (SELECT {DD_START} AS start_at, {DD_END} AS end_at),
+moves AS (
+  SELECT h.opportunity_id, {canon_from} AS from_stage, {canon_to} AS to_stage
+  FROM bedrock.jobs_stage_history h JOIN bedrock.jobs_opportunity o ON o.id = h.opportunity_id
+  WHERE o.deleted_at IS NULL AND h.from_stage IS NOT NULL
+    AND h.changed_at >= (SELECT start_at FROM w) AND h.changed_at < (SELECT end_at FROM w)
+)
+SELECT count(*) FILTER (WHERE from_stage <> to_stage) AS stage_moves,
+       count(*) FILTER (WHERE from_stage <> to_stage AND to_stage = 'ask_submitted') AS asks_sent
+FROM moves"""
+
+
+LOST_REASONS_LOOKBACK_DAYS = 180
+
+
+def dictionary_lost_reasons_sql() -> str:
+    """The reference query for why opportunities were lost (PRO-110): those
+    whose latest stage change before the window's end moved them to Closed
+    Lost, in the 180 days up to it, by reason ("(none)" when it was left
+    blank). A close reverted later doesn't count."""
+    end = "(SELECT end_at FROM w)"
+    return f"""WITH w AS (SELECT {DD_START} AS start_at, {DD_END} AS end_at),
+last_change AS (
+  SELECT DISTINCT ON (h.opportunity_id) h.opportunity_id, h.to_stage, h.changed_at
+  FROM bedrock.jobs_stage_history h JOIN bedrock.jobs_opportunity o ON o.id = h.opportunity_id
+  WHERE o.deleted_at IS NULL AND h.changed_at < {end}
+  ORDER BY h.opportunity_id, h.changed_at DESC
+)
+SELECT coalesce(o.closed_lost_reason, '(none)') AS reason, count(*) AS opportunities_lost
+FROM last_change lc JOIN bedrock.jobs_opportunity o ON o.id = lc.opportunity_id
+WHERE lc.to_stage = 'closed_lost'
+  AND lc.changed_at >= (({end} AT TIME ZONE 'America/New_York')
+                        - interval '{LOST_REASONS_LOOKBACK_DAYS} days') AT TIME ZONE 'America/New_York'
+GROUP BY 1 ORDER BY 2 DESC"""
+
+
+def dictionary_stalled_opportunity_accounts_sql(open_opp_stages: Iterable[str]) -> str:
+    """The reference query for the Thursday view's stalled accounts (PRO-110):
+    accounts with an open opportunity at the window's end where no contact was
+    touched and no opportunity moved for 6+ weeks (D3). The dictionary's
+    Stalled accounts also counts accounts with only open contacts."""
+    end = "(SELECT end_at FROM w)"
+    opp_in = ", ".join(f"'{s}'" for s in open_opp_stages)
+    scope = activity_scope_ctes(
+        opps="FALSE", accounts="{k} IN (SELECT k FROM open_keys)",
+        activity=f"{external_activity_sql('a')} AND a.activity_date < {end}")
+    return f"""WITH w AS (SELECT {DD_START} AS start_at, {DD_END} AS end_at),
+open_keys AS (
+  SELECT DISTINCT lower(btrim(o.account_name)) AS k FROM bedrock.jobs_opportunity o
+  WHERE o.deleted_at IS NULL AND btrim(coalesce(o.account_name, '')) <> ''
+    AND o.created_at < {end} AND (o.closed_at IS NULL OR o.closed_at >= {end})
+    AND (o.stage IN ({opp_in}) OR (o.closed_at IS NOT NULL AND o.closed_at >= {end}))
+),
+{scope},
+touched AS (SELECT k, max(at) AS at FROM account_touches GROUP BY k),
+moved AS (
+  SELECT lower(btrim(o.account_name)) AS k, max(h.changed_at) AS at
+  FROM bedrock.jobs_stage_history h JOIN bedrock.jobs_opportunity o ON o.id = h.opportunity_id
+  WHERE o.deleted_at IS NULL AND h.changed_at < {end}
+  GROUP BY 1
+)
+SELECT count(*) FILTER (WHERE greatest(t.at, mv.at) IS NULL
+                          OR greatest(t.at, mv.at) < least({end}, now()) - interval '6 weeks')
+         AS stalled_accounts,
+       count(*) AS accounts_with_open_opportunities
+FROM open_keys ok LEFT JOIN touched t USING (k) LEFT JOIN moved mv USING (k)"""
 
 
 def dictionary_committed_salary_sql() -> str:

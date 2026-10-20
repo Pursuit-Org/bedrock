@@ -28,7 +28,8 @@ import {
 import { withReferrer } from "@/components/detail";
 import { InlineDate, InlineSelect, InlineText } from "@/components/ui/InlineEdit";
 import { parseEstimatedJobs } from "@/lib/estimatedJobs";
-import { closedLostLabel, untitledOppHeading } from "@/components/jobs/oppLabels";
+import { PRIORITY_OPTIONS, closedLostLabel, untitledOppHeading } from "@/components/jobs/oppLabels";
+import { SlowButActive } from "@/components/jobs/SlowButActive";
 import {
   useJobsOpportunity,
   useUpdateOpportunity,
@@ -39,7 +40,6 @@ import {
 } from "@/services/jobs";
 
 const DEAL_TYPE_OPTIONS = (Object.keys(DEAL_TYPE_LABELS) as DealType[]).map((v) => ({ value: v, label: DEAL_TYPE_LABELS[v] }));
-const PRIORITY_OPTIONS = [1, 2, 3, 4, 5].map((n) => ({ value: String(n), label: `P${n}` }));
 const LIKELIHOOD_OPTIONS = [
   { value: "low", label: "Low" }, { value: "medium", label: "Medium" }, { value: "high", label: "High" },
 ];
@@ -168,6 +168,12 @@ export function JobsOpportunityDetailPage() {
               onSave={(v) => { const n = parseEstimatedJobs(v); return n === undefined ? Promise.reject(new Error("Whole number, 0–999")) : patch("estimated_jobs", n); }} />
           </EditField>
         </div>
+        {!o.stage.startsWith("closed") ? (
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-border-strong px-5 py-3">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">Slow but active</span>
+            <SlowButActive opp={o} />
+          </div>
+        ) : null}
         {o.closed_lost_reason ? (
           <div className="border-t border-border-strong px-5 py-3 text-[12px] text-ink-3">
             <span className="font-semibold text-ink-2">Closed-lost:</span> {closedLostLabel(o.closed_lost_reason)}{o.closed_lost_note ? ` — ${o.closed_lost_note}` : ""}

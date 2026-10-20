@@ -10,7 +10,7 @@ import {
   type StuckReasonKind,
   type StuckRow,
 } from "@/services/jobs";
-import { Panel } from "@/pages/jobs/JobsOpportunitiesOverview";
+import { Panel } from "@/components/jobs/Panel";
 import { MetricInfo } from "@/components/jobs/MetricInfo";
 import { ListWhy } from "@/components/jobs/ListWhy";
 import { jobsAccountPath } from "@/components/jobs/jobsPaths";

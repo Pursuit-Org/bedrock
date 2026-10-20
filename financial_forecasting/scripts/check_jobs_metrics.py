@@ -76,6 +76,13 @@ async def _overview(ctx):
         user=None, conn=ctx.conn))
 
 
+async def _thursday(ctx):
+    from routes import jobs
+    return await ctx.once("thursday", lambda: jobs.opportunities_thursday(
+        deal_type="all", start=ctx.d_from.isoformat(), end=ctx.d_to.isoformat(),
+        user=None, conn=ctx.conn))
+
+
 async def _interviews(ctx):
     from routes import jobs
     return await ctx.once("interviews", lambda: jobs.interviews_over_time(
@@ -145,6 +152,11 @@ CHECKS = [
     Check("stalled_opportunities", "stalled_opportunities", _data(_overview, "summary", "stalled")),
     Check("closed_won", "closed_won", _data(_overview, "summary", "moved_committed")),
     Check("closed_lost", "closed_lost", _data(_overview, "summary", "closed_lost")),
+    Check("opportunities_active", "opportunities_active", _data(_thursday, "summary", "active")),
+    Check("opportunities_slow", "opportunities_slow", _data(_thursday, "summary", "slow")),
+    Check("opportunity_stage_moves", "stage_moves", _data(_thursday, "definitions", "moves", "value")),
+    Check("asks_sent", "asks_sent", _data(_thursday, "definitions", "asks", "value")),
+    Check("stalled_opportunity_accounts", "stalled_accounts", _data(_thursday, "summary", "stalled_accounts")),
     Check("interviews", "interviews", _data(_interviews, "interviews")),
     Check("interview_to_hire", "rate_pct", _data(_interviews, "rate_pct")),
     Check("milestone_to_interview", "rate_pct", _milestone("first_stage_to_interview")),

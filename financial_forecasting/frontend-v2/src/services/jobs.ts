@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import { useMutation, useQuery, useQueryClient, keepPreviousData, type QueryClient } from "@tanstack/react-query";
+import { apiErrorMessage } from "@/lib/estimatedJobs";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { fetchAllPages } from "@/lib/fetchAllPages";
@@ -118,6 +119,12 @@ export interface JobsOpportunity {
   /** Jobs the deal is expected to yield. Absent until the 2026-09-29
    *  estimated_jobs migration adds the column. */
   estimated_jobs?: number | null;
+  /** Slow but active (PRO-110): the owner's reason and check-again date.
+   *  Absent until the 2026-10-20 migration adds the columns. */
+  slow_reason?: string | null;
+  slow_check_again?: string | null;
+  slow_marked_by?: string | null;
+  slow_marked_at?: string | null;
   /** Comments on the deal (list endpoint only): count and the latest one. */
   comment_count?: number | null;
   last_comment?: string | null;
@@ -2173,7 +2180,9 @@ export function useUpdateOpportunity() {
         changedStage ? `Stage → ${STAGE_LABELS[updated.stage] ?? updated.stage}` : "Updated",
       );
     },
-    onError: () => toast.error("Update failed"),
+    // Say why: a refused save (Closed Lost without a reason, a pending
+    // migration) names what to do.
+    onError: (err) => toast.error(apiErrorMessage(err, "Update failed")),
   });
 }
 
@@ -3533,6 +3542,111 @@ export function useOpportunitiesOverview(owner?: string, dealType?: string, week
       const { data } = await api.get<ApiResponse<OpportunitiesOverview>>(`/api/jobs/opportunities/overview${qs}`);
       return data.data;
     },
+    staleTime: 30_000,
+  });
+}
+
+// ── Thursday Pipeline (PRO-110) ─────────────────────────────────────────────
+
+/** Full-time by default; "all" adds every other type and untyped ones. */
+export type ThursdayDealType = "ft" | "pt_contract" | "all";
+export type OppState = "active" | "stalled" | "slow";
+
+export interface ThursdayOpportunity {
+  opportunity_id: string;
+  account: string | null;
+  account_key: string;
+  title: string | null;
+  deal_type: DealType | null;
+  stage: string;
+  stage_label: string;
+  owner: string | null;
+  relationship_owner: string | null;
+  /** Stored 1–5, 5 highest (shown P1); null when not set. */
+  priority: number | null;
+  days_in_stage: number;
+  /** No history row for the current stage: days_in_stage is since creation. */
+  stage_from_created: boolean;
+  /** Days since the last movement (creation, a stage move or activity). */
+  idle_days: number | null;
+  last_movement: string | null;
+  last_stage_change: string | null;
+  last_activity: { at: string; type: string | null; by: string | null } | null;
+  state: OppState;
+  slow: {
+    reason: string; check_again: string; marked_by: string | null;
+    marked_at: string | null; lapsed: boolean;
+  } | null;
+}
+
+export interface ThursdayPriority extends ThursdayOpportunity {
+  /** The latest comment: where it stands. */
+  latest_note: { text: string; by: string | null; at: string | null } | null;
+}
+
+export interface ThursdayEvent {
+  opportunity_id: string;
+  account: string | null;
+  owner: string | null;
+  deal_type: DealType | null;
+  actor: string | null;
+  detail: string;
+  at: string | null;
+}
+
+export interface ThursdayAccount {
+  account_key: string;
+  account: string | null;
+  state: "active" | "stalled";
+  last_contact_touch: string | null;
+  last_opportunity_move: string | null;
+  idle_days: number | null;
+  opportunity_ids: string[];
+}
+
+export interface ThursdayLostReason {
+  /** null: no reason given. */
+  key: string | null;
+  label: string;
+  count: number;
+  rows: ThursdayEvent[];
+}
+
+export type ThursdayWeekKey = "new" | "moves" | "won" | "lost" | "asks";
+
+export interface ThursdayPipeline {
+  deal_type: ThursdayDealType;
+  window: { start: string; end: string };
+  as_of: string;
+  lookback: { start: string; days: number };
+  /** False until the slow-but-active migration runs. */
+  slow_enabled: boolean;
+  summary: { open: number; active: number; stalled: number; slow: number;
+             accounts: number; stalled_accounts: number };
+  opportunities: ThursdayOpportunity[];
+  priority: ThursdayPriority[];
+  stalled: ThursdayOpportunity[];
+  slow: ThursdayOpportunity[];
+  week: Record<ThursdayWeekKey, ThursdayEvent[]>;
+  accounts: ThursdayAccount[];
+  stalled_accounts: ThursdayAccount[];
+  lost_reasons: ThursdayLostReason[];
+  milestones: FunnelMilestone[];
+  definitions: Record<"open" | "active" | "stalled" | "slow" | ThursdayWeekKey
+                      | "stalled_accounts" | "lost_reasons", MetricDefinition>;
+}
+
+/** `start`/`end` are inclusive New York dates (YYYY-MM-DD). */
+export function useThursdayPipeline(dealType: ThursdayDealType, start: string, end: string) {
+  return useQuery<ThursdayPipeline>({
+    queryKey: ["jobs", "opportunities", "thursday", dealType, start, end],
+    queryFn: async () => {
+      const p = new URLSearchParams({ deal_type: dealType, start, end });
+      const { data } = await api.get<ApiResponse<ThursdayPipeline>>(`/api/jobs/opportunities/thursday?${p}`);
+      return data.data;
+    },
+    // Keep the last view on screen while a new type or week loads.
+    placeholderData: keepPreviousData,
     staleTime: 30_000,
   });
 }

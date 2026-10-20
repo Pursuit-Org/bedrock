@@ -10,6 +10,17 @@ export const CLOSED_LOST_LABELS: Record<string, string> = {
   not_responsive: "Not responsive", revisit: "Revisit later", other: "Other",
 };
 
+/** Priority is stored 1–5 with 5 the highest and shown as P1, everywhere. The
+ *  opportunity page offered P1 as 1, so a priority set there read as P5 on
+ *  every other surface (PRO-110). */
+export const PRIORITY_OPTIONS: { value: string; label: string }[] = [
+  { value: "5", label: "P1 — Highest" },
+  { value: "4", label: "P2 — High" },
+  { value: "3", label: "P3 — Medium" },
+  { value: "2", label: "P4 — Low" },
+  { value: "1", label: "P5 — Lowest" },
+];
+
 export function closedLostLabel(reason: string): string {
   return CLOSED_LOST_LABELS[reason] ?? reason;
 }
