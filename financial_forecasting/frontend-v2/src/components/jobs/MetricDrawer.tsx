@@ -43,6 +43,7 @@ export function MetricDrawer({
   metricKey,
   segment,
   jobType,
+  part,
   onClose,
 }: {
   metricKey: string | null;
@@ -50,9 +51,11 @@ export function MetricDrawer({
   segment?: string;
   /** The job type the card was scoped to (D4). */
   jobType?: string;
+  /** One line of the Placed card (PRO-105). */
+  part?: string;
   onClose: () => void;
 }) {
-  const { data, isLoading } = useMetricDrill(metricKey, segment, jobType);
+  const { data, isLoading } = useMetricDrill(metricKey, segment, jobType, part);
   const open = metricKey !== null;
   const [expandedRow, setExpandedRow] = useState<number | null>(null);
   useEffect(() => setExpandedRow(null), [metricKey]);

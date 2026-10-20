@@ -932,6 +932,29 @@ export function useJobsStaff() {
   });
 }
 
+/** How a Jobs list picks its rows, for its "Why these?" note (PRO-105). */
+export interface ListWhyEntry {
+  key: string;
+  title: string;
+  who: string;
+  order: string;
+  cap: string;
+  dates: string[];
+  notes: string[];
+}
+
+/** Every list's note, in one call: the words are static (services/jobs_lists). */
+export function useListsWhy() {
+  return useQuery<Record<string, ListWhyEntry>>({
+    queryKey: ["jobs", "lists-why"],
+    queryFn: async () => {
+      const { data } = await api.get<ApiResponse<Record<string, ListWhyEntry>>>("/api/jobs/lists/why");
+      return data.data;
+    },
+    staleTime: Infinity,
+  });
+}
+
 /** "avni.nahar@pursuit.org" → "Avni Nahar". Fallback when staff lookup misses. */
 export function titleCaseEmail(email: string): string {
   return email.split("@")[0].replace(/[._-]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
@@ -1012,6 +1035,44 @@ export interface RolesSummary {
   rows: JobRole[];
 }
 
+/** Where the rows behind a number come from (PRO-105): an endpoint whose
+ *  `count_field` is the number, or a list already in the response (`drill`,
+ *  `inline`). `count` is how many records an average or a rate is over. */
+export interface MetricRecords {
+  endpoint: string | null;
+  params?: Record<string, string | number | null>;
+  count_field?: string;
+  drill?: string;
+  inline?: string;
+  count?: number;
+}
+
+/** What a number means, beside it in every Jobs response (services/
+ *  jobs_metrics.define). The words are the data dictionary's, or its draft
+ *  until the entry is saved there (`source: "repo_draft"`). */
+export interface MetricDefinition {
+  key: string;
+  value: number | null;
+  metric_id: number | null;
+  concept: string;
+  measure: string;
+  label: string | null;
+  definition: string | null;
+  numerator: string | null;
+  denominator: string | null;
+  caveat: string | null;
+  time_anchor: string | null;
+  /** The dictionary's status ("confirmed" is signed off), or why there is none. */
+  status: string | null;
+  source: "dictionary" | "repo_draft" | null;
+  window: { from: string | null; to: string | null; tz: string } | null;
+  as_of: string | null;
+  filters: Record<string, string | number>;
+  /** Filters on the page this number doesn't apply, with why. */
+  ignored: Record<string, string>;
+  records: MetricRecords | null;
+}
+
 /** One option of the Overview's job-type filter (D4). "full_time" is placed
  *  (full-time or a paid trial, D2); "all" is all paid work. */
 export interface JobTypeOption { value: string; label: string; count: number }
@@ -1040,6 +1101,8 @@ export interface PlacementsSummary {
   ft_salaried: number;
   committed_expected_salary: number | null;
   interviewing: number;
+  /** What each card and line means (PRO-97, PRO-105). */
+  definitions: Record<string, MetricDefinition>;
 }
 
 /** An L3 cohort of the job-ready pool. "current_l3" names the cohort it
@@ -1357,6 +1420,9 @@ export interface FunnelData {
    *  first stage → interview, then interview → hire. Their rows carry no rate.
    *  Null for builders, whose rows do. */
   milestones: FunnelMilestone[] | null;
+  /** Builders: one per stage (job_ready, paid, placed). Contacts and
+   *  opportunities: `count`, what every row counts (PRO-97, PRO-105). */
+  definitions: Record<string, MetricDefinition>;
 }
 
 /** One conversion between milestones. Counts only records that started at
@@ -1373,6 +1439,7 @@ export interface FunnelMilestone {
   /** first_stage_to_interview: who reached interview. interview_to_hire:
    *  every interview, with whether it was hired. */
   records: Record<string, string | boolean | null>[];
+  definition: MetricDefinition;
 }
 
 /** Window for period-flow mode. Omit it to get the all-time snapshot (the Exec
@@ -1430,13 +1497,16 @@ export function useJobRoles() {
   });
 }
 
-export function useMetricDrill(metricKey: string | null, segment?: string, jobType = "full_time") {
+/** `part` narrows the placements drill to one line of the Placed card:
+ *  "full_time", "trial" or "in_role" (PRO-105). */
+export function useMetricDrill(metricKey: string | null, segment?: string, jobType = "full_time",
+                               part?: string) {
   const seg = segment && segment !== "all" ? segment : undefined;
   return useQuery<MetricDrill>({
-    queryKey: ["jobs", "metric", metricKey, seg ?? "all", jobType],
+    queryKey: ["jobs", "metric", metricKey, seg ?? "all", jobType, part ?? null],
     queryFn: async () => {
       const { data } = await api.get<ApiResponse<MetricDrill>>(`/api/jobs/metrics/${metricKey}`, {
-        params: { ...(seg ? { segment: seg } : {}), job_type: jobType },
+        params: { ...(seg ? { segment: seg } : {}), job_type: jobType, ...(part ? { part } : {}) },
       });
       return data.data;
     },
@@ -1510,6 +1580,8 @@ export interface VolumeTrends {
    *  someone is actually managing to. Null where no target is set. */
   targets: Record<VolumeSeriesKey, number | null>;
   totals: Record<VolumeSeriesKey, number>;
+  /** Each series' measure, the same as its Activity Pipeline row (PRO-97). */
+  definitions?: Record<VolumeSeriesKey | "targets", MetricDefinition>;
 }
 
 /** Accounts activated, outreach, calls and opportunities over a long run.
@@ -1594,6 +1666,9 @@ export interface ScorecardRow {
   this_period: number;
   last_period: number;
   target: number | null;
+  /** What the row counts, and what its target means (PRO-97, PRO-105). */
+  definition?: MetricDefinition;
+  target_definition?: MetricDefinition;
 }
 
 export interface ScorecardPeriod {
@@ -1628,6 +1703,7 @@ export interface TouchDepth {
   touch_from: string;
   touch_to: string;
   buckets: TouchDepthBucket[];
+  definition?: MetricDefinition;
 }
 
 export interface OutreachScorecard {
@@ -1689,6 +1765,8 @@ export interface OutreachSummary {
   drills: Record<"accounts_activated" | "outreach_activity" | "calls_booked" | "converted", DrillRow[]>;
   /** Full length of each list, which is the card's own number. */
   drill_totals?: Record<"accounts_activated" | "outreach_activity" | "calls_booked" | "converted", number>;
+  /** What each card means, keyed like `drills` (PRO-97, PRO-105). */
+  definitions?: Record<"accounts_activated" | "outreach_activity" | "calls_booked" | "converted", MetricDefinition>;
 }
 
 /** The three headline numbers on the Outreach tab, over the page's own window
@@ -1858,6 +1936,8 @@ export interface OwnerMetric {
   this_period: number;
   last_period: number;
   delta: number | null;
+  /** This person's records for the cell (PRO-105); absent on the team line. */
+  records?: MetricRecords;
 }
 export interface OwnerScorecardRow {
   owner: string;
@@ -1878,6 +1958,8 @@ export interface OwnerScorecard {
   totals: { outreach: OwnerMetric; calls: OwnerMetric; opportunities: OwnerMetric };
   /** How much of a total no owner row could claim. */
   unattributed?: { opportunities: number };
+  /** What each column means; per owner the filter is that owner (PRO-97). */
+  definitions?: Record<"outreach" | "calls" | "opportunities" | "contacted" | "target", MetricDefinition>;
 }
 
 /** The Activity Pipeline cut by person. Every owner who carries a target
@@ -2154,6 +2236,7 @@ export interface TagCampaign extends CampaignNumbers {
   owner_email: string | null;
   /** The campaign shown by default (D10). The others are past campaigns. */
   current: boolean;
+  definitions?: CampaignDefinitions;
 }
 
 /** Every campaign with its numbers, in priority order, current and past. */
@@ -2234,7 +2317,13 @@ export interface TagCampaignStats {
     last_touch: string | null;
   };
   trend: CampaignTrendPoint[];
+  /** What each total means (PRO-97, PRO-105). */
+  definitions?: CampaignDefinitions;
 }
+
+/** The campaign numbers' definitions, the same on its row and its detail. */
+export type CampaignDefinitions = Record<"contacts" | "accounts" | "contacted" | "reached" | "conversion",
+                                         MetricDefinition>;
 
 /** One round trip for the campaign detail view: reach, funnel, outbound volume
  *  and the trend. Disabled until a campaign is picked. */
@@ -3316,6 +3405,8 @@ export interface OpportunitiesOverview {
     moved_committed: number; closed_lost: number;
     /** Open, no movement past the D3 limit (4 weeks). `stalled_label` says so. */
     stalled: number; stalled_label: string;
+    /** Closed won with a task not Completed, as of now (PRO-105). */
+    won_open_tasks: number;
   };
   aging: { buckets: OppAgingBucket[] };
   breakdowns: Record<OppBreakdownDim, OppBreakdownItem[]>;
@@ -3327,8 +3418,12 @@ export interface OpportunitiesOverview {
   needs_attention: OppNeedsRow[];
   active_set: OppActiveSetMember[];
   /** Rows behind each summary card — same query as the count, so they agree. */
-  drills: { in_set: OppDrillRow[]; stalled: OppDrillRow[]; net_new: OppDrillRow[]; won: OppDrillRow[]; lost: OppDrillRow[] };
+  drills: { in_set: OppDrillRow[]; stalled: OppDrillRow[]; net_new: OppDrillRow[]; won: OppDrillRow[];
+            lost: OppDrillRow[]; won_open_tasks: OppDrillRow[] };
   recent_activity: OppActivityEvent[];
+  /** What each card means (PRO-97); `records.drill` names its list above. */
+  definitions?: Record<"in_set" | "net_new" | "stalled" | "moved_committed" | "closed_lost"
+                       | "won_open_tasks" | "aging", MetricDefinition>;
 }
 
 /** `weekEnd`/`start` are inclusive YYYY-MM-DD bounds of the window. Omit `start`

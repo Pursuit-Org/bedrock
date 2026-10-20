@@ -54,6 +54,8 @@ import { JobsProjectionChart } from "@/components/jobs/JobsProjectionChart";
 import { InterviewsPanel } from "@/components/jobs/InterviewsPanel";
 import { PeriodBar, defaultPeriod } from "@/components/jobs/PeriodBar";
 import { CommittedRolesModal } from "@/components/jobs/CommittedRolesModal";
+import { MetricInfo } from "@/components/jobs/MetricInfo";
+import { ListWhy } from "@/components/jobs/ListWhy";
 import { DealExpandPanel, PlacementsModal, ClosedLostModal, useOppStageOptions, displayPriority } from "./JobsTeam";
 import { relDay } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -233,17 +235,22 @@ export function JobsOpportunitiesOverview() {
     }
     return m;
   }, [allTasks]);
-  const wonOpenTasks = useMemo(
-    () => (oppsData?.data ?? []).filter((o) => o.stage === "closed_won" && (o.open_tasks ?? 0) > 0),
-    [oppsData]);
   // Summary-card drill — rows come from the SAME query as the count (server
-  // `drills`), so a card and its list can't disagree.
+  // `drills`), so a card and its list can't disagree. Won, open tasks is the
+  // server's too now; it was counted here from the opportunities list (PRO-105).
   const [drill, setDrill] = useState<{ title: string; note?: string; rows: OppDrillRow[] } | null>(null);
-  const asDrillRows = (opps: JobsOpportunity[]): OppDrillRow[] => opps.map((o) => ({
-    opportunity_id: o.id, account: o.account_name, stage: o.stage,
-    stage_label: STAGE_LABELS[o.stage as JobStage] ?? o.stage,
-    owner: o.owner_email ?? null, at: o.last_activity_at ?? null,
-  }));
+  const defs = data?.definitions;
+  const openDrill = {
+    in_set: () => setDrill({ title: "In the set", note: "All active opportunities", rows: data?.drills?.in_set ?? [] }),
+    net_new: () => setDrill({ title: "Net new", note: `Created ${rangeLabel}`, rows: data?.drills?.net_new ?? [] }),
+    stalled: () => setDrill({ title: "Stalled", note: `Open, no stage change and no activity (comments don't count) on the opportunity or with its contacts · ${s?.stalled_label ?? ""} · date is last movement`, rows: data?.drills?.stalled ?? [] }),
+    won_open_tasks: () => setDrill({ title: "Won with open tasks", note: "Closed won but follow-through still open · date is the earliest open task's deadline", rows: data?.drills?.won_open_tasks ?? [] }),
+    won: () => setDrill({ title: "Closed won", note: rangeLabel, rows: data?.drills?.won ?? [] }),
+    lost: () => setDrill({ title: "Closed lost", note: rangeLabel, rows: data?.drills?.lost ?? [] }),
+  };
+  const info = (key: keyof NonNullable<typeof defs>, open?: () => void) => (
+    <MetricInfo definition={defs?.[key]} onViewRecords={open} />
+  );
 
   // One expand at a time across all managed tables; stage-gating modals at page root.
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -284,8 +291,8 @@ export function JobsOpportunitiesOverview() {
       {/* ── Summary cards ─────────────────────────────────────────────── */}
       <div className="grid grid-cols-2 items-stretch gap-4 lg:grid-cols-5">
         <SummaryCard tone="ink" label="In the set" value={s?.in_set} isLoading={isLoading}
-          sub="All active opportunities"
-          onClick={() => setDrill({ title: "In the set", note: "All active opportunities", rows: data?.drills?.in_set ?? [] })} />
+          sub="All active opportunities" info={info("in_set", openDrill.in_set)}
+          onClick={openDrill.in_set} />
         {/* Net new and Stalled read black like In the set (Kwame 2026-09-21).
             Colouring a headline count implies a verdict on it, and neither is
             one: net new is neither good nor bad without a target, and stalled
@@ -294,23 +301,23 @@ export function JobsOpportunitiesOverview() {
             actually belongs. */}
         <SummaryCard tone="ink" label="Net new" value={s?.net_new} sub={rangeLabel} isLoading={isLoading}
           delta={s ? { n: netDelta, prev: s.net_new_prev, priorLabel: spanDays === 7 ? "last wk" : `prior ${spanDays}d` } : undefined}
-          onClick={() => setDrill({ title: "Net new", note: `Created ${rangeLabel}`, rows: data?.drills?.net_new ?? [] })} />
+          info={info("net_new", openDrill.net_new)} onClick={openDrill.net_new} />
         <SummaryCard tone="ink" label="Stalled" value={s?.stalled} isLoading={isLoading}
           sub={s?.stalled_label ?? "No activity in 4+ weeks"}
-          onClick={() => setDrill({ title: "Stalled", note: `Open, no stage change and no activity (comments don't count) on the opportunity or with its contacts · ${s?.stalled_label ?? ""} · date is last movement`, rows: data?.drills?.stalled ?? [] })} />
+          info={info("stalled", openDrill.stalled)} onClick={openDrill.stalled} />
         {/* Stage-gate check: won on the board but the follow-through (e.g. the
             signed contract task) is still open — "signed contract = closed".
             Sits left of the outcome boxes: it's an action, they're a result. */}
-        <SummaryCard tone="red" label="Won, open tasks" value={wonOpenTasks.length} isLoading={isLoading}
-          sub={wonOpenTasks.slice(0, 2).map((o) => o.account_name).join(" · ") || "all buttoned up"}
-          onClick={() => setDrill({ title: "Won with open tasks", note: "Closed won but follow-through still open", rows: asDrillRows(wonOpenTasks) })} />
+        <SummaryCard tone="red" label="Won, open tasks" value={s?.won_open_tasks} isLoading={isLoading}
+          sub={(data?.drills?.won_open_tasks ?? []).slice(0, 2).map((o) => o.account).join(" · ") || "all buttoned up"}
+          info={info("won_open_tasks", openDrill.won_open_tasks)} onClick={openDrill.won_open_tasks} />
         {/* Stacked outcome boxes for the week — Closed won (the goal,
             subtly highlighted) over Closed lost (context to understand, not a red flag). */}
         <div className="flex flex-col gap-4">
           <OutcomeBox tone="green" highlight label="Closed won" value={s?.moved_committed} isLoading={isLoading}
-            onClick={() => setDrill({ title: "Closed won", note: rangeLabel, rows: data?.drills?.won ?? [] })} />
+            info={info("moved_committed", openDrill.won)} onClick={openDrill.won} />
           <OutcomeBox tone="ink" label="Closed lost" value={s?.closed_lost} isLoading={isLoading}
-            onClick={() => setDrill({ title: "Closed lost", note: rangeLabel, rows: data?.drills?.lost ?? [] })} />
+            info={info("closed_lost", openDrill.lost)} onClick={openDrill.lost} />
         </div>
       </div>
 
@@ -330,7 +337,7 @@ export function JobsOpportunitiesOverview() {
 
       {/* ── Aging + Breakdown ─────────────────────────────────────────── */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <Panel title="Time in Pipeline">
+        <Panel title="Time in Pipeline" info={<MetricInfo definition={defs?.aging} />}>
           <AgingBars buckets={data?.aging?.buckets ?? []} isLoading={isLoading}
             activeSet={data?.active_set} nameOf={nameOf} />
         </Panel>
@@ -419,7 +426,7 @@ export function JobsOpportunitiesOverview() {
           2026-09-21): the heatmap says where deals are piling up, and this is
           the list you work them from. The activity feed is the narrative you
           read afterwards, not the thing you act on. */}
-      <Panel title="Opportunities Set">
+      <Panel title="Opportunities Set" info={<ListWhy listKey="opportunities_set" />}>
         {/* Scrolls both ways: the header is sticky within this box, and the
             nine columns keep their width on narrow screens instead of squashing. */}
         <div className="max-h-[520px] overflow-auto">
@@ -431,7 +438,9 @@ export function JobsOpportunitiesOverview() {
       {/* ── Recent activity — the week's narrative ────────────────────── */}
       <Panel
         title="Recent Activity"
-        desc={`Added, moved, won or lost between ${rangeLabel} — newest first`}
+        info={<ListWhy listKey="recent_activity" />}
+        // Ordered for review, not by time (ACTIVITY_ORDER above); it said "newest first".
+        desc={`Added, moved, won or lost between ${rangeLabel} — wins, then moves, new and losses`}
       >
         <RecentActivity events={orderedActivity} isLoading={isLoading} nameOf={nameOf} />
       </Panel>
@@ -1139,7 +1148,7 @@ const TONE: Record<string, string> = {
 };
 
 function SummaryCard({
-  tone, label, value, sub, delta, isLoading, onClick,
+  tone, label, value, sub, delta, isLoading, info, onClick,
 }: {
   tone: keyof typeof TONE | string;
   label: string;
@@ -1147,6 +1156,8 @@ function SummaryCard({
   sub?: string;
   delta?: { n: number; prev: number; priorLabel: string };
   isLoading: boolean;
+  /** "How is this calculated?" (PRO-105); it stops its own clicks and keys. */
+  info?: React.ReactNode;
   onClick?: () => void;
 }) {
   return (
@@ -1158,7 +1169,9 @@ function SummaryCard({
       className={cn("rounded-2xl border border-border-strong bg-surface px-5 py-4",
         onClick && "cursor-pointer transition-colors hover:border-accent focus:outline-none focus-visible:border-accent")}
     >
-      <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">{label}{onClick ? " ›" : ""}</div>
+      <div className="flex items-center justify-between gap-1 text-[11px] font-semibold uppercase tracking-wider text-ink-3">
+        <span>{label}{onClick ? " ›" : ""}</span>{info}
+      </div>
       {isLoading ? (
         <div className="mt-2 h-8 w-16 animate-pulse rounded bg-surface-2" />
       ) : (
@@ -1186,7 +1199,7 @@ function SummaryCard({
 // ── Outcome box (half-height; stacked for won / lost) ─────────────────────────
 
 function OutcomeBox({
-  tone, label, value, sub, highlight, isLoading, onClick,
+  tone, label, value, sub, highlight, isLoading, info, onClick,
 }: {
   tone: keyof typeof TONE | string;
   label: string;
@@ -1194,6 +1207,7 @@ function OutcomeBox({
   sub?: string;
   highlight?: boolean;
   isLoading: boolean;
+  info?: React.ReactNode;
   onClick?: () => void;
 }) {
   return (
@@ -1212,6 +1226,7 @@ function OutcomeBox({
         <div className="flex items-center gap-1 text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
           {highlight ? <Trophy size={11} className="text-[var(--green)]" /> : null}
           {label}
+          {info}
         </div>
         {/* No "this week" fallback: it was a lie under any preset but Weekly,
             and the period row above already states the window. */}
@@ -1231,9 +1246,11 @@ function OutcomeBox({
 // ── Panel wrapper ─────────────────────────────────────────────────────────────
 
 export function Panel({
-  title, desc, action, badge, className, children,
+  title, desc, action, badge, info, className, children,
 }: {
   title: string; desc?: string; action?: React.ReactNode; badge?: string;
+  /** "How is this calculated?" or "Why these?" (PRO-105), beside the title. */
+  info?: React.ReactNode;
   /** For a panel that has to fill its grid row — pass "h-full". */
   className?: string;
   children: React.ReactNode;
@@ -1250,6 +1267,7 @@ export function Panel({
         <div className="min-w-0">
           <div className="flex items-center gap-2">
             <h3 className="whitespace-nowrap text-[14px] font-semibold text-ink">{title}</h3>
+            {info}
             {badge ? (
               <span className="rounded-full bg-[var(--red-soft)] px-2 py-0.5 text-[11px] font-bold text-[var(--red)]">{badge}</span>
             ) : null}

@@ -140,6 +140,7 @@ export function JobsStatBubble({
   celebrate = false,
   isLoading = false,
   big = false,
+  info,
   onClick,
 }: {
   label: string;
@@ -149,7 +150,7 @@ export function JobsStatBubble({
   icon?: React.ReactNode;
   format?: ValueFormat;
   /** small caption beneath the number */
-  sub?: string;
+  sub?: React.ReactNode;
   /** emphasized breakdown line right under the number */
   subLead?: React.ReactNode;
   /** 0–100, drives the ring; omit to hide the ring */
@@ -161,6 +162,8 @@ export function JobsStatBubble({
   isLoading?: boolean;
   /** larger hero variant — bigger number, label, padding */
   big?: boolean;
+  /** "How is this calculated?" (PRO-105), beside the label. */
+  info?: React.ReactNode;
   onClick?: () => void;
 }) {
   const spec = BUBBLE_TONES[tone];
@@ -208,6 +211,7 @@ export function JobsStatBubble({
         >
           {label}
         </span>
+        {info ? <span className="ml-auto">{info}</span> : null}
       </div>
 
       <div className="flex items-end justify-between gap-2">

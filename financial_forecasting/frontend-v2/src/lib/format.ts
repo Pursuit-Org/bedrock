@@ -154,6 +154,13 @@ export const relDay = (iso: string | null | undefined): string | null => {
   return d <= 0 ? "today" : d === 1 ? "1d" : d < 30 ? `${d}d` : d < 365 ? `${Math.floor(d / 30)}mo` : `${Math.floor(d / 365)}y`;
 };
 
+/** relDay as words that read after a verb: "today", "3d ago". Null-safe.
+ *  ("replied today ago" was relDay with " ago" stuck on.) */
+export const relAgo = (iso: string | null | undefined): string | null => {
+  const r = relDay(iso);
+  return r === null ? null : r === "today" ? "today" : `${r} ago`;
+};
+
 /** Normalize a user-entered URL for use in an `href`.
  *
  *  Salesforce holds plenty of scheme-less values (`www.linkedin.com/in/x`,

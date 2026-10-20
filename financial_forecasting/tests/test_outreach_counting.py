@@ -273,7 +273,8 @@ async def test_events_sql_runs_with_its_parameters_through_fakeconn():
 
 from datetime import date, timedelta  # noqa: E402
 
-from tests.jobs_fakes import EVENTS, PRIOR_EVENTS, event_row, make_jobs_client  # noqa: E402
+from tests.jobs_fakes import (EVENTS, PRIOR_EVENTS, assert_records_match, event_row,  # noqa: E402
+                              make_jobs_client, records_count)
 
 
 @pytest.fixture
@@ -381,3 +382,53 @@ def test_campaign_numbers_use_the_same_activity(_clear_overrides):
     o = d["outreach"]
     assert (o["emails"], o["calls_booked"], o["total"]) == (1, 1, 2)
     assert sum(b["total"] for b in d["trend"]) == 2
+
+
+def test_every_scorecard_row_opens_the_records_it_counts(_clear_overrides, monkeypatch):
+    """PRO-105: each row's "View records" reports the row's number. Two sends
+    reach Acme, so accounts activated is one account, not two activity rows;
+    a person's cell opens that person's records."""
+    import routes.jobs as jobs
+    monkeypatch.setattr(jobs, "scorecard_owners", lambda: TEAM)
+    this_t, last_t = _last_week()
+    conn = FakeConn(rows={NO_CONVERSIONS: {"n0": 0, "n1": 0}}, lists={
+        PRIOR_EVENTS: [],
+        EVENTS: [
+            event_row(ts=this_t, contact_id=1, companies=["acme"]),
+            event_row(ts=this_t, activity_id="b", contact_id=2, companies=["acme"], recipients=["b@acme.com"]),
+            event_row(kind="linkedin", ts=this_t, sender="devika@pursuit.org"),
+            event_row(kind="call", ts=this_t, call_kind="discovery"),
+            event_row(ts=last_t, contact_id=3, companies=["globex"]),
+        ]})
+    c = make_jobs_client(conn)
+    rows = c.get("/api/jobs/outreach/scorecard").json()["data"]["activity_pipeline"]
+    assert {r["metric"]: r["this_period"] for r in rows}["accounts_activated"] == 1
+    assert_records_match(c, {r["metric"]: r["definition"] for r in rows if r["available"]})
+    by = c.get("/api/jobs/outreach/scorecard/by-owner").json()["data"]["rows"]
+    for row in by:
+        for section in ("outreach", "calls", "opportunities"):
+            cell = row[section]
+            assert cell["records"]["params"]["owner"] == row["owner"]
+            assert records_count(c, cell) == cell["this_period"], (row["owner"], section)
+
+
+def test_an_owner_cell_opens_only_what_they_sent_while_on_the_team(_clear_overrides, monkeypatch):
+    """PRO-105, found on live data 10/20: Kwame's cell read 0 (his sends came
+    while he wasn't on the team list) but his records link opened all 3. The
+    link now counts the way the row does."""
+    import routes.jobs as jobs
+    monkeypatch.setattr(jobs, "scorecard_owners", lambda: TEAM)
+    monkeypatch.setattr(jobs.jobs_targets_store, "member_at",
+                        lambda email, at: email != "devika@pursuit.org")
+    this_t, _ = _last_week()
+    conn = FakeConn(rows={NO_CONVERSIONS: {"n0": 0, "n1": 0}}, lists={EVENTS: [
+        event_row(ts=this_t, sender="devika@pursuit.org"),
+        event_row(ts=this_t, sender="avni@pursuit.org"),
+    ]})
+    c = make_jobs_client(conn)
+    rows = {r["owner"]: r for r in c.get("/api/jobs/outreach/scorecard/by-owner").json()["data"]["rows"]}
+    devika = rows["devika@pursuit.org"]["outreach"]
+    assert devika["this_period"] == 0
+    assert devika["records"]["params"]["on_team"] == "true"
+    assert records_count(c, devika) == 0
+    assert records_count(c, rows["avni@pursuit.org"]["outreach"]) == 1

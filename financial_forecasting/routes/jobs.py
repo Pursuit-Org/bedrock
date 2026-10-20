@@ -29,7 +29,7 @@ from dependencies import get_mcp_client, require_sf_mcp_client
 from sf_errors import sf_http_error
 from services.placement_sf import sync_placement_to_sf, record_sync_error, NotEligible, AccountAmbiguous
 from services.outreach_targets import activity_pipeline_target, scorecard_owners
-from services import jobs_metrics, jobs_targets_store, outreach_counting
+from services import jobs_lists, jobs_metrics, jobs_targets_store, outreach_counting
 from services.jobs_activity_link import has_membership_history
 
 logger = logging.getLogger(__name__)
@@ -384,11 +384,19 @@ def _check_job_type(job_type: str) -> None:
         raise HTTPException(400, f"Unknown job type: {job_type!r}")
 
 
+@router.get("/lists/why")
+async def lists_why(user=Depends(require_auth)):
+    """How each Jobs list picks its rows, for its "Why these?" note (PRO-105).
+    Static words (services/jobs_lists), fetched once by the page."""
+    return {"success": True, "data": {k: jobs_lists.why(k) for k in jobs_lists.LISTS}}
+
+
 @router.get("/metrics/{key}")
 async def metric_drilldown(
     key: str,
     segment: Optional[str] = Query(None),
     job_type: str = Query(jobs_metrics.FULL_TIME),
+    part: Optional[str] = Query(None, pattern="^(full_time|trial|in_role)$"),
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
@@ -402,6 +410,10 @@ async def metric_drilldown(
     headline cards: the drill is scoped the way the number above it is, so
     its row count is the number. Committed roles have no builder and so no
     cohort; they're their own drill, the same under every cohort.
+
+    `part` narrows the placements drill to one line of the Placed card:
+    placed through a full-time job, through a paid trial only, or still in
+    the role (PRO-105), so each line opens the builders it counts.
     """
     ENGAGED = ("initial_outreach", "active", "on_hold")
     _check_job_type(job_type)
@@ -593,7 +605,19 @@ async def metric_drilldown(
         # The Placed card: under full-time (the default), builders placed
         # full-time or through a paid trial (D2); under another job type, the
         # builders with counted work of that type; under "all", paid work.
-        rows = by_builder((await counted()).of_type(job_type))
+        # The full-time and trial lines split Placed (D2) whatever job type
+        # the card shows, as their numbers do.
+        p = await counted()
+        if part == "full_time":
+            records = [r for r in p.records if r["employment_type"] == jobs_metrics.FULL_TIME]
+        elif part == "trial":
+            records = [r for r in p.of_type(jobs_metrics.FULL_TIME) if r["user_id"] in p.trial_only_uids]
+        elif part == "in_role":
+            in_role_uids = p.in_role_uids(job_type)
+            records = [r for r in p.of_type(job_type) if r["user_id"] in in_role_uids]
+        else:
+            records = p.of_type(job_type)
+        rows = by_builder(records)
         return {"columns": builder_columns, "child_columns": role_columns}, rows, "builder"
 
     async def any_paid(_where: str):
@@ -618,6 +642,12 @@ async def metric_drilldown(
         cols = [{"key": "company", "label": "Company"}, {"key": "role", "label": "Role"}, {"key": "salary", "label": "Expected Pay"}]
         return cols, out, "role"
 
+    async def committed_salaries(_where: str):
+        # What Committed expected salary averages: the committed roles with an
+        # expected salary (avg_expected_salary skips the rest).
+        cols, out, entity = await committed_roles(_where)
+        return cols, [r for r in out if r["salary"] != "—"], entity
+
     async def builders_interviewing(_where: str):
         rows = await conn.fetch("""
             SELECT trim(split_part(notes, ':', 1)) AS builder, builder_id, company_name, role_title
@@ -637,6 +667,7 @@ async def metric_drilldown(
     DISPATCH = {
         "any_paid":             ("Builders with paid work",   lambda: any_paid("true")),
         "committed_roles":      ("Committed roles (unfilled)", lambda: committed_roles("true")),
+        "committed_salaries":   ("Committed roles with an expected salary", lambda: committed_salaries("true")),
         "interviewing_builders": ("Builders Interviewing",    lambda: builders_interviewing("true")),
         "total_leads":          ("Total Leads",              lambda: contacts("true")),
         "engaged_leads":        ("Engaged Prospects",        lambda: engaged_prospects("true")),
@@ -650,7 +681,9 @@ async def metric_drilldown(
         "builder_interviews":   ("Builders Submitted / Interviewing", lambda: deals(_sql_in("stage", ["builder_submitted", "builder_interviewing", "reviewing_builders", "active_builder_interview"]))),
         "placements":           (("Placed" if job_type == jobs_metrics.FULL_TIME
                                   else "Builders with paid work" if job_type == jobs_metrics.ALL_PAID
-                                  else f"Placed — {jobs_metrics.job_type_label(job_type)}"),
+                                  else f"Placed — {jobs_metrics.job_type_label(job_type)}")
+                                 + {"full_time": " — full-time", "trial": " — paid trial",
+                                    "in_role": " — still in the role"}.get(part or "", ""),
                                  lambda: placed("true")),
         "ft_salaries":          ("Full-time salaries", lambda: salaries("true")),
         "candidates_submitted": ("Companies w/ Candidates Submitted", lambda: companies("stage IN ('applied','interview','accepted')")),
@@ -731,8 +764,17 @@ async def get_placements(
     interviewing = len({r["builder_id"] for r in iv_rows} & pop_uids)
 
     filters = {"segment": pop.segment, "job_type": job_type}
+    # What the page's filters don't narrow (PRO-105). Committed roles belong to
+    # employers, not cohorts, and are full-time by rule; paid work is every
+    # job type; the salary average is full-time pay.
+    cohort_picked = pop.picked not in (None, "", "all")
+    other_type = job_type != jobs_metrics.FULL_TIME
+    ignored_committed = {**({"segment": "Roles belong to employers, not cohorts"} if cohort_picked else {}),
+                         **({"job_type": "Committed roles are full-time"} if other_type else {})}
+    ignored_paid = {"job_type": "Paid work counts every job type"}
+    ignored_salary = {"job_type": "The average is of full-time pay"} if other_type else {}
     drill = lambda key, **kw: {"endpoint": f"/api/jobs/metrics/{key}",
-                               "params": {"segment": pop.picked, **kw}}
+                               "params": {"segment": pop.picked, **kw}, "count_field": "count"}
     placed_drill = drill("placements", job_type=job_type)
     return {
         "success": True,
@@ -765,25 +807,32 @@ async def get_placements(
                 "placed": jobs_metrics.define(
                     "placed", value=len(placed_uids), filters=filters, records=placed_drill),
                 "placed_ft": jobs_metrics.define(
-                    "placed_ft", value=len(p.ft_uids), filters=filters, records=placed_drill),
+                    "placed_ft", value=len(p.ft_uids), filters=filters,
+                    records=drill("placements", job_type=job_type, part="full_time")),
                 "placed_trial": jobs_metrics.define(
-                    "placed_trial", value=len(p.trial_only_uids), filters=filters, records=placed_drill),
+                    "placed_trial", value=len(p.trial_only_uids), filters=filters,
+                    records=drill("placements", job_type=job_type, part="trial")),
                 "placed_in_role": jobs_metrics.define(
-                    "placed_in_role", value=in_role, filters=filters, records=placed_drill),
+                    "placed_in_role", value=in_role, filters=filters,
+                    records=drill("placements", job_type=job_type, part="in_role")),
                 "placed_rate": jobs_metrics.define(
                     "placed_rate", value=placed_rate, filters=filters),
                 "job_ready": jobs_metrics.define(
                     "job_ready_pool", value=len(pop_uids), filters={"segment": pop.segment}),
                 "committed_roles": jobs_metrics.define(
-                    "committed_roles", value=len(committed), records=drill("committed_roles")),
+                    "committed_roles", value=len(committed), ignored=ignored_committed,
+                    records=drill("committed_roles")),
                 "paid_work": jobs_metrics.define(
                     "paid_work", value=len(p.paid_uids), filters={"segment": pop.segment},
-                    records=drill("any_paid")),
+                    ignored=ignored_paid, records=drill("any_paid")),
                 "avg_ft_salary_placed": jobs_metrics.define(
                     "avg_ft_salary_placed", value=p.avg_ft_salary_placed, filters={"segment": pop.segment},
-                    records=drill("ft_salaries")),
+                    ignored=ignored_salary,
+                    records={**drill("ft_salaries"), "count": len(p.ft_salary)}),
                 "committed_expected_salary": jobs_metrics.define(
-                    "committed_expected_salary", value=committed_salary, records=drill("committed_roles")),
+                    "committed_expected_salary", value=committed_salary, ignored=ignored_committed,
+                    records={**drill("committed_salaries"),
+                             "count": sum(1 for r in committed if r["approx_salary"])}),
             },
         },
     }
@@ -1984,8 +2033,11 @@ async def interviews_over_time(
                        "before_history": mon + timedelta(days=6) < jobs_metrics.INTERVIEW_HISTORY_FROM})
 
     filters = {"owner": owner_f, "deal_type": ",".join(dt_f) if dt_f is not None else None}
+    # The rows are the interviews; the rate's records are those same
+    # interviews, its denominator.
     records = {"endpoint": "/api/jobs/interviews",
-               "params": {"date_from": d_from.isoformat(), "date_to": d_to.isoformat(), **filters}}
+               "params": {"date_from": d_from.isoformat(), "date_to": d_to.isoformat(), **filters},
+               "count_field": "interviews"}
     return {"success": True, "data": {
         "interviews": len(picked),
         "hired": len(hired),
@@ -1999,7 +2051,8 @@ async def interviews_over_time(
             "interviews": jobs_metrics.define(
                 "interviews", value=len(picked), window=window, filters=filters, records=records),
             "interview_to_hire": jobs_metrics.define(
-                "interview_to_hire", value=rate, window=window, filters=filters, records=records),
+                "interview_to_hire", value=rate, window=window, filters=filters,
+                records={**records, "count": len(picked)}),
         },
     }}
 
@@ -2694,7 +2747,12 @@ async def _funnel_milestones(conn, ftype: str, period: Optional[tuple],
             "rate": m.rate, "numerator": len(m.reached), "denominator": len(m.started),
             "rate_prev": p.rate if p is not None else None,
             "records": records,
-            "definition": jobs_metrics.define(measure, value=m.rate, window=period, filters=filters),
+            "definition": jobs_metrics.define(
+                measure, value=m.rate, window=period, filters=filters,
+                ignored=({"owner": "The contacts funnel counts every owner's contacts"}
+                         if owner_f and ftype == "prospects" else None),
+                # The rows beside it: who reached interview, or who interviewed.
+                records={"endpoint": None, "inline": "records", "count": len(records)}),
         }
 
     return [
@@ -3176,19 +3234,43 @@ async def get_funnel(
             "regressed_in": sum(1 for m in mv if m["flow"] == "in" and m["direction"] == "regressed"),
         })
 
-    # What the counts and rates mean, from the data dictionary (PRO-97).
-    filters = {"deal_type": deal_type, "owner": owner_f, "segment": segment}
+    # What the counts and rates mean, from the data dictionary (PRO-97), and
+    # which of the filters sent this funnel doesn't apply (PRO-105).
+    sent = {"deal_type": deal_type, "owner": owner_f, "segment": segment,
+            "period": f"{period_from}..{period_to}" if period_from and period_to else None,
+            "job_type": job_type if job_type != jobs_metrics.FULL_TIME else None}
+    why_not = {
+        "builders": {"deal_type": "Builders aren't counted by deal", "owner": "Builders have no deal owner",
+                     "period": "The builders funnel is as of today"},
+        "prospects": {"owner": "The contacts funnel counts every owner's contacts",
+                      "segment": "Cohorts are builders'", "job_type": "Job type is the builders funnel's"},
+        "opportunities": {"segment": "Cohorts are builders'", "job_type": "Job type is the builders funnel's"},
+    }[ftype]
+
+    def _split(applies: set) -> tuple[dict, dict]:
+        """(filters applied, filters ignored with why) for one number."""
+        on = {k: v for k, v in sent.items() if v and k in applies}
+        off = {k: why_not.get(k, "Doesn't apply to this number") for k, v in sent.items()
+               if v and k not in applies}
+        return on, off
+
     if ftype == "builders":
-        within = {"segment": seg, "population": "job-ready pool"}
+        on, off = _split({"segment"})
+        within = {**on, "segment": seg, "population": "job-ready pool"}
+        off_type = {**off, **({"job_type": "Only the last stage is by job type"} if sent["job_type"] else {})}
         definitions = {
-            "job_ready": jobs_metrics.define("job_ready_pool", value=counts[0], filters=within),
-            "paid": jobs_metrics.define("paid_work", value=counts[1], filters=within),
-            "placed": jobs_metrics.define("placed", value=counts[2], filters={**within, "job_type": job_type}),
+            "job_ready": jobs_metrics.define("job_ready_pool", value=counts[0], filters=within, ignored=off_type),
+            "paid": jobs_metrics.define("paid_work", value=counts[1], filters=within,
+                                        ignored={**off, **({"job_type": "Paid work counts every job type"}
+                                                           if sent["job_type"] else {})}),
+            "placed": jobs_metrics.define("placed", value=counts[2], ignored=off,
+                                          filters={**within, "job_type": job_type}),
         }
     else:
         noun = "contacts" if ftype == "prospects" else "opportunities"
         count_key = f"{noun}_entering_stage" if period_entries is not None else f"{noun}_by_stage"
-        definitions = {"count": jobs_metrics.define(count_key, window=period, filters=filters)}
+        on, off = _split({"deal_type", "period"} | ({"owner"} if ftype == "opportunities" else set()))
+        definitions = {"count": jobs_metrics.define(count_key, window=period, filters=on, ignored=off)}
 
     # Conversion between milestones (D11): first stage → interview → hire.
     milestones = (await _funnel_milestones(conn, ftype, period, dt, owner_f)
@@ -3584,6 +3666,23 @@ async def opportunities_overview(
     moved_committed = len(won_rows)
     lost_rows = await _closed_in_window("closed_lost")
     closed_lost = len(lost_rows)
+    # Won, open tasks: the dictionary's measure, as of now, under the page's
+    # owner and deal type. It was counted in the browser from the
+    # opportunities list, so its icon had no server number to explain.
+    won_open_rows = await conn.fetch(f"""
+        SELECT o.id, o.account_name, o.stage, o.owner_email,
+               (SELECT min(t.deadline) FROM bedrock.jobs_task t
+                 WHERE t.parent_type = 'opportunity' AND t.parent_id = o.id::text
+                   AND t.deleted_at IS NULL AND t.status <> 'Completed') AS at
+        FROM bedrock.jobs_opportunity o
+        WHERE o.deleted_at IS NULL AND o.stage = 'closed_won'
+          AND EXISTS (SELECT 1 FROM bedrock.jobs_task t
+                       WHERE t.parent_type = 'opportunity' AND t.parent_id = o.id::text
+                         AND t.deleted_at IS NULL AND t.status <> 'Completed')
+          AND ($1::text IS NULL OR o.owner_email = $1)
+          AND {_deal_type_sql('o.deal_type', 2)}
+        ORDER BY o.account_name
+    """, owner_f, dt_f)
 
     def _days(dt):
         return None if dt is None else max(0, (age_ref - dt).days)
@@ -3770,6 +3869,8 @@ async def opportunities_overview(
     recent_activity = sorted((e for e in recent_activity if e["at"]), key=lambda e: e["at"], reverse=True)
 
     _filters = {"owner": owner_f, "deal_type": ",".join(dt_f) if dt_f is not None else None}
+    # Records that ride in this response: the list in `drills`, not a fetch.
+    _drill = lambda key: {"endpoint": None, "drill": key}
     return {"success": True, "data": {
         "filters": {"owner": owner_f, "deal_type": ",".join(dt_f) if dt_f is not None else None,
                     "week_end": week_end},
@@ -3777,22 +3878,28 @@ async def opportunities_overview(
         "summary": {
             "in_set": in_set, "net_new": net_new, "net_new_prev": net_new_prev,
             "moved_committed": moved_committed, "closed_lost": closed_lost, "stalled": stalled,
+            "won_open_tasks": len(won_open_rows),
             "stalled_label": jobs_metrics.stalled_label("opportunity"),
         },
         # What each card means, from the data dictionary (PRO-97).
+        # Each card's records are its list in `drills` below (PRO-105).
         "definitions": {
+            # States are read at a moment, not over the window: open and
+            # stalled as of the window's end, or now for the week in progress.
             "in_set": jobs_metrics.define("opportunities_open", value=in_set,
-                                          window=(win_start, ref), filters=_filters),
+                                          as_of=age_ref, filters=_filters, records=_drill("in_set")),
             "net_new": jobs_metrics.define("opportunities_new", value=net_new,
-                                           window=(win_start, ref), filters=_filters),
+                                           window=(win_start, ref), filters=_filters, records=_drill("net_new")),
             "stalled": jobs_metrics.define("stalled_opportunities", value=stalled,
-                                           window=(win_start, ref), filters=_filters),
+                                           as_of=age_ref, filters=_filters, records=_drill("stalled")),
             "moved_committed": jobs_metrics.define("closed_won", value=moved_committed,
-                                                   window=(win_start, ref), filters=_filters),
+                                                   window=(win_start, ref), filters=_filters,
+                                                   records=_drill("won")),
             "closed_lost": jobs_metrics.define("closed_lost", value=closed_lost,
-                                               window=(win_start, ref), filters=_filters),
-            "won_open_tasks": jobs_metrics.define("won_open_tasks", filters=_filters),
-            "aging": jobs_metrics.define("time_in_stage", window=(win_start, ref), filters=_filters),
+                                               window=(win_start, ref), filters=_filters, records=_drill("lost")),
+            "won_open_tasks": jobs_metrics.define("won_open_tasks", value=len(won_open_rows), filters=_filters,
+                                                  as_of=now, records=_drill("won_open_tasks")),
+            "aging": jobs_metrics.define("time_in_stage", as_of=age_ref, filters=_filters),
         },
         "aging": {"buckets": [
             {"key": k, "label": lbl, "count": age_counts[i],
@@ -3830,6 +3937,8 @@ async def opportunities_overview(
             "net_new": [_drill_row(r, r["at"]) for r in net_new_rows],
             "won":     [_drill_row(r, r["at"]) for r in won_rows],
             "lost":    [_drill_row(r, r["at"]) for r in lost_rows],
+            # `at` is the earliest open task's deadline.
+            "won_open_tasks": [_drill_row(r, r["at"]) for r in won_open_rows],
         },
     }}
 
@@ -4626,7 +4735,8 @@ async def activity_trends_volume(
             "accounts_activated": jobs_metrics.define("accounts_activated", window=win, filters=flt),
             "outreach": jobs_metrics.define("outreach", window=win, filters=flt),
             "calls": jobs_metrics.define("calls", window=win, filters=flt),
-            "opportunities": jobs_metrics.define("converted_opportunities", window=win, filters=flt),
+            "opportunities": jobs_metrics.define("converted_opportunities", window=win,
+                                                 **_conversion_filters(flt)),
             "targets": jobs_metrics.define("activity_target", window=win, filters=flt),
         },
         "targets": {
@@ -4765,16 +4875,33 @@ _ACTIVITY_MEASURE = {
 }
 
 
+# Conversions are a membership stamp, not activity, so they follow one owner
+# but no sender scope (PRO-105: say so beside them).
+_CONVERSION_IGNORES_SCOPE = "Conversions follow one owner, not who sent activity"
+
+
+def _conversion_filters(flt: dict) -> dict:
+    """(filters, ignored) kwargs for a conversion number on a page whose
+    filters are `flt`: the scope is reported as ignored, not applied."""
+    scope = flt.get("scope")
+    return {"filters": {k: v for k, v in flt.items() if k != "scope"},
+            "ignored": {"scope": _CONVERSION_IGNORES_SCOPE} if scope else {}}
+
+
 def _scorecard_records(key: str, granularity: str, scope: Optional[str], owner: Optional[str],
                        date_from: Optional[str], date_to: Optional[str],
-                       call_date: str = "booked") -> dict:
+                       call_date: str = "booked", on_team: bool = False) -> dict:
     """Where the rows behind an Activity Pipeline number come from. Booked is
-    the default call date, so it is only named when the number used held."""
+    the default call date, so it is only named when the number used held. The
+    detail's `measure_count` is the number (PRO-105); its `count` is how many
+    contacts the activity is grouped under."""
     params = {"key": key, "granularity": granularity, "scope": scope, "owner": owner,
               "date_from": date_from, "date_to": date_to,
-              "call_date": call_date if call_date != "booked" else None}
+              "call_date": call_date if call_date != "booked" else None,
+              "on_team": "true" if on_team else None}
     return {"endpoint": "/api/jobs/outreach/scorecard/detail",
-            "params": {k: v for k, v in params.items() if v is not None}}
+            "params": {k: v for k, v in params.items() if v is not None},
+            "count_field": "measure_count"}
 # Funnel tier per activity metric — the frontend draws a stronger rule where the
 # tier changes, which is what separates the send block from the call block.
 _ACTIVITY_TIER = {
@@ -4941,7 +5068,8 @@ async def outreach_scorecard(
         flt = {"scope": None if owner else scope, "owner": owner}
         return {"metric": m, "label": label, "depth": depth, "tier": _ACTIVITY_TIER.get(m),
                 "definition": jobs_metrics.define(
-                    _ACTIVITY_MEASURE[m], value=this_n, window=win, filters=flt,
+                    _ACTIVITY_MEASURE[m], value=this_n, window=win,
+                    **(_conversion_filters(flt) if m == "converted_opportunities" else {"filters": flt}),
                     records=_scorecard_records(m, granularity, scope, owner, date_from, date_to)),
                 "target_definition": jobs_metrics.define(
                     "activity_target", value=target, window=win, filters={**flt, "metric": m}),
@@ -5054,11 +5182,17 @@ async def _touch_depth(conn, owner: Optional[str]) -> dict:
             "truncated": max(0, len(members) - _TOUCH_DEPTH_CAP),
         })
     return {"total": total,
+            # The records are the buckets here; a capped bucket says how many
+            # it holds back (`truncated`).
             "definition": jobs_metrics.define(
-                "activity_depth", value=total, filters={"owner": owner}),
+                "activity_depth", value=total, filters={"owner": owner},
+                window=(touch_from, None), as_of=datetime.now(timezone.utc),
+                records={"endpoint": "/api/jobs/outreach/touch-depth",
+                         "params": {"owner": owner} if owner else {}, "count_field": "total"}),
             "weeks": _TOUCH_DEPTH_WEEKS,
-            "touch_from": touch_from.date().isoformat(),
-            "touch_to": datetime.now(timezone.utc).date().isoformat(),
+            # New York days, as every other date on the page.
+            "touch_from": touch_from.astimezone(jobs_metrics.NY).date().isoformat(),
+            "touch_to": jobs_metrics.ny_today().isoformat(),
             "buckets": buckets}
 
 
@@ -5150,7 +5284,11 @@ async def outreach_scorecard_by_owner(
                     # Signed, and null when there is no target: "no goal set" and
                     # "exactly on goal" are different states and must not render
                     # as the same zero.
-                    "delta": None if target is None else this_n - target}
+                    "delta": None if target is None else this_n - target,
+                    # This person's records, not the team's, counted like the
+                    # row: only while they were on the team (PRO-105).
+                    "records": _scorecard_records(key, granularity, None, email, date_from, date_to,
+                                                  on_team=True)}
 
         conv_this, conv_last = await _converted_counts(
             conn, [(this_start, this_end), (last_start, last_end)], owner=email)
@@ -5242,6 +5380,8 @@ async def outreach_scorecard_detail(
     date_from: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
     date_to: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
     call_date: str = Query("booked", pattern="^(booked|held)$"),
+    on_team: bool = Query(False, description="With owner: only what they did while on the Jobs team, "
+                                             "as the by-owner table counts it"),
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
@@ -5271,6 +5411,7 @@ async def outreach_scorecard_detail(
     send_keys = {"direct_email_sent", "linkedin_message_sent", "text_sent",
                  "facilitated_intro_sent"}
     listed = 0
+    measured: Optional[int] = None   # the row's number, when it isn't `listed`
     if key == "converted_opportunities":
         # With an owner, only the conversions that resolve to them — the same
         # predicate _converted_counts applies to that owner's number. Without
@@ -5298,13 +5439,17 @@ async def outreach_scorecard_detail(
         listed = len(rows)
     else:
         from routes.jobs_intro import ASK_LABELS   # local: keeps the import one-way
-        senders = await _scope_senders(conn, scope, owner)
-        events = await _outreach_events(conn, start, end, senders, call_date=call_date)
+        senders = (_team_scope([owner]) if on_team and owner and _SAFE_EMAIL.match(owner)
+                   else await _scope_senders(conn, scope, owner))
+        # The row's own window test, as the scorecard applies it.
+        events = outreach_counting.in_window(
+            await _outreach_events(conn, start, end, senders, call_date=call_date), start, end)
         if key == "accounts_activated":
             # The accounts the window activated, and the activity on them in
             # it, each listed under the contact it reached there.
             (act,) = await _activated_by_window(conn, events, [(start, end)], senders)
             picked = [(e, co) for e in events for co in e.companies if co in act]
+            measured = len(act)
         elif key == "total_outreach_activity":
             picked = [(e, None) for e in events if e.is_send]
         elif key == "total_calls":
@@ -5330,6 +5475,8 @@ async def outreach_scorecard_detail(
                 "direction": "sent" if e.is_send else _touch_direction(e.kind, e.email_from),
                 "actor": e.sender})
         listed = len(picked)
+    if measured is None:
+        measured = listed
     items = sorted(contacts.values(), key=lambda g: (-(len(g["touches"])), g["company"] or ""))
     # Distinct actors per contact, so the collapsed row can name who worked it
     # without expanding to read the per-touch column.
@@ -5337,8 +5484,11 @@ async def outreach_scorecard_detail(
         g["actors"] = sorted({t["actor"] for t in g["touches"] if t.get("actor")})
     # Nothing is capped any more: the list is the events the row counted. Both
     # numbers stay so the drill's "Showing X of Y" reads as complete (PRO-96).
+    # `measure_count` is the row's number: activity sent, calls, conversions,
+    # or for accounts activated the accounts, which the listed (activity,
+    # account) pairs are not.
     return {"success": True, "data": {"kind": "activity", "key": key, "period": period,
-            "count": len(items), "contacts": items,
+            "count": len(items), "contacts": items, "measure_count": measured,
             "touches_listed": listed, "touches_total": listed}}
 
 
@@ -5472,8 +5622,8 @@ async def outreach_summary(
             "calls_booked": jobs_metrics.define(
                 "calls", value=c.calls, window=win, filters=flt, records=rec("total_calls")),
             "converted": jobs_metrics.define(
-                "converted_opportunities", value=len(converted_rows), window=win, filters=flt,
-                records=rec("converted_opportunities")),
+                "converted_opportunities", value=len(converted_rows), window=win,
+                **_conversion_filters(flt), records=rec("converted_opportunities")),
         },
         "email_index": email_index,
         "accounts_activated": len(activated),
@@ -5787,7 +5937,12 @@ async def this_week_summary(user=Depends(require_auth), conn=Depends(get_db)):
         return {"email": r["email"], "name": r["full_name"],
                 "company": r["current_company"], "when": r["first_touch"]}
 
+    # Rolling, not a calendar week: say so rather than let it read as one.
+    now = datetime.now(timezone.utc)
     return {"success": True, "data": {
+        "window": {"from": (now - timedelta(days=7)).astimezone(jobs_metrics.NY).date().isoformat(),
+                   "to": jobs_metrics.ny_today().isoformat(), "tz": "America/New_York",
+                   "rolling": "the last 7 days, to now"},
         "emailed":  [_person(r) for r in emailed],
         "met":      [_person(r) for r in met],
         "progressed": [{
@@ -8905,7 +9060,24 @@ def _linked(events, pipe: dict) -> list[tuple]:
             for cid in sorted({e.contact_id, *e.contact_ids} & pipe.keys())]
 
 
-def _campaign_summary(camp: dict, n: "jobs_metrics.CampaignNumbers") -> dict:
+def _campaign_definitions(key: str, n: "jobs_metrics.CampaignNumbers",
+                          ignored: Optional[dict] = None) -> dict:
+    """What each campaign number means (PRO-97); its records are /records
+    narrowed to it (PRO-105)."""
+    filters = {"campaign": key}
+    d = lambda measure, value, rec: jobs_metrics.define(measure, value=value, filters=filters,
+                                                        ignored=ignored, records=rec)
+    return {
+        "contacts": d("campaign_contacts", n.contacts, _campaign_records(key, "contacts")),
+        "accounts": d("campaign_accounts", n.accounts, _campaign_records(key, "accounts")),
+        "contacted": d("contacted", n.contacted, _campaign_records(key, "contacted")),
+        "reached": d("campaign_reached", n.accounts_reached, _campaign_records(key, "reached")),
+        "conversion": d("campaign_conversion", n.conversion,
+                        {**_campaign_records(key, "converted"), "count": n.converted_contacted}),
+    }
+
+
+def _campaign_summary(camp: dict, n: "jobs_metrics.CampaignNumbers", key: Optional[str] = None) -> dict:
     return {
         **camp,
         "contacts": n.contacts,
@@ -8920,6 +9092,7 @@ def _campaign_summary(camp: dict, n: "jobs_metrics.CampaignNumbers") -> dict:
         "stages": n.stages,
         # The same stages, for the contacted contacts only (the Sankey's split).
         "stages_contacted": n.stages_contacted,
+        **({"definitions": _campaign_definitions(key, n)} if key else {}),
     }
 
 
@@ -8935,14 +9108,25 @@ async def tag_campaigns(user=Depends(require_auth), conn=Depends(get_db)):
         by_camp.setdefault(r["campaign"], []).append(r)
     pipe = _pipe(rows)
     reached = outreach_counting.activity_by_contact(await _campaign_events(conn, pipe), pipe)
-    out = [_campaign_summary(c, jobs_metrics.campaign_numbers(by_camp.get(k, []), reached))
+    out = [_campaign_summary(c, jobs_metrics.campaign_numbers(by_camp.get(k, []), reached), k)
            for k, c in camps.items()]
     return {"success": True, "data": out}
+
+
+# The campaign numbers a records list can be narrowed to (PRO-105), and what
+# each lists: `contacts` everyone tagged, the rest the pipeline contacts.
+_CAMPAIGN_MEASURES = ("contacts", "contacted", "converted", "accounts", "reached")
+
+
+def _campaign_records(key: str, measure: str) -> dict:
+    return {"endpoint": f"/api/jobs/tag-campaigns/{key}/records", "params": {"measure": measure},
+            "count_field": "measure_count"}
 
 
 @router.get("/tag-campaigns/{key}/records")
 async def tag_campaign_records(
     key: str,
+    measure: Optional[str] = Query(None, pattern="^(" + "|".join(_CAMPAIGN_MEASURES) + ")$"),
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
@@ -8952,15 +9136,22 @@ async def tag_campaign_records(
     Contacts are the pipeline contacts. `contacted` and `activity` are the
     Activation card's rule: activity from anyone at Pursuit, ever, each piece
     once. Accounts are grouped by name (case and spacing folded); contacts with
-    no company are `unassigned`, not an account."""
+    no company are `unassigned`, not an account.
+
+    `measure` narrows the list to what one number counts, and `measure_count`
+    is that number (PRO-105): `contacts` is everyone tagged, in the pipeline
+    or not; `contacted` and `converted` (converted, of the contacted: the
+    conversion rate's numerator) are pipeline contacts; `accounts` and
+    `reached` are accounts."""
     camp = await _campaign_or_404(conn, key)
     rows = await _campaign_contacts(conn, camp["slugs"])
     pipe = _pipe(rows)
     act = outreach_counting.activity_by_contact(await _campaign_events(conn, pipe), pipe)
     in_pipe = sorted((r for r in rows if r["in_pipeline"]), key=lambda r: r["full_name"] or "")
+    listed = (sorted(rows, key=lambda r: r["full_name"] or "") if measure == "contacts" else in_pipe)
 
     contacts = []
-    for r in in_pipe:
+    for r in listed:
         n, last = act.get(r["contact_id"], (0, None))
         contacts.append({
             "contact_id": r["contact_id"],
@@ -8969,10 +9160,15 @@ async def tag_campaign_records(
             "stage": r["stage"],
             "stage_entered_at": r["stage_entered_at"].isoformat() if r["stage_entered_at"] else None,
             "owner": r["owner_email"],
+            "in_pipeline": bool(r["in_pipeline"]),
             "contacted": n > 0,
             "activity": n,
             "last_activity": last.isoformat() if last else None,
         })
+    if measure == "contacted":
+        contacts = [c for c in contacts if c["contacted"]]
+    elif measure == "converted":
+        contacts = [c for c in contacts if c["contacted"] and c["stage"] == "converted_to_opportunity"]
 
     by_key: dict = {}
     unassigned = {"contacts": 0, "reached": 0}
@@ -8992,8 +9188,13 @@ async def tag_campaign_records(
           "contacts": a["contacts"], "reached": a["reached"]} for a in by_key.values()),
         key=lambda a: (-a["contacts"], a["company"].lower()))
 
-    return {"success": True, "data": {"contacts": contacts, "accounts": accounts,
-                                      "unassigned": unassigned}}
+    if measure == "reached":
+        accounts = [a for a in accounts if a["reached"]]
+    out = {"contacts": contacts, "accounts": accounts, "unassigned": unassigned}
+    if measure:
+        out["measure"] = measure
+        out["measure_count"] = len(accounts if measure in ("accounts", "reached") else contacts)
+    return {"success": True, "data": out}
 
 
 @router.get("/tag-campaigns/{key}/stats")
@@ -9019,7 +9220,7 @@ async def tag_campaign_stats(
     # Period: an explicit from+to wins; otherwise a trailing window sized to the
     # granularity, so the default view always has roughly a dozen buckets.
     step = {"day": timedelta(days=1), "week": timedelta(weeks=1), "month": timedelta(days=30)}[granularity]
-    today = date.today()
+    today = jobs_metrics.ny_today()   # New York, as the range the browser sends
     d_to = date.fromisoformat(date_to) if date_to else today
     d_from = date.fromisoformat(date_from) if date_from else d_to - step * 12
     if d_from > d_to:
@@ -9056,7 +9257,10 @@ async def tag_campaign_stats(
                       "other": len(evs) - emails - calls, "total": len(evs)})
         b = nb
 
-    filters = {"campaign": key}
+    # The totals are the campaign's, all time; the range picks the volume and
+    # the trend. Said beside each total rather than left to look filtered.
+    ignored = ({"period": "Campaign totals are all time; the dates set the activity chart"}
+               if date_from or date_to else None)
     summary = _campaign_summary(camp, n)
     return {"success": True, "data": {
         "key": key,
@@ -9083,13 +9287,7 @@ async def tag_campaign_stats(
         },
         "trend": trend,
         # What each number means, from the data dictionary (PRO-97).
-        "definitions": {
-            "contacts": jobs_metrics.define("campaign_contacts", value=n.contacts, filters=filters),
-            "accounts": jobs_metrics.define("campaign_accounts", value=n.accounts, filters=filters),
-            "contacted": jobs_metrics.define("contacted", value=n.contacted, filters=filters),
-            "reached": jobs_metrics.define("campaign_reached", value=n.accounts_reached, filters=filters),
-            "conversion": jobs_metrics.define("campaign_conversion", value=n.conversion, filters=filters),
-        },
+        "definitions": _campaign_definitions(key, n, ignored),
     }}
 
 
@@ -9134,7 +9332,7 @@ async def tag_campaign_activity(
     """
     camp = await _campaign_or_404(conn, key)
 
-    today = date.today()
+    today = jobs_metrics.ny_today()
     d_to = date.fromisoformat(date_to) if date_to else today
     d_from = date.fromisoformat(date_from) if date_from else d_to - timedelta(weeks=12)
     if d_from > d_to:

@@ -45,6 +45,7 @@ import {
   type CampaignEvent,
 } from "@/services/jobs";
 import { usePinnedCampaigns } from "@/lib/pinnedCampaigns";
+import { MetricInfo } from "@/components/jobs/MetricInfo";
 import { cn } from "@/lib/utils";
 
 const EMAIL_COLOR = "#4242EA";
@@ -247,7 +248,8 @@ function ActivationGroup({ label, hint, tone, rows }: {
   label: string;
   hint?: string;
   tone: "accent" | "green";
-  rows: { n: number; of?: number; unit: string }[];
+  /** `info`: "How is this calculated?" for the row's number (PRO-105). */
+  rows: { n: number; of?: number; unit: string; info?: React.ReactNode }[];
 }) {
   const bar = { accent: "bg-accent", green: "bg-green" }[tone];
   const ink = { accent: "text-accent", green: "text-green" }[tone];
@@ -259,7 +261,9 @@ function ActivationGroup({ label, hint, tone, rows }: {
           const p = r.of !== undefined ? pct(r.n, r.of) : null;
           return (
             <div key={r.unit} className={cn("flex flex-col gap-1.5", i > 0 && "border-t border-border-strong/70 pt-3.5")}>
-              <span className="text-[11px] font-medium uppercase tracking-wide text-ink-3">{r.unit}</span>
+              <span className="flex items-center gap-0.5 text-[11px] font-medium uppercase tracking-wide text-ink-3">
+                {r.unit}{r.info}
+              </span>
               {p !== null ? (
                 <div className="flex items-center gap-3">
                   {/* Flexes to fill whatever the counts beside it don't need,
@@ -607,8 +611,10 @@ function CampaignDetail({ campaignKey, from, to, granularity }: {
             tone="accent"
             hint="Contacted: any activity from Pursuit, ever (an email, call, meeting, text, LinkedIn message or intro). The same contacts the campaign row and the Sankey call contacted."
             rows={[
-              { n: t.accounts_reached, of: t.accounts, unit: "accounts" },
-              { n: t.contacted, of: t.in_pipeline, unit: "contacts" },
+              { n: t.accounts_reached, of: t.accounts, unit: "accounts",
+                info: <MetricInfo definition={stats.definitions?.reached} /> },
+              { n: t.contacted, of: t.in_pipeline, unit: "contacts",
+                info: <MetricInfo definition={stats.definitions?.contacted} /> },
             ]}
           />
           <div className="flex flex-col gap-2 rounded-xl border border-border-strong bg-surface px-4 py-3.5 lg:col-span-2">

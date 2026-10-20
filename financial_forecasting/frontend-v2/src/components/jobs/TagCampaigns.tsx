@@ -23,6 +23,9 @@ import { useTagCampaigns, useSetTagCampaignOrder, useSetCampaignOwner, useSetCur
   type TagCampaign, type MembershipStage } from "@/services/jobs";
 import { Link } from "react-router-dom";
 import { relDay } from "@/lib/format";
+import { MetricInfo } from "@/components/jobs/MetricInfo";
+import { ListWhy } from "@/components/jobs/ListWhy";
+import { columnDefinition } from "@/components/jobs/metricInfoText";
 import { InlineSelect } from "@/components/ui/InlineEdit";
 import { useSessionState } from "@/lib/useSessionState";
 import { cn } from "@/lib/utils";
@@ -225,8 +228,9 @@ function CampaignDrill({ campaignKey, kind, label }: {
   return (
     <div className="border-t border-border-strong bg-surface-2/40 px-3 py-2">
       <div className="mb-1.5 flex items-center justify-between">
-        <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
+        <span className="flex items-center gap-1 text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
           {label} · {kind === "contacts" ? "contacts in pipeline" : "accounts"}
+          {kind === "contacts" ? <ListWhy listKey="campaign_contacts" /> : null}
         </span>
         <span className="text-[11px] tabular-nums text-ink-4">{rows.length}</span>
       </div>
@@ -329,6 +333,8 @@ export function TagCampaigns() {
   const { data: staff = [] } = useStaff();
   const save = useSetTagCampaignOrder();
   const [items, setItems] = useState<TagCampaign[]>([]);
+  // The words are each measure's, the same on every row: the headings read them off one.
+  const defs = items[0]?.definitions;
   // One drill open at a time — two expanded tables at this row height turns
   // the list into a wall.
   const [openDrill, setOpenDrill] = useState<{ key: string; kind: "contacts" | "accounts" } | null>(null);
@@ -380,6 +386,7 @@ export function TagCampaigns() {
     <div className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">Campaigns · outreach priority</span>
+        <ListWhy listKey="campaigns" />
         <CampaignPicker all={items} selected={picked} onChange={setPicked} />
         {save.isPending && <Loader2 size={12} className="animate-spin text-ink-4" />}
         {/* Only speaks up when a filter is on, where "3 of 5" is the one thing
@@ -404,9 +411,15 @@ export function TagCampaigns() {
         <div className="flex items-center gap-3 border-b border-border-strong bg-surface-2 px-3 py-1.5 text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
           <span className="w-[14px]" /><span className="w-5 text-right">#</span>
           <span className="w-40 shrink-0">Campaign</span>
-          <span className="min-w-0 flex-1">Pipeline by stage · contacted</span>
-          <span className="w-20 shrink-0 text-right">Accounts</span>
-          <span className="w-14 shrink-0 text-right" title="Of the contacted, the share converted to an opportunity">Conv.</span>
+          <span className="flex min-w-0 flex-1 items-center gap-0.5">
+            Pipeline by stage · contacted<MetricInfo definition={columnDefinition(defs?.contacted)} />
+          </span>
+          <span className="flex w-20 shrink-0 items-center justify-end gap-0.5">
+            Accounts<MetricInfo definition={columnDefinition(defs?.reached)} />
+          </span>
+          <span className="flex w-14 shrink-0 items-center justify-end gap-0.5" title="Of the contacted, the share converted to an opportunity">
+            Conv.<MetricInfo definition={columnDefinition(defs?.conversion)} />
+          </span>
           <span className="w-36 shrink-0">Owner</span>
           <span className="w-20 shrink-0" />
         </div>

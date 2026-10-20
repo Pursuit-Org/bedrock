@@ -33,7 +33,8 @@ import { OppBuilderActivity } from "@/components/jobs/OppBuilderActivity";
 import { CommittedRolesModal } from "@/components/jobs/CommittedRolesModal";
 import { DealExpandPanel, PlacementsModal, ClosedLostModal, useOppStageOptions } from "./JobsTeam";
 import { cn } from "@/lib/utils";
-import { relDay } from "@/lib/format";
+import { relAgo } from "@/lib/format";
+import { ListWhy } from "@/components/jobs/ListWhy";
 import { useSort, sortBy } from "@/lib/sort";
 import { useSessionState } from "@/lib/useSessionState";
 import { useActiveUsers } from "@/services/projects";
@@ -93,8 +94,11 @@ const isOpenOpp = (o: JobsOpportunity) =>
   !o.stage.startsWith("closed") && !o.stage.startsWith("on_hold");
 
 // ── Section label + bordered panel (mirrors the Performance tab's SectionWrap) ──
-function Section({ title, count, action, children }: {
-  title: string; count?: number; action?: React.ReactNode; children: React.ReactNode;
+function Section({ title, count, why, action, children }: {
+  title: string; count?: number;
+  /** The list's key in services/jobs_lists.py, for its "Why these?" (PRO-105). */
+  why?: string;
+  action?: React.ReactNode; children: React.ReactNode;
 }) {
   return (
     <div className="flex flex-col gap-3">
@@ -102,6 +106,7 @@ function Section({ title, count, action, children }: {
         <div className="flex items-baseline gap-2">
           <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">{title}</span>
           {count != null && <span className="text-[11px] tabular-nums text-ink-4">{count}</span>}
+          {why ? <ListWhy listKey={why} /> : null}
         </div>
         {action}
       </div>
@@ -195,9 +200,9 @@ function AssignedRow({ c, staff, expanded, onToggle }: {
           onSave={(email) => new Promise<void>((resolve, reject) =>
             updateContact.mutate({ id: c.contact_id, owner_email: email || null },
               { onSuccess: () => resolve(), onError: reject }))} />
-        <span className="w-[52px] shrink-0 text-right text-[11.5px] tabular-nums text-ink-4"
+        <span className="w-[104px] shrink-0 text-right text-[11.5px] tabular-nums text-ink-4"
           title={c.membership_stage_entered_at ? `Assigned ${new Date(c.membership_stage_entered_at).toLocaleDateString()}` : "Assignment date unknown"}>
-          {relDay(c.membership_stage_entered_at) ?? "—"}
+          {c.membership_stage_entered_at ? `assigned ${relAgo(c.membership_stage_entered_at)}` : "—"}
         </span>
       </div>
       {expanded && (
@@ -237,7 +242,7 @@ function AssignedContactsZone({ owner }: { owner: string | null }) {
   const pct = total > 0 ? Math.round((contacted.length / total) * 100) : 0;
 
   return (
-    <Section title="Assigned contacts" count={contacts.length}
+    <Section title="Assigned contacts" count={contacts.length} why="assigned_contacts"
       action={total > 0 ? (
         <div className="flex items-center gap-2" title={`${contacted.length} of ${total} contacted this week`}>
           <span className={cn("text-[11.5px] font-medium", contacted.length > 0 ? "text-green" : "text-ink-4")}>
@@ -330,9 +335,9 @@ function ContactedRow({ c, expanded, onToggle }: {
           </div>
         </div>
         <span className="shrink-0 text-[10.5px] font-medium text-green">Initial outreach</span>
-        <span className="w-[52px] shrink-0 text-right text-[11.5px] tabular-nums text-ink-4"
+        <span className="w-[104px] shrink-0 text-right text-[11.5px] tabular-nums text-ink-4"
           title={c.membership_stage_entered_at ? `Contacted ${new Date(c.membership_stage_entered_at).toLocaleDateString()}` : undefined}>
-          {relDay(c.membership_stage_entered_at) ?? "—"}
+          {c.membership_stage_entered_at ? `contacted ${relAgo(c.membership_stage_entered_at)}` : "—"}
         </span>
       </div>
       {expanded && (
@@ -376,7 +381,7 @@ function RepliedZone({ owner }: { owner: string | null }) {
   };
   const shown = showAll ? data : data.slice(0, 6);
   return (
-    <Section title="Replied — needs a decision" count={data.length}>
+    <Section title="Replied — needs a decision" count={data.length} why="replied_needs_decision">
       {stageChange.dialog}
       <div className="flex flex-col overflow-hidden rounded-lg border border-border-strong bg-surface">
         {shown.map((c) => (
@@ -387,7 +392,9 @@ function RepliedZone({ owner }: { owner: string | null }) {
                   {c.full_name || "—"}
                 </Link>
                 <span className="text-[11.5px] text-ink-3">{c.current_company || "—"}</span>
-                <span className="text-[11px] text-ink-4">replied {relDay(c.last_reply) ?? "—"} ago</span>
+                <span className="text-[11px] text-ink-4">
+                  {c.last_reply ? `replied ${relAgo(c.last_reply)}` : "reply date unknown"}
+                </span>
               </div>
               {c.snippet && <p className="mt-0.5 line-clamp-2 text-[11.5px] italic text-ink-3">“{c.snippet}”</p>}
             </div>
@@ -492,7 +499,7 @@ function OppTableRow({ o, needs, expanded, onToggle, showOwner, resolveName, onR
         </td>
         <td className="px-2 py-1.5 text-right text-[11.5px] tabular-nums text-ink-4"
           title={o.last_activity_at ? `Last activity ${new Date(o.last_activity_at).toLocaleDateString()}` : "No activity"}>
-          {relDay(o.last_activity_at) ?? "—"}
+          {relAgo(o.last_activity_at) ?? "no activity"}
         </td>
         {showOwner && (
           <td className="px-2 py-1.5 text-[11.5px] text-ink-3">{o.owner_email ? resolveName(o.owner_email) : "—"}</td>
@@ -569,7 +576,7 @@ function OpportunitiesZone({ owner }: { owner: string | null }) {
 
   const showOwner = owner === null;
   return (
-    <Section title="Opportunities" count={filtered.length}
+    <Section title="Opportunities" count={filtered.length} why="opportunities_needs_attention"
       action={
         <div className="flex flex-wrap items-center gap-2">
           <button type="button" onClick={() => setAttnOnly(!attnOnly)}
@@ -699,7 +706,7 @@ function RolesZone({ owner }: { owner: string | null }) {
   const colSpan = showOwner ? 5 : 4;
 
   return (
-    <Section title="Roles" count={rows.length}
+    <Section title="Roles" count={rows.length} why="roles"
       action={openCount > 0 ? <span className="text-[11.5px] text-ink-4">{openCount} open</span> : undefined}>
       <div className="overflow-x-auto rounded-lg border border-border-strong bg-surface">
         <table className="w-full table-fixed">
@@ -904,7 +911,7 @@ function TasksZone({ owner }: { owner: string | null }) {
   };
 
   return (
-    <Section title="Tasks" count={filtered.length} action={
+    <Section title="Tasks" count={filtered.length} why="tasks" action={
       <button type="button" onClick={openAdd}
         className="inline-flex h-7 items-center gap-1 rounded-md border border-border-strong bg-surface px-2 text-[12px] text-ink-2 hover:bg-surface-2">
         <Plus size={12} /> Add
@@ -1000,7 +1007,7 @@ function IntroRequestCard({ r, mine }: { r: IntroRequest; mine: boolean }) {
         <span className="text-[11px] text-ink-4">
           {mine ? `via ${r.connector_name || r.connector_email || "—"}` : `from ${r.requested_by_name || r.requested_by || "—"}`}
           {fromBuilder && r.builder_cohort ? ` · ${r.builder_cohort}` : ""}
-          {r.created_at ? ` · ${relDay(r.created_at)}` : ""}
+          {r.created_at ? ` · asked ${relAgo(r.created_at)}` : ""}
         </span>
         {!isPending && (
           <Tag variant={isAccepted ? "green" : r.status === "completed" ? "green" : "default"}>{r.status}</Tag>
@@ -1047,7 +1054,7 @@ function IntroRequestsZone() {
   if (reqs.length === 0 && !showClosed) {
     // Always visible so the flow is discoverable — a one-line how-to when empty.
     return (
-      <Section title="Intro requests" count={0}>
+      <Section title="Intro requests" count={0} why="intro_requests">
         <div className="rounded-lg border border-border-strong bg-surface px-3 py-3 text-[12px] text-ink-4">
           None yet. Open any contact and hit <span className="font-medium text-ink-2">Request intro</span> next
           to their connected staff — the request lands here for that staff member to accept, decline, or mark the intro made.
@@ -1057,7 +1064,7 @@ function IntroRequestsZone() {
     );
   }
   return (
-    <Section title="Intro requests" count={reqs.length}
+    <Section title="Intro requests" count={reqs.length} why="intro_requests"
       action={
         <label className="flex items-center gap-1 text-[11px] text-ink-4">
           <input type="checkbox" checked={showClosed} onChange={(e) => setShowClosed(e.target.checked)} className="accent-accent" /> show closed

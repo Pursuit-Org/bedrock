@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from tests.jobs_fakes import FakeConn, make_jobs_client
+from tests.jobs_fakes import FakeConn, assert_records_match, make_jobs_client
 
 NOW = datetime.now(timezone.utc)
 UUID_A = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
@@ -96,7 +96,10 @@ def test_overview_numbers_carry_their_definitions():
     d = c.get("/api/jobs/opportunities/overview?week_end=2026-09-27&start=2026-09-21").json()["data"]
     defs = d["definitions"]
     assert defs["stalled"]["measure"] == "stalled_opportunities"
-    assert defs["in_set"]["window"] == {"from": "2026-09-21", "to": "2026-09-27", "tz": "America/New_York"}
+    assert defs["net_new"]["window"] == {"from": "2026-09-21", "to": "2026-09-27", "tz": "America/New_York"}
+    # Open and stalled are states, read at the week's end, not over it (PRO-105).
+    assert defs["in_set"]["window"] is None and defs["in_set"]["as_of"] == "2026-09-27"
+    assert defs["stalled"]["as_of"] == "2026-09-27"
 
 
 def test_account_activity_keeps_status_active():
@@ -190,3 +193,20 @@ def test_opportunity_list_binds_deal_type_list():
     assert r.status_code == 200
     calls = [call for call in conn.calls if "o.deal_type = ANY(" in call[1]]
     assert calls and ["ft", "unset"] in list(calls[0][2])
+
+
+def test_every_pipeline_card_opens_the_records_it_counts():
+    """PRO-105: each card's records are its list in `drills`, and Won, open
+    tasks is the server's own number now, not a count made in the browser."""
+    rows = [_set_row(UUID_A, "Worked", created_days=90, moved_days=3, touch_days=3),
+            _set_row(UUID_B, "Quiet", created_days=60, moved_days=60)]
+    won_open = [{"id": UUID_A, "account_name": "Acme", "stage": "closed_won",
+                 "owner_email": "a@p.org", "at": None}]
+    conn = OverviewConn(rows, won=[{"id": UUID_A, "account_name": "Acme", "stage": "closed_won",
+                                    "owner_email": "a@p.org", "at": NOW}])
+    conn.lists["o.stage = 'closed_won'\n          AND EXISTS"] = won_open
+    c = make_jobs_client(conn)
+    d = c.get("/api/jobs/opportunities/overview").json()["data"]
+    assert d["summary"]["won_open_tasks"] == 1
+    assert d["definitions"]["won_open_tasks"]["source"] == "repo_draft"
+    assert_records_match(c, d["definitions"], d)

@@ -23,14 +23,16 @@ import { cn } from "@/lib/utils";
 
 /** Card chrome, duplicated from JobsCampaigns rather than imported, so this
  *  component has no dependency back on the page that first used it. */
-function Section({ title, note, action, children }: {
-  title: string; note?: string; action?: React.ReactNode; children: React.ReactNode;
+function Section({ title, note, why, action, children }: {
+  title: string; note?: string; why?: React.ReactNode; action?: React.ReactNode; children: React.ReactNode;
 }) {
   return (
     <section className="rounded-2xl border border-border-strong bg-surface px-5 py-4">
       <div className="mb-3 flex flex-wrap items-baseline justify-between gap-3">
         <div>
-          <h3 className="text-[14px] font-semibold text-ink">{title}</h3>
+          <div className="flex items-center gap-1">
+            <h3 className="text-[14px] font-semibold text-ink">{title}</h3>{why}
+          </div>
           {note ? <p className="mt-0.5 text-[11.5px] text-ink-3">{note}</p> : null}
         </div>
         {action}
@@ -214,7 +216,7 @@ function GroupDetail({ g }: { g: EventGroup }) {
 }
 
 export function ActivityFeed({
-  events, total, owners, isLoading, title, note, showSegments = true, owner, onOwner,
+  events, total, owners, isLoading, title, note, why, showSegments = true, owner, onOwner,
 }: {
   events: CampaignEvent[];
   /** Events in the period before the server's cap. When it is more than
@@ -225,6 +227,8 @@ export function ActivityFeed({
   isLoading: boolean;
   title?: string;
   note?: string;
+  /** "Why these?" for the list (PRO-105), beside the title. */
+  why?: React.ReactNode;
   /** Campaigns mixes touches with stage changes, so it needs the All / Outreach
    *  / Funnel split. A sends-only feed has nothing to segment. */
   showSegments?: boolean;
@@ -256,6 +260,7 @@ export function ActivityFeed({
   return (
     <Section
       title={title ?? "Activity"}
+      why={why}
       note={note ?? "Owner is who the contact or their account is assigned to in Bedrock. Editor is who made the change. Click a row for the contacts behind it."}
       action={
         <div className="flex flex-wrap items-center gap-2">

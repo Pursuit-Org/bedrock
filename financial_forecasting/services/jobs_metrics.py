@@ -4,10 +4,11 @@ Pursuit keeps its metric definitions in the data dictionary
 (`bedrock.dd_metrics`, the app at data-dictionary-866060457933.us-central1.run.app).
 Every number on the Jobs Overview, Outreach, Pipeline and Campaigns tabs is tied
 to one entry there: a concept (a `dd_metrics` row) and one of its measures (an
-element of the row's `cuts`). Bedrock doesn't keep its own copy of the words.
-It reads the definition and its status from the dictionary and returns them
+element of the row's `cuts`). Bedrock doesn't write the words in code. It
+reads the definition and its status from the dictionary and returns them
 beside each number (`define`), which is what the "How is this calculated?"
-icon shows (PRO-105).
+icon shows (PRO-105). Until an entry is in the dictionary, the icon shows its
+draft from the file below, labelled as a draft.
 
 The drafts of every entry live in `db/dictionary/jobs_metrics.json`, with a
 reference query per measure. `scripts/import_jobs_dictionary.py` writes them
@@ -39,6 +40,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import Iterable, Mapping, Optional
 from zoneinfo import ZoneInfo
 
@@ -212,18 +214,52 @@ def _entry(key: str) -> tuple[Optional[Measure], Optional[Concept], Optional[dic
     return m, concept, row, cut
 
 
+DRAFTS_PATH = Path(__file__).resolve().parent.parent / "db" / "dictionary" / "jobs_metrics.json"
+
+
+def _load_drafts() -> dict[tuple[str, str], dict]:
+    """(concept key, measure key) -> the measure's draft in jobs_metrics.json."""
+    try:
+        doc = json.loads(DRAFTS_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        logger.warning(f"jobs_metrics.json unreadable, numbers not in the dictionary show no words: {e!r}")
+        return {}
+    return {(c["bedrock_key"], cut["key"]): cut
+            for c in doc.get("concepts", []) for cut in c.get("cuts", [])}
+
+
+_DRAFTS = _load_drafts()
+
+
+def _anchor(cut: Optional[Mapping]) -> Optional[str]:
+    """The measure's default time anchor, in words ("as of today")."""
+    anchors = (cut or {}).get("time_anchors") or []
+    if isinstance(anchors, str):
+        anchors = json.loads(anchors)
+    a = next((a for a in anchors if a.get("default")), anchors[0] if anchors else None)
+    return a.get("label") if a else None
+
+
 def define(key: str, *, value=None, window: Optional[tuple] = None,
-           filters: Optional[Mapping] = None, records: Optional[Mapping] = None) -> dict:
+           as_of: Optional[datetime] = None,
+           filters: Optional[Mapping] = None, ignored: Optional[Mapping] = None,
+           records: Optional[Mapping] = None) -> dict:
     """What a number means, for the response beside it.
 
     `window` is the half-open [start, end) the number covers (aware datetimes,
-    New York midnights) or None for a number "as of now". `filters` are what
-    the viewer narrowed it by. `records` is how to fetch the rows behind the
-    number: {"endpoint": "/api/jobs/...", "params": {...}}.
+    New York midnights) or None for a number "as of now". `as_of` is the
+    moment a state ("open", "stalled") is read at, when it isn't now: a past
+    week's stalled count is as of that week's end. `filters` are what
+    the viewer narrowed it by. `ignored` are the filters on the page this
+    number does not apply, {param: why}, so the icon can say so rather than
+    let the number look filtered. `records` is how to fetch the rows behind
+    the number: {"endpoint": "/api/jobs/...", "params": {...}}.
 
-    The words come only from the dictionary. An entry that isn't there yet
-    says so (`status: "not_in_dictionary"`); Bedrock never fills the gap with
-    text of its own.
+    The words come from the dictionary (`source: "dictionary"`). Until an
+    entry is there, they come from its draft in jobs_metrics.json (`source:
+    "repo_draft"`, decided 10/20 for PRO-105): the same words waiting to be
+    entered, never text written in code. A dictionary entry wins as soon as it
+    exists.
     """
     m, concept, row, cut = _entry(key)
     if m is None:
@@ -239,24 +275,36 @@ def define(key: str, *, value=None, window: Optional[tuple] = None,
         "definition": None,
         "numerator": None,
         "denominator": None,
+        "caveat": None,
+        "time_anchor": None,
         "status": "not_in_dictionary",
+        "source": None,
         "window": _window_json(window),
+        "as_of": _as_of_day(as_of),
         "filters": {k: v for k, v in (filters or {}).items() if v not in (None, "", "all")},
+        "ignored": dict(ignored) if ignored else {},
         "records": dict(records) if records else None,
     }
-    if row is None:
-        return out
-    if cut is None:
-        # The concept is there but this measure isn't yet.
-        out["definition"] = row.get("definition")
-        out["status"] = "measure_not_in_dictionary"
-        return out
+    if cut is not None:
+        words, out["source"] = cut, "dictionary"
+        out["status"] = cut.get("status") or row.get("status")
+    else:
+        if row is not None:
+            # The concept is there but this measure isn't yet.
+            out["status"] = "measure_not_in_dictionary"
+        words = _DRAFTS.get((m.concept, m.cut))
+        if words is None:
+            out["definition"] = row.get("definition") if row else None
+            out["source"] = "dictionary" if row else None
+            return out
+        out["source"] = "repo_draft"
     out.update({
-        "label": cut.get("label"),
-        "definition": cut.get("definition") or row.get("definition"),
-        "numerator": cut.get("numerator"),
-        "denominator": cut.get("denominator"),
-        "status": cut.get("status") or row.get("status"),
+        "label": words.get("label"),
+        "definition": words.get("definition") or (row or {}).get("definition"),
+        "numerator": words.get("numerator"),
+        "denominator": words.get("denominator"),
+        "caveat": words.get("caveat"),
+        "time_anchor": _anchor(words),
     })
     return out
 
@@ -380,6 +428,17 @@ def prior_window(start: datetime, end: datetime) -> tuple[datetime, datetime]:
     days = (end.date() - start.date()).days
     s = start.date() - timedelta(days=days)
     return ny_midnight(s), ny_midnight(start.date())
+
+
+def _as_of_day(t: Optional[datetime]) -> Optional[str]:
+    """The New York day a state is read at. A New York midnight is the end of
+    the day before: open "as of" a week's end is open on its Sunday."""
+    if t is None:
+        return None
+    t = t.astimezone(NY)
+    if t.time() == datetime.min.time():
+        t -= timedelta(seconds=1)
+    return t.date().isoformat()
 
 
 def _window_json(window: Optional[tuple]) -> Optional[dict]:

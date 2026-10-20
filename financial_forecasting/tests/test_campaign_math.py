@@ -10,7 +10,7 @@ import pytest
 
 from services import jobs_metrics as jm
 from services import outreach_counting as oc
-from tests.jobs_fakes import EVENTS, FakeConn, event_row, make_jobs_client
+from tests.jobs_fakes import EVENTS, FakeConn, assert_records_match, event_row, make_jobs_client
 
 T = datetime(2026, 9, 24, 15, 0, tzinfo=timezone.utc)
 
@@ -357,3 +357,12 @@ def test_activity_depth_covers_every_contact_in_outreach():
     assert by["1"] == 1 and by["0"] == 1                 # call + its meeting = 1; a booking = 0
     q = next(c[1] for c in conn.calls if "WHERE m.stage = 'initial_outreach'" in c[1])
     assert "owner_email) IN" not in q and jm.internal_contact_sql("p") in q
+
+
+def test_every_campaign_number_opens_the_records_it_counts():
+    """PRO-105: Contacts is everyone tagged, so its records include the
+    contacts outside the pipeline; the rest are narrowed to what they count."""
+    c = make_jobs_client(_conn())
+    d = c.get("/api/jobs/tag-campaigns/operation_35/stats").json()["data"]
+    assert d["definitions"]["contacts"]["value"] > d["totals"]["in_pipeline"]
+    assert_records_match(c, d["definitions"])

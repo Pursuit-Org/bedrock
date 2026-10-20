@@ -33,6 +33,8 @@ import { Panel } from "./JobsOpportunitiesOverview";
 import { ActivityTrends } from "@/components/jobs/ActivityTrends";
 import { ActivityFeed } from "@/components/jobs/ActivityFeed";
 import { DrillList } from "@/components/jobs/DrillList";
+import { MetricInfo } from "@/components/jobs/MetricInfo";
+import { ListWhy } from "@/components/jobs/ListWhy";
 import { CallKindChip } from "@/components/jobs/CallKindPicker";
 import { PeriodBar, ScopeButtons, defaultPeriod } from "@/components/jobs/PeriodBar";
 import { relDay } from "@/lib/format";
@@ -359,12 +361,21 @@ function ScorecardTable({
                         : <ChevronRight size={12} className="inline" />}
                     </span>
                     {r.label}
+                    {pending ? null : (
+                      <MetricInfo definition={r.definition} onViewRecords={() => setOpen(id)}
+                                  className="ml-1 align-middle" />
+                    )}
                     {pending && <span className="ml-2 text-[10.5px] uppercase tracking-wide text-ink-4">pending migration</span>}
                   </td>
                   {/* A dash, never 0 (Kwame 2026-09-21): the individual outreach
                       channels carry no target, and printing 0 claimed one — every
                       send then read as beating a goal nobody set. */}
-                  <td className="px-3.5 py-2.5 text-center tabular-nums text-ink-3">{pending ? "—" : r.target ?? "—"}</td>
+                  <td className="px-3.5 py-2.5 text-center tabular-nums text-ink-3">
+                    {pending ? "—" : r.target ?? "—"}
+                    {!pending && r.target != null ? (
+                      <MetricInfo definition={r.target_definition} className="ml-0.5 align-middle" />
+                    ) : null}
+                  </td>
                   <td className="px-3.5 py-2.5 text-center">
                     {pending ? <span className="text-ink-4">—</span>
                       : <DeltaChip actual={thisN} target={r.target} />}
@@ -489,6 +500,7 @@ function TouchDepthPanel({ owner, nameOf, className }: {
   return (
     <Panel
       title="Activity Depth"
+      info={<><MetricInfo definition={depth?.definition} /><ListWhy listKey="activity_depth" /></>}
       // Spells out both halves of the measure, because "3 touches" is
       // meaningless without knowing over what window and for whom. "Right now"
       // is load-bearing: this panel does not follow the period bar.
@@ -1085,15 +1097,18 @@ function OwnerScorecardTable({ granularity, range, rangeLabel, nameOf, leading, 
                 read as belonging to it. */}
             <th className="border-l border-border px-2 pt-2 pb-1" colSpan={4}>
               <span className={GROUP_CAP}>Outreach</span>
+              <MetricInfo definition={data?.definitions?.outreach} className="ml-1 align-middle" />
             </th>
             <th className="border-l border-border px-2 pt-2 pb-1" colSpan={3}>
               <span className={GROUP_CAP}>Discovery Calls</span>
+              <MetricInfo definition={data?.definitions?.calls} className="ml-1 align-middle" />
             </th>
             {/* Converting is a team outcome, so this group carries a target on
                 the team line only — every owner cell reads a dash by design
                 (Kwame 2026-09-21). */}
             <th className="border-l border-border px-2 pt-2 pb-1" colSpan={3}>
               <span className={GROUP_CAP}>Opportunities</span>
+              <MetricInfo definition={data?.definitions?.opportunities} className="ml-1 align-middle" />
             </th>
           </tr>
           <tr className="bg-surface-2 text-[10px] uppercase tracking-wide text-ink-4">
@@ -1115,6 +1130,7 @@ function OwnerScorecardTable({ granularity, range, rangeLabel, nameOf, leading, 
                   <th className="px-3 pb-2 text-center font-semibold align-bottom"
                     title="Of the contacts that entered this owner's queue in this period, how many moved to initial outreach. A stage count: 'contacted' means activity (PRO-100). Click either number for the list.">
                     Moved to outreach / assigned
+                    <MetricInfo definition={data?.definitions?.contacted} className="ml-0.5 align-middle" />
                   </th>
                 )}
               </Fragment>
@@ -1259,7 +1275,9 @@ function OutboundActivityFeed({ granularity, scope, owner, range }: {
       owners={[]}
       isLoading={isLoading}
       title="Activity"
-      note="Every email, LinkedIn message and text sent in this period. Owner is who the contact belongs to; Editor is who sent it. Click a row for the contacts behind it."
+      why={<ListWhy listKey="activity_feed" />}
+      // Intros are sends too: the note used to leave them out (PRO-105).
+      note="Every email, LinkedIn message, text and facilitated intro sent in this period. Owner is who the contact belongs to; Editor is who sent it. Click a row for the contacts behind it."
       showSegments={false}
     />
   );
@@ -1319,13 +1337,14 @@ function OutreachSummaryCards({ granularity, scope, owner, range }: {
         {SUMMARY_CARDS.map((c) => {
           const active = open === c.key;
           return (
+            // The info icon sits beside the card's button, not in it.
+            <div key={c.key} className="relative">
             <button
-              key={c.key}
               type="button"
               onClick={() => setOpen(active ? null : c.key)}
               aria-expanded={active}
               className={cn(
-                "rounded-2xl border bg-surface px-5 py-4 text-left transition-colors",
+                "h-full w-full rounded-2xl border bg-surface px-5 py-4 pr-9 text-left transition-colors",
                 active ? "border-accent ring-1 ring-accent/30" : "border-border-strong hover:border-accent",
               )}
             >
@@ -1344,6 +1363,9 @@ function OutreachSummaryCards({ granularity, scope, owner, range }: {
                 </div>
               ) : null}
             </button>
+            <MetricInfo definition={data?.definitions?.[c.key]} onViewRecords={() => setOpen(c.key)}
+                        className="absolute right-3 top-3" />
+            </div>
           );
         })}
       </div>

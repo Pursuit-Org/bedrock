@@ -5,6 +5,7 @@ import { usePlacements, useBuilderSegments } from "@/services/jobs";
 import { JobsFunnels } from "@/components/jobs/JobsFunnels";
 import { MetricDrawer } from "@/components/jobs/MetricDrawer";
 import { JobsStatBubble } from "@/components/jobs/JobsStatBubble";
+import { MetricInfo } from "@/components/jobs/MetricInfo";
 import {
   FULL_TIME, placedLabel, placedBreakdown, inRoleLine, ofJobReady, pctOf, ringPct,
   committedLine, expectedSalaryLine, salaryBasis,
@@ -51,7 +52,10 @@ function LineLink({ children, onClick }: { children: React.ReactNode; onClick: (
 // ── Main component ────────────────────────────────────────────────────────
 
 export function JobsLeadership() {
-  const [openMetric, setOpenMetric] = useState<string | null>(null);
+  const [openMetric, setOpenMetricKey] = useState<string | null>(null);
+  // One line of the Placed card: full-time, paid trial, or still in the role.
+  const [openPart, setOpenPart] = useState<string | undefined>(undefined);
+  const setOpenMetric = (key: string | null, part?: string) => { setOpenMetricKey(key); setOpenPart(part); };
   const [segment, setSegment] = useState<string>("all");
   // Full-time is the core number; every other type, and all paid work, can be
   // viewed (D4). It scopes the Placed card, its drill and the funnel's last stage.
@@ -73,6 +77,11 @@ export function JobsLeadership() {
   const paidRate = pctOf(p?.paid_work ?? 0, jobReady);
   const breakdown = p ? placedBreakdown(p, jobType) : null;
   const expected = p ? expectedSalaryLine(p.committed_expected_salary, p.committed_roles, scoped) : null;
+  const defs = p?.definitions;
+  // "How is this calculated?" for one number, its records opened in the drawer.
+  const info = (key: string, metric: string, part?: string, label?: string) => (
+    <MetricInfo definition={defs?.[key]} label={label} onViewRecords={() => setOpenMetric(metric, part)} />
+  );
 
   return (
     <div className="flex flex-col gap-7">
@@ -109,18 +118,34 @@ export function JobsLeadership() {
             icon={<Trophy size={14} />}
             isLoading={pLoading}
             celebrate={!pLoading && (p?.placed ?? 0) > 0}
+            info={info("placed", "placements")}
             subLead={pLoading || !p ? undefined : (
               <span className="flex flex-col gap-0.5">
-                {breakdown ? <span>{breakdown}</span> : null}
-                <span>{inRoleLine(p)}</span>
+                {breakdown ? (
+                  <span className="flex items-center gap-1">
+                    {breakdown}{info("placed_ft", "placements", "full_time", "Placed through a full-time job")}
+                    {p.placed_trial > 0
+                      ? info("placed_trial", "placements", "trial", "Placed through a paid trial only")
+                      : null}
+                  </span>
+                ) : null}
+                <span className="flex items-center gap-1">{inRoleLine(p)}{info("placed_in_role", "placements", "in_role")}</span>
                 {jobType === FULL_TIME ? (
-                  <LineLink onClick={() => setOpenMetric("committed_roles")}>
-                    {committedLine(p.committed_roles, scoped)}
-                  </LineLink>
+                  <span className="flex items-center gap-1">
+                    <LineLink onClick={() => setOpenMetric("committed_roles")}>
+                      {committedLine(p.committed_roles, scoped)}
+                    </LineLink>
+                    {info("committed_roles", "committed_roles")}
+                  </span>
                 ) : null}
               </span>
             )}
-            sub={pLoading ? undefined : ofJobReady(p?.placed_rate, jobReady)}
+            sub={pLoading ? undefined : (
+              <span className="flex items-center gap-1">
+                {ofJobReady(p?.placed_rate, jobReady)}
+                <MetricInfo definition={defs?.placed_rate} />
+              </span>
+            )}
             progressPct={ringPct(p?.placed_rate)}
             progressLabel={`${ringPct(p?.placed_rate)}%`}
             onClick={() => setOpenMetric("placements")}
@@ -132,8 +157,14 @@ export function JobsLeadership() {
             tone="sky"
             icon={<Users size={14} />}
             isLoading={pLoading}
+            info={info("paid_work", "any_paid")}
             subLead="any paid work, full-time and trials included · not pro bono"
-            sub={pLoading ? undefined : ofJobReady(paidRate, jobReady)}
+            sub={pLoading ? undefined : (
+              <span className="flex items-center gap-1">
+                {ofJobReady(paidRate, jobReady)}
+                <MetricInfo definition={defs?.job_ready} />
+              </span>
+            )}
             progressPct={ringPct(paidRate)}
             progressLabel={`${ringPct(paidRate)}%`}
             onClick={() => setOpenMetric("any_paid")}
@@ -146,11 +177,15 @@ export function JobsLeadership() {
             icon={<DollarSign size={14} />}
             format="salary"
             isLoading={pLoading}
+            info={info("avg_ft_salary_placed", "ft_salaries")}
             subLead={pLoading || !p ? undefined : (
               <span className="flex flex-col gap-0.5">
                 <span>{salaryBasis(p.ft_salaried)}</span>
                 {expected ? (
-                  <LineLink onClick={() => setOpenMetric("committed_roles")}>{expected}</LineLink>
+                  <span className="flex items-center gap-1">
+                    <LineLink onClick={() => setOpenMetric("committed_salaries")}>{expected}</LineLink>
+                    {info("committed_expected_salary", "committed_salaries")}
+                  </span>
                 ) : null}
               </span>
             )}
@@ -174,6 +209,7 @@ export function JobsLeadership() {
         segment={segment}
         // Only the Placed drill follows the job type; the other two are fixed.
         jobType={openMetric === "placements" ? jobType : undefined}
+        part={openMetric === "placements" ? openPart : undefined}
         onClose={() => setOpenMetric(null)}
       />
     </div>

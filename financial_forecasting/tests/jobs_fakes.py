@@ -179,3 +179,27 @@ def make_jobs_client(conn, sf=None, user=None):
     # restores the real value after every test.
     db_module._pool = FakePool(conn)
     return TestClient(app, raise_server_exceptions=False)
+
+
+def records_count(client, definition) -> int:
+    """Open a number's "View records" link the way the icon does and return
+    the count it shows (PRO-105: the count must be the number)."""
+    rec = definition["records"]
+    r = client.get(rec["endpoint"], params={k: v for k, v in rec["params"].items() if v is not None})
+    assert r.status_code == 200, r.text
+    data = r.json()["data"]
+    for part in rec.get("count_field", "count").split("."):
+        data = data[part]
+    return data
+
+
+def assert_records_match(client, definitions, data=None) -> None:
+    """Every number with a records link opens exactly that many records: the
+    number itself, or for an average the `count` of records it averages.
+    Records that ride in the response (`drill`) are counted in `data`."""
+    for key, d in definitions.items():
+        if d.get("records") is None or d.get("value") is None:
+            continue
+        rec = d["records"]
+        n = len(data["drills"][rec["drill"]]) if rec.get("drill") else records_count(client, d)
+        assert n == rec.get("count", d["value"]), key

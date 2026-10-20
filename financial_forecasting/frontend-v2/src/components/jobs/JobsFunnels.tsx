@@ -11,9 +11,11 @@ import {
   type FunnelPeriod,
   type FunnelMovement,
   type FunnelMilestone,
+  type MetricDefinition,
 } from "@/services/jobs";
 import { cn } from "@/lib/utils";
 import { FUNNEL_NOUN, funnelSubtitle } from "./funnelCopy";
+import { MetricInfo } from "./MetricInfo";
 
 // ── Funnel-type config ─────────────────────────────────────────────────────
 
@@ -178,6 +180,7 @@ export function JobsFunnels({ builderSegment, builderJobType, only, period, peri
         periodLabel={periodLabel}
         lastMovementAt={data?.last_movement_at ?? null}
         milestones={data?.milestones ?? null}
+        definitions={data?.definitions}
         isError={isError}
         errorText={(error as { message?: string } | null)?.message ?? null}
         onRetry={() => refetch()}
@@ -236,6 +239,7 @@ function FunnelCard({
   periodLabel,
   lastMovementAt,
   milestones,
+  definitions,
   isError,
   errorText,
   onRetry,
@@ -251,6 +255,7 @@ function FunnelCard({
   /** Contacts and opportunities: conversion between milestones (D11), in
    *  place of a rate per row. Null for builders, whose rows carry one. */
   milestones: FunnelMilestone[] | null;
+  definitions?: Record<string, MetricDefinition>;
   isError: boolean;
   errorText: string | null;
   onRetry: () => void;
@@ -290,18 +295,18 @@ function FunnelCard({
       style={{ background: "var(--surface)" }}
     >
       {/* Header bar — soft gradient band. Clicking it collapses the stage rows,
-          so a week with no movement can be folded away. */}
+          so a week with no movement can be folded away. What every row counts
+          sits beside it (the builders' rows carry their own). */}
+      <div
+        className={cn("flex items-center", !collapsed && "border-b border-border-strong")}
+        style={{ background: "linear-gradient(135deg, #f4f3ff 0%, #fbfaff 70%)" }}
+      >
       <button
         type="button"
         onClick={() => setCollapsed((c) => !c)}
         aria-expanded={!collapsed}
         title={collapsed ? "Show the stages" : "Hide the stages"}
-        className={cn(
-          "flex w-full items-center gap-2 px-5 py-2.5 text-left",
-          // Only divide from something. Collapsed there are no rows below.
-          !collapsed && "border-b border-border-strong",
-        )}
-        style={{ background: "linear-gradient(135deg, #f4f3ff 0%, #fbfaff 70%)" }}
+        className="flex min-w-0 flex-1 items-center gap-2 py-2.5 pl-5 pr-2 text-left"
       >
         <span className="text-[#4f3fe0]">
           {collapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
@@ -331,6 +336,8 @@ function FunnelCard({
           </span>
         ) : null}
       </button>
+      {definitions?.count ? <MetricInfo definition={definitions.count} className="mr-4" /> : null}
+      </div>
 
       {/* Column headers — two groups over four numbers. Only meaningful next to
           the rows, so they collapse with them. */}
@@ -426,12 +433,14 @@ function FunnelCard({
             // The stage this row converts FROM, for the conversion tooltip.
             const prevLabel = i > 0 ? stages[i - 1].label : null;
 
+            const stageDef = definitions?.[stage.key];
             return (
               <div key={stage.key}>
+                <div className="flex items-center gap-1">
                 <button
                   type="button"
                   onClick={() => setExpanded(isExpanded ? null : stage.key)}
-                  className="group flex w-full items-center gap-3 rounded-lg px-1 py-1 text-left transition-colors hover:bg-surface-2/40"
+                  className="group flex min-w-0 flex-1 items-center gap-3 rounded-lg px-1 py-1 text-left transition-colors hover:bg-surface-2/40"
                   title={
                     isPeriod
                       ? `${stage.count} ${FUNNEL_NOUN[funnel]} entered ${stage.label} in this period — click for who, when and owner`
@@ -490,6 +499,10 @@ function FunnelCard({
                     ) : null}
                   </span>
                 </button>
+                {stageDef ? (
+                  <MetricInfo definition={stageDef} onViewRecords={() => setExpanded(stage.key)} />
+                ) : definitions ? <span className="w-5 shrink-0" /> : null}
+                </div>
 
                 {isExpanded ? (
                   <div className="mb-1 mt-1 overflow-hidden rounded-lg border border-border-strong">
@@ -530,9 +543,10 @@ function MilestoneStrip({ milestones, isPeriod, noun }: {
       <div className="mb-2 text-[9.5px] font-bold uppercase tracking-[.1em] text-ink-3">Conversion</div>
       <div className="grid gap-3 sm:grid-cols-2">
         {milestones.map((m) => (
-          <button key={m.key} type="button" title={explain(m)}
+          <div key={m.key} className="flex items-center gap-1">
+          <button type="button" title={explain(m)}
             onClick={() => setOpen(open === m.key ? null : m.key)}
-            className={cn("flex items-center justify-between gap-3 rounded-lg border bg-surface px-3.5 py-2.5 text-left transition-colors",
+            className={cn("flex min-w-0 flex-1 items-center justify-between gap-3 rounded-lg border bg-surface px-3.5 py-2.5 text-left transition-colors",
               open === m.key ? "border-accent" : "border-border-strong hover:bg-surface-2/60")}>
             <span className="min-w-0">
               <span className="block text-[11.5px] font-semibold text-ink-2">{m.from_label} → {m.to_label}</span>
@@ -547,6 +561,8 @@ function MilestoneStrip({ milestones, isPeriod, noun }: {
               {isPeriod ? <PtTrend current={m.rate} prior={m.rate_prev} /> : null}
             </span>
           </button>
+          <MetricInfo definition={m.definition} onViewRecords={() => setOpen(m.key)} />
+          </div>
         ))}
       </div>
       {opened ? <MilestoneRecords m={opened} /> : null}

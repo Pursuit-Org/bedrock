@@ -7,6 +7,7 @@ import { AlertTriangle, Loader2, Mail, Calendar } from "lucide-react";
 import { Drawer } from "@/components/ui/Drawer";
 // Same card wrapper as Targeting Mix — see the Panel note at the return below.
 import { Panel } from "@/pages/jobs/JobsOpportunitiesOverview";
+import { MetricInfo } from "./MetricInfo";
 import {
   useActivityTrends, useActivityTrendDetail, useVolumeTrends,
   type ActivityTrendBucket, type OutreachChannel, type OutreachScope, type OutreachRange,
@@ -220,8 +221,11 @@ export function ActivityTrends({ scope, owner, range }: {
               {VOLUME_SERIES.map((sr) => {
                 const t = volume.data?.targets?.[sr.key];
                 return (
-                  <Legend key={sr.key} color={sr.color}
-                    label={t != null ? `${sr.label} (target ${t})` : sr.label} />
+                  <span key={sr.key} className="inline-flex items-center gap-0.5">
+                    <Legend color={sr.color}
+                      label={t != null ? `${sr.label} (target ${t})` : sr.label} />
+                    <MetricInfo definition={volume.data?.definitions?.[sr.key]} />
+                  </span>
                 );
               })}
             </div>

@@ -144,7 +144,7 @@ def test_windowed_queries_read_the_dictionary_window():
                 assert sql.startswith("WITH w AS (") and "dd.window_from" in sql, m["key"]
 
 
-# ── define(): the words come only from the dictionary ────────────────────────
+# ── define(): the dictionary's words, else the draft waiting to be entered ───
 
 @pytest.fixture
 def dictionary():
@@ -153,11 +153,33 @@ def dictionary():
     jm.reset()
 
 
-def test_a_number_not_yet_in_the_dictionary_says_so(dictionary):
+def test_a_number_not_yet_in_the_dictionary_shows_its_draft_labelled(dictionary):
     d = jm.define("outreach", value=56)
-    assert d["status"] == "not_in_dictionary"
-    assert d["definition"] is None and d["value"] == 56
+    draft = _cut("employer_outreach", "outreach_sent")
+    assert d["status"] == "not_in_dictionary" and d["source"] == "repo_draft"
+    assert d["definition"] == draft["definition"] and d["label"] == draft["label"]
+    assert d["value"] == 56
     assert d["concept"] == "Employer outreach" and d["measure"] == "outreach_sent"
+
+
+@pytest.mark.parametrize("key", sorted(jm.MEASURES))
+def test_every_number_has_words_before_the_dictionary_saves(dictionary, key):
+    d = jm.define(key)
+    assert d["source"] == "repo_draft" and d["definition"] and d["time_anchor"], key
+
+
+def test_the_draft_carries_its_time_anchor_and_caveat(dictionary):
+    d = jm.define("activity_depth")
+    assert d["time_anchor"] == "last 4 weeks, as of now"
+    assert d["caveat"] == _cut("employer_outreach", "activity_depth")["caveat"]
+
+
+def test_ignored_filters_are_reported_beside_the_number(dictionary):
+    d = jm.define("committed_roles", filters={"segment": "L3 2026"},
+                  ignored={"segment": "Roles belong to employers, not cohorts"})
+    assert d["filters"] == {"segment": "L3 2026"}
+    assert d["ignored"] == {"segment": "Roles belong to employers, not cohorts"}
+    assert jm.define("committed_roles")["ignored"] == {}
 
 
 def test_a_number_reads_its_definition_and_status(dictionary):
@@ -168,6 +190,7 @@ def test_a_number_reads_its_definition_and_status(dictionary):
     d = jm.define("placed_ft", value=14, window=(start, end), filters={"segment": "all", "owner": "a@x"},
                   records={"endpoint": "/api/jobs/metrics/placements", "params": {}})
     assert d["definition"] == "measure words" and d["status"] == "confirmed"
+    assert d["source"] == "dictionary"
     assert d["metric_id"] == 171 and d["column"] == "full_time"
     assert d["window"] == {"from": "2026-09-21", "to": "2026-09-27", "tz": "America/New_York"}
     assert d["filters"] == {"owner": "a@x"}          # "all" is no filter
@@ -177,7 +200,9 @@ def test_a_concept_without_the_measure_falls_back_to_its_words(dictionary):
     jm.load([{"metric_id": 171, "name": "Employment", "status": "draft", "definition": "concept words",
               "cuts": []}])
     d = jm.define("placed_ft")
-    assert d["status"] == "measure_not_in_dictionary" and d["definition"] == "concept words"
+    # The measure's draft is more specific than the concept's words.
+    assert d["status"] == "measure_not_in_dictionary" and d["source"] == "repo_draft"
+    assert d["definition"] == _cut("employment", "placed")["definition"]
 
 
 def test_unknown_numbers_are_a_programming_error():

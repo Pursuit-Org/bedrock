@@ -9,7 +9,7 @@ from datetime import date
 
 import pytest
 
-from tests.jobs_fakes import FakeConn, make_jobs_client
+from tests.jobs_fakes import FakeConn, assert_records_match, make_jobs_client
 
 # Employment records, read through the placement rule (services/jobs_metrics).
 SECURED = "bedrock.jobs_employment_records()"
@@ -216,3 +216,16 @@ def test_builder_drawer_lists_every_record_and_derives_status_from_counted_ones(
     assert d["derived_status"] == "not_started"
     [pl] = d["placements"]
     assert pl["counted"] is False and "excluded" not in pl and pl["provenance"] == "Entered by hand"
+
+
+def test_every_outcome_number_opens_the_records_it_counts():
+    """PRO-105: "View records" opens exactly the builders each line counts. Gus
+    is placed but has left the role, so Placed and Still in the role differ."""
+    recs = RECORDS + [_placement(5, "Gus", engagement_stage="ended")]
+    committed = [{"id": "r1", "approx_salary": 85000, "account_name": "Acme", "title": "Eng"},
+                 {"id": "r2", "approx_salary": None, "account_name": "Beta", "title": "Eng"}]
+    c = make_jobs_client(_conn(recs, committed=committed))
+    for job_type in ("full_time", "contract", "all"):
+        d = c.get(f"/api/jobs/placements?job_type={job_type}").json()["data"]
+        assert d["placed_in_role"] != d["placed"] or job_type != "full_time"
+        assert_records_match(c, d["definitions"])
