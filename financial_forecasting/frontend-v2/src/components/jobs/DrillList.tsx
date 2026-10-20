@@ -9,7 +9,7 @@
  * Owner and Editor are always both shown. They routinely differ (Avni moving a
  * contact Kwame owns), and that difference is the point of opening the list.
  */
-import { useState, type ReactNode } from "react";
+import { Fragment, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { format } from "date-fns";
 
@@ -30,6 +30,9 @@ export interface DrillRow {
   /** Calls booked rows: the call or meeting behind the row (PRO-102). */
   activity_id?: string | null;
   call_kind?: "discovery" | "general" | null;
+  /** Converted rows: the opportunities the contact became (D15). Present, even
+   *  empty, only on lists where a link is expected, so its absence says so. */
+  opportunities?: { id: string; name: string | null }[];
 }
 
 const DRILL_PAGE = 5;
@@ -87,9 +90,24 @@ export function DrillList({ rows, total, incompleteNote, emptyLabel = "Nothing i
           </span>
           <span className="flex min-w-0 flex-1 items-center gap-2">
             {detailPrefix?.(r)}
-            <span className="min-w-0 flex-1 truncate text-[12px] text-ink-3" title={r.detail ?? undefined}>
-              {r.detail ?? "—"}
-            </span>
+            {r.opportunities ? (
+              <span className="min-w-0 flex-1 truncate text-[12px]">
+                {r.opportunities.length ? r.opportunities.map((o, j) => (
+                  <Fragment key={o.id}>
+                    {j > 0 ? <span className="text-ink-4">, </span> : null}
+                    <Link to={`/jobs/opportunities/${o.id}`} className="text-accent hover:underline">
+                      {o.name ?? "Opportunity"}
+                    </Link>
+                  </Fragment>
+                )) : <span className="text-ink-4" title="Converted before linking an opportunity was required (D15)">
+                  No opportunity linked
+                </span>}
+              </span>
+            ) : (
+              <span className="min-w-0 flex-1 truncate text-[12px] text-ink-3" title={r.detail ?? undefined}>
+                {r.detail ?? "—"}
+              </span>
+            )}
           </span>
           <span className="w-[88px] shrink-0 truncate text-[11px] text-ink-4" title={r.owner ?? "Nobody assigned"}>
             {r.owner ? nameOf(r.owner) : "—"}

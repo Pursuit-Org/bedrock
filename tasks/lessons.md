@@ -3,6 +3,26 @@
 > Updated after every correction or mistake. Patterns to avoid repeating.
 > Review at session start.
 
+## 2026-10-20 — PRO-106 Monday Outreach (2 lessons)
+
+1. **Copying into the served clone with `sed … > file` can leave Vite caching an empty module.** The redirect truncates the file first; Vite's watcher fired on the empty file, cached an empty transform under its `?t=` stamp, and the Pipeline tab went blank ("does not provide an export named jobsAccountPath") even after the file was whole again. **Rule**: write to a temp file and `mv` it into place, then confirm the served size (`curl -s localhost:4200/src/<file> | wc -c`) for every copied file before opening the browser.
+
+2. **Check whether the field a view groups by is actually filled before building on it.** The plan grouped "where outreach is stuck" by the pipeline (membership) owner, but only 7 of 117 Operation 35 memberships had one; 115 contacts had a contact owner. One count query before writing the endpoint would have shown it. **Rule**: before grouping or filtering a new view by a column, count how often it's filled on prod for the records the view covers.
+
+## 2026-10-20 — PRO-105 info icons (2 lessons)
+
+1. **Starting the WSL dev servers from Claude Code: `./dev.sh` dies with the session, and `bash -lc` finds Windows `npm`.** `wsl -e bash -lc "./dev.sh"` returned "started", but its `nohup` children were killed when that `wsl` call exited, so nothing listened on :8000 or :4200. Under `-lc` (no nvm) `npm` resolved to the Windows one through the inherited PATH and failed on the UNC path. **Rule**: run each server as its own long-lived background command, `wsl.exe -e bash -ic "cd … && exec .venv/bin/python main.py"` and `wsl.exe -e bash -ic "cd …/frontend-v2 && exec npx vite --host 0.0.0.0 --port 4200"`, then confirm with `curl` before opening the browser.
+
+2. **Two files whose names differ only in case clash on Windows.** `MetricInfo.tsx` and `metricInfo.ts` in one folder made `tsc` report the module as the same file. **Rule**: name a component's pure helper module differently, not by case (`metricInfoText.ts`).
+
+## 2026-10-14 — Mockup tab (1 lesson)
+
+1. **The dev server on :4200 runs from a WSL clone, not the Windows checkout.** I edited `C:\Users\XX\dev\bedrock` and called it done once :4200 answered, but the server (`vite`) runs in WSL from `/home/nqpursuit/dev/bedrock`. Nina loaded the tab and nothing had changed. A 200 from Vite proved nothing either: an unknown path also returns 200, the SPA fallback. **Rule**: before saying a frontend change is live, find the process on the port (`Get-NetTCPConnection -LocalPort 4200` → `wslrelay.exe` means WSL; then `readlink /proc/<vite pid>/cwd`) and confirm the served module contains the change (`curl localhost:4200/src/<file> | grep <new symbol>`). Edit in the clone that is actually served, or copy the files there when both clones are on the same branch and commit with a clean tree.
+
+## 2026-10-07 — PRO-98 follow-up (1 lesson)
+
+1. **When an answer covers more than one open question, apply it to all of them.** Nina answered "Keep everyone in the settings so that history does not shift." That decided both open items: keep history, AND keep everyone (Damon included) on the team. I applied it only to history and asked again about Damon, so she had to repeat herself. **Rule**: before re-asking, re-read the person's last answers against every open question; if the answer is plausibly already there, state the reading back ("I'm taking that as: Damon stays on") instead of asking.
+
 ## 2026-10-06 — PRO-98 outreach counting (2 lessons)
 
 1. **Never cut a row into one-per-key when exporting fixtures for logic that dedups.** The anonymized fixture kept the earliest event per (account, sender) as `ARRAY[company]`, so one email that reached two accounts became two rows with one identity. The rules' cross-mailbox dedup kept one and silently erased the other account's history: calendar week pinned 20 accounts activated where the data says 15. Caught only because a second, independent implementation (`outreach_counting.reference_sql()` run on production) disagreed. **Rule**: export whole events with every field the rules read; when a pinned number comes from a fixture, cross-check it once against a query on the real data before trusting the pin.

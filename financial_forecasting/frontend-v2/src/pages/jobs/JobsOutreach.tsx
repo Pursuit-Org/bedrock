@@ -10,23 +10,22 @@ import {
   useOutreachActivity,
   useOutreachDrill,
   useJobsStaff,
-  useJobsContacts,
-  useContactDetail,
-  useContactTagCatalog,
   JOBS_TEAM_PINNED,
   type OutreachGranularity,
   type OutreachScopeKind,
   type OutreachSummary,
   type OutreachDateRange,
+  type OutreachSplit,
   type CallDate,
   type ScorecardRow,
   type OutreachDrillContact,
   scorecardCount,
   useOwnerScorecard,
   type OwnerMetric,
+  type OwnerScorecard,
+  type OwnerScorecardRow,
   useTouchDepth,
   type TouchDepthBucket,
-  type JobContactWithDeal,
 } from "@/services/jobs";
 import { JobsFunnels } from "@/components/jobs/JobsFunnels";
 import { Panel } from "./JobsOpportunitiesOverview";
@@ -36,8 +35,10 @@ import { DrillList } from "@/components/jobs/DrillList";
 import { MetricInfo } from "@/components/jobs/MetricInfo";
 import { ListWhy } from "@/components/jobs/ListWhy";
 import { CallKindChip } from "@/components/jobs/CallKindPicker";
-import { PeriodBar, ScopeButtons, defaultPeriod } from "@/components/jobs/PeriodBar";
-import { relDay } from "@/lib/format";
+import { PeriodBar, ScopeButtons, defaultPeriod, targetGranularity } from "@/components/jobs/PeriodBar";
+import { OutreachStuck } from "@/components/jobs/OutreachStuck";
+import { TagCampaigns } from "@/components/jobs/TagCampaigns";
+import { followUpLine, vsTarget } from "@/components/jobs/outreachText";
 import { cn } from "@/lib/utils";
 
 /** Accounts shown in a scorecard drill before "Show more". */
@@ -45,8 +46,6 @@ const DRILL_PAGE = 25;
 /** Contact names listed on a collapsed account row before "+N". */
 const CONTACT_NAMES_SHOWN = 3;
 
-/** Touches shown before "Show n older" in a contact's inline touch log. */
-const TOUCH_LOG_CAP = 5;
 /** Contacts shown per touch-depth bucket before "Show n more". */
 const TOUCH_DRILL_PAGE = 5;
 /** Fallback only — the live list comes from useStageVocabulary(), so the picker
@@ -505,7 +504,7 @@ function TouchDepthPanel({ owner, nameOf, className }: {
       // meaningless without knowing over what window and for whom. "Right now"
       // is load-bearing: this panel does not follow the period bar.
       desc={depth
-        ? `All ${depth.total} contacts sitting in initial outreach right now, whoever owns them, by activity Pursuit sent them in the last ${depth.weeks} weeks`
+        ? `All ${depth.total} contacts sitting in initial outreach right now, whoever owns them, by activity Pursuit sent them in the last ${depth.weeks} weeks · the period and team buttons don't apply`
         : "Loading…"}
       className={className}
     >
@@ -618,296 +617,10 @@ function TouchDepthPanel({ owner, nameOf, className }: {
 }
 
 
-// ── Daily digest — Avni's morning Slack, computed ────────────────────────────
-// Monday of the current week (D8: weeks run Monday to Sunday).
-const startOfWeek = () => {
-  const d = new Date();
-  d.setHours(0, 0, 0, 0);
-  d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
-  return d;
-};
-
-/** Per-owner "this week": current assigned queue + contacts moved to Initial
- *  outreach this week — the same numbers as Jobs Home's progress strip,
- *  rolled up per person for the meeting. */
-const CELL_DRILL_CAP = 10;
-
-/** The contacts behind an Assigned-set / Contacted number: who, when they hit
- *  the stage, and how much outreach they've had. All of it is already on the
- *  contact rows the table counts, so this needs no extra fetch. */
-/** Connected staff as a count you hover rather than a list of names — five
- *  names inline pushed the table into a horizontal scroll, and the question is
- *  usually "does anyone here know them?" not "who exactly". */
-/** Connected staff, named on the row rather than hidden behind a tooltip.
- *
- *  This used to be a count with the names only in a `title`. Two problems: a
- *  native tooltip takes about a second and is easy to miss entirely, and
- *  `cursor-help` renders as a question-mark cursor — so hovering "3" gave you a
- *  question mark and nothing else. A popover wouldn't help either: the drill
- *  card clips with overflow-hidden, so an absolutely positioned one gets cut
- *  off mid-table. First names fit the column and need no interaction at all. */
-function StaffBadge({ names }: { names?: string[] }) {
-  const list = names ?? [];
-  if (list.length === 0) return <span className="text-[11px] text-ink-4">—</span>;
-  const head = list.slice(0, STAFF_INLINE_CAP);
-  const rest = list.slice(STAFF_INLINE_CAP);
-  return (
-    <span
-      title={`Connected staff: ${list.join(", ")}`}
-      className="inline-flex max-w-[190px] items-center gap-1 rounded-full border border-border-strong bg-surface-2 px-1.5 py-0.5 text-[10.5px] font-medium text-ink-2">
-      <Users size={10} className="shrink-0 text-ink-3" />
-      <span className="truncate">
-        {head.map(firstNameOf).join(", ")}
-        {rest.length > 0 ? ` +${rest.length}` : ""}
-      </span>
-    </span>
-  );
-}
-
-/** Names shown before falling back to "+n". Three first names fit the column;
- *  the title still carries the full list. */
-const STAFF_INLINE_CAP = 3;
-
-/** First name only — "Avni Nahar" → "Avni". Keeps several connections legible
- *  in a narrow cell; the full names are in the title. */
-function firstNameOf(name: string) {
-  return name.trim().split(/\s+/)[0] || name;
-}
-
-/** Campaign tags. Two inline, the rest behind a +n whose tooltip names them.
- *  `labelOf` turns the stored slug into the catalog label — the API returns
- *  "other_hiring_partner" and nobody should have to read that. */
-function TagChips({ tags, labelOf }: { tags?: string[]; labelOf: (slug: string) => string }) {
-  const list = (tags ?? []).map(labelOf);
-  if (list.length === 0) return <span className="text-[11px] text-ink-4">—</span>;
-  const head = list.slice(0, 2);
-  const rest = list.slice(2);
-  return (
-    <span className="flex flex-wrap items-center gap-1">
-      {head.map((t) => (
-        <span key={t} title={t}
-          className="max-w-[136px] truncate rounded bg-accent-soft px-1.5 py-0.5 text-[10.5px] font-medium text-accent">
-          {t}
-        </span>
-      ))}
-      {rest.length > 0 && (
-        <span title={rest.join(", ")} className="cursor-help text-[10.5px] font-medium text-ink-3">
-          +{rest.length}
-        </span>
-      )}
-    </span>
-  );
-}
-
-/** slug → catalog label, falling back to a de-slugged version so an
- *  uncatalogued tag still reads as words rather than snake_case. */
-function useTagLabels() {
-  const { data: catalog = [] } = useContactTagCatalog();
-  return useMemo(() => {
-    const m = new Map(catalog.map((t) => [t.slug, t.label]));
-    return (slug: string) =>
-      m.get(slug) ?? slug.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-  }, [catalog]);
-}
-
-/** What the touches actually were — the last conversation, in the row. Reads
- *  the contact-detail endpoint, which already returns subject + snippet per
- *  activity, so this needed no new API. */
-function TouchLog({ contactId }: { contactId: number }) {
-  const { data, isLoading, isError } = useContactDetail(contactId);
-  const [showAll, setShowAll] = useState(false);
-  if (isLoading) return <div className="flex items-center gap-2 text-[12px] text-ink-3"><Loader2 size={12} className="animate-spin" /> Loading the activity…</div>;
-  if (isError) return <div className="text-[12px] text-red">Couldn't load the activity.</div>;
-  const jobs = (data?.activity ?? []).filter((a) => a.is_jobs);
-  // Fall back to everything logged rather than claiming there are no touches:
-  // the count on the row comes from a different relevance rule than is_jobs.
-  const acts = jobs.length > 0 ? jobs : (data?.activity ?? []);
-  if (acts.length === 0) return <div className="text-[12px] text-ink-4">Nothing logged against this contact yet.</div>;
-  const shown = showAll ? acts : acts.slice(0, TOUCH_LOG_CAP);
-  return (
-    <div className="flex flex-col gap-1.5">
-      {shown.map((a) => {
-        const inbound = a.email_from ? !a.email_from.toLowerCase().includes("@pursuit.org") : false;
-        return (
-          <div key={a.id} className="flex items-start gap-2 text-[12px]">
-            <span className={cn("mt-[1px] w-[52px] shrink-0 rounded px-1 py-0.5 text-center text-[10px] font-semibold uppercase",
-              inbound ? "bg-green-soft text-green" : "bg-surface-2 text-ink-3")}>
-              {inbound ? "reply" : a.type}
-            </span>
-            <span className="min-w-0 flex-1">
-              <span className="font-medium text-ink">{a.subject || "(no subject)"}</span>
-              {a.email_snippet || a.description ? (
-                <span className="mt-0.5 block line-clamp-2 text-[11.5px] leading-snug text-ink-3">
-                  {a.email_snippet || a.description}
-                </span>
-              ) : null}
-            </span>
-            <span className="w-[112px] shrink-0 truncate text-right text-[11px] text-ink-4"
-              title={a.email_from || a.logged_by || undefined}>
-              {a.email_from || a.logged_by || "—"}
-            </span>
-            <span className="w-[54px] shrink-0 text-right text-[11px] tabular-nums text-ink-4">
-              {relDay(a.activity_date) ?? "—"}
-            </span>
-          </div>
-        );
-      })}
-      {!showAll && acts.length > TOUCH_LOG_CAP ? (
-        <button type="button" onClick={() => setShowAll(true)}
-          className="self-start text-[11.5px] font-medium text-accent hover:underline">
-          Show {acts.length - TOUCH_LOG_CAP} older
-        </button>
-      ) : null}
-    </div>
-  );
-}
-
-function ContactCellDrill({ label, contacts, whenLabel }: {
-  label: string;
-  contacts: JobContactWithDeal[];
-  whenLabel: string;
-}) {
-  const [showAll, setShowAll] = useState(false);
-  /** Which contact's touch log is expanded — one at a time. */
-  const [openTouches, setOpenTouches] = useState<number | null>(null);
-  const tagLabel = useTagLabels();
-  const sorted = useMemo(() => [...contacts].sort((a, b) =>
-    (b.membership_stage_entered_at ?? "").localeCompare(a.membership_stage_entered_at ?? "")),
-    [contacts]);
-  const shown = showAll ? sorted : sorted.slice(0, CELL_DRILL_CAP);
-  const extra = sorted.length - shown.length;
-
-  if (contacts.length === 0) return <div className="text-[12px] text-ink-4">No contacts.</div>;
-  return (
-    <div className="overflow-hidden rounded-lg border border-border-strong bg-surface">
-      <div className="flex items-center justify-between border-b border-border-strong px-3 py-1.5">
-        <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">{label}</span>
-        <span className="text-[11px] tabular-nums text-ink-4">{sorted.length}</span>
-      </div>
-      <table className="w-full text-[12px]">
-        <thead>
-          <tr className="bg-surface-2/60 text-left text-[10.5px] uppercase tracking-wider text-ink-3">
-            <th className="px-3 py-1.5 font-semibold">Contact</th>
-            <th className="px-2 py-1.5 font-semibold">Company</th>
-            <th className="px-2 py-1.5 font-semibold" title="Pursuit staff with a relationship to this contact">Staff</th>
-            <th className="px-2 py-1.5 font-semibold" title="Campaign tags on this contact">Tags</th>
-            <th className="px-2 py-1.5 font-semibold">{whenLabel}</th>
-            <th className="px-2 py-1.5 text-right font-semibold" title="Logged jobs activity — click a count to read it">Activity</th>
-            <th className="px-2 py-1.5 text-right font-semibold">Last activity</th>
-          </tr>
-        </thead>
-        <tbody>
-          {shown.map((c) => {
-            const touches = c.recent_activity_count ?? 0;
-            const isOpen = openTouches === c.contact_id;
-            return (
-              <Fragment key={c.contact_id}>
-                <tr className="border-t border-border-strong">
-                  <td className="px-3 py-1.5">
-                    <Link to={`/jobs/contacts/${c.contact_id}`} className="font-medium text-ink hover:text-accent hover:underline">
-                      {c.full_name ?? "—"}
-                    </Link>
-                  </td>
-                  <td className="max-w-[160px] truncate px-2 py-1.5 text-ink-2" title={c.current_company ?? undefined}>
-                    {c.current_company ?? "—"}
-                  </td>
-                  <td className="px-2 py-1.5"><StaffBadge names={c.connected_staff_names} /></td>
-                  <td className="px-2 py-1.5"><TagChips tags={c.crm_tags} labelOf={tagLabel} /></td>
-                  <td className="whitespace-nowrap px-2 py-1.5 text-ink-3">{relDay(c.membership_stage_entered_at) ?? "—"}</td>
-                  <td className="px-2 py-1.5 text-right tabular-nums">
-                    {touches > 0 ? (
-                      <button type="button"
-                        onClick={() => setOpenTouches(isOpen ? null : c.contact_id)}
-                        title={`Read the ${touches} logged ${touches === 1 ? "activity" : "activities"} on ${c.full_name ?? "this contact"}`}
-                        className={cn("font-semibold hover:underline", isOpen ? "text-accent" : "text-ink-2 hover:text-accent")}>
-                        {touches}
-                      </button>
-                    ) : <span className="text-ink-4">0</span>}
-                  </td>
-                  <td className="whitespace-nowrap px-2 py-1.5 text-right tabular-nums text-ink-4">{relDay(c.last_activity_at) ?? "—"}</td>
-                </tr>
-                {isOpen ? (
-                  <tr className="border-t border-border-strong bg-bg">
-                    <td colSpan={7} className="px-3 py-2"><TouchLog contactId={c.contact_id} /></td>
-                  </tr>
-                ) : null}
-              </Fragment>
-            );
-          })}
-        </tbody>
-      </table>
-      {extra > 0 ? (
-        <button type="button" onClick={() => setShowAll(true)}
-          className="w-full border-t border-border-strong px-3 py-1.5 text-[11.5px] font-medium text-accent hover:bg-surface-2">
-          Show all {sorted.length}
-        </button>
-      ) : null}
-    </div>
-  );
-}
-
-/** Contacts that entered `assigned` or `initial_outreach` during the period,
- *  bucketed by owner.
- *
- *  Lifted out of the old Outreach Detail table on 2026-09-21 so the Owner cut of
- *  the Activity Pipeline can carry the same numbers in a column (Kwame: fold the
- *  two together). Keeps the contact objects, not just tallies — the drill lists
- *  them, and deriving both from one pass means the number and the list can never
- *  disagree. */
-type AssignedContacted = { assigned: JobContactWithDeal[]; contacted: JobContactWithDeal[] };
-const EMPTY_AC: AssignedContacted = { assigned: [], contacted: [] };
-
-function useAssignedContacted(range?: OutreachDateRange) {
-  // Every page, not the first 1,000: the scorecard's per-owner and team counts
-  // are built from these rows (PRO-96).
-  const { data: assignedData } = useJobsContacts({ membership_stage: "assigned", all: true });
-  const { data: contactedData } = useJobsContacts({ membership_stage: "initial_outreach", all: true });
-  return useMemo(() => {
-    // Contacted is a period event, so it follows the page's Period picker (it
-    // used to hardcode the current Sun-week and ignore the selector entirely).
-    const pStart = range?.from ? new Date(`${range.from}T00:00:00`) : startOfWeek();
-    const pEnd = range?.to ? new Date(`${range.to}T23:59:59.999`) : new Date();
-    const by = new Map<string, AssignedContacted>();
-    const bucket = (email: string | null | undefined) => {
-      const k = (email ?? "").toLowerCase() || "(unowned)";
-      const r = by.get(k) ?? { assigned: [], contacted: [] };
-      by.set(k, r);
-      return r;
-    };
-    // BOTH sides are period-scoped, so the ratio compares like with like: of the
-    // contacts that entered this window, what share got reached. Assigned used
-    // to be the whole standing queue against a period-scoped numerator, which
-    // made the % drift down as the backlog grew rather than describing the week.
-    //
-    // `undated` is contacts whose stage entry has no timestamp, so no period can
-    // place them. Production currently has zero of these across every stage, but
-    // the count stays because nothing guarantees that stays true — a membership
-    // written without a stamp would otherwise vanish from the totals silently.
-    let undated = 0;
-    const inWindow = (c: JobContactWithDeal) => {
-      if (!c.membership_stage_entered_at) { undated++; return false; }
-      const t = new Date(c.membership_stage_entered_at);
-      return t >= pStart && t <= pEnd;
-    };
-    for (const c of assignedData?.data ?? []) if (inWindow(c)) bucket(c.owner_email).assigned.push(c);
-    for (const c of contactedData?.data ?? []) if (inWindow(c)) bucket(c.owner_email).contacted.push(c);
-    return { by, undated };
-  }, [assignedData, contactedData, range]);
-}
-
-/** Sum several owners' buckets into one, for the team line. Summed from the
- *  rows on screen rather than counted separately, so the total can never
- *  disagree with what is under it. */
-function sumAC(parts: AssignedContacted[]): AssignedContacted {
-  return {
-    assigned: parts.flatMap((p) => p.assigned),
-    contacted: parts.flatMap((p) => p.contacted),
-  };
-}
-
-/** The Activity Pipeline table, lifted out of ThisWeekBlock on 2026-09-16 so it
- *  can live on the Outbound Detail sub-tab. Overview shows the summary card in
- *  the space it used to occupy. */
+/** The Activity Pipeline table: what the scope did, by type of activity. The
+ *  per-person cut that used to share this card as a tab is its own section
+ *  now, higher up the page (PRO-106): who's behind is the Monday meeting's
+ *  first question, not a tab to find. */
 function ActivityPipelineBlock({ activityPipeline, granularity, scope, owner, range, nameOf, rangeLabel, lastRangeLabel, ownerLabel, ownerIsPerson }: {
   activityPipeline?: ScorecardRow[];
   granularity: OutreachGranularity;
@@ -925,290 +638,168 @@ function ActivityPipelineBlock({ activityPipeline, granularity, scope, owner, ra
   /** True when one person is selected, which is what earns the stronger chip. */
   ownerIsPerson?: boolean;
 }) {
-  // Two cuts of one table: by activity type, or by person. The tab lives in the
-  // card header rather than above the card, so it reads as "this table, viewed
-  // two ways" instead of two sections that happen to sit together.
-  const [cut, setCut] = useState<"activity" | "owner">("activity");
-  const tabs = (
-    <div className="inline-flex items-center rounded-md border border-border-strong bg-surface p-0.5">
-      {([["activity", "Activity"], ["owner", "Owner"]] as const).map(([k, label]) => (
-        <button key={k} type="button" onClick={() => setCut(k)}
-          title={k === "activity" ? "What the team did, by type of activity"
-                                  : "Who carried their number, by person"}
-          className={cn("rounded px-2 py-0.5 text-[12px] font-medium transition-colors",
-            cut === k ? "bg-accent-soft text-accent" : "text-ink-2 hover:bg-surface-2")}>
-          {label}
-        </button>
-      ))}
-    </div>
-  );
-
-  if (cut === "owner") {
-    // No Viewing chip here: this cut shows every owner at once, so the page's
-    // sender filter has nothing to say about it.
-    return <OwnerScorecardTable granularity={granularity} range={range}
-      rangeLabel={rangeLabel} nameOf={nameOf} leading={tabs} />;
-  }
   if (!activityPipeline || activityPipeline.length === 0) return null;
   return (
     <ScorecardTable title="Activity Pipeline" firstColHeader="Activity" rows={activityPipeline}
       idPrefix="act" drillKind="activity" granularity={granularity} scope={scope}
       owner={owner} range={range} nameOf={nameOf} rangeLabel={rangeLabel}
-      lastRangeLabel={lastRangeLabel} leading={tabs}
+      lastRangeLabel={lastRangeLabel}
       action={ownerLabel ? <ViewingChip label={ownerLabel} strong={ownerIsPerson} /> : undefined} />
   );
 }
 
-// ── Activity Pipeline · the owner cut ────────────────────────────────────────
+// ── Each person vs target ────────────────────────────────────────────────────
 
 /** A column-group cap: centred, ruled underneath. Mirrors Volume / Conversion
  *  on Contact Pipeline so the two tables read as one system. */
 const GROUP_CAP =
   "block border-b border-border-strong pb-0.5 text-center text-[9.5px] font-bold uppercase tracking-[.1em] text-ink-3";
 
-/** Target, actual and gap for one metric — three cells, used six times. */
 /** A metric the backend has not sent yet reads as an empty one rather than
- *  crashing the page. The Owner table grew an Opportunities section on
- *  2026-09-21; against a backend that predates it, `totals.opportunities` is
- *  undefined, and reading `.target` off that blanked the whole Outreach tab the
- *  last time this happened. Normalise where the value is USED, not where it is
+ *  crashing the page. Normalise where the value is USED, not where it is
  *  fetched — a cached row from React Query never passes through the queryFn. */
 const NO_METRIC: OwnerMetric = { target: null, this_period: 0, last_period: 0, delta: null };
 
-function OwnerCells({ m: raw, muted, onOpen, open }: {
+/** The four measures each person is held to, in funnel order (Kwame 2026-09-21,
+ *  PRO-106): outreach sent, discovery calls, accounts activated, conversions. */
+const PERSON_MEASURES = [
+  { key: "outreach", label: "Outreach", drill: "total_outreach_activity" },
+  { key: "calls", label: "Discovery calls", drill: "call_discovery" },
+  { key: "accounts", label: "Accounts activated", drill: "accounts_activated" },
+  { key: "opportunities", label: "Conversions", drill: "converted_opportunities" },
+] as const;
+type PersonMeasure = (typeof PERSON_MEASURES)[number]["key"];
+
+/** Actual against goal in one cell: the number in red or green (grey with no
+ *  goal), and "of N" under it. Clickable when it can open the records. */
+function VsTargetCell({ m: raw, muted, onOpen, open, sub }: {
   m: OwnerMetric | undefined; muted?: boolean;
-  /** Set to make the actual clickable — it opens the same account-grouped
-   *  drill the Activity tab uses, filtered to this owner and metric. */
-  onOpen?: () => void;
-  open?: boolean;
+  onOpen?: () => void; open?: boolean;
+  /** A line under the goal, such as the new / follow-up split. */
+  sub?: React.ReactNode;
 }) {
   const m = raw ?? NO_METRIC;
   const n = scorecardCount(m.this_period);
+  const state = vsTarget(n, m.target);
+  const tone = state === "met" ? "text-green" : state === "short" ? "text-red" : muted ? "text-ink-3" : "text-ink";
+  const num = onOpen ? (
+    <button type="button" onClick={onOpen} title="Show the accounts and contacts behind this"
+      className={cn("rounded px-1.5 py-0.5 font-semibold tabular-nums transition-colors hover:bg-surface-2",
+        open ? "bg-accent-soft text-accent" : tone)}>
+      {n}
+    </button>
+  ) : <span className={cn("font-semibold tabular-nums", tone)}>{n}</span>;
   return (
-    <>
-      <td className="px-3 py-2.5 text-center tabular-nums text-ink-3">{m.target ?? "—"}</td>
-      <td className="px-3 py-2.5 text-center">
-        {onOpen ? (
-          <button
-            type="button"
-            onClick={onOpen}
-            title="Show the accounts and contacts behind this"
-            className={cn("rounded px-1.5 py-0.5 font-semibold tabular-nums transition-colors hover:bg-surface-2",
-              open ? "bg-accent-soft text-accent" : muted ? "text-ink-3" : "text-ink")}
-          >
-            {n}
-          </button>
-        ) : (
-          <span className={cn("font-semibold tabular-nums", muted ? "text-ink-3" : "text-ink")}>{n}</span>
-        )}
-      </td>
-      <td className="px-3 py-2.5 text-center"><DeltaChip actual={n} target={m.target} /></td>
-    </>
-  );
-}
-
-/** Contacted out of assigned, with a short bar under it — the fourth Outreach
- *  column (Kwame 2026-09-21).
- *
- *  Reaching the contacts you were handed is the other half of outreach volume,
- *  and it used to sit in its own table below this one saying the same thing
- *  about the same people. Both numbers stay clickable, so the assigned list and
- *  the contacted list are exactly where they were, one row closer. The bar is
- *  deliberately short: it is a glance at the ratio, not a second reading of it. */
-function ContactedCell({ r, muted, onOpen, openWhich }: {
-  r: AssignedContacted;
-  muted?: boolean;
-  onOpen?: (which: "assigned" | "contacted") => void;
-  openWhich?: "assigned" | "contacted" | null;
-}) {
-  const total = r.assigned.length + r.contacted.length;
-  const pct = total ? Math.round((100 * r.contacted.length) / total) : 0;
-  const num = (which: "assigned" | "contacted", n: number, cls: string, title: string) =>
-    onOpen && n > 0 ? (
-      <button type="button" onClick={() => onOpen(which)} title={title}
-        className={cn("rounded px-0.5 tabular-nums hover:underline",
-          openWhich === which ? "text-accent" : cls)}>
-        {n}
-      </button>
-    ) : <span className={cn("tabular-nums", cls)}>{n}</span>;
-  return (
-    <td className="px-3 py-2.5 text-center">
-      <div className="inline-flex flex-col items-center gap-1">
-        <span className="text-[13px] font-semibold">
-          {num("contacted", r.contacted.length, muted || !r.contacted.length ? "text-ink-3" : "text-green",
-            `List the ${r.contacted.length} of ${total} moved to initial outreach in this period`)}
-          <span className="font-normal text-ink-4"> / </span>
-          {num("assigned", total, muted ? "text-ink-3" : "text-ink-2",
-            `List the ${total} contacts that entered this period`)}
-          <span className="ml-1 text-[10.5px] font-normal text-ink-4">({pct}%)</span>
-        </span>
-        <div className="h-1 w-16 overflow-hidden rounded-full border border-border-strong bg-surface-2"
-          title={`${r.contacted.length} of ${total} moved to initial outreach in this period`}>
-          <div className="h-full rounded-full bg-green transition-all" style={{ width: `${pct}%` }} />
-        </div>
+    <td className="border-l border-border px-3 py-2.5 text-center">
+      <div className="flex items-center justify-center gap-1.5">
+        {num}
+        <DeltaChip actual={n} target={m.target} />
       </div>
+      <div className="mt-0.5 text-[10.5px] text-ink-4">
+        {m.target == null ? "no target" : `of ${m.target}`}
+      </div>
+      {sub ? <div className="mt-0.5 text-[10.5px] text-ink-4">{sub}</div> : null}
     </td>
   );
 }
 
-/** The Activity Pipeline, cut by person instead of by activity type.
+/** Each Jobs team member against their goals, for the period (PRO-106).
  *
- *  Every owner who carries a target gets a row, whether or not they sent
- *  anything: a quiet week from someone with a goal is precisely what this table
- *  is for, and a list built from activity would leave them out. Rows arrive
- *  sorted by shortfall, so the conversation you need to have is at the top.
- *
- *  Not clickable. The Activity tab already drills every number behind these,
- *  and per-owner drilling is one sender-filter click away in the period bar. */
-function OwnerScorecardTable({ granularity, range, rangeLabel, nameOf, leading, action }: {
+ *  Every owner who carries a target gets a row, whether or not they did
+ *  anything: a quiet week from someone with a goal is precisely what this
+ *  table is for, and a list built from activity would leave them out. Red is
+ *  short of goal, green is on or over it, grey is no goal set. The goals come
+ *  from Settings › Targets, scaled to the period. The team line leads. */
+function PersonVsTargetTable({ granularity, range, rangeLabel, nameOf }: {
   granularity: OutreachGranularity;
   range?: OutreachDateRange;
   rangeLabel?: string;
   nameOf: (email: string) => string;
-  leading?: React.ReactNode;
-  action?: React.ReactNode;
 }) {
   const { data, isLoading } = useOwnerScorecard(granularity, range);
-  // "<owner>:<metric>", where metric is an activity key or one of the two
-  // pseudo-keys the Contacted / assigned column opens.
+  // "<owner>:<measure>": the one cell whose records are open.
   const [open, setOpen] = useState<string | null>(null);
   const rows = data?.rows ?? [];
-  // Contacts handed over and reached in the same window, for the fourth
-  // Outreach column. Keyed lowercase; a row with no entries reads as 0 / 0.
-  const { by: acByOwner, undated } = useAssignedContacted(range);
-  const acOf = (email: string) => acByOwner.get(email.toLowerCase()) ?? EMPTY_AC;
-  // The team line sums the rows on screen, never the whole map: a contact owned
-  // by somebody who carries no target has no row to sit in, so counting it in
-  // the total would make the column not add up.
-  const acTotal = useMemo(() => sumAC(rows.map((r) => acOf(r.owner))),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [rows, acByOwner]);
+  const metricOf = (r: OwnerScorecardRow | OwnerScorecard["totals"], k: PersonMeasure): OwnerMetric | undefined =>
+    (r as Partial<Record<PersonMeasure, OwnerMetric>>)[k];
+  const splitOf = (m: { split?: OutreachSplit }) =>
+    m.split ? (
+      <span title="New outreach vs follow-ups on an opportunity open when the send went out">
+        {m.split.new} new · {m.split.follow_up} follow-up{m.split.follow_up === 1 ? "" : "s"}
+      </span>
+    ) : null;
   return (
     <div className="flex flex-col overflow-hidden rounded-xl border border-border-strong bg-surface">
-      <CardHead title="Activity Pipeline" leading={leading} action={action} />
+      <CardHead title="Each person vs target"
+        leading={<MetricInfo definition={data?.definitions?.target} />}
+        action={
+          <span className="flex flex-wrap items-center gap-3 text-[11.5px]">
+            <span className="text-ink-4">Every Jobs team member · the Sender filter doesn't apply</span>
+            <Link to="/settings?tab=targets&targets=jobs" className="font-medium text-accent hover:underline">
+              Targets: Settings › Targets
+            </Link>
+          </span>
+        } />
       <table className="w-full border-collapse">
         <thead>
-          {/* Two header rows: the group spans say which three columns belong to
-              which metric, so "Target" appearing twice is never ambiguous. */}
           <tr className="bg-surface-2 text-[10.5px] uppercase tracking-wide text-ink-3">
-            <th className="py-2 pl-3.5 pr-2 text-left font-bold align-bottom" rowSpan={2}>Owner</th>
-            {/* Same treatment as Volume / Conversion on Contact Pipeline: a
-                centred cap with a rule under it, so the three columns beneath
-                read as belonging to it. */}
-            <th className="border-l border-border px-2 pt-2 pb-1" colSpan={4}>
-              <span className={GROUP_CAP}>Outreach</span>
-              <MetricInfo definition={data?.definitions?.outreach} className="ml-1 align-middle" />
+            <th className="py-2 pl-3.5 pr-2 text-left font-bold">
+              Person
+              <span className="mt-0.5 block text-[9.5px] font-normal normal-case tracking-normal text-ink-4">
+                {rangeLabel ?? ""}
+              </span>
             </th>
-            <th className="border-l border-border px-2 pt-2 pb-1" colSpan={3}>
-              <span className={GROUP_CAP}>Discovery Calls</span>
-              <MetricInfo definition={data?.definitions?.calls} className="ml-1 align-middle" />
-            </th>
-            {/* Converting is a team outcome, so this group carries a target on
-                the team line only — every owner cell reads a dash by design
-                (Kwame 2026-09-21). */}
-            <th className="border-l border-border px-2 pt-2 pb-1" colSpan={3}>
-              <span className={GROUP_CAP}>Opportunities</span>
-              <MetricInfo definition={data?.definitions?.opportunities} className="ml-1 align-middle" />
-            </th>
-          </tr>
-          <tr className="bg-surface-2 text-[10px] uppercase tracking-wide text-ink-4">
-            {/* The window sits under "This period", the only column it qualifies.
-                It was under Owner, where it read as a property of the person. */}
-            {[0, 1, 2].map((i) => (
-              <Fragment key={i}>
-                <th className="border-l border-border px-3 pb-2 text-center font-semibold align-bottom">Target</th>
-                <th className="px-3 pb-2 text-center font-semibold align-bottom">
-                  <span className="block">This period</span>
-                  <span className="mt-0.5 block h-3.5 text-[9.5px] font-normal normal-case tracking-normal text-ink-4">
-                    {rangeLabel ?? ""}
-                  </span>
-                </th>
-                <th className="px-3 pb-2 text-center font-semibold align-bottom">Δ to target</th>
-                {/* Outreach carries a fourth: contacts reached out of contacts
-                    handed over, for the same window. Calls has no equivalent. */}
-                {i === 0 && (
-                  <th className="px-3 pb-2 text-center font-semibold align-bottom"
-                    title="Of the contacts that entered this owner's queue in this period, how many moved to initial outreach. A stage count: 'contacted' means activity (PRO-100). Click either number for the list.">
-                    Moved to outreach / assigned
-                    <MetricInfo definition={data?.definitions?.contacted} className="ml-0.5 align-middle" />
-                  </th>
-                )}
-              </Fragment>
+            {PERSON_MEASURES.map((pm) => (
+              <th key={pm.key} className="border-l border-border px-2 py-2">
+                <span className={GROUP_CAP}>{pm.label}</span>
+                <MetricInfo definition={data?.definitions?.[pm.key]} className="ml-1 align-middle" />
+              </th>
             ))}
           </tr>
         </thead>
         <tbody>
           {isLoading && (
-            <tr><td colSpan={11} className="px-4 py-6 text-center text-[12.5px] text-ink-3">
+            <tr><td colSpan={5} className="px-4 py-6 text-center text-[12.5px] text-ink-3">
               <Loader2 size={13} className="mr-1.5 inline animate-spin" />Loading…
             </td></tr>
           )}
           {!isLoading && rows.length === 0 && (
-            <tr><td colSpan={11} className="px-4 py-6 text-center text-[12.5px] text-ink-4">
-              Nobody carries a target yet.
+            <tr><td colSpan={5} className="px-4 py-6 text-center text-[12.5px] text-ink-4">
+              Nobody is on the Jobs team yet.
             </td></tr>
           )}
-          {/* The team line leads (Kwame 2026-09-21): you read the group result
-              first, then who made it up. Greyed and ruled off so it reads as a
-              total rather than a fourth person. It is summed from the rows
-              below, never counted separately, so it cannot disagree with them. */}
           {!isLoading && rows.length > 0 && data && (
-            <tr className="border-b-2 border-border-strong bg-surface-2/60 text-[13.5px] font-semibold">
+            <tr className="border-b-2 border-border-strong bg-surface-2/60 text-[13.5px]">
               <td className="px-3.5 py-2.5 text-left text-[11px] font-bold uppercase tracking-wider text-ink-3">
-                All jobs team
+                All Jobs team
               </td>
-              <OwnerCells m={data.totals.outreach} muted />
-              <ContactedCell r={acTotal} muted />
-              <OwnerCells m={data.totals.calls} muted />
-              <OwnerCells m={data.totals.opportunities} muted />
+              {PERSON_MEASURES.map((pm) => (
+                <VsTargetCell key={pm.key} m={metricOf(data.totals, pm.key)} muted
+                  sub={pm.key === "outreach" ? splitOf(data.totals.outreach) : undefined} />
+              ))}
             </tr>
           )}
           {rows.map((r) => {
-            const openKey = (metric: string) => `${r.owner}:${metric}`;
-            const isOpen = (metric: string) => open === openKey(metric);
-            const toggle = (metric: string) => setOpen(isOpen(metric) ? null : openKey(metric));
-            const openMetric = open?.startsWith(`${r.owner}:`) ? open.split(":").pop()! : null;
+            const openMeasure = open?.startsWith(`${r.owner}:`) ? open.slice(r.owner.length + 1) : null;
+            const drill = PERSON_MEASURES.find((pm) => pm.key === openMeasure)?.drill;
             return (
               <Fragment key={r.owner}>
-                <tr className={cn("text-[13.5px]", !openMetric && "border-b border-border")}>
+                <tr className={cn("text-[13.5px]", !openMeasure && "border-b border-border")}>
                   <td className="px-3.5 py-2.5 text-left font-medium text-ink" title={r.owner}>{nameOf(r.owner)}</td>
-                  <OwnerCells m={r.outreach} open={isOpen("total_outreach_activity")}
-                    onOpen={() => toggle("total_outreach_activity")} />
-                  <ContactedCell r={acOf(r.owner)} onOpen={toggle}
-                    openWhich={openMetric === "assigned" || openMetric === "contacted" ? openMetric : null} />
-                  <OwnerCells m={r.calls} open={isOpen("call_discovery")}
-                    onOpen={() => toggle("call_discovery")} />
-                  <OwnerCells m={r.opportunities} open={isOpen("converted_opportunities")}
-                    onOpen={() => toggle("converted_opportunities")} />
+                  {PERSON_MEASURES.map((pm) => (
+                    <VsTargetCell key={pm.key} m={metricOf(r, pm.key)} open={openMeasure === pm.key}
+                      onOpen={() => setOpen(openMeasure === pm.key ? null : `${r.owner}:${pm.key}`)}
+                      sub={pm.key === "outreach" ? splitOf(r.outreach) : undefined} />
+                  ))}
                 </tr>
-                {openMetric && (
+                {drill && (
                   <tr>
-                    <td colSpan={11} className="border-b border-border bg-bg p-0">
-                      {openMetric === "assigned" || openMetric === "contacted" ? (
-                        // The contact list the Outreach Detail table used to
-                        // open, unchanged — same rows, same columns, now under
-                        // the number it belongs to.
-                        <div className="px-3 py-2">
-                          <ContactCellDrill
-                            label={openMetric === "assigned"
-                              ? `${nameOf(r.owner)} · entered this period`
-                              : `${nameOf(r.owner)} · moved to outreach this period`}
-                            // "Assigned" is the queue PLUS those already
-                            // contacted, so its drill lists both — otherwise
-                            // clicking 26 shows 23.
-                            contacts={openMetric === "assigned"
-                              ? [...acOf(r.owner).assigned, ...acOf(r.owner).contacted]
-                              : acOf(r.owner).contacted}
-                            whenLabel={openMetric === "assigned" ? "Entered stage" : "Moved"}
-                          />
-                        </div>
-                      ) : (
-                        // Same drill as the Activity tab: account first, its
-                        // contacts under it, five at a time, each expanding to
-                        // the actual touches. Scoped to this person by `owner`.
-                        <RowDrill kind="activity" rowKey={openMetric} granularity={granularity}
-                          scope="pursuit" owner={r.owner} range={range} nameOf={nameOf} />
-                      )}
+                    <td colSpan={5} className="border-b border-border bg-bg p-0">
+                      {/* Same drill as the Activity Pipeline: account first, its
+                          contacts under it, each expanding to the activity.
+                          Scoped to this person by `owner`. */}
+                      <RowDrill kind="activity" rowKey={drill} granularity={granularity}
+                        scope="pursuit" owner={r.owner} range={range} nameOf={nameOf} />
                     </td>
                   </tr>
                 )}
@@ -1217,28 +808,20 @@ function OwnerScorecardTable({ granularity, range, rangeLabel, nameOf, leading, 
           })}
         </tbody>
       </table>
-      {/* Contacted / assigned counts entries INTO a stage during the period.
-          Contacts with no stage stamp can't be placed in time, so they're named
-          here rather than quietly missing from the column. */}
-      {/* The opportunities column does not add up, on purpose. Saying so beats a
-          reader discovering it (Kwame's team line counts every conversion; only
+      {/* The conversions column does not add up, on purpose. Saying so beats a
+          reader discovering it (the team line counts every conversion; only
           about a quarter of them resolve to a person at all). */}
       {(data?.unattributed?.opportunities ?? 0) > 0 && (
         <div className="border-t border-border-strong bg-surface-2 px-4 py-2 text-[11px] text-ink-4"
           title="A conversion is attributed through the membership owner, the account owner, then whoever did the first outreach. Most carry none of the three.">
-          {data!.unattributed!.opportunities} of the {scorecardCount(data!.totals.opportunities?.this_period)} opportunities
+          {data!.unattributed!.opportunities} of the {scorecardCount(data!.totals.opportunities?.this_period)} conversions
           {" "}this period carry no owner, so they sit in the team line only
-        </div>
-      )}
-      {undated > 0 && (
-        <div className="border-t border-border-strong bg-surface-2 px-4 py-2 text-[11px] text-ink-4"
-          title="These contacts have no stage timestamp, so no period can claim them. The stage-history grant fills most of them in.">
-          {undated} contact{undated === 1 ? "" : "s"} without a stage date, not counted under Moved to outreach / assigned
         </div>
       )}
     </div>
   );
 }
+
 
 /** Whose numbers are on screen, as a chip rather than a sentence.
  *
@@ -1290,13 +873,12 @@ function OutboundActivityFeed({ granularity, scope, owner, range }: {
 const SUMMARY_CARDS: {
   key: keyof OutreachSummary["drills"];
   label: string;
-  tone: "ink" | "green";
   empty: string;
 }[] = [
-  { key: "accounts_activated", label: "Accounts activated", tone: "ink", empty: "No account had its first activity in this period." },
-  { key: "outreach_activity", label: "Outreach Activity", tone: "ink", empty: "Nothing sent in this period." },
-  { key: "calls_booked", label: "Calls booked", tone: "ink", empty: "No calls or meetings in this period." },
-  { key: "converted", label: "Converted to oppty", tone: "green", empty: "No conversions in this period." },
+  { key: "accounts_activated", label: "Accounts activated", empty: "No account had its first activity in this period." },
+  { key: "outreach_activity", label: "Outreach Activity", empty: "Nothing sent in this period." },
+  { key: "calls_booked", label: "Calls booked", empty: "No calls or meetings in this period." },
+  { key: "converted", label: "Converted to oppty", empty: "No conversions in this period." },
 ];
 
 /** What Calls booked counts, said on screen (PRO-102: Kwame asked whether it
@@ -1352,19 +934,36 @@ function OutreachSummaryCards({ granularity, scope, owner, range }: {
               {isLoading ? (
                 <div className="mt-2 h-8 w-16 animate-pulse rounded bg-surface-2" />
               ) : (
-                <div className={cn("mt-1.5 text-[30px] font-bold leading-none tabular-nums",
-                  c.tone === "green" ? "text-green" : "text-ink")}>
-                  {data?.[c.key] ?? 0}
+                <div className="mt-1.5 flex items-baseline gap-2">
+                  {/* Red under goal, green on or over it, ink with no goal (PRO-106). */}
+                  <span className={cn("text-[30px] font-bold leading-none tabular-nums", {
+                    met: "text-green", short: "text-red", none: "text-ink",
+                  }[vsTarget(data?.[c.key] ?? 0, data?.targets?.[c.key])])}>
+                    {data?.[c.key] ?? 0}
+                  </span>
+                  <DeltaChip actual={data?.[c.key] ?? 0} target={data?.targets?.[c.key]} />
                 </div>
               )}
-              {c.key === "calls_booked" && !isLoading ? (
+              {!isLoading ? (
                 <div className="mt-1.5 text-[11px] text-ink-4">
-                  {data?.calls_discovery ?? 0} discovery · by day {callDate}
+                  {data?.targets?.[c.key] != null ? `Goal ${data.targets[c.key]}` : "No goal set"}
+                  {c.key === "calls_booked" ? ` · ${data?.calls_discovery ?? 0} discovery · by day ${callDate}` : ""}
+                </div>
+              ) : null}
+              {c.key === "outreach_activity" && data?.outreach_split ? (
+                <div className="mt-0.5 text-[11px] text-ink-4"
+                  title="A follow-up reached someone on an opportunity that was open when it went out">
+                  {followUpLine(data.outreach_split)}
                 </div>
               ) : null}
             </button>
             <MetricInfo definition={data?.definitions?.[c.key]} onViewRecords={() => setOpen(c.key)}
                         className="absolute right-3 top-3" />
+            {/* Beside the card's button, not in it, like the one above. */}
+            {c.key === "outreach_activity" && data?.outreach_split ? (
+              <MetricInfo definition={data.definitions?.outreach_follow_up} label="Follow-ups on open opportunities"
+                          className="absolute bottom-3 right-3" />
+            ) : null}
             </div>
           );
         })}
@@ -1402,21 +1001,24 @@ function OutreachSummaryCards({ granularity, scope, owner, range }: {
   );
 }
 
-/** Hygiene: the accountability strip + the assigned-but-no-prospect table. */
-/** Accounts a jobs-team member owns with nobody flagged into the prospect list.
- *  Shared by the Requiring Attention card (count) and its detail table, so the
- *  headline number and the rows can never disagree. */
-
+/** The Monday Outreach view (PRO-106): who's behind and what to do next.
+ *
+ *  Top to bottom: the period, the four headline numbers against the team's
+ *  goal, each person against theirs, where outreach is stuck, the contacts
+ *  funnel, the Activity Pipeline, campaign progress, then activity depth and
+ *  the activity log under the fold. Every filter applies to every widget, or
+ *  the widget says it doesn't. */
 export function JobsOutreach() {
-  // Bucket size follows the period preset; scope is the three-way sender filter.
-  const [granularity, setGranularity] = useState<OutreachGranularity>("week");
   const [scope, setScope] = useState<OutreachScopeKind>("team");
   const [owner, setOwner] = useState<string>("");   // "" = whole scope
-  // Defaults to the completed week (see defaultPeriod) rather than the one in
-  // progress — on a Monday the current week is two days of nothing.
+  // Defaults to the completed week (D8): the Monday meeting reviews the week
+  // that just ended. This week so far and any range are one click away.
   const [from, setFrom] = useState(() => defaultPeriod()[0]);
   const [to, setTo] = useState(() => defaultPeriod()[1]);
   const range: OutreachDateRange | undefined = from && to ? { from, to } : undefined;
+  // How targets are spread, read off the dates rather than the last preset
+  // clicked: a range picked by hand is measured against its own share.
+  const granularity = targetGranularity(from, to);
 
   const { data: staff = [] } = useJobsStaff();
   const nameOf = (email: string) => staff.find((s) => s.email.toLowerCase() === email.toLowerCase())?.name || email.split("@")[0];
@@ -1430,8 +1032,6 @@ export function JobsOutreach() {
     const [lf, lt] = priorDayRange(from, to);
     return fmtDayRange(lf, lt);
   }, [from, to]);
-
-
 
   // The picker splits into pinned and everyone else. Pinned keeps JOBS_TEAM_PINNED's
   // order (it is a priority list, not an alphabet); the rest sorts by name.
@@ -1451,31 +1051,18 @@ export function JobsOutreach() {
     ? nameOf(owner)
     : { team: "All jobs team", staff: "Other staff", pursuit: "Everyone at Pursuit" }[scope];
 
-  // One page. The Outbound Detail sub-tab is gone (Kwame 2026-09-21): Targeting
-  // Mix was cut, Requiring attention moved to Jobs Home, and a tab strip with
-  // one tab left in it is chrome that costs a row and answers nothing.
-
   return (
     <div className="flex flex-col gap-4 pt-3">
-      {/* ── ZONE 1 · the selected period ──────────────────────────────────
-             This bar governs everything down to the Current state boundary,
-             and nothing below it. It used to float above the whole page, which
-             is what made it look like it filtered Requiring Attention too. ── */}
-      {/* No container of its own. Pipeline and Campaigns put the period bar
-          straight on the page, and a box around half of one tab read as a
-          stray outline rather than as a zone boundary. The bar itself is the
-          same PeriodBar component on all three. */}
       <section aria-label="In period" className="flex flex-col gap-4">
         <PeriodBar
           from={from} to={to}
           onChange={(f, t) => { setFrom(f); setTo(t); }}
-          granularity={granularity} onGranularityChange={setGranularity}
+          showWeekSoFar
         >
           <ScopeButtons value={scope} onChange={(v) => { setScope(v); setOwner(""); }} />
           {/* One row, as it was. The jobs team is grouped to the top of the list
-              rather than broken out into buttons: four names you reach without
-              scrolling is the whole benefit, and a button strip spent a row of
-              the card to save the same click (Kwame 2026-09-21). */}
+              rather than broken out into buttons: names you reach without
+              scrolling is the whole benefit (Kwame 2026-09-21). */}
           <div className="flex items-center gap-2">
           <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">Sender</span>
           <select value={owner} onChange={(e) => setOwner(e.target.value)}
@@ -1498,50 +1085,49 @@ export function JobsOutreach() {
           </div>
         </PeriodBar>
 
-          {/* Topline first: the four numbers are the answer to "how did the
-              period go", and they belong directly under the period that scopes
-              them. The Contacts Pipeline is the breakdown behind them, so it
-              reads better as the next level of detail than as a preamble. */}
-          <OutreachSummaryCards granularity={granularity} scope={scope}
-            owner={owner || undefined} range={range} />
+        {/* Topline first: how the period went against the team's goal. */}
+        <OutreachSummaryCards granularity={granularity} scope={scope}
+          owner={owner || undefined} range={range} />
 
-          <JobsFunnels only="prospects" period={range} periodLabel={rangeLabel || undefined} />
+        {/* Then who's behind (Dave: action-oriented, not reporting-only). */}
+        <PersonVsTargetTable granularity={granularity} range={range}
+          rangeLabel={rangeLabel || undefined} nameOf={nameOf} />
 
-          {isError && <div className="rounded-lg border border-red-soft bg-red-soft px-4 py-3 text-[13px] text-red">Couldn't load the scorecard. Try again in a moment.</div>}
-          {isLoading && !sc && (
-            <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-              {[0, 1].map((i) => <div key={i} className="h-64 animate-pulse rounded-xl border border-border-strong bg-surface-2" />)}
-            </div>
-          )}
+        {/* And where to push: contacts assigned and not yet reached, by why. */}
+        <OutreachStuck scope={scope} owner={owner || undefined} nameOf={nameOf} />
 
-          <ActivityPipelineBlock activityPipeline={sc?.activity_pipeline}
-            granularity={granularity} scope={scope} owner={owner || undefined}
-            range={range} nameOf={nameOf} rangeLabel={rangeLabel || undefined}
-            lastRangeLabel={lastRangeLabel || undefined}
-            ownerLabel={senderLabel} ownerIsPerson={!!owner} />
-          {/* Outreach Detail is gone (Kwame 2026-09-21): its two numbers and its
-              two contact lists are now the Contacted / assigned column on the
-              Activity Pipeline's Owner cut, next to the outreach volume they
-              qualify, instead of repeating the same owners in a second table. */}
+        <JobsFunnels only="prospects" period={range} periodLabel={rangeLabel || undefined}
+          owner={owner || undefined} />
 
-          {/* Volume over time, and whether that volume is follow-up or one-and-
-              done. They answer the same question from two sides, so they read
-              better side by side than a screen apart. Stacks below lg, where
-              half width would squeeze the trend line into noise.
-              Note the asymmetry, which is deliberate and stated in Touch
-              Depth's own subtitle: the trend follows the period bar, Touch
-              Depth is always "right now". */}
-          <div className="grid grid-cols-1 items-stretch gap-4 lg:grid-cols-2">
-            <ActivityTrends scope={scope} owner={owner || undefined} range={range} />
-            <TouchDepthPanel owner={owner || undefined} nameOf={nameOf} className="h-full" />
-          </div>
+        {isError && <div className="rounded-lg border border-red-soft bg-red-soft px-4 py-3 text-[13px] text-red">Couldn't load the scorecard. Try again in a moment.</div>}
+        {isLoading && !sc && (
+          <div className="h-64 animate-pulse rounded-xl border border-border-strong bg-surface-2" />
+        )}
 
-          <OutboundActivityFeed granularity={granularity} scope={scope}
-            owner={owner || undefined} range={range} />
+        <ActivityPipelineBlock activityPipeline={sc?.activity_pipeline}
+          granularity={granularity} scope={scope} owner={owner || undefined}
+          range={range} nameOf={nameOf} rangeLabel={rangeLabel || undefined}
+          lastRangeLabel={lastRangeLabel || undefined}
+          ownerLabel={senderLabel} ownerIsPerson={!!owner} />
+
+        {/* The current campaign (D10), past ones a click away. A campaign is
+            read across all its weeks, so neither the period nor the Sender
+            applies, and the panel says so. */}
+        <Panel title="Campaign progress"
+          desc="All time · the period and the Sender filter don't apply · past campaigns are behind Show past campaigns">
+          <TagCampaigns />
+        </Panel>
+
+        {/* Under the fold: volume over time and how deep the follow-up goes,
+            side by side, then the activity log itself. */}
+        <div className="grid grid-cols-1 items-stretch gap-4 lg:grid-cols-2">
+          <ActivityTrends scope={scope} owner={owner || undefined} range={range} />
+          <TouchDepthPanel owner={owner || undefined} nameOf={nameOf} className="h-full" />
+        </div>
+
+        <OutboundActivityFeed granularity={granularity} scope={scope}
+          owner={owner || undefined} range={range} />
       </section>
-
     </div>
   );
 }
-
-

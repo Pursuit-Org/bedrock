@@ -109,6 +109,12 @@ def test_measures_the_overview_retired_say_so():
         assert not any(m.concept == concept and m.cut == cut for m in jm.MEASURES.values())
 
 
+def test_the_outreach_column_pro_106_replaced_says_so():
+    cut = _cut("employer_outreach", "moved_to_outreach")
+    assert "Retired from the Outreach tab by PRO-106" in cut["caveat"]
+    assert not any(m.cut == "moved_to_outreach" for m in jm.MEASURES.values())
+
+
 def test_stalled_queries_use_the_d3_limits_and_skip_comments():
     p = "employer_pipeline"
     assert "interval '4 weeks'" in _cut(p, "stalled_opportunities")["sql_query"]
@@ -416,8 +422,10 @@ def test_every_single_value_number_on_the_tabs_is_checked():
     not_single = {"contacts_by_stage", "contacts_entering_stage", "opportunities_by_stage",
                   "opportunities_entering_stage", "time_in_stage", "activity_depth",
                   "campaign_contacts", "campaign_accounts", "campaign_reached", "campaign_conversion",
-                  "activity_target", "jobs_projection", "contacted", "moved_to_outreach",
-                  "won_open_tasks"}
+                  "activity_target", "jobs_projection", "contacted",
+                  "won_open_tasks",
+                  # One row per campaign and owner (PRO-106).
+                  "stuck_assigned", "stuck_reached", "stuck_call_booked"}
     assert set(jm.MEASURES) - checked == not_single
 
 

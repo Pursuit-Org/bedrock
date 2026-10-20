@@ -111,11 +111,14 @@ MEASURES: dict[str, Measure] = {
     "call_discovery":         Measure("employer_outreach", "call_discovery"),
     "call_general":           Measure("employer_outreach", "call_general"),
     "contacted":              Measure("employer_outreach", "contacted"),
-    "moved_to_outreach":      Measure("employer_outreach", "moved_to_outreach"),
     "activity_depth":         Measure("employer_outreach", "activity_depth"),
     "campaign_contacts":      Measure("employer_outreach", "campaign_contacts"),
     "campaign_accounts":      Measure("employer_outreach", "campaign_accounts"),
     "campaign_reached":       Measure("employer_outreach", "campaign_reached"),
+    "outreach_follow_up":     Measure("employer_outreach", "outreach_follow_up", "follow_up"),
+    "stuck_assigned":         Measure("employer_outreach", "outreach_stuck", "assigned"),
+    "stuck_reached":          Measure("employer_outreach", "outreach_stuck", "reached"),
+    "stuck_call_booked":      Measure("employer_outreach", "outreach_stuck", "call_booked"),
     # Pipeline
     "contacts_by_stage":      Measure("employer_pipeline", "contacts_by_stage"),
     "contacts_entering_stage": Measure("employer_pipeline", "contacts_entering_stage"),
@@ -608,6 +611,58 @@ def activity_scope_ctes(*, opps: str = "TRUE", accounts: Optional[str] = None,
   WHERE os.k <> '' AND {on_key('os.k')}
 )""")
     return ",\n".join(ctes)
+
+
+# When an opportunity stopped being live. closed_at, else, for a closed stage
+# with no stamp (26 of 42 Closed Won on 10/20), its first move to a closed
+# stage, else its creation: never live, as the open set reads it.
+OPPORTUNITY_CLOSED_AT_SQL = """coalesce(o.closed_at, CASE WHEN o.stage LIKE 'closed%' THEN coalesce(
+    (SELECT min(h.changed_at) FROM bedrock.jobs_stage_history h
+      WHERE h.opportunity_id = o.id AND h.to_stage LIKE 'closed%'), o.created_at) END)"""
+
+
+def open_opportunity_contacts_sql(p_start: str = "$1", p_end: str = "$2") -> str:
+    """CTEs ending in `live`: (contact_id, created_at, closed_at) for every
+    contact on an opportunity that was open at some point in [start, end).
+    Who is on an opportunity is the PRO-101 rule (activity_scope_ctes): its
+    linked contacts, or everyone at its account when none is linked. The
+    follow-up split (outreach_counting.is_follow_up) reads it (PRO-106)."""
+    s, e = f"({p_start})::timestamptz", f"({p_end})::timestamptz"
+    scope = activity_scope_ctes(
+        opps=f"o.id IN (SELECT id FROM opp_live WHERE closed_at IS NULL OR closed_at >= {s})")
+    return f"""opp_live AS (
+  SELECT o.id, o.created_at, {OPPORTUNITY_CLOSED_AT_SQL} AS closed_at
+  FROM bedrock.jobs_opportunity o
+  WHERE o.deleted_at IS NULL AND o.created_at < {e}
+),
+{scope},
+live AS (
+  SELECT DISTINCT oc.contact_id, l.created_at, l.closed_at
+  FROM opp_contacts oc JOIN opp_live l ON l.id = oc.opp_id
+)"""
+
+
+def dictionary_follow_up_sql() -> str:
+    """The reference query for the follow-up split: the Jobs team's sends in
+    the dictionary window, new vs follow-ups on an opportunity open when they
+    went out."""
+    from services.outreach_counting import counted_once_ctes
+    win = "ts >= (SELECT start_at FROM w) AND ts < (SELECT end_at FROM w)"
+    return (
+        f"WITH w AS (SELECT {DD_START} AS start_at, {DD_END} AS end_at, {DD_TEAM} AS team),\n"
+        f"{counted_once_ctes(p_start='(SELECT start_at FROM w)', p_end='(SELECT end_at FROM w)', p_senders='(SELECT team FROM w)', team_history=True)},\n"
+        f"{open_opportunity_contacts_sql('(SELECT start_at FROM w)', '(SELECT end_at FROM w)')},\n"
+        "sends AS (\n"
+        "  SELECT once.*, EXISTS (\n"
+        "    SELECT 1 FROM live l\n"
+        "    WHERE l.contact_id = ANY(once.contact_ids || once.contact_id)\n"
+        "      AND l.created_at <= once.ts AND (l.closed_at IS NULL OR once.ts < l.closed_at)) AS follow_up\n"
+        f"  FROM once WHERE kind IN ('email', 'linkedin', 'text', 'intro') AND {win}\n"
+        ")\n"
+        "SELECT count(*) FILTER (WHERE follow_up) AS follow_up,\n"
+        "       count(*) FILTER (WHERE NOT follow_up) AS new\n"
+        "FROM sends"
+    )
 
 
 def dictionary_open_opportunities_sql(open_opp_stages: Iterable[str]) -> str:
@@ -1505,6 +1560,134 @@ def campaign_reference_sql() -> str:
         "FROM camp p LEFT JOIN reached r ON r.cid = p.contact_id LEFT JOIN cur USING (campaign)\n"
         "GROUP BY p.campaign, cur.current\n"
         "ORDER BY cur.current DESC NULLS LAST, p.campaign"
+    )
+
+
+# ── Where outreach is stuck (PRO-106) ────────────────────────────────────────
+# For each Jobs owner, of the contacts assigned to them: how many have been
+# reached out to, how many got as far as a booked call, and why the rest
+# haven't been reached. Reached out is "contacted" (PRO-100: any activity from
+# anyone at Pursuit, ever), so a contact reads the same here as on Campaigns.
+# Call booked is the stage: at or past Call Booked, now or ever. A call nobody
+# reached out for (a meeting Nick set up) counts there and is not stuck.
+#
+# Whose contact it is: the membership's owner, else the contact's. On 10/20
+# only 7 of 117 Operation 35 memberships named an owner, while 115 contacts
+# did (Devika 66, Avni 28, Damon 12), so the membership alone would have put
+# nearly everyone under "Unowned".
+#
+# Nothing records why a contact is waiting (D6 is open, 10/20), so the reason
+# is read from what is recorded, first match wins: a pending intro request,
+# Revisit with its date, Not a fit with its reason. Everything else says so.
+
+STUCK_REASONS: tuple = (
+    ("intro", "Waiting on an intro"),
+    ("revisit", "Revisit later"),
+    ("not_a_fit", "Not a fit"),
+    ("none", "No reason recorded"),
+)
+
+_BOOKED_STAGES = "('call_booked', 'converted_to_opportunity')"
+
+# Per membership: what the stuck view reads beyond its campaign row. `$1` the
+# contact ids.
+STUCK_DETAIL_SQL = f"""
+    SELECT m.contact_id, lower(coalesce(m.owner_email, c.owner_email)) AS owner,
+           m.assigned_at, m.revisit_date, m.not_a_fit_reason,
+           (m.stage IN {_BOOKED_STAGES} OR m.call_booked_at IS NOT NULL OR m.converted_at IS NOT NULL
+            OR EXISTS (SELECT 1 FROM bedrock.jobs_membership_stage_history h
+                        WHERE h.contact_id = m.contact_id AND h.to_stage IN {_BOOKED_STAGES})) AS call_booked,
+           (SELECT coalesce(sm.display_name, sm.email, 'a colleague')
+              FROM bedrock.intro_request ir
+              LEFT JOIN bedrock.staff_user_id_map sm ON sm.staff_user_id = ir.connector_staff_id
+             WHERE ir.contact_id = m.contact_id AND ir.status = 'pending'
+             ORDER BY ir.created_at DESC LIMIT 1) AS intro_from
+    FROM bedrock.jobs_contact_membership m
+    JOIN public.contacts c ON c.contact_id = m.contact_id
+    WHERE m.contact_id = ANY($1::int[])
+"""
+
+# Every Jobs contact, in the shape of CAMPAIGN_CONTACTS_SQL's pipeline rows:
+# the stuck view's "All Jobs contacts" choice. Staff left out, as there.
+JOBS_CONTACTS_SQL = f"""
+    SELECT 'all' AS campaign, c.contact_id, c.full_name, c.current_company AS company,
+           nullif(lower(btrim(coalesce(c.current_company, ''))), '') AS account_key,
+           true AS in_pipeline, {canon_membership_sql('m.stage')} AS stage, m.owner_email,
+           coalesce(m.converted_at, m.first_outreach_at, m.assigned_at) AS stage_entered_at
+    FROM bedrock.jobs_contact_membership m
+    JOIN public.contacts c ON c.contact_id = m.contact_id
+    WHERE NOT {internal_contact_sql('c')}
+"""
+
+
+def stuck_reason(r: Mapping, reached: bool) -> Optional[dict]:
+    """Why a contact hasn't been reached, or None when they have (or a call
+    got booked anyway). {kind, detail}: kind is a STUCK_REASONS key."""
+    if reached or r["call_booked"]:
+        return None
+    if r.get("intro_from"):
+        return {"kind": "intro", "detail": r["intro_from"]}
+    if r["stage"] == "revisit":
+        d = r.get("revisit_date")
+        return {"kind": "revisit", "detail": d.isoformat() if d else None}
+    if r["stage"] == "not_a_fit":
+        return {"kind": "not_a_fit", "detail": r.get("not_a_fit_reason")}
+    return {"kind": "none", "detail": None}
+
+
+def stuck_numbers(rows: Iterable[Mapping], reached: Iterable[int]) -> dict:
+    """owner (None = unowned) -> {assigned, reached, call_booked,
+    not_reached, reasons: {kind: n}} over the stuck view's contacts (campaign
+    rows joined to STUCK_DETAIL_SQL). `reached` is activity_by_contact's keys."""
+    hit = set(reached)
+    out: dict = {}
+    for r in rows:
+        o = out.setdefault(r["owner"], {
+            "assigned": 0, "reached": 0, "call_booked": 0, "not_reached": 0,
+            "reasons": {k: 0 for k, _ in STUCK_REASONS}})
+        o["assigned"] += 1
+        o["reached"] += int(r["contact_id"] in hit)
+        o["call_booked"] += int(bool(r["call_booked"]))
+        why = stuck_reason(r, r["contact_id"] in hit)
+        if why:
+            o["not_reached"] += 1
+            o["reasons"][why["kind"]] += 1
+    return out
+
+
+def stuck_reference_sql() -> str:
+    """The reference query for Where outreach is stuck: per campaign and Jobs
+    owner, the contacts assigned, reached out to (anyone at Pursuit, ever, by
+    outreach_counting's rules), at or past Call Booked, and the rest by why.
+    The SQL twin of stuck_numbers."""
+    from services.outreach_counting import counted_once_ctes
+    slugs = "(SELECT array_agg(slug) FROM bedrock.contact_tag_catalog WHERE active)"
+    contacts = CAMPAIGN_CONTACTS_SQL.replace("$1::text[]", f"{slugs}::text[]")
+    detail = STUCK_DETAIL_SQL.replace("WHERE m.contact_id = ANY($1::int[])", "")
+    return (
+        f"WITH w AS (SELECT {DD_PURSUIT} AS senders),\n"
+        f"{counted_once_ctes(p_start='NULL', p_end='NULL', p_senders='(SELECT senders FROM w)')},\n"
+        "reached AS (\n"
+        "  SELECT DISTINCT x.cid FROM once o, unnest(o.contact_ids || o.contact_id) x(cid)\n"
+        "  WHERE o.kind <> 'call_booked' AND x.cid IS NOT NULL\n"
+        "),\n"
+        f"camp AS ({contacts}),\n"
+        f"detail AS ({detail}),\n"
+        "s AS (\n"
+        "  SELECT p.campaign, p.stage, r.cid IS NOT NULL AS hit, d.*\n"
+        "  FROM camp p JOIN detail d USING (contact_id) LEFT JOIN reached r ON r.cid = p.contact_id\n"
+        "  WHERE p.in_pipeline\n"
+        ")\n"
+        "SELECT campaign, owner,\n"
+        "       count(*) AS assigned,\n"
+        "       count(*) FILTER (WHERE hit) AS reached,\n"
+        "       count(*) FILTER (WHERE call_booked) AS call_booked,\n"
+        "       count(*) FILTER (WHERE NOT hit AND NOT call_booked AND intro_from IS NOT NULL) AS waiting_on_intro,\n"
+        "       count(*) FILTER (WHERE NOT hit AND NOT call_booked AND intro_from IS NULL AND stage = 'revisit') AS revisit,\n"
+        "       count(*) FILTER (WHERE NOT hit AND NOT call_booked AND intro_from IS NULL AND stage = 'not_a_fit') AS not_a_fit,\n"
+        "       count(*) FILTER (WHERE NOT hit AND NOT call_booked AND intro_from IS NULL\n"
+        "                          AND stage NOT IN ('revisit', 'not_a_fit')) AS no_reason\n"
+        "FROM s GROUP BY campaign, owner ORDER BY campaign, owner NULLS LAST"
     )
 
 

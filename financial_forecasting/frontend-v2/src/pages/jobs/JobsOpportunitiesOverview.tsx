@@ -42,7 +42,6 @@ import {
   type OppActivityEvent,
   type OppHeatmap,
   type OppActiveSetMember,
-  type OutreachGranularity,
 } from "@/services/jobs";
 import { useAllJobsTasks } from "@/services/jobsTasks";
 import { useSessionState } from "@/lib/useSessionState";
@@ -176,7 +175,6 @@ export function JobsOpportunitiesOverview() {
   // it is always populated; priority can legitimately be empty.
   const [heatAxis, setHeatAxis] = useState<HeatAxis>("stage");
   // Bucket size travels with the period preset, same as Outreach.
-  const [granularity, setGranularity] = useState<OutreachGranularity>("week");
   // Free-form window: both bounds inclusive, no snapping. The presets and the
   // two date inputs set it.
   // The current week so far: Pipeline is the Thursday meeting's view (D8).
@@ -269,7 +267,6 @@ export function JobsOpportunitiesOverview() {
       <PeriodBar
         from={fmtDateInput(weekStart)} to={fmtDateInput(weekEnd)}
         onChange={(f, t) => setRange({ start: parseDateInput(f), end: parseDateInput(t) })}
-        granularity={granularity} onGranularityChange={setGranularity}
         clampToToday
       >
         <div className="flex items-center gap-2">

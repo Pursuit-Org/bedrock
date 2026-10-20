@@ -25,9 +25,13 @@ import {
   type OpenRole,
   type CompanyBuilderRole,
   STAGE_LABELS,
+  MEMBERSHIP_STAGE_LABELS,
+  useStaffNameResolver,
   type JobStage,
   type DealType,
   type JobsStaff,
+  type LinkedOpportunity,
+  type MembershipStage,
 } from "@/services/jobs";
 
 export const DEAL_TYPE_OPTIONS = (["ft", "pt_contract", "capstone", "volunteer", "workshop", "pilot"] as DealType[])
@@ -152,6 +156,49 @@ export interface ContactRowData {
   current_title?: string | null;
   contact_stage: string | null;
   linkedin_url: string | null;
+  /** Where their outreach stands, when the list carries it (an account's
+   *  contacts, D9 / PRO-106). Absent fields show nothing. */
+  membership_stage?: MembershipStage | null;
+  owner?: string | null;
+  activity_count?: number;
+  last_activity_at?: string | null;
+  opportunities?: LinkedOpportunity[];
+}
+
+/** Stages where no activity means outreach hasn't started, and says so in red. */
+const AWAITING_OUTREACH: (MembershipStage | null | undefined)[] = ["assigned", "initial_outreach"];
+
+/** "3 activities · last Oct 14", or, with none, "Not reached yet" while the
+ *  contact waits on outreach and "No activity recorded" past it (a converted
+ *  contact whose calls were never logged). Activity is anything anyone at
+ *  Pursuit sent them, ever (Contacted, PRO-100). */
+function activityLine(n: number, last: string | null | undefined, stage: MembershipStage | null | undefined): string {
+  if (!n) return AWAITING_OUTREACH.includes(stage) ? "Not reached yet" : "No activity recorded";
+  const when = last ? new Date(last).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : null;
+  return `${n} ${n === 1 ? "activity" : "activities"}${when ? ` · last ${when}` : ""}`;
+}
+
+/** A contact's outreach status, on one line under their name (D9). */
+function OutreachStatusLine({ contact }: { contact: ContactRowData }) {
+  const nameOf = useStaffNameResolver();
+  if (contact.membership_stage === undefined) return null;
+  return (
+    <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-ink-4">
+      <span className="rounded-full bg-surface-2 px-1.5 py-0.5 font-medium text-ink-3">
+        {contact.membership_stage ? MEMBERSHIP_STAGE_LABELS[contact.membership_stage] ?? contact.membership_stage
+          : "Not in the Jobs pipeline"}
+      </span>
+      <span>{contact.owner ? nameOf(contact.owner) : "Unowned"}</span>
+      <span className={!contact.activity_count && AWAITING_OUTREACH.includes(contact.membership_stage) ? "text-red" : undefined}>
+        {activityLine(contact.activity_count ?? 0, contact.last_activity_at, contact.membership_stage)}
+      </span>
+      {(contact.opportunities ?? []).map((o) => (
+        <Link key={o.id} to={jobsOpportunityPath(o.id)} state={jobsRef} className="text-accent hover:underline">
+          {o.name ?? "Opportunity"}
+        </Link>
+      ))}
+    </div>
+  );
 }
 
 /** Inline-editable contact row (stage) with name link to detail. */
@@ -159,7 +206,10 @@ export function JobsContactRow({ contact, source }: { contact: ContactRowData; s
   return (
     <div className="flex items-center gap-2.5 rounded-md border border-border-strong/70 bg-surface px-3 py-2 hover:border-accent/50">
       <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-accent-soft text-[10px] font-bold leading-none text-accent-ink">{initials(contact.full_name)}</span>
-      <Link to={jobsContactPath(contact.contact_id)} state={jobsRef} className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-ink hover:text-accent">{contact.full_name || "—"}</Link>
+      <div className="min-w-0 flex-1">
+        <Link to={jobsContactPath(contact.contact_id)} state={jobsRef} className="block truncate text-[12.5px] font-medium text-ink hover:text-accent">{contact.full_name || "—"}</Link>
+        <OutreachStatusLine contact={contact} />
+      </div>
       {contact.current_title && <span className="hidden max-w-[35%] truncate text-[12px] text-ink-3 sm:block">{contact.current_title}</span>}
       <SourceBadge source={source} />
       {contact.linkedin_url

@@ -25,6 +25,7 @@ USER_PIPELINE_TARGETS lived here until 2026-09-21, alongside the User Pipeline
 table it fed. Both went when nothing rendered that table any more.
 """
 
+from datetime import date, timedelta
 from typing import Optional
 
 from services import jobs_targets_store as store
@@ -142,6 +143,40 @@ def activity_pipeline_target(metric: str, granularity: str,
     if owner:
         return OWNER_ACTIVITY_TARGETS.get(owner.strip().lower(), {}).get(metric, {}).get(granularity)
     return ACTIVITY_PIPELINE_TARGETS.get(metric, {}).get(granularity)
+
+
+def weekdays_in(start: date, end: date) -> int:
+    """Monday-to-Friday days in [start, end), both New York dates."""
+    days = (end - start).days
+    if days <= 0:
+        return 0
+    full, rest = divmod(days, 7)
+    return full * WORK_DAYS_PER_WEEK + sum(
+        1 for i in range(rest) if (start + timedelta(days=full * 7 + i)).weekday() < 5)
+
+
+def weekly_target(metric: str, owner: Optional[str] = None) -> Optional[int]:
+    """The weekly goal as set, unspread. With `owner`, the personal one."""
+    if store.available():
+        return store.owner_weekly(owner, metric) if owner else store.team_weekly(metric)
+    if owner:
+        return OWNER_ACTIVITY_TARGETS.get(owner.strip().lower(), {}).get(metric, {}).get("week")
+    return ACTIVITY_PIPELINE_TARGETS.get(metric, {}).get("week")
+
+
+def target_for_window(metric: str, start: date, end: date,
+                      owner: Optional[str] = None) -> Optional[int]:
+    """The goal for any [start, end) range (PRO-106): the weekly one, a fifth
+    of it per weekday. A full Monday-Sunday week is the weekly goal, "this week
+    so far" on a Wednesday is three fifths of it, and a custom 14 days is two
+    weeks' worth, so a range picked by hand is no longer measured against one
+    week's number. Like the daily spread, a share that rounds below 1 reports
+    no target rather than a goal of 0, unless the weekly goal itself is 0."""
+    weekly = weekly_target(metric, owner)
+    if weekly is None:
+        return None
+    n = round(weekly * weekdays_in(start, end) / WORK_DAYS_PER_WEEK)
+    return n if (weekly == 0 or n >= 1) else None
 
 
 def scorecard_owners() -> list[str]:

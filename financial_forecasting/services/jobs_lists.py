@@ -124,6 +124,21 @@ LISTS: dict[str, dict] = {
         "notes": ["Activity is anything anyone at Pursuit sent them in the last 4 weeks, calls and "
                   "meetings included. It doesn't follow the period or the team and staff buttons."],
     },
+    # routes/jobs.py outreach_stuck (PRO-106).
+    "outreach_stuck": {
+        "title": "Not reached yet",
+        "who": ("Contacts in the campaign picked (or every Jobs contact) that nobody at Pursuit has reached "
+                "with any activity, and that never got to Call Booked. Owner is the pipeline owner, else "
+                "the contact's owner. The team and staff buttons, and a Sender picked above, narrow it by owner."),
+        "order": "Waiting longest first, by when the contact was assigned.",
+        "cap": "None: every contact not reached is listed.",
+        "dates": ["Assigned is when the contact was assigned to the Jobs pipeline.",
+                  "Days waiting count from then to today."],
+        "notes": ["The reason is read from what's recorded, first match wins: a pending intro request, "
+                  "Revisit (with its date), Not a fit (with its reason). Nothing else records why a contact "
+                  "is waiting yet (D6), so the rest say \"No reason recorded\".",
+                  "It covers every week of the campaign, so it doesn't follow the period."],
+    },
     # Pipeline tab ────────────────────────────────────────────────────────────
     # JobsOpportunitiesOverview OwnerWalkthrough over list_opportunities + needs_attention.
     "opportunities_set": {

@@ -6,8 +6,9 @@ import type { OutreachGranularity } from "@/services/jobs";
 /**
  * The period control shared by Outreach and Pipeline, so the two pages read
  * identically: stepper + range label on the left, the two date inputs, then the
- * Daily / Weekly / Monthly presets. Page-specific controls (sender, scope,
- * owner, deal type) go in `children` on the right.
+ * Daily / Last week / Monthly presets (and This week so far, where the page asks
+ * for it). Page-specific controls (sender, scope, owner, deal type) go in
+ * `children` on the right.
  *
  * Works in local YYYY-MM-DD strings throughout — `toISOString()` would shift the
  * day for anyone west of UTC.
@@ -45,12 +46,16 @@ function mondayOf(d: Date): Date {
 /** Each preset sets the window AND the bucket size together — a month of dates
  *  shown in weekly buckets reads as a bug.
  *
- *  Weekly is the last full calendar week, Monday to Sunday (D8), so on Wed 7 Oct
- *  it reads 28 Sep – 4 Oct. It used to be the seven days ending yesterday, which
- *  disagreed with every Monday-to-Sunday number on the backend. Daily and
- *  Monthly end yesterday. */
+ *  Last week is the last full calendar week, Monday to Sunday (D8), so on Wed 7
+ *  Oct it reads 28 Sep – 4 Oct. It used to be the seven days ending yesterday,
+ *  which disagreed with every Monday-to-Sunday number on the backend. Daily and
+ *  Monthly end yesterday. This week so far is Monday to today (PRO-106): the
+ *  only preset with an in-progress period, so only pages that ask show it. */
+export type PresetGranularity = Exclude<OutreachGranularity, "range">;
+export type PeriodPresetKey = PresetGranularity | "week_so_far";
+
 export const PERIOD_PRESETS: {
-  key: OutreachGranularity;
+  key: PeriodPresetKey;
   label: string;
   title: string;
   get: () => [string, string];
@@ -63,7 +68,7 @@ export const PERIOD_PRESETS: {
   },
   {
     key: "week",
-    label: "Weekly",
+    label: "Last week",
     title: "The last full week, Monday to Sunday",
     get: () => {
       const s = mondayOf(new Date());
@@ -71,6 +76,12 @@ export const PERIOD_PRESETS: {
       const e = new Date(s); e.setDate(s.getDate() + 6);
       return [iso(s), iso(e)];
     },
+  },
+  {
+    key: "week_so_far",
+    label: "This week so far",
+    title: "Monday of this week to today",
+    get: () => [iso(mondayOf(new Date())), iso(new Date())],
   },
   {
     key: "month",
@@ -87,8 +98,29 @@ export const PERIOD_PRESETS: {
 /** The week each meeting reviews (D8): Monday's meeting looks at the last full
  *  week (Outreach), Thursday's at the current week so far (Pipeline). */
 export function defaultPeriod(meeting: "monday" | "thursday" = "monday"): [string, string] {
-  if (meeting === "monday") return PERIOD_PRESETS[1].get();
-  return [iso(mondayOf(new Date())), iso(new Date())];
+  return preset(meeting === "monday" ? "week" : "week_so_far").get();
+}
+
+function preset(key: PeriodPresetKey) {
+  return PERIOD_PRESETS.find((p) => p.key === key)!;
+}
+
+/** A preset's window, today. */
+export function presetRange(key: PeriodPresetKey): [string, string] {
+  return preset(key).get();
+}
+
+/** What the backend should spread targets by for this window: a preset's own
+ *  granularity when the dates are exactly that preset's, else `range`, a fifth
+ *  of the weekly goal per weekday (PRO-106). Read off the dates, never off the
+ *  last button clicked, so a range typed by hand after clicking Last week is no
+ *  longer measured against one week's goal. */
+export function targetGranularity(from: string, to: string): OutreachGranularity {
+  for (const key of ["day", "week", "month"] as const) {
+    const [pf, pt] = preset(key).get();
+    if (from === pf && to === pt) return key;
+  }
+  return "range";
 }
 
 function fmt(v: string) {
@@ -96,13 +128,15 @@ function fmt(v: string) {
 }
 
 export function PeriodBar({
-  from, to, onChange, granularity, onGranularityChange, clampToToday = false, children,
+  from, to, onChange, onGranularityChange, showWeekSoFar = false, clampToToday = false, children,
 }: {
   from: string;
   to: string;
   onChange: (from: string, to: string) => void;
-  granularity: OutreachGranularity;
-  onGranularityChange: (g: OutreachGranularity) => void;
+  /** Told the bucket size when Daily, Last week or Monthly is clicked. */
+  onGranularityChange?: (g: PresetGranularity) => void;
+  /** Offer This week so far (the Monday meeting's toggle, PRO-106). */
+  showWeekSoFar?: boolean;
   /** Pipeline never shows a future window (it would always be empty). */
   clampToToday?: boolean;
   children?: React.ReactNode;
@@ -165,12 +199,16 @@ export function PeriodBar({
       </div>
 
       <div className="inline-flex items-center rounded-md border border-border-strong bg-surface p-0.5">
-        {PERIOD_PRESETS.map((p) => {
+        {PERIOD_PRESETS.filter((p) => showWeekSoFar || p.key !== "week_so_far").map((p) => {
           const [pf, pt] = p.get();
-          const active = granularity === p.key && from === pf && to === pt;
+          // Lit by its dates alone: no two presets ever cover the same days.
+          const active = from === pf && to === pt;
           return (
             <button key={p.key} type="button"
-              onClick={() => { onGranularityChange(p.key); onChange(pf, pt); }}
+              onClick={() => {
+                if (p.key !== "week_so_far") onGranularityChange?.(p.key);
+                onChange(pf, pt);
+              }}
               title={`${p.title} — ${pf} to ${pt}`}
               className={cn("rounded px-2 py-0.5 text-[12px] font-medium transition-colors",
                 active ? "bg-accent-soft text-accent" : "text-ink-2 hover:bg-surface-2")}>
@@ -191,9 +229,8 @@ export function ScopeButtons({ value, onChange }: {
   onChange: (v: "pursuit" | "team" | "staff") => void;
 }) {
   const opts: { key: "team" | "staff" | "pursuit"; label: string; title: string }[] = [
-    // The scope is the three in JOBS_TEAM_EMAILS. Kwame is grouped under Jobs
-    // Team in the sender picker, and carries a target, but is deliberately not
-    // in this aggregate — see JOBS_TEAM_PINNED for why and what it costs.
+    // The scope is the Jobs team (D7: Avni, Damon and Devika). Kwame is not on
+    // it, so his sends count under Other Staff.
     { key: "team", label: "Jobs Team", title: "Avni, Damon and Devika" },
     { key: "staff", label: "Other Staff", title: "Everyone else at Pursuit" },
     { key: "pursuit", label: "Everyone", title: "The whole Pursuit team" },

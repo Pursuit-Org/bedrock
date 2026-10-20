@@ -684,6 +684,22 @@ export interface JobsAccountProspect {
   current_title: string | null;
   contact_stage: string | null;
   linkedin_url: string | null;
+  /** Where their outreach stands (D9, PRO-106): the Jobs pipeline stage
+   *  (null = not in the pipeline), its owner (the pipeline's, else the
+   *  contact's), activity anyone at Pursuit sent them, ever, and when last. */
+  membership_stage?: MembershipStage | null;
+  owner?: string | null;
+  activity_count?: number;
+  last_activity_at?: string | null;
+  opportunities?: LinkedOpportunity[];
+}
+
+/** An opportunity a contact is linked to (D15). */
+export interface LinkedOpportunity {
+  id: string;
+  name: string | null;
+  account: string | null;
+  stage: string;
 }
 
 export interface JobsAccount {
@@ -1462,8 +1478,11 @@ export function useJobsFunnel(
 ) {
   const dt = dealType && dealType !== "all" ? dealType : undefined;
   const seg = segment && segment !== "all" ? segment : undefined;
-  // Only the opportunities funnel is owned by a deal owner.
-  const own = ftype === "opportunities" && owner && owner !== "all" ? owner : undefined;
+  // Only the opportunities funnel is owned by a deal owner. The contacts funnel
+  // is sent the owner too, only so its definitions can say they ignore it
+  // (PRO-106: every filter applies to every widget, or the widget says so).
+  const own = (ftype === "opportunities" || ftype === "prospects") && owner && owner !== "all"
+    ? owner : undefined;
   // The builders funnel has no stage-entry stamps, so a period would silently
   // return zeros — the backend ignores it, and we keep it out of the key too.
   const p0 = ftype === "builders" ? undefined : period;
@@ -1613,34 +1632,28 @@ export function useVolumeTrends(
 
 // ── Outreach Dashboard scorecard ──────────────────────────────────────────────
 
-export type OutreachGranularity = "day" | "week" | "month";
+/** How a period's targets are spread: a preset's (day, week, month) or
+ *  `range`, a fifth of the weekly goal per weekday (PRO-106). */
+export type OutreachGranularity = "day" | "week" | "month" | "range";
 export type OutreachScopeKind = "pursuit" | "team" | "staff";
 
-/** The core jobs team. Mirrors JOBS_TEAM_EMAILS in routes/jobs.py — the backend
- *  is the source of truth; this copy exists so client-side tables (the assigned
- *  queue) can honour the same scope toggle the API endpoints do. Keep in sync. */
+/** The Jobs team (D7, decided 10/3). Mirrors DEFAULT_TEAM in
+ *  services/jobs_targets_store.py — Settings › Targets is the source of truth;
+ *  this copy exists so client-side tables (the assigned queue) can honour the
+ *  same scope toggle the API endpoints do. Keep in sync. */
 export const JOBS_TEAM_EMAILS = [
   "avni@pursuit.org",
   "damon.kornhauser@pursuit.org",
   "devika@pursuit.org",
 ];
 
-/** Who gets pinned to the top of a sender picker.
+/** Who gets pinned to the top of a sender picker, under "Jobs Team".
  *
- *  A superset of JOBS_TEAM_EMAILS on purpose (Kwame 2026-09-21). Adding someone
- *  to JOBS_TEAM_EMAILS changes what the "Jobs Team" SCOPE counts, and therefore
- *  every team number on every page. Pinning is only about which four names you
- *  should not have to scroll a forty-name list to reach. Two different
- *  questions, two different lists.
- *
- *  The one place that bites: Kwame carries 10 of the team's 150 weekly outreach
- *  target (services/outreach_targets.py) but is not in the scope, so the team
- *  view is ~10 short of its own target by construction. Closing that gap is a
- *  deliberate decision about the scope, not a tweak to this list. */
-export const JOBS_TEAM_PINNED = [
-  ...JOBS_TEAM_EMAILS,
-  "kwame@pursuit.org",
-];
+ *  It pinned Kwame too while he carried a share of the team's target (Kwame
+ *  2026-09-21). D7 (10/3) took him off the team and his targets with him, so
+ *  a "Jobs Team" group listing him read as though his sends counted there.
+ *  He is under everyone else now, still one pick away (PRO-106). */
+export const JOBS_TEAM_PINNED = [...JOBS_TEAM_EMAILS];
 
 /** Does this owner belong to the selected sender scope? */
 export function inScope(email: string | null | undefined, scope: OutreachScopeKind): boolean {
@@ -1735,6 +1748,8 @@ export interface DrillRow {
   /** Calls booked rows: the call or meeting, so its type can be changed in place. */
   activity_id?: string | null;
   call_kind?: CallKind | null;
+  /** Converted rows: the opportunity or opportunities it became (D15). */
+  opportunities?: LinkedOpportunity[];
 }
 
 /** Whether the nightly per-message email index is keeping up with the sync.
@@ -1769,8 +1784,15 @@ export interface OutreachSummary {
   /** Full length of each list, which is the card's own number. */
   drill_totals?: Record<"accounts_activated" | "outreach_activity" | "calls_booked" | "converted", number>;
   /** What each card means, keyed like `drills` (PRO-97, PRO-105). */
-  definitions?: Record<"accounts_activated" | "outreach_activity" | "calls_booked" | "converted", MetricDefinition>;
+  definitions?: Record<"accounts_activated" | "outreach_activity" | "calls_booked" | "converted"
+                       | "outreach_follow_up" | "target", MetricDefinition>;
+  /** Each card's goal for the window: the team's, or the Sender's own. null = none set. */
+  targets?: Record<"accounts_activated" | "outreach_activity" | "calls_booked" | "converted", number | null>;
+  /** Outreach as new vs follow-ups on an opportunity open at the time (PRO-106). */
+  outreach_split?: OutreachSplit;
 }
+
+export interface OutreachSplit { new: number; follow_up: number }
 
 /** The three headline numbers on the Outreach tab, over the page's own window
  *  and sender scope. */
@@ -1944,8 +1966,10 @@ export interface OwnerMetric {
 }
 export interface OwnerScorecardRow {
   owner: string;
-  outreach: OwnerMetric;
+  outreach: OwnerMetric & { split?: OutreachSplit };
   calls: OwnerMetric;
+  /** Accounts whose first activity ever was this person's, in the period (D17). */
+  accounts?: OwnerMetric;
   /** Contacts converted to an opportunity, attributed to this person where the
    *  data allows. Read it as a floor: only about a quarter of conversions
    *  resolve to anyone at all — see `unattributed`. */
@@ -1958,11 +1982,13 @@ export interface OwnerScorecard {
   /** Outreach and calls are the sum of the rows. Opportunities is counted over
    *  the whole window, so it matches the Activity tab and the summary card even
    *  though the rows below it cannot add up to it. */
-  totals: { outreach: OwnerMetric; calls: OwnerMetric; opportunities: OwnerMetric };
+  totals: { outreach: OwnerMetric & { split?: OutreachSplit }; calls: OwnerMetric;
+            accounts?: OwnerMetric; opportunities: OwnerMetric };
   /** How much of a total no owner row could claim. */
   unattributed?: { opportunities: number };
   /** What each column means; per owner the filter is that owner (PRO-97). */
-  definitions?: Record<"outreach" | "calls" | "opportunities" | "contacted" | "target", MetricDefinition>;
+  definitions?: Partial<Record<"outreach" | "calls" | "accounts" | "opportunities" | "follow_up" | "target",
+                               MetricDefinition>>;
 }
 
 /** The Activity Pipeline cut by person. Every owner who carries a target
@@ -1977,6 +2003,66 @@ export function useOwnerScorecard(granularity: OutreachGranularity, range?: Outr
       const { data } = await api.get<ApiResponse<OwnerScorecard>>(`/api/jobs/outreach/scorecard/by-owner?${p}`);
       return data.data;
     },
+    staleTime: 60_000,
+  });
+}
+
+/** Why a contact hasn't been reached: what's recorded, first match wins
+ *  (services/jobs_metrics.STUCK_REASONS). */
+export type StuckReasonKind = "intro" | "revisit" | "not_a_fit" | "none";
+export interface StuckReason { kind: StuckReasonKind; detail: string | null }
+export interface StuckRow {
+  /** The pipeline owner, else the contact's. null = nobody. */
+  owner: string | null;
+  on_team: boolean;
+  assigned: number;
+  reached: number;
+  call_booked: number;
+  not_reached: number;
+  reasons: Record<StuckReasonKind, number>;
+}
+export interface StuckContact {
+  contact_id: number;
+  name: string | null;
+  company: string | null;
+  account_key: string | null;
+  owner: string | null;
+  stage: MembershipStage | null;
+  assigned_at: string | null;
+  days_waiting: number | null;
+  activity_count: number;
+  last_activity_at: string | null;
+  call_booked: boolean;
+  /** null when reached, or a call got booked anyway. */
+  reason: StuckReason | null;
+}
+export interface OutreachStuck {
+  /** The campaign shown, or "all" for every Jobs contact. */
+  campaign: string;
+  campaigns: { key: string; label: string; current: boolean }[];
+  rows: StuckRow[];
+  totals: Omit<StuckRow, "owner" | "on_team">;
+  reasons: { key: StuckReasonKind; label: string }[];
+  /** Every contact counted, uncapped. */
+  contacts: StuckContact[];
+  definitions: Record<"assigned" | "reached" | "call_booked", MetricDefinition>;
+}
+
+/** Where outreach is stuck (PRO-106): every week of a campaign, read now, so
+ *  it takes no period. `campaign` undefined = the current one (D10). */
+export function useOutreachStuck(campaign: string | undefined, scope: OutreachScopeKind, owner?: string) {
+  return useQuery<OutreachStuck>({
+    queryKey: ["jobs", "outreach-stuck", campaign ?? "", scope, owner ?? ""],
+    queryFn: async () => {
+      const p = new URLSearchParams({ scope });
+      if (campaign) p.set("campaign", campaign);
+      if (owner) p.set("owner", owner);
+      const { data } = await api.get<ApiResponse<OutreachStuck>>(`/api/jobs/outreach/stuck?${p}`);
+      return data.data;
+    },
+    // Keep the last campaign on screen while the next loads, so the picker
+    // doesn't vanish from under the click that changed it.
+    placeholderData: keepPreviousData,
     staleTime: 60_000,
   });
 }
@@ -2293,7 +2379,7 @@ export function useTagCampaignRecords(key: string | null) {
 
 /** Same three buckets the Outreach and Pipeline period bar works in. Aliased
  *  rather than redeclared so the shared PeriodBar can drive this page too. */
-export type CampaignGranularity = OutreachGranularity;
+export type CampaignGranularity = Exclude<OutreachGranularity, "range">;
 
 export interface CampaignTrendPoint {
   bucket: string; emails: number; calls_booked: number; other: number; total: number;

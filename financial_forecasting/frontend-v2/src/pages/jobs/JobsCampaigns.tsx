@@ -33,7 +33,7 @@ import {
 import { Calendar, Check, ChevronDown, Linkedin, Loader2, Mail, MessageSquare, Pin } from "lucide-react";
 
 import { TagCampaigns } from "@/components/jobs/TagCampaigns";
-import { PeriodBar, PERIOD_PRESETS } from "@/components/jobs/PeriodBar";
+import { PeriodBar, presetRange } from "@/components/jobs/PeriodBar";
 import { ActivityFeed } from "@/components/jobs/ActivityFeed";
 import { DrillList, type DrillRow } from "@/components/jobs/DrillList";
 import {
@@ -659,7 +659,7 @@ function Portfolio() {
  *  the trend readable as a trend. The Daily preset (yesterday alone) would draw
  *  a single dot, and Weekly buckets over a month draws four. */
 function campaignDefaultPeriod(): [string, string] {
-  return PERIOD_PRESETS[2].get();
+  return presetRange("month");
 }
 
 export function JobsCampaigns() {
@@ -685,7 +685,6 @@ export function JobsCampaigns() {
               from={from}
               to={to}
               onChange={(f, t) => setRange([f, t])}
-              granularity={granularity}
               onGranularityChange={setGranularity}
               clampToToday
             />

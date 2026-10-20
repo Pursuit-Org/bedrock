@@ -28,7 +28,8 @@ from db import get_db, get_pool
 from dependencies import get_mcp_client, require_sf_mcp_client
 from sf_errors import sf_http_error
 from services.placement_sf import sync_placement_to_sf, record_sync_error, NotEligible, AccountAmbiguous
-from services.outreach_targets import activity_pipeline_target, scorecard_owners
+from services.outreach_targets import (activity_pipeline_target, scorecard_owners, target_for_window,
+                                      weekdays_in)
 from services import jobs_lists, jobs_metrics, jobs_targets_store, outreach_counting
 from services.jobs_activity_link import has_membership_history
 
@@ -4557,6 +4558,36 @@ async def _activated_by_window(conn, events, windows, senders) -> list[dict]:
             for s, e in windows]
 
 
+async def _open_opportunity_spans(conn, start, end) -> dict:
+    """contact_id -> when each of their opportunities was open, for the
+    opportunities open at any point in [start, end) (PRO-106)."""
+    rows = await conn.fetch(
+        f"WITH {jobs_metrics.open_opportunity_contacts_sql()} "
+        "SELECT contact_id, created_at, closed_at FROM live", start, end)
+    return outreach_counting.open_opportunity_spans(rows)
+
+
+async def _contact_opportunities(conn, contact_ids) -> dict:
+    """contact_id -> [{id, name, stage}] for the opportunities each contact is
+    linked to (D15: opportunity_links_sql, no account fallback)."""
+    ids = sorted({i for i in contact_ids if i is not None})
+    if not ids:
+        return {}
+    rows = await conn.fetch(f"""
+        SELECT l.contact_id, o.id, coalesce(nullif(btrim(o.title), ''), o.account_name) AS name,
+               o.account_name, o.stage
+        FROM ({jobs_metrics.opportunity_links_sql()}) l
+        JOIN bedrock.jobs_opportunity o ON o.id = l.opp_id
+        WHERE l.contact_id = ANY($1::int[]) AND o.deleted_at IS NULL
+        ORDER BY o.created_at DESC
+    """, ids)
+    out: dict = {}
+    for r in rows:
+        out.setdefault(r["contact_id"], []).append(
+            {"id": str(r["id"]), "name": r["name"], "account": r["account_name"], "stage": r["stage"]})
+    return out
+
+
 async def _contact_info(conn, ids) -> dict:
     """contact_id -> name, employer and owners, for the lists under a number."""
     ids = sorted({i for i in ids if i is not None})
@@ -4931,6 +4962,8 @@ def _outreach_windows(granularity, date_from, date_to):
     Saturday.
     """
     midnight = jobs_metrics.ny_midnight
+    if granularity == "range" and not (date_from and date_to):
+        raise HTTPException(400, "granularity=range needs date_from and date_to")
     if date_from and date_to:
         try:
             this_start, this_end = jobs_metrics.date_window(date_from, date_to)
@@ -4948,6 +4981,26 @@ def _outreach_windows(granularity, date_from, date_to):
         this_start = _shift_months(today.replace(day=1), -1)
         last_start, this_end = _shift_months(this_start, -1), today.replace(day=1)
     return midnight(this_start), midnight(this_end), midnight(last_start), midnight(this_start)
+
+
+def _period_target(metric: str, granularity: str, start, end,
+                   owner: Optional[str] = None) -> Optional[int]:
+    """The target for the period shown. A preset (day, week, month) spreads
+    the weekly goal as Kwame set it out (a month is four weeks); `range`, any
+    other span picked on the page, is a fifth of the weekly goal per weekday in
+    it (PRO-106), so "this week so far" and a custom fortnight each get their
+    own share rather than one week's number."""
+    if granularity == "range":
+        return target_for_window(metric, start.date(), end.date(), owner)
+    return activity_pipeline_target(metric, granularity, owner)
+
+
+def _target_scaling(granularity: str, start, end) -> dict:
+    """How a range's target was scaled, for the words beside it."""
+    if granularity != "range":
+        return {}
+    n = weekdays_in(start.date(), end.date())
+    return {"scaled": f"{n} weekday{'' if n == 1 else 's'}, a fifth of the weekly goal each"}
 
 
 def _scope_email_pred(col, scope):
@@ -4995,7 +5048,7 @@ async def _converted_counts(conn, windows, owner: Optional[str] = None) -> list[
 
 @router.get("/outreach/scorecard")
 async def outreach_scorecard(
-    granularity: str = Query("week", pattern="^(day|week|month)$"),
+    granularity: str = Query("week", pattern="^(day|week|month|range)$"),
     scope: str = Query("team", pattern="^(pursuit|team|staff)$"),
     owner: Optional[str] = Query(None, description="Scope to one staff sender (overrides scope)"),
     date_from: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
@@ -5063,7 +5116,7 @@ async def outreach_scorecard(
         ok = has_call_kind or _CALL_KIND_METRIC.get(m) in (None, CALL_KIND_DEFAULT)
         split = (None if m in _ACTIVITY_OUTCOME_METRICS else
                  outreach_counting.split_new([e for e in win_this if _in_row(e, m)], act_this))
-        target = activity_pipeline_target(m, granularity, owner)
+        target = _period_target(m, granularity, this_start, this_end, owner)
         win = (this_start, this_end)
         flt = {"scope": None if owner else scope, "owner": owner}
         return {"metric": m, "label": label, "depth": depth, "tier": _ACTIVITY_TIER.get(m),
@@ -5072,7 +5125,8 @@ async def outreach_scorecard(
                     **(_conversion_filters(flt) if m == "converted_opportunities" else {"filters": flt}),
                     records=_scorecard_records(m, granularity, scope, owner, date_from, date_to)),
                 "target_definition": jobs_metrics.define(
-                    "activity_target", value=target, window=win, filters={**flt, "metric": m}),
+                    "activity_target", value=target, window=win,
+                    filters={**flt, "metric": m, **_target_scaling(granularity, this_start, this_end)}),
                 "available": ok,
                 "unavailable_reason": None if ok else
                 "Available once the pending call-type migration is applied",
@@ -5226,7 +5280,7 @@ def _touch_direction(type_: str, email_from: Optional[str]) -> str:
 
 @router.get("/outreach/scorecard/by-owner")
 async def outreach_scorecard_by_owner(
-    granularity: str = Query("week", pattern="^(day|week|month)$"),
+    granularity: str = Query("week", pattern="^(day|week|month|range)$"),
     date_from: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
     date_to: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
     user=Depends(require_auth),
@@ -5254,6 +5308,12 @@ async def outreach_scorecard_by_owner(
     until the call_kind migration lands, every call defaults to `general`, so
     this column reads 0 for everyone.
 
+    Accounts activated (D17) is credited to whoever did the first activity on
+    the account, so the rows add up to the team's number. Outreach carries
+    `split`: new outreach vs follow-ups on an opportunity open when the send
+    went out (PRO-106). Each column is measured against the person's own goal
+    from Settings › Targets; a column nobody set a goal for reads null.
+
     Opportunities carries a team target and no personal ones (Kwame 2026-09-21):
     converting is a team outcome, and splitting 2 four ways would invent
     commitments nobody made. Read the per-person numbers as a floor — see
@@ -5267,11 +5327,19 @@ async def outreach_scorecard_by_owner(
     if jobs_targets_store.has_history():
         owners += [e for e in jobs_targets_store.members_during(last_start, this_end)
                    if e not in owners and _SAFE_EMAIL.match(e)]
-    events = await _outreach_events(conn, last_start, this_end, _team_scope(owners))
+    team = _team_scope(owners)
+    events = await _outreach_events(conn, last_start, this_end, team)
+    # Accounts activated by the team, each credited to whoever did the first
+    # activity on it (D17), so the rows add up to the team's number.
+    act_this, act_last = await _activated_by_window(
+        conn, events, [(this_start, this_end), (last_start, last_end)], team)
+    spans = await _open_opportunity_spans(conn, this_start, this_end)
 
     rows = []
     for email in owners:
         mine = [e for e in events if e.sender == email]
+        split = outreach_counting.split_follow_ups(
+            outreach_counting.in_window(mine, this_start, this_end), spans)
         c_this = outreach_counting.count(outreach_counting.in_window(mine, this_start, this_end))
         c_last = outreach_counting.count(outreach_counting.in_window(mine, last_start, last_end))
         counts = {"outreach_this": c_this.outreach, "outreach_last": c_last.outreach,
@@ -5279,7 +5347,7 @@ async def outreach_scorecard_by_owner(
                   "calls_last": c_last.by_metric.get("call_discovery", 0)}
 
         def _metric(key: str, this_n: int, last_n: int):
-            target = activity_pipeline_target(key, granularity, email)
+            target = _period_target(key, granularity, this_start, this_end, email)
             return {"target": target, "this_period": this_n, "last_period": last_n,
                     # Signed, and null when there is no target: "no goal set" and
                     # "exactly on goal" are different states and must not render
@@ -5295,8 +5363,12 @@ async def outreach_scorecard_by_owner(
 
         rows.append({
             "owner": email,
-            "outreach": _metric("total_outreach_activity", counts["outreach_this"], counts["outreach_last"]),
+            "outreach": {**_metric("total_outreach_activity", counts["outreach_this"], counts["outreach_last"]),
+                         "split": split},
             "calls": _metric("call_discovery", counts["calls_this"], counts["calls_last"]),
+            "accounts": _metric("accounts_activated",
+                                sum(1 for e in act_this.values() if e.sender == email),
+                                sum(1 for e in act_last.values() if e.sender == email)),
             "opportunities": _metric("converted_opportunities", conv_this, conv_last),
         })
 
@@ -5316,15 +5388,16 @@ async def outreach_scorecard_by_owner(
         targets are editable, because a team total can be SET rather than
         summed (e.g. a team number while people carry 0)."""
         line = {k: _total(section, k) for k in ("target", "this_period", "last_period", "delta")}
-        if jobs_targets_store.available():
-            t = activity_pipeline_target(metric, granularity)
+        # Accounts activated has no personal goals to sum: its goal is the team's.
+        if jobs_targets_store.available() or line["target"] is None:
+            t = _period_target(metric, granularity, this_start, this_end)
             line["target"] = t
             line["delta"] = None if t is None else (line["this_period"] or 0) - t
         return line
 
     conv_team_this, conv_team_last = await _converted_counts(
         conn, [(this_start, this_end), (last_start, last_end)])
-    conv_target = activity_pipeline_target("converted_opportunities", granularity)
+    conv_target = _period_target("converted_opportunities", granularity, this_start, this_end)
 
     win = (this_start, this_end)
     rec = lambda key: _scorecard_records(key, granularity, None, None, date_from, date_to)
@@ -5338,11 +5411,12 @@ async def outreach_scorecard_by_owner(
         "definitions": {
             "outreach": jobs_metrics.define("outreach", window=win, records=rec("total_outreach_activity")),
             "calls": jobs_metrics.define("call_discovery", window=win, records=rec("call_discovery")),
+            "accounts": jobs_metrics.define("accounts_activated", window=win, records=rec("accounts_activated")),
             "opportunities": jobs_metrics.define("converted_opportunities", window=win,
                                                  records=rec("converted_opportunities")),
-            # Stage moves, not "contacted" (that word is activity since PRO-100).
-            "contacted": jobs_metrics.define("moved_to_outreach", window=win),
-            "target": jobs_metrics.define("activity_target", window=win),
+            "follow_up": jobs_metrics.define("outreach_follow_up", window=win),
+            "target": jobs_metrics.define("activity_target", window=win,
+                                          filters=_target_scaling(granularity, this_start, this_end)),
         },
         "rows": rows,
         # Outreach and calls are summed from the rows above rather than
@@ -5356,8 +5430,11 @@ async def outreach_scorecard_by_owner(
         # only what can be attributed, and `unattributed` names the difference so
         # the gap is stated rather than hidden in a column that does not add up.
         "totals": {
-            "outreach": _team_line("outreach", "total_outreach_activity"),
+            "outreach": {**_team_line("outreach", "total_outreach_activity"),
+                         "split": {k: sum(r["outreach"]["split"][k] for r in rows)
+                                   for k in ("new", "follow_up")}},
             "calls":    _team_line("calls", "call_discovery"),
+            "accounts": _team_line("accounts", "accounts_activated"),
             "opportunities": {
                 "target": conv_target,
                 "this_period": conv_team_this, "last_period": conv_team_last,
@@ -5374,7 +5451,7 @@ async def outreach_scorecard_by_owner(
 async def outreach_scorecard_detail(
     key: str = Query(..., description="an activity-pipeline metric"),
     period: str = Query("this", pattern="^(this|last)$"),
-    granularity: str = Query("week", pattern="^(day|week|month)$"),
+    granularity: str = Query("week", pattern="^(day|week|month|range)$"),
     scope: str = Query("team", pattern="^(pursuit|team|staff)$"),
     owner: Optional[str] = Query(None),
     date_from: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
@@ -5500,7 +5577,7 @@ def _window_total(rows) -> int:
 
 @router.get("/outreach/summary")
 async def outreach_summary(
-    granularity: str = Query("week", pattern="^(day|week|month)$"),
+    granularity: str = Query("week", pattern="^(day|week|month|range)$"),
     scope: str = Query("team", pattern="^(pursuit|team|staff)$"),
     owner: Optional[str] = Query(None, description="Scope to one staff sender (overrides scope)"),
     date_from: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
@@ -5559,6 +5636,12 @@ async def outreach_summary(
         WHERE m.converted_at >= $1 AND m.converted_at < $2 {conv_owner}
         ORDER BY m.converted_at DESC
     """, this_start, this_end)
+    # The opportunity each conversion became (D15), so the list links to it.
+    converted_opps = await _contact_opportunities(conn, [r["contact_id"] for r in converted_rows])
+
+    # New outreach vs follow-ups on an opportunity open at the time (PRO-106).
+    split = outreach_counting.split_follow_ups(
+        events, await _open_opportunity_spans(conn, this_start, this_end))
 
     # ── Lists, one per card ──────────────────────────────────────────────────
     # Each is the events its card counted, newest first, capped for display.
@@ -5624,7 +5707,22 @@ async def outreach_summary(
             "converted": jobs_metrics.define(
                 "converted_opportunities", value=len(converted_rows), window=win,
                 **_conversion_filters(flt), records=rec("converted_opportunities")),
+            "outreach_follow_up": jobs_metrics.define(
+                "outreach_follow_up", value=split["follow_up"], window=win, filters=flt),
+            "target": jobs_metrics.define(
+                "activity_target", window=win,
+                filters={**flt, **_target_scaling(granularity, this_start, this_end)}),
         },
+        # Each card's goal for this window: the team's, or with one person
+        # selected, theirs (PRO-106). null = no goal set.
+        "targets": {
+            card: _period_target(metric, granularity, this_start, this_end, owner)
+            for card, metric in (("accounts_activated", "accounts_activated"),
+                                 ("outreach_activity", "total_outreach_activity"),
+                                 ("calls_booked", "total_calls"),
+                                 ("converted", "converted_opportunities"))
+        },
+        "outreach_split": split,
         "email_index": email_index,
         "accounts_activated": len(activated),
         "accounts_reached": len(outreach_counting.touched_accounts(events)),
@@ -5642,6 +5740,7 @@ async def outreach_summary(
                 "name": r["name"], "account": r["account"],
                 "owner": r["owner"], "editor": r["editor"],
                 "detail": None, "subkind": None, "contact_id": r["contact_id"],
+                "opportunities": converted_opps.get(r["contact_id"], []),
             } for r in converted_rows[:DRILL_CAP]],
         },
         "drill_totals": {
@@ -5655,7 +5754,7 @@ async def outreach_summary(
 
 @router.get("/outreach/activity")
 async def outreach_activity_feed(
-    granularity: str = Query("week", pattern="^(day|week|month)$"),
+    granularity: str = Query("week", pattern="^(day|week|month|range)$"),
     scope: str = Query("team", pattern="^(pursuit|team|staff)$"),
     owner: Optional[str] = Query(None, description="Sender whose activity to show"),
     date_from: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
@@ -5714,6 +5813,100 @@ async def outreach_activity_feed(
         # instead of stopping silently (PRO-96).
         "total": len(sends),
         "events": events,
+    }}
+
+
+_STUCK_IGNORES_PERIOD = "Covers every week of the campaign, not the period picked"
+
+
+@router.get("/outreach/stuck")
+async def outreach_stuck(
+    campaign: Optional[str] = Query(None, description="A campaign key, or 'all' for every Jobs "
+                                                      "contact. Default: the current campaign (D10)"),
+    scope: str = Query("team", pattern="^(pursuit|team|staff)$"),
+    owner: Optional[str] = Query(None, description="One owner (overrides scope)"),
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Where outreach is stuck (PRO-106, Kwame 10/2): per owner, of the
+    contacts assigned, how many were reached out to and how many got to a
+    booked call, and why the rest haven't been reached. The rules are
+    jobs_metrics.stuck_numbers; reached out is "contacted" (PRO-100), so a
+    contact reads the same here as on the Campaigns tab.
+
+    Every week of the campaign, read now: it does not take a period. `scope`
+    and `owner` narrow by whose contact it is (the pipeline owner, else the
+    contact's owner): team = on the Jobs team now, staff = owned by anyone
+    else, pursuit = everyone, unowned included. `contacts` is every contact
+    counted, uncapped, each with its reason when not reached.
+    """
+    camps = await _campaign_catalog(conn)
+    if campaign is None:
+        key = next((k for k, c in camps.items() if c["current"]), "all")
+    elif campaign == "all" or campaign in camps:
+        key = campaign
+    else:
+        raise HTTPException(404, f"Unknown campaign: {campaign}")
+    if key == "all":
+        base = [dict(r) for r in await conn.fetch(jobs_metrics.JOBS_CONTACTS_SQL)]
+    else:
+        base = [r for r in await _campaign_contacts(conn, camps[key]["slugs"]) if r["in_pipeline"]]
+    detail = {}
+    if base:
+        detail = {r["contact_id"]: dict(r) for r in await conn.fetch(
+            jobs_metrics.STUCK_DETAIL_SQL, [r["contact_id"] for r in base])}
+    rows = [{**r, **detail[r["contact_id"]]} for r in base if r["contact_id"] in detail]
+
+    team = set(_jobs_team())
+    if owner and _SAFE_EMAIL.match(owner):
+        rows = [r for r in rows if r["owner"] == owner.strip().lower()]
+    elif scope == "team":
+        rows = [r for r in rows if r["owner"] in team]
+    elif scope == "staff":
+        rows = [r for r in rows if r["owner"] and r["owner"] not in team]
+
+    ids = [r["contact_id"] for r in rows]
+    activity = outreach_counting.activity_by_contact(await _campaign_events(conn, ids), ids)
+    numbers = jobs_metrics.stuck_numbers(rows, activity.keys())
+    today = jobs_metrics.ny_today()
+
+    def _contact(r: dict) -> dict:
+        n, last = activity.get(r["contact_id"], (0, None))
+        assigned = r.get("assigned_at")
+        return {
+            "contact_id": r["contact_id"], "name": r["full_name"], "company": r["company"],
+            "account_key": r["account_key"], "owner": r["owner"], "stage": r["stage"],
+            "assigned_at": assigned.isoformat() if assigned else None,
+            "days_waiting": (today - assigned.astimezone(jobs_metrics.NY).date()).days if assigned else None,
+            "activity_count": n, "last_activity_at": last.isoformat() if last else None,
+            "call_booked": bool(r["call_booked"]),
+            "reason": jobs_metrics.stuck_reason(r, r["contact_id"] in activity),
+        }
+
+    contacts = sorted((_contact(r) for r in rows),
+                      key=lambda c: (c["assigned_at"] is None, c["assigned_at"] or "", c["name"] or ""))
+    # Team first, biggest book first; unowned last, where nobody can miss it.
+    order = sorted(numbers, key=lambda o: (o is None, o not in team, -numbers[o]["assigned"], o or ""))
+    flt = {"campaign": key, "scope": None if owner else scope, "owner": owner}
+    ignored = {"period": _STUCK_IGNORES_PERIOD}
+    totals = {k: sum(numbers[o][k] for o in numbers)
+              for k in ("assigned", "reached", "call_booked", "not_reached")}
+    return {"success": True, "data": {
+        "campaign": key,
+        "campaigns": [{"key": k, "label": c["label"], "current": c["current"]} for k, c in camps.items()],
+        "rows": [{"owner": o, "on_team": o in team, **numbers[o]} for o in order],
+        "totals": {**totals, "reasons": {k: sum(numbers[o]["reasons"][k] for o in numbers)
+                                         for k, _ in jobs_metrics.STUCK_REASONS}},
+        "reasons": [{"key": k, "label": label} for k, label in jobs_metrics.STUCK_REASONS],
+        "contacts": contacts,
+        "definitions": {
+            "assigned": jobs_metrics.define("stuck_assigned", value=totals["assigned"],
+                                            filters=flt, ignored=ignored),
+            "reached": jobs_metrics.define("stuck_reached", value=totals["reached"],
+                                           filters=flt, ignored=ignored),
+            "call_booked": jobs_metrics.define("stuck_call_booked", value=totals["call_booked"],
+                                               filters=flt, ignored=ignored),
+        },
     }}
 
 
@@ -7073,19 +7266,36 @@ async def account_prospects(
     """Prospects (jobs contacts) at one account, keyed by normalized company name.
     Split out of GET /accounts so the account list doesn't ship ~38k prospect
     rows — these load lazily when an account row is expanded. `scope` mirrors the
-    list's engaged/all toggle so the drill-in matches the row's prospect_count."""
+    list's engaged/all toggle so the drill-in matches the row's prospect_count.
+
+    Each contact also carries where their outreach stands (D9, PRO-106): the
+    pipeline stage, its owner (the pipeline's, else the contact's), how much
+    activity anyone at Pursuit has sent them and when last (the counting rules,
+    services/outreach_counting), and the opportunities they are linked to."""
     eng = "" if scope == "all" else f"AND {_engaged_clause('c')}"
     rows = await conn.fetch(
         f"""
         SELECT c.contact_id, c.full_name, c.email, c.current_title,
-               c.contact_stage, c.linkedin_url
+               c.contact_stage, c.linkedin_url,
+               {jobs_metrics.canon_membership_sql('m.stage')} AS membership_stage,
+               lower(coalesce(m.owner_email, c.owner_email)) AS owner
         FROM public.contacts c
+        LEFT JOIN bedrock.jobs_contact_membership m ON m.contact_id = c.contact_id
         WHERE c.is_jobs_contact = true AND lower(trim(c.current_company)) = $1 {eng}
         ORDER BY c.full_name
         """,
         key.strip().lower(),
     )
-    return {"success": True, "data": [dict(r) for r in rows]}
+    ids = [r["contact_id"] for r in rows]
+    activity = outreach_counting.activity_by_contact(await _campaign_events(conn, ids), ids)
+    opps = await _contact_opportunities(conn, ids)
+    out = []
+    for r in rows:
+        n, last = activity.get(r["contact_id"], (0, None))
+        out.append({**dict(r), "activity_count": n,
+                    "last_activity_at": last.isoformat() if last else None,
+                    "opportunities": opps.get(r["contact_id"], [])})
+    return {"success": True, "data": out}
 
 
 # ── Jobs contact activation (flag + funnel membership) ────────────────────────

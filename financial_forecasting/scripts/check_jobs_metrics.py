@@ -133,6 +133,7 @@ CHECKS = [
     Check("outreach", "outreach", _data(_summary, "outreach_activity")),
     Check("calls", "calls", _data(_summary, "calls_booked")),
     Check("converted_opportunities", "converted", _data(_summary, "converted")),
+    Check("outreach_follow_up", "follow_up", _data(_summary, "outreach_split", "follow_up")),
     Check("direct_email", "direct_email", _row("direct_email_sent")),
     Check("linkedin", "linkedin", _row("linkedin_message_sent")),
     Check("text", "text", _row("text_sent")),

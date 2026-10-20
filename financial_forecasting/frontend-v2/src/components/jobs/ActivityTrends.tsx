@@ -168,9 +168,10 @@ export function ActivityTrends({ scope, owner, range }: {
     // Mix's. Same wrapper = tops line up by construction, not by hand-tuning.
     <Panel
       title="Outreach Trends"
-      desc={isVolume
-        ? `Accounts activated, outreach, calls and opportunities${windowLabel ? ` · ${windowLabel}` : ""}`
-        : `Accounts contacted${windowLabel ? ` · ${windowLabel}` : ""}`}
+      // Says its window is its own (PRO-106: a widget that doesn't follow a
+      // filter says so): it ends where the period ends and looks further back.
+      desc={`${isVolume ? "Accounts activated, outreach, calls and opportunities" : "Accounts contacted"}${
+        windowLabel ? ` · ${windowLabel}, ending with the period above` : ""}`}
       action={controls}
       className="h-full"
     >

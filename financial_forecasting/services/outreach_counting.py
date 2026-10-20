@@ -412,6 +412,38 @@ def split_new(events: Iterable[Event], activated: Iterable[str]) -> dict:
     return out
 
 
+def open_opportunity_spans(rows: Iterable) -> dict:
+    """contact_id -> [(opened, closed)] from open_opportunity_contacts_sql
+    rows (contact_id, created_at, closed_at). `closed` None = still open."""
+    spans: dict = {}
+    for r in rows:
+        spans.setdefault(r["contact_id"], []).append((r["created_at"], r["closed_at"]))
+    return spans
+
+
+def is_follow_up(e: Event, spans: Mapping) -> bool:
+    """A follow-up on a live opportunity (PRO-106): the send reached a contact
+    on an opportunity that was open when it went out. Who is "on" an
+    opportunity is the PRO-101 rollup rule (jobs_metrics.activity_scope_ctes):
+    its linked contacts, or everyone at its account when none is linked."""
+    for cid in {e.contact_id, *e.contact_ids} - {None}:
+        for opened, closed in spans.get(cid, ()):
+            if opened <= e.ts and (closed is None or e.ts < closed):
+                return True
+    return False
+
+
+def split_follow_ups(events: Iterable[Event], spans: Mapping) -> dict:
+    """Sends split into NEW outreach and FOLLOW-UPS on live opportunities.
+    The two always add up to the sends counted, so the split never disagrees
+    with the Outreach number beside it."""
+    out = {"new": 0, "follow_up": 0}
+    for e in events:
+        if e.is_send:
+            out["follow_up" if is_follow_up(e, spans) else "new"] += 1
+    return out
+
+
 # ── SQL ──────────────────────────────────────────────────────────────────────
 
 CALL_DATES = ("booked", "held")
