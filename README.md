@@ -14,20 +14,25 @@ A Python client for connecting to Model Context Protocol (MCP) servers, with bui
 
 ## 📦 Installation
 
+Use Python 3.10 or newer. Before installing dependencies into a new or existing
+environment, [update pip to 26.2.2 or newer using the hash-pinned bootstrap](https://discuss.python.org/t/information-for-python-users-regarding-emudhra-emsign-ca-certificate-security-incident/109576)
+so its bundled certificate store no longer trusts the affected emSign root.
+
 1. Clone the repository:
 ```bash
 git clone <repository-url>
 cd pursuit-mcp-client
 ```
 
-2. Install dependencies:
+2. Create or check the root virtual environment, bootstrap patched pip, and install
+the MCP client in development mode:
 ```bash
-pip install -r requirements.txt
+bash scripts/install.sh
 ```
 
-Or install in development mode:
+3. Activate that environment before running the client:
 ```bash
-pip install -e .
+source venv/bin/activate
 ```
 
 ## ⚙️ Configuration
@@ -207,9 +212,12 @@ python examples/google_drive_example.py
 
 ### Setting up for Development
 
+Complete the installation above and activate `venv` before adding development
+dependencies, so these downloads also use the patched pip trust store.
+
 ```bash
 # Install development dependencies
-pip install -e ".[dev]"
+python -m pip install -e ".[dev]"
 
 # Run tests
 pytest

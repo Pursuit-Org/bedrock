@@ -4,13 +4,29 @@ Pebble powers prospect research for Bedrock. Integration #9.
 
 ## Quick Start
 
+Use Python 3.11 or newer for the patched FastAPI/Starlette stack.
+Bootstrap pip's patched certificate store before installing dependencies.
+
 ```bash
 # From repo root
-pip install -r pebble/requirements.txt
+(test -d pebble/.venv || python3.11 -m venv pebble/.venv) &&
+source pebble/.venv/bin/activate &&
+python -c 'import sys; sys.exit("Python 3.11+ required; recreate pebble/.venv" if sys.version_info < (3, 11) else 0)' &&
+bash scripts/bootstrap-pip.sh python &&
+python -m pip install -r pebble/requirements.txt
+```
+
+After installation succeeds, configure and start Pebble:
+
+```bash
 cp pebble/.env.example pebble/.env
 # Edit pebble/.env: set ANTHROPIC_API_KEY
 uvicorn pebble.main:app --reload --port 8001
 ```
+
+Use your installed Python 3.11+ executable in place of `python3.11` if needed.
+Check an existing environment's version before reusing it. The bootstrap command
+is from the [Python security team's guidance](https://discuss.python.org/t/information-for-python-users-regarding-emudhra-emsign-ca-certificate-security-incident/109576).
 
 Bedrock (financial_forecasting) runs on 8000. Set `REACT_APP_PEBBLE_API_URL=http://localhost:8001` in the frontend .env to call Pebble.
 

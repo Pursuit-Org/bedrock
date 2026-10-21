@@ -27,15 +27,33 @@ The backend service account is the problem — it's tied to a personal account a
 
 ### 1. Clone and install
 
+Use Python 3.11 or newer for this backend and Pebble. The standalone root MCP
+client supports Python 3.10+. Bootstrap pip's patched certificate store in each
+new or existing environment before installing application dependencies; updating
+application `certifi` alone does not update pip's vendored copy.
+
 ```bash
 # Backend
-cd financial_forecasting
-pip install -r requirements.txt
-
-# Frontend
-cd frontend
-npm install
+cd financial_forecasting &&
+(test -d .venv || python3.11 -m venv .venv) &&
+source .venv/bin/activate &&
+python -c 'import sys; sys.exit("Python 3.11+ required; recreate .venv" if sys.version_info < (3, 11) else 0)' &&
+bash ../scripts/bootstrap-pip.sh python &&
+python -m pip install -r requirements.txt
 ```
+
+After the backend installation succeeds, install the frontend from the same directory:
+
+```bash
+# Frontend
+cd frontend && npm install
+```
+
+The bootstrap URL and hash come from the [Python security team's emSign incident guidance](https://discuss.python.org/t/information-for-python-users-regarding-emudhra-emsign-ca-certificate-security-incident/109576).
+The shared helper preserves pip 26.2.2 or newer; older versions receive the hash-pinned wheel.
+Use your installed Python 3.11+ executable in place of `python3.11` if needed.
+The `.venv` path matches `dev.sh`; if it already exists, activate it and check its
+Python version before the bootstrap. Recreate unsupported environments separately.
 
 ### 2. Create your `.env` file
 

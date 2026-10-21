@@ -73,9 +73,12 @@ returns 503.
 
 ### c. Install + run
 
+First complete [Clone and install in the developer guide](DEV_SETUP_GUIDE.md#1-clone-and-install)
+using Python 3.11+ and `.venv`, including the hash-pinned pip bootstrap.
+
 ```bash
-# backend deps
-cd financial_forecasting && pip install -r requirements.txt
+# activate the backend environment prepared above
+cd financial_forecasting && source .venv/bin/activate
 # frontend deps
 cd frontend-v2 && npm install && cd ..
 
