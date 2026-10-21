@@ -55,34 +55,63 @@ do not equate unavailable evidence with a confirmed bug or imply unperformed ver
 Screenshots, recordings, profiling, runtime checks, or migration/rollback proof are needed only
 when relevant to the changed behavior and its risk. Do not execute code to obtain them.
 
-Use **Not ready** for unresolved consequential defects or unmet merge requirements;
-**Needs verification** when material evidence is missing, pending, or inaccessible;
-otherwise use **Ready**. A critical unresolved issue cannot be averaged away. Assess residual
-merge risk independently as **Low**, **Medium**, or **High**, based on potential impact,
-uncertainty, reversibility, and detection. Neither a small diff nor zero findings implies low risk.
+For GitHub reviews, prefix each finding title with **Blocking:** or **Non-blocking:**.
+Blocking findings require correction before merge. Non-blocking findings must explain why
+safe deferral is reasonable; omit style preferences and inconsequential inconsistencies rather
+than promoting them to findings. Keep the existing finding bullets and brevity limits.
 
-Use this exact Markdown template for the assessment, preserving labels, capitalization,
-bold verdicts, blank lines, and one bullet per section. Replace braces with PR-specific text;
-choose only one listed verdict. Do not combine sections, rename labels, or use em dashes in
-the assessment. Keep explanations concise (normally at most 80 words total), link supporting
-evidence where available, and refer to findings rather than repeating them.
+Choose exactly one merge status, using this precedence:
+
+1. 🔴 **Not ready**: unresolved blocking findings or unmet merge requirements. Name what must
+   change before merge.
+2. 🟡 **Needs verification**: no known blocker, but material missing, pending, or inaccessible
+   evidence prevents a readiness judgment. Name the specific next check.
+3. 🟡 **Ready with non-blocking findings**: only non-blocking findings remain and no material
+   verification gaps exist. Explain why merging before addressing them is safe.
+4. 🟢 **Ready**: no unresolved findings or material verification gaps.
+
+Future Improvements are optional follow-ups, not unresolved findings. Missing specs alone are
+not findings or verification gaps. Do not invent requirements or demand a spec by default.
+
+Assess residual merge risk independently as **Low**, **Medium**, or **High**, based on potential
+impact, uncertainty, reversibility, and detection. A critical issue cannot be averaged away;
+neither a small diff nor zero findings implies low risk.
+
+Use the exact template below. Preserve labels, capitalization, blank lines, and bold verdicts.
+Replace braces with PR-specific text and select the exact status line from the list above.
+Use plain paragraphs, not bullets, for every assessment section. Do not use em dashes.
+Keep the assessment normally within 80 words, and refer to findings rather than repeating them.
+
+Do not add narration: no review diary, "I read/checked" lists, tool-call recaps, change summaries,
+boilerplate reassurance, or unrelated CI status. Investigate evidence without narrating the work.
+The merge-status sentence must explain the decision, not recap the PR.
 
 ```markdown
-Merge status: **{Ready | Needs verification | Not ready}**
+Merge status: {colored circle and bold status from the list above}
 
-- {One short sentence explaining the verdict.}
+{One short sentence explaining why merge is safe, what blocks it, or what must be verified.}
 
 Residual risk: **{Low | Medium | High}**
 
-- {One short sentence explaining the principal remaining exposure, or none identified.}
+{One short sentence naming the principal remaining exposure, or none identified.}
+```
 
+Append these sections in this order only when applicable, using plain paragraphs:
+
+```markdown
 **Evidence checked**
 
-- {Relevant checks or artifacts actually inspected, with links where useful.}
+{Specific evidence materially supporting the verdict, with a useful link where available.}
 
-**Verification gaps:**
+**Verification gaps**
 
-- {Material missing evidence and the smallest next check, or "None material."}
+{Material missing evidence and the smallest next check.}
 ```
+
+Omit Evidence checked for routine inspection or generic CI success; include it only when
+specific evidence materially supports the decision, such as a reproduction or runtime check.
+Omit Verification gaps entirely when there are no material gaps; never write "None material"
+or list unrelated pending checks. Needs verification always requires this section. Keep material
+gaps visible even when Not ready takes precedence. Never imply verification that did not occur.
 
 Inspired by [Warp's merge-risk skill](https://github.com/warpdotdev/common-skills/blob/main/.agents/skills/merge-risk/SKILL.md).
