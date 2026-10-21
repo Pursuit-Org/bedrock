@@ -61,12 +61,28 @@ otherwise use **Ready**. A critical unresolved issue cannot be averaged away. As
 merge risk independently as **Low**, **Medium**, or **High**, based on potential impact,
 uncertainty, reversibility, and detection. Neither a small diff nor zero findings implies low risk.
 
-Keep the assessment to these three short lines (normally at most 80 words total), linking to
-supporting evidence where available and referring to findings rather than repeating them:
+Use this exact Markdown template for the assessment, preserving labels, capitalization,
+bold verdicts, blank lines, and one bullet per section. Replace braces with PR-specific text;
+choose only one listed verdict. Do not combine sections, rename labels, or use em dashes in
+the assessment. Keep explanations concise (normally at most 80 words total), link supporting
+evidence where available, and refer to findings rather than repeating them.
 
-- **Readiness:** Ready / Needs verification / Not ready — decisive reason.
-- **Residual risk:** Low / Medium / High — principal remaining exposure, or none identified.
-- **Evidence / gaps:** Relevant checks or artifacts inspected; material missing evidence and
-  the smallest next check, or no material gaps identified.
+```markdown
+Merge status: **{Ready | Needs verification | Not ready}**
+
+- {One short sentence explaining the verdict.}
+
+Residual risk: **{Low | Medium | High}**
+
+- {One short sentence explaining the principal remaining exposure, or none identified.}
+
+**Evidence checked**
+
+- {Relevant checks or artifacts actually inspected, with links where useful.}
+
+**Verification gaps:**
+
+- {Material missing evidence and the smallest next check, or "None material."}
+```
 
 Inspired by [Warp's merge-risk skill](https://github.com/warpdotdev/common-skills/blob/main/.agents/skills/merge-risk/SKILL.md).
