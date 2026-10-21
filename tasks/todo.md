@@ -127,3 +127,31 @@ The official `node:22.23.4-alpine` image is available for amd64 and arm64. Local
 container builds were not run because the Docker daemon is unavailable. Before
 production rollout, build the deployment image, smoke-test login/navigation/API
 flows in staging, and retain the previous image revision for rollback.
+
+## October dependency security updates (2026-10-21)
+
+Scope: patched frontend tooling and transitive HTTP packages, compatible Python
+HTTP/auth/parser dependencies, certificate trust, and reproducible Docker installs.
+Keep Node 22.23.4 and existing API/auth contracts. No deployment or production
+credentials; preserve the original checkout.
+
+- [x] Verify upstream patch floors and resolve a compatible Python set.
+- [x] Update frontend locks and use frozen Docker installs.
+- [x] Test parser/auth/HTTP boundaries with local fixtures and existing suites.
+- [ ] Build both frontends and verify clean installs, Python dependencies, and CI.
+- [ ] Record exact validation and remaining runtime checks; open a dedicated PR.
+
+Review fixes: retain five compact, session-bound Authlib states so two Google login
+tabs can complete in either order. Real provider metadata, token exchange and
+ID-token signature/nonce tests cover bounded states, expiry, missing session and
+consumed-state rejection. A fresh-process probe exercises the actual startup and
+shutdown hooks, connection initialization, background scheduling and health route.
+Container CI now loads both CA bundles explicitly, asserts they are nonempty, runs
+the isolated lifespan probe, and boots/stops the real Gunicorn command without
+network access. Installer/docs corrections are an independent PR.
+
+Validation: both frontend clean installs/builds and all 458 frontend tests pass;
+backend dependency and OAuth/lifespan suites pass locally on Python 3.13; Pebble
+passes 290 tests. Both isolated dependency resolutions pass pip check. Linux
+Python 3.11 and production image results will be checked in PR CI. Production
+OAuth/provider/database smoke tests remain staging checks; nothing was deployed.

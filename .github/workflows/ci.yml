@@ -40,8 +40,11 @@ jobs:
         run: npm run build
 
   backend:
-    name: Backend — pytest
+    name: Backend — pytest (Python ${{ matrix.python }})
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.11", "3.13"]
     defaults:
       run:
         working-directory: financial_forecasting
@@ -51,12 +54,18 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          python-version: ${{ matrix.python }}
           cache: pip
           cache-dependency-path: financial_forecasting/requirements.txt
 
+      - name: Bootstrap patched pip trust store
+        run: python -m pip install "pip @ https://files.pythonhosted.org/packages/3f/06/3e4420302363fbb71be3c7f35ce042f54bfca330e3e66b3a2e3c4cca579f/pip-26.2.2-py3-none-any.whl#sha256=fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70"
+
       - name: Install dependencies
-        run: pip install -r requirements.txt pytest pytest-asyncio
+        run: python -m pip install -r requirements.txt pytest pytest-asyncio
+
+      - name: Verify dependency compatibility
+        run: python -m pip check
 
       - name: Run tests
         # test_awards_route.py and test_jobs_*.py call get_pool() directly,
@@ -74,3 +83,68 @@ jobs:
           JWT_SECRET_KEY: ci-test-secret-not-for-production
           DATABASE_URL: ""
           FRONTEND_URL: http://localhost:4200
+
+  backend-container:
+    name: Backend — production container and trust stores
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build production Python 3.11 image with fresh base and certificates
+        run: docker build --pull --no-cache -t bedrock-backend-ci financial_forecasting
+
+      - name: Verify installed dependencies
+        run: docker run --rm bedrock-backend-ci python -m pip check
+
+      - name: Check application imports and compromised root removal
+        run: |
+          docker run --rm -i \
+            -e JWT_SECRET_KEY=ci-test-secret-not-for-production \
+            -e FRONTEND_URL=http://localhost:4200 \
+            -e DATABASE_URL= \
+            bedrock-backend-ci python - <<'PY'
+          import ssl
+          import certifi
+          import main
+          from uvicorn.workers import UvicornWorker
+
+          for name, context in (
+              ("system", ssl.create_default_context(cafile="/etc/ssl/certs/ca-certificates.crt")),
+              ("certifi", ssl.create_default_context(cafile=certifi.where())),
+          ):
+              certificates = context.get_ca_certs()
+              assert certificates, f"{name} trust store is empty"
+              for certificate in certificates:
+                  common_names = [
+                      value for rdn in certificate["subject"] for key, value in rdn
+                      if key == "commonName"
+                  ]
+                  assert "emSign ECC Root CA - G3" not in common_names, name
+          print("Application, Gunicorn worker, system CA store and certifi verified")
+          PY
+
+      - name: Exercise real application lifespan with isolated services
+        run: |
+          docker run --rm --network none \
+            -e JWT_SECRET_KEY=ci-test-secret-not-for-production \
+            -e FRONTEND_URL=http://localhost:4200 \
+            -e DATABASE_URL= \
+            bedrock-backend-ci python tests/startup_probe.py
+
+      - name: Boot the production Gunicorn command and check health
+        run: |
+          trap 'docker logs bedrock-startup; docker rm -f bedrock-startup' EXIT
+          docker run -d --name bedrock-startup --network none \
+            -e JWT_SECRET_KEY=ci-test-secret-not-for-production \
+            -e FRONTEND_URL=http://localhost:4200 \
+            -e DATABASE_URL= \
+            bedrock-backend-ci
+          for attempt in $(seq 1 30); do
+            if docker exec bedrock-startup python -c 'import json, urllib.request; data = json.load(urllib.request.urlopen("http://127.0.0.1:8080/health", timeout=2)); assert data["meta"]["services"]["mcp_client"] is True; assert data["data"]["status"] == "degraded"'; then
+              docker stop --time 15 bedrock-startup
+              test "$(docker inspect --format '{{.State.ExitCode}}' bedrock-startup)" = 0
+              exit 0
+            fi
+            sleep 1
+          done
+          exit 1
