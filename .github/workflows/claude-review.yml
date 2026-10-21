@@ -53,5 +53,5 @@ jobs:
             --model opus --max-turns 80 --restricted --permission-mode dontAsk
             --add-dir "${{ runner.temp }}/claude-review" --strict-mcp-config
             --tools Read,Glob,Grep,ToolSearch
-            --allowedTools Read,Glob,Grep,mcp__github_comment__update_claude_comment
+            --allowedTools Read,Glob,Grep,mcp__github_comment__update_claude_comment,mcp__github_ci__get_ci_status,mcp__github_ci__get_workflow_run_details,mcp__github_ci__download_job_log
             --disallowedTools Bash,Edit,Write,NotebookEdit,Skill,Agent,mcp__github_file_ops__*
