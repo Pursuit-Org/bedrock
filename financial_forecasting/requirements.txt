@@ -11,6 +11,10 @@ starlette==1.9.0
 # Authentication
 authlib==1.9.1
 httpx==0.28.1
+# Authlib's preferred transport; keep it explicit rather than relying on Anthropic.
+httpx2==2.16.0
+httpcore2==2.16.0
+truststore==0.10.5
 PyJWT==2.15.1
 python-jose[cryptography]==3.5.0
 itsdangerous==2.1.2

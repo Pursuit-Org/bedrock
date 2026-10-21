@@ -138,8 +138,8 @@ credentials; preserve the original checkout.
 - [x] Verify upstream patch floors and resolve a compatible Python set.
 - [x] Update frontend locks and use frozen Docker installs.
 - [x] Test parser/auth/HTTP boundaries with local fixtures and existing suites.
-- [ ] Build both frontends and verify clean installs, Python dependencies, and CI.
-- [ ] Record exact validation and remaining runtime checks; open a dedicated PR.
+- [x] Build both frontends and verify clean installs, Python dependencies, and CI.
+- [x] Record exact validation and remaining runtime checks; open a dedicated PR.
 
 Review fixes: retain five compact, session-bound Authlib states so two Google login
 tabs can complete in either order. Real provider metadata, token exchange and
@@ -151,7 +151,13 @@ the isolated lifespan probe, and boots/stops the real Gunicorn command without
 network access. Installer/docs corrections are an independent PR.
 
 Validation: both frontend clean installs/builds and all 458 frontend tests pass;
-backend dependency and OAuth/lifespan suites pass locally on Python 3.13; Pebble
+backend dependency and OAuth/lifespan suites pass locally (1,052 tests) on Python 3.13; Pebble
 passes 290 tests. Both isolated dependency resolutions pass pip check. Linux
-Python 3.11 and production image results will be checked in PR CI. Production
+Python 3.11/3.13 each pass the same 1,052 tests in PR #335 CI. The production image
+build, nonempty CA-bundle checks, isolated lifespan probe and actual Gunicorn
+startup/health/graceful-stop check also pass. Production
 OAuth/provider/database smoke tests remain staging checks; nothing was deployed.
+
+Independent Codex and Claude Opus reviews found no actionable application defects.
+Authlib's preferred httpx2/httpcore2/truststore dependencies are explicitly pinned
+to the already-tested versions rather than depending on Anthropic to supply them.
