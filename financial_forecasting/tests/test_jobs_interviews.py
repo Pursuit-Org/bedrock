@@ -313,42 +313,6 @@ def test_delete_without_grant_is_a_clear_503():
     assert r.json()["detail"] == PENDING
 
 
-# ── stats ────────────────────────────────────────────────────────────────────
-
-def test_stats_fills_every_week_and_excludes_test_data():
-    import routes.jobs as jobs
-    today = datetime.now(jobs._PROJECTION_TZ).date()
-    this_monday = today - timedelta(days=today.weekday())
-    conn = FakeConn(
-        lists={"AS week_start": [{"week_start": this_monday, "n": 4},
-                                 {"week_start": this_monday - timedelta(weeks=2), "n": 1}]},
-        rows={"AS scheduled": {"total": 37, "builders": 15, "scheduled": 2}},
-    )
-    r = make_jobs_client(conn).get("/api/jobs/interviews/stats")
-    assert r.status_code == 200, r.text
-    data = r.json()["data"]
-    assert len(data["weeks"]) == 8
-    assert data["weeks"][-1] == {"week_start": this_monday.isoformat(), "count": 4}
-    assert data["weeks"][0]["week_start"] == (this_monday - timedelta(weeks=7)).isoformat()
-    assert [w["count"] for w in data["weeks"]] == [0, 0, 0, 0, 0, 1, 0, 4]
-    assert (data["this_week"], data["total"], data["builders"], data["scheduled"]) == (4, 37, 15, 2)
-    week_q = [c for c in conn.calls if "AS week_start" in c[1]][0]
-    # window: first Monday through the end of this week (scheduled rounds count)
-    assert week_q[2] == (this_monday - timedelta(weeks=7), this_monday + timedelta(weeks=1))
-    for q in conn.queries():
-        assert "seeded for platform demo" in q
-        assert "smoke test" in q
-        assert "+auto-testing" in q
-
-
-def test_stats_weeks_param():
-    conn = FakeConn(rows={"AS scheduled": {"total": 0, "builders": 0, "scheduled": 0}})
-    r = make_jobs_client(conn).get("/api/jobs/interviews/stats?weeks=3")
-    assert r.status_code == 200
-    assert [w["count"] for w in r.json()["data"]["weeks"]] == [0, 0, 0]
-    assert make_jobs_client(conn).get("/api/jobs/interviews/stats?weeks=0").status_code == 422
-
-
 # ── board payloads carry the rollup ──────────────────────────────────────────
 
 ROLLUP = {"interview_count": 3, "latest_round": 4, "latest_interview_date": date(2026, 10, 16),

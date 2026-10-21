@@ -29,7 +29,6 @@ import {
   useCreateInterview,
   useUpdateInterview,
   useDeleteInterview,
-  useInterviewStats,
   APP_STAGE_OPTIONS,
   INTERVIEW_TYPES,
   interviewTypeLabel,
@@ -399,45 +398,6 @@ function InterviewRoundsPanel({ appId, count, latestRound }: { appId: number; co
           + Log interview
         </button>
       )}
-    </div>
-  );
-}
-
-/** Board-header stat line: rounds this week, a tiny bar per week for the last
- *  8 (by interview date, Monday-start), and the all-time totals. */
-function InterviewStatsLine() {
-  const { data } = useInterviewStats(8);
-  if (!data) return null;
-  const peak = Math.max(1, ...data.weeks.map((w) => w.count));
-  const recent = data.weeks.reduce((n, w) => n + w.count, 0);
-  return (
-    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11.5px] text-ink-3">
-      <span className="text-[10.5px] uppercase tracking-wider text-ink-4">Interviews</span>
-      <span>
-        <span className="font-medium text-ink">{data.this_week}</span> this week
-      </span>
-      <span className="text-ink-4">·</span>
-      <span className="flex h-3 items-end gap-[2px]" aria-hidden>
-        {data.weeks.map((w, i) => (
-          <span
-            key={w.week_start}
-            title={`Week of ${fmtDateShort(w.week_start)}: ${w.count}`}
-            className={cn(
-              "w-[4px] rounded-sm",
-              w.count === 0 ? "bg-border-strong" : i === data.weeks.length - 1 ? "bg-accent" : "bg-accent/50",
-            )}
-            style={{ height: `${Math.max(2, Math.round((w.count / peak) * 12))}px` }}
-          />
-        ))}
-      </span>
-      <span title={data.weeks.map((w) => `${fmtDateShort(w.week_start)}: ${w.count}`).join("\n")}>
-        <span className="font-medium text-ink">{recent}</span> in last 8 wks
-      </span>
-      <span className="text-ink-4">·</span>
-      <span>
-        {data.total} all-time across {data.builders} {data.builders === 1 ? "builder" : "builders"}
-        {data.scheduled > 0 && <span className="text-ink-4"> · {data.scheduled} scheduled</span>}
-      </span>
     </div>
   );
 }
@@ -1725,7 +1685,6 @@ export function RolesBoard() {
 
   return (
     <div className="flex flex-col gap-3">
-      <InterviewStatsLine />
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-[2fr_1fr_1fr]">
         <div className="flex min-w-0 flex-col gap-3">
           <div className="flex items-center justify-between">

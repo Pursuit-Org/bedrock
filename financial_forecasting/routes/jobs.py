@@ -2972,66 +2972,6 @@ async def delete_interview(
     return {"success": True, "data": {"interview_id": interview_id, "job_application_id": row["job_application_id"], "deleted": True}}
 
 
-@router.get("/interviews/stats")
-async def interview_stats(
-    weeks: int = Query(8, ge=1, le=52),
-    user=Depends(require_auth),
-    conn=Depends(get_db),
-):
-    """Interview volume for the Roles board header: rounds per ISO week (Monday
-    start, by interview date — not when it was logged) for the last `weeks`
-    weeks including this one, plus all-time totals. "This week" counts rounds
-    scheduled for later this week too; the all-time totals count only rounds
-    dated today or earlier, with future-dated ones reported as `scheduled`.
-    Same test-data exclusions as the Builder-/Staff-Sourced queues. Weeks run
-    on New York dates, as the projection does."""
-    today = datetime.now(_PROJECTION_TZ).date()
-    this_week = today - timedelta(days=today.weekday())
-    first_week = this_week - timedelta(weeks=weeks - 1)
-    # Shared FROM/WHERE: interviews on real builders' applications only.
-    base = """
-        FROM public.interviews i
-        JOIN public.job_applications ja ON ja.job_application_id = i.job_application_id
-        LEFT JOIN LATERAL bedrock.builder_by_id(ja.builder_id) b ON true
-        WHERE i.date IS NOT NULL
-          AND COALESCE(ja.notes, '') NOT ILIKE '%seeded for platform demo%'
-          AND COALESCE(ja.notes, '') NOT ILIKE '%smoke test%'
-          AND (b.email IS NULL OR b.email NOT ILIKE '%+auto-testing%')
-    """
-    by_week = await conn.fetch(
-        f"""
-        -- Plain date arithmetic to the ISO Monday: date_trunc('week', date)
-        -- would round-trip through timestamptz in the session's time zone.
-        SELECT i.date - (extract(isodow FROM i.date)::int - 1) AS week_start, count(*)::int AS n
-        {base}
-          AND i.date >= $1 AND i.date < $2
-        GROUP BY 1
-        """,
-        first_week, this_week + timedelta(weeks=1),
-    )
-    totals = await conn.fetchrow(
-        f"""
-        SELECT count(*) FILTER (WHERE i.date <= $1)::int AS total,
-               count(DISTINCT ja.builder_id) FILTER (WHERE i.date <= $1)::int AS builders,
-               count(*) FILTER (WHERE i.date > $1)::int AS scheduled
-        {base}
-        """,
-        today,
-    )
-    counts = {r["week_start"]: r["n"] for r in by_week}
-    series = []
-    for k in range(weeks):
-        wk = first_week + timedelta(weeks=k)
-        series.append({"week_start": wk.isoformat(), "count": counts.get(wk, 0)})
-    return {"success": True, "data": {
-        "weeks": series,
-        "this_week": series[-1]["count"],
-        "total": (totals["total"] if totals else 0) or 0,
-        "builders": (totals["builders"] if totals else 0) or 0,
-        "scheduled": (totals["scheduled"] if totals else 0) or 0,
-    }}
-
-
 # ── Job-ready (L3+) pool ───────────────────────────────────────────────────────
 # Builders who EVER reached L3+ (have an L3+ course enrollment), each tagged with
 # the L3 cohort (class) they completed — the dashboard's segment dimension. L3+ is

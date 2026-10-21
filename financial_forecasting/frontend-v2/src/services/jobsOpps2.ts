@@ -826,21 +826,11 @@ export interface InterviewBody {
   interviewer_name?: string | null;
 }
 
-export interface InterviewStats {
-  weeks: { week_start: string; count: number }[];
-  this_week: number;
-  /** Rounds dated today or earlier; future-dated ones are `scheduled`. */
-  total: number;
-  builders: number;
-  scheduled: number;
-}
-
 /** Every family that shows a round count or an interview-driven stage. A new
  *  round can also move an applied application to Interviewing, so the stage
  *  readers (pipeline, funnel, builders) refetch too — same set as a stage edit. */
 function invalidateInterviewDependents(qc: QueryClient, appId: number) {
   qc.invalidateQueries({ queryKey: ["jobs", "interviews", appId] });
-  qc.invalidateQueries({ queryKey: ["jobs", "interview-stats"] });
   qc.invalidateQueries({ queryKey: ["jobs", "roles-board"] });
   qc.invalidateQueries({ queryKey: ["jobs", "builder-sourced"] });
   qc.invalidateQueries({ queryKey: ["jobs", "staff-sourced"] });
@@ -908,17 +898,5 @@ export function useDeleteInterview(appId: number) {
       toast.success("Interview removed");
     },
     onError: (e: unknown) => toast.error(apiErrorMessage(e, "Couldn't remove interview")),
-  });
-}
-
-/** Rounds per ISO week (by interview date) for the Roles board header. */
-export function useInterviewStats(weeks = 8) {
-  return useQuery<InterviewStats>({
-    queryKey: ["jobs", "interview-stats", weeks],
-    queryFn: async () => {
-      const { data } = await api.get<ApiResponse<InterviewStats>>(`/api/jobs/interviews/stats?weeks=${weeks}`);
-      return data.data;
-    },
-    staleTime: 60_000,
   });
 }
