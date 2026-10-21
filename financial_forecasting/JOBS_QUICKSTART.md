@@ -31,7 +31,7 @@ tool. I'm starting from a fresh Mac — nothing is set up. Walk me through every
 step by step, run the commands for me where you can, explain what each does so I
 learn, and verify each step works before moving to the next.
 
-1. Check whether I have git, node (v20+), python3, and the GitHub CLI (gh). Install
+1. Check whether I have git, Node 22.23.4, Python 3.11+, and the GitHub CLI (gh). Install
    anything missing using Homebrew (install Homebrew first if I don't have it).
 2. Log me into GitHub: run `gh auth login` and walk me through the browser steps
    (I already have access to the Pursuit-Org/bedrock repo).
@@ -46,7 +46,9 @@ learn, and verify each step works before moving to the next.
    data model back to me so I understand it.
 6. Backend setup, in the financial_forecasting/ folder: create a .env file — ask me
    for the DATABASE_URL value (Jac sent it) and generate JWT_SECRET_KEY by running
-   `openssl rand -hex 32`. Then run: pip install -r requirements.txt
+   `openssl rand -hex 32`. Follow financial_forecasting/DEV_SETUP_GUIDE.md,
+   section "1. Clone and install": use .venv, verify Python 3.11+, and run the
+   shared hash-pinned pip bootstrap successfully before installing requirements.
 7. Frontend setup: cd frontend-v2 && npm install
 8. Start the app: ./dev.sh   (backend on :8000, frontend on :4200). Open
    http://localhost:4200, log in with my @pursuit.org Google account, go to /jobs.

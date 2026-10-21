@@ -1,42 +1,40 @@
 #!/bin/bash
 # Installation script for pursuit-mcp-client
 
-set -e
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
 
 echo "🚀 Installing Pursuit MCP Client..."
 
-# Check Python version
-python_version=$(python3 --version 2>&1 | awk '{print $2}' | cut -d. -f1,2)
-required_version="3.8"
-
-if [ "$(printf '%s\n' "$required_version" "$python_version" | sort -V | head -n1)" != "$required_version" ]; then
-    echo "❌ Python 3.8+ is required. Found: $python_version"
-    exit 1
-fi
-
-echo "✅ Python version: $python_version"
-
 # Create virtual environment if it doesn't exist
 if [ ! -d "venv" ]; then
+    if ! python3 -c 'import sys; sys.exit(sys.version_info < (3, 10))'; then
+        echo "❌ Python 3.10+ is required for the MCP client (backend and Pebble require 3.11+)."
+        exit 1
+    fi
     echo "📦 Creating virtual environment..."
     python3 -m venv venv
 fi
 
-# Activate virtual environment
-echo "🔧 Activating virtual environment..."
-source venv/bin/activate
+venv_python="$repo_root/venv/bin/python"
+if ! "$venv_python" -c 'import sys; sys.exit(sys.version_info < (3, 10))'; then
+    echo "❌ Existing venv requires Python 3.10+. Recreate it with a supported interpreter."
+    exit 1
+fi
 
-# Upgrade pip
-echo "⬆️  Upgrading pip..."
-pip install --upgrade pip
+# Bootstrap the patched trust store with the Python security team's pinned hash.
+echo "⬆️  Installing patched pip trust store..."
+bash "$repo_root/scripts/bootstrap-pip.sh" "$venv_python"
 
 # Install dependencies
 echo "📥 Installing dependencies..."
-pip install -r requirements.txt
+"$venv_python" -m pip install -r requirements.txt
 
 # Install in development mode
 echo "🔗 Installing package in development mode..."
-pip install -e .
+"$venv_python" -m pip install -e .
 
 echo "✅ Installation completed!"
 echo ""

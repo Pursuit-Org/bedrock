@@ -1,0 +1,22 @@
+name: Installer checks
+
+on:
+  pull_request:
+    paths: ["scripts/install.sh", "scripts/bootstrap-pip.sh", "scripts/tests/**", "financial_forecasting/dev.sh", "RUN_POC.sh", ".github/workflows/installer-checks.yml"]
+  push:
+    branches: [main]
+    paths: ["scripts/install.sh", "scripts/bootstrap-pip.sh", "scripts/tests/**", "financial_forecasting/dev.sh", "RUN_POC.sh", ".github/workflows/installer-checks.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  installer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          for script in scripts/install.sh scripts/bootstrap-pip.sh financial_forecasting/dev.sh RUN_POC.sh; do
+            bash -n "$script" || exit 1
+          done
+      - run: python3 -m unittest discover -s scripts/tests -v

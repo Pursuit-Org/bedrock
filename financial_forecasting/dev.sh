@@ -39,6 +39,11 @@ if [ "$1" = "stop" ]; then
   exit 0
 fi
 
+if ! "$PY" -c 'import sys; sys.exit(sys.version_info < (3, 11))'; then
+  echo "ERROR: The backend requires Python 3.11+. See $BACKEND_DIR/DEV_SETUP_GUIDE.md."
+  exit 1
+fi
+
 # Stop any existing instances
 stop
 
@@ -48,9 +53,8 @@ if ! "$PY" -c "import dotenv, fastapi, asyncpg, uvicorn" 2>/dev/null; then
   echo "ERROR: $PY can't import the backend's dependencies."
   echo "  $("$PY" --version 2>&1)"
   echo ""
-  echo "Create the venv and install them:"
-  echo "  python3.13 -m venv $BACKEND_DIR/.venv"
-  echo "  $BACKEND_DIR/.venv/bin/pip install -r $BACKEND_DIR/requirements.txt"
+  echo "Create .venv and bootstrap patched pip before installing dependencies:"
+  echo "  See $BACKEND_DIR/DEV_SETUP_GUIDE.md (Clone and install)."
   exit 1
 fi
 

@@ -10,7 +10,11 @@ echo ""
 # Check Python
 echo "Checking Python..."
 if ! command -v python3 &> /dev/null; then
-    echo "❌ Python3 not found. Please install Python 3.8+"
+    echo "❌ Python3 not found. Please install Python 3.11+"
+    exit 1
+fi
+if ! python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))'; then
+    echo "❌ Python 3.11+ is required. See financial_forecasting/DEV_SETUP_GUIDE.md."
     exit 1
 fi
 echo "✅ Python found: $(python3 --version)"
@@ -18,7 +22,7 @@ echo "✅ Python found: $(python3 --version)"
 # Check required Python packages
 echo ""
 echo "Checking Python packages..."
-python3 -c "import fastapi" 2>/dev/null || { echo "❌ FastAPI not installed. Run: pip install fastapi uvicorn simple-salesforce"; exit 1; }
+python3 -c "import fastapi" 2>/dev/null || { echo "❌ Follow financial_forecasting/DEV_SETUP_GUIDE.md to bootstrap patched pip and install dependencies."; exit 1; }
 echo "✅ FastAPI installed"
 
 # Test Salesforce connection
