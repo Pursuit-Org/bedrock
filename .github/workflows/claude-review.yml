@@ -32,8 +32,9 @@ jobs:
         env:
           REVIEW_BASE_REF: ${{ github.base_ref }}
           REVIEW_DIFF_DIR: ${{ runner.temp }}/claude-review
+          REVIEW_LOG_DIR: ${{ runner.temp }}/github-ci-logs
         run: |
-          mkdir -p "$REVIEW_DIFF_DIR"
+          mkdir -p "$REVIEW_DIFF_DIR" "$REVIEW_LOG_DIR"
           git --no-pager diff --no-ext-diff --no-textconv "origin/$REVIEW_BASE_REF...HEAD" > "$REVIEW_DIFF_DIR/pr.diff"
 
       - uses: anthropics/claude-code-action@v1
@@ -51,7 +52,8 @@ jobs:
           # The opus alias follows Claude Code's recommended Opus version for the provider.
           claude_args: >-
             --model opus --max-turns 80 --restricted --permission-mode dontAsk
-            --add-dir "${{ runner.temp }}/claude-review" --strict-mcp-config
+            --add-dir "${{ runner.temp }}/claude-review" --add-dir "${{ runner.temp }}/github-ci-logs"
+            --strict-mcp-config
             --tools Read,Glob,Grep,ToolSearch
-            --allowedTools Read,Glob,Grep,mcp__github_comment__update_claude_comment
+            --allowedTools Read,Glob,Grep,mcp__github_comment__update_claude_comment,mcp__github_ci__get_ci_status,mcp__github_ci__get_workflow_run_details,mcp__github_ci__download_job_log
             --disallowedTools Bash,Edit,Write,NotebookEdit,Skill,Agent,mcp__github_file_ops__*
