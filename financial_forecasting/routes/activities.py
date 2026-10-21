@@ -7,6 +7,7 @@ bedrock.activity table with full-text search, soft delete, and AI insights.
 import json
 import logging
 import os
+import re
 import uuid
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
@@ -51,11 +52,11 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 # (window count = 1 per row). This keeps meetings, calls, notes etc.
 # untouched — the dupe pattern only shows up for emails.
 #
-# Inserted via _DEDUP_CTE_TEMPLATE.format(where=...) — callers append
+# Inserted via _dedup_cte(conn, where) — callers append
 # their own WHERE clause.
 _DEDUP_CTE_TEMPLATE = """
 WITH ranked AS (
-    SELECT *,
+    SELECT *{recency_cols},
         ROW_NUMBER() OVER (
             PARTITION BY
                 CASE WHEN type = 'email' AND account_id IS NOT NULL
@@ -72,6 +73,9 @@ WITH ranked AS (
                     WHEN 'salesforce' THEN 2
                     ELSE 3
                 END,
+                -- Two mailboxes' copies of one thread: keep the one that has
+                -- seen more of the conversation.
+                {message_count} DESC NULLS LAST,
                 activity_date DESC
         ) AS _dedup_rn
     FROM bedrock.activity
@@ -84,6 +88,88 @@ WITH ranked AS (
 # Helper: convert asyncpg Record to Activity-compatible dict
 # ---------------------------------------------------------------------------
 
+async def _dedup_cte(conn, where: str) -> str:
+    """_DEDUP_CTE_TEMPLATE for this schema. Before the thread-recency
+    migration, last_message_at is derived from the message index (all senders,
+    automated included) so callers' ORDER BY COALESCE(last_message_at, …)
+    works either way."""
+    from services.last_activity import thread_recency_ready
+
+    if await thread_recency_ready(conn):
+        return _DEDUP_CTE_TEMPLATE.format(where=where, recency_cols="", message_count="message_count")
+    return _DEDUP_CTE_TEMPLATE.format(
+        where=where,
+        recency_cols=(
+            ", (SELECT max(m.sent_at) FROM bedrock.activity_email_message m"
+            " WHERE m.activity_id = bedrock.activity.id) AS last_message_at"
+            ", NULL::int AS message_count"
+        ),
+        message_count="NULL::int",
+    )
+
+
+# Per-message payload caps for a thread row. A feed returns up to ~150 rows, so
+# a long chain ships only its newest messages, each with quoted history cut.
+EMAIL_MESSAGES_MAX = 20
+EMAIL_MESSAGE_BODY_MAX = 1500
+
+# Where a reply's quoted history starts: "On <date>, <who> wrote:" (which
+# Gmail may wrap over two lines), Outlook's "-----Original Message-----" or
+# "From: … Sent: …" header block, or ">"-prefixed lines.
+_QUOTE_START_RE = re.compile(
+    r"^(On\b.{0,300}?\bwrote:\s*$"
+    r"|-{2,}\s*Original Message\s*-{2,}"
+    r"|From:\s.+\n(Sent|Date):\s)",
+    re.MULTILINE | re.DOTALL | re.IGNORECASE,
+)
+
+
+def _strip_quoted_history(text: str) -> str:
+    m = _QUOTE_START_RE.search(text)
+    if m and m.start() > 0:
+        text = text[:m.start()]
+    lines = [ln for ln in text.splitlines() if not ln.lstrip().startswith(">")]
+    return "\n".join(lines).strip()
+
+
+def _thread_messages_for_response(raw) -> Optional[list[dict]]:
+    """Newest-capped, quote-stripped per-message view of a gmail thread row.
+
+    Automated messages (read-receipt reminders, no-reply bots) are dropped —
+    the same rule message_count uses — unless the thread is nothing but.
+    """
+    from services.email_message_index import _parse_date
+    from services.gmail_sync import _is_automated_sender
+
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except Exception:
+            return None
+    if not isinstance(raw, list) or not raw:
+        return None
+    raw = [m for m in raw if not _is_automated_sender(m.get("from") or "")] or raw
+    dated = sorted(
+        raw,
+        key=lambda m: _parse_date(m.get("date")) or datetime.min.replace(tzinfo=timezone.utc),
+    )
+    out = []
+    for m in dated[-EMAIL_MESSAGES_MAX:]:
+        sent = _parse_date(m.get("date"))
+        body = _strip_quoted_history(m.get("body_text") or "")
+        out.append({
+            "message_id": m.get("message_id"),
+            "from": m.get("from") or "",
+            "to": m.get("to"),
+            "cc": m.get("cc"),
+            "sent_at": sent.isoformat() if sent else None,
+            "snippet": m.get("snippet"),
+            "body_text": body[:EMAIL_MESSAGE_BODY_MAX],
+            "attachment_count": m.get("attachment_count") or 0,
+        })
+    return out
+
+
 def _row_to_dict(row) -> dict:
     """Convert an asyncpg Record to a JSON-serializable dict."""
     d = dict(row)
@@ -93,7 +179,7 @@ def _row_to_dict(row) -> dict:
     if "project_task_id" in d and d["project_task_id"] is not None:
         d["project_task_id"] = str(d["project_task_id"])
     # Convert datetime to ISO string for JSON
-    for key in ("activity_date", "sf_last_modified", "synced_at", "created_at", "updated_at"):
+    for key in ("activity_date", "last_message_at", "sf_last_modified", "synced_at", "created_at", "updated_at"):
         if key in d and d[key] is not None:
             d[key] = d[key].isoformat()
     # Strip internal fields not in the response model
@@ -102,6 +188,28 @@ def _row_to_dict(row) -> dict:
     # Cap full body to prevent large payloads on account-level feeds (matches jobs.py pattern)
     if d.get("email_body_text") and len(d["email_body_text"]) > 4000:
         d["email_body_text"] = d["email_body_text"][:4000]
+    # email_body_text is the whole chain oldest-first, so the cap above cuts
+    # off the LATEST replies. The per-message list is what the feed renders.
+    if "email_messages" in d:
+        raw = d["email_messages"]
+        d["email_messages"] = _thread_messages_for_response(raw)
+        # The stored messages are the source of truth for the thread's
+        # recency (same rule as the sync). Prefer them over the column when
+        # newer: rows not yet backfilled, or — before the migration — a value
+        # derived from a message index that lags the threads.
+        if d["email_messages"]:
+            from services.gmail_sync import summarize_thread_messages
+            msgs = json.loads(raw) if isinstance(raw, str) else raw
+            summary = summarize_thread_messages(msgs)
+            derived = summary["last_message_at"]
+            current = d.get("last_message_at")
+            if derived and (current is None or derived > datetime.fromisoformat(current)):
+                d["last_message_at"] = derived.isoformat()
+                d["last_message_from"] = summary["last_message_from"]
+            if d.get("message_count") is None:
+                d["message_count"] = summary["message_count"]
+            if d.get("last_message_from") is None:
+                d["last_message_from"] = summary["last_message_from"]
     return d
 
 
@@ -601,13 +709,13 @@ async def list_account_activities_full(
         where_clause = f"deleted_at IS NULL AND ({' OR '.join(or_parts)})"
         count_params = list(params)
 
-        cte = _DEDUP_CTE_TEMPLATE.format(where=where_clause)
+        cte = await _dedup_cte(conn, where_clause)
         rows = await conn.fetch(
             f"""
             {cte}
             SELECT * FROM ranked
             WHERE _dedup_rn = 1
-            ORDER BY activity_date DESC
+            ORDER BY COALESCE(last_message_at, activity_date) DESC
             LIMIT ${idx} OFFSET ${idx + 1}
             """,
             *params, limit, offset,
@@ -708,13 +816,13 @@ async def list_activities(
 
         where_clause = " AND ".join(where_parts)
 
-        cte = _DEDUP_CTE_TEMPLATE.format(where=where_clause)
+        cte = await _dedup_cte(conn, where_clause)
         rows = await conn.fetch(
             f"""
             {cte}
             SELECT * FROM ranked
             WHERE _dedup_rn = 1
-            ORDER BY activity_date DESC
+            ORDER BY COALESCE(last_message_at, activity_date) DESC
             LIMIT ${idx} OFFSET ${idx + 1}
             """,
             *params, limit, offset,

@@ -15,6 +15,7 @@ import { InlineSelect, InlineText } from "@/components/ui/InlineEdit";
 import { StageChip } from "@/components/ui/StageChip";
 import { Tag } from "@/components/ui/Tag";
 import { fmtDate, fmtMoneyFull } from "@/lib/format";
+import { daysSince, lastActivityDate } from "@/lib/lastActivity";
 import { isOpen, stageStatus } from "@/lib/stages";
 import { useAccountEnrichment } from "@/services/accounts";
 import { useActivities } from "@/services/activities";
@@ -101,7 +102,10 @@ export function ContactDetailPage() {
     });
   };
 
-  const lastActivity = contact.Last_Activity_Date__c ?? contact.LastActivityDate ?? null;
+  const lastActivity = lastActivityDate(contact);
+  // Computed from the merged date — SF's Days_Since_Last_Activity__c only
+  // knows about activity logged in Salesforce.
+  const daysSinceLast = daysSince(lastActivity);
   const wonOnOpps = primaryOnOpps.filter((o) => o.IsWon);
   const wonAmount = wonOnOpps.reduce((sum, o) => sum + (o.Amount ?? 0), 0);
 
@@ -183,17 +187,8 @@ export function ContactDetailPage() {
         <Stat label="Last activity" value={fmtDate(lastActivity)} />
         <Stat
           label="Days since"
-          value={
-            contact.Days_Since_Last_Activity__c != null
-              ? String(contact.Days_Since_Last_Activity__c)
-              : "—"
-          }
-          tone={
-            contact.Days_Since_Last_Activity__c != null &&
-            contact.Days_Since_Last_Activity__c > 90
-              ? "amber"
-              : "default"
-          }
+          value={daysSinceLast != null ? String(daysSinceLast) : "—"}
+          tone={daysSinceLast != null && daysSinceLast > 90 ? "amber" : "default"}
         />
         <Stat
           label="Opps as primary"

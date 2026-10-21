@@ -57,6 +57,7 @@ AUTOMATED_SENDER_DOMAINS = {
     "airtable.com",
     "jira.atlassian.com",
     "github.com", "githubusercontent.com",
+    "mailsuite.com", "mailtrack.io",  # read-receipt / follow-up reminder bots
 }
 
 
@@ -73,6 +74,49 @@ def _is_automated_sender(from_header: str) -> bool:
         return True
     domain = addr.split("@")[-1] if "@" in addr else ""
     return domain in AUTOMATED_SENDER_DOMAINS
+
+
+def _addresses(header_value: str) -> list[str]:
+    """Bare, lowercased addresses from a To/Cc/From header value."""
+    from email.utils import getaddresses
+    return [addr.lower() for _, addr in getaddresses([header_value or ""]) if "@" in addr]
+
+
+def _parse_header_date(raw: str) -> datetime | None:
+    from email.utils import parsedate_to_datetime
+    try:
+        dt = parsedate_to_datetime(raw)
+    except Exception:
+        return None
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def summarize_thread_messages(email_messages: list[dict]) -> dict[str, Any]:
+    """Latest-message view of a thread, for the feed headline.
+
+    Automated senders (read-receipt reminders, no-reply bots) never become the
+    headline or count toward message_count, so a Mailsuite nudge can't make a
+    quiet thread look active. Falls back to the newest message of any kind
+    only when every message is automated.
+    """
+    dated = [(m, _parse_header_date(m.get("date", ""))) for m in email_messages]
+    dated = [(m, d) for m, d in dated if d is not None]
+    human = [(m, d) for m, d in dated if not _is_automated_sender(m.get("from", ""))]
+    pool = human or dated
+    if not pool:
+        return {"last_message_at": None, "last_message_from": None,
+                "message_count": len(email_messages) or None, "latest": None}
+    latest, latest_at = max(pool, key=lambda md: md[1])
+    return {
+        "last_message_at": latest_at,
+        "last_message_from": latest.get("from") or None,
+        "message_count": len(human) if human else len(dated),
+        "latest": latest,
+    }
 
 
 def _build_gmail_service(staff_email: str):
@@ -258,14 +302,14 @@ def _extract_thread_meta(service, thread_id: str) -> dict[str, Any] | None:
         logger.warning("gmail thread %s fetch error: %s", thread_id, e)
         return None
 
-    all_labels: set[str] = set()
-    for msg in thread.get("messages", []):
-        all_labels.update(msg.get("labelIds", []))
-    if all_labels & SKIP_LABELS:
-        return None
-
     messages = thread.get("messages", [])
     if not messages:
+        return None
+
+    # Drop a thread only when EVERY message is categorized (promotions, social,
+    # updates, forums). One reply that Gmail files under Updates used to drop
+    # the whole human conversation it belongs to.
+    if all(set(msg.get("labelIds", [])) & SKIP_LABELS for msg in messages):
         return None
 
     first = messages[0]
@@ -284,12 +328,9 @@ def _extract_thread_meta(service, thread_id: str) -> dict[str, Any] | None:
     for msg in messages:
         for h in msg.get("payload", {}).get("headers", []):
             if h["name"].lower() in ("from", "to", "cc"):
-                for part in h["value"].split(","):
-                    part = part.strip()
-                    if "@" in part:
-                        email = part.split("<")[-1].strip("> ")
-                        if email and not any(email.endswith(sfx) for sfx in _NOISE_EMAIL_SUFFIXES):
-                            all_emails.add(email.lower())
+                for email in _addresses(h["value"]):
+                    if not any(email.endswith(sfx) for sfx in _NOISE_EMAIL_SUFFIXES):
+                        all_emails.add(email)
 
     # Parse date from first message
     date_str = headers.get("date", "")
@@ -313,7 +354,10 @@ def _extract_thread_meta(service, thread_id: str) -> dict[str, Any] | None:
         email_messages.append({
             "message_id": msg["id"],
             "from": msg_headers.get("from", ""),
+            "to": _addresses(msg_headers.get("to", "")),
+            "cc": _addresses(msg_headers.get("cc", "")),
             "date": msg_headers.get("date", ""),
+            "snippet": msg.get("snippet", "")[:500],
             "body_text": body_text.strip(),
             "attachment_count": len(att_meta),
         })
@@ -325,13 +369,22 @@ def _extract_thread_meta(service, thread_id: str) -> dict[str, Any] | None:
             att["message_id"] = msg["id"]
             pending_attachments.append(att)
 
+    # Thread identity (subject/sender/date) stays on the first message — the
+    # cross-mailbox dedup keys on it. The headline (snippet, recency) follows
+    # the latest human message so a reply moves the thread up the feed.
+    summary = summarize_thread_messages(email_messages)
+    latest = summary["latest"]
+
     return {
         "thread_id": thread_id,
         "subject": headers.get("subject", "(no subject)"),
         "email_from": headers.get("from", ""),
         "all_emails": list(all_emails),
-        "snippet": first.get("snippet", "")[:500],
+        "snippet": (latest.get("snippet") if latest else None) or first.get("snippet", "")[:500],
         "date": date,
+        "last_message_at": summary["last_message_at"] or date,
+        "last_message_from": summary["last_message_from"],
+        "message_count": summary["message_count"],
         "email_body_text": "\n\n---\n\n".join(all_body_text_parts),
         "email_messages": email_messages,
         "pending_attachments": pending_attachments,
@@ -377,6 +430,7 @@ async def sync_gmail_for_staff(
     upserted = 0
     errors = 0
     page_token = None
+    listing_complete = True
 
     while True:
         try:
@@ -387,6 +441,7 @@ async def sync_gmail_for_staff(
         except HttpError as e:
             logger.error("gmail list threads error for %s: %s", staff_email, e)
             errors += 1
+            listing_complete = False
             break
 
         threads = result.get("threads", [])
@@ -432,9 +487,9 @@ async def sync_gmail_for_staff(
             # have cosmetically-different body_text (quoted history), so matching
             # on body would let the duplicates through. If an equivalent row
             # already exists from another thread/mailbox, skip.
-            dup_id = await conn.fetchval(
+            dup = await conn.fetchrow(
                 """
-                SELECT id FROM bedrock.activity
+                SELECT id, message_count FROM bedrock.activity
                 WHERE deleted_at IS NULL
                   AND source IN ('gmail-sync','calendar-sync')
                   AND source_thread_id IS DISTINCT FROM $3
@@ -448,7 +503,38 @@ async def sync_gmail_for_staff(
                 meta["subject"], meta["date"], meta["thread_id"],
                 meta["email_from"], real_external,
             )
-            if dup_id is not None:
+            if dup is not None:
+                # Same conversation already stored from another mailbox. Keep
+                # ONE row, but never the poorer copy: if this mailbox has seen
+                # more of the thread (e.g. was added on a later reply), its
+                # messages replace the stored ones.
+                if (meta["message_count"] or 0) > (dup["message_count"] or 0):
+                    await conn.execute(
+                        """
+                        UPDATE bedrock.activity SET
+                            email_snippet     = $2,
+                            email_body_text   = $3,
+                            email_messages    = $4,
+                            attachments       = $5,
+                            contact_ids       = ARRAY(SELECT DISTINCT unnest(coalesce(contact_ids, '{}') || $6::text[])),
+                            account_id        = COALESCE(account_id, $7),
+                            last_message_at   = $8,
+                            last_message_from = $9,
+                            message_count     = $10,
+                            synced_at         = now()
+                        WHERE id = $1
+                        """,
+                        dup["id"],
+                        meta["snippet"],
+                        meta["email_body_text"] or None,
+                        json.dumps(meta["email_messages"]) if meta["email_messages"] else None,
+                        json.dumps(attachments_out) if attachments_out else None,
+                        contact_ids,
+                        account_id,
+                        meta["last_message_at"],
+                        meta["last_message_from"],
+                        meta["message_count"],
+                    )
                 upserted += 1
                 continue
 
@@ -461,14 +547,16 @@ async def sync_gmail_for_staff(
                         email_from, email_to, email_snippet,
                         email_body_text, email_messages, attachments,
                         contact_ids, account_id,
-                        logged_by
+                        logged_by,
+                        last_message_at, last_message_from, message_count
                     ) VALUES (
                         'email', $1, $2,
                         'gmail-sync', $3,
                         $4, $5, $6,
                         $7, $8, $9,
                         $10, $11,
-                        $12
+                        $12,
+                        $13, $14, $15
                     )
                     ON CONFLICT (source, source_thread_id)
                     WHERE source_thread_id IS NOT NULL
@@ -480,6 +568,9 @@ async def sync_gmail_for_staff(
                         attachments      = EXCLUDED.attachments,
                         contact_ids      = EXCLUDED.contact_ids,
                         account_id       = COALESCE(EXCLUDED.account_id, bedrock.activity.account_id),
+                        last_message_at   = EXCLUDED.last_message_at,
+                        last_message_from = EXCLUDED.last_message_from,
+                        message_count     = EXCLUDED.message_count,
                         synced_at        = now()
                     """,
                     meta["subject"],
@@ -494,6 +585,9 @@ async def sync_gmail_for_staff(
                     contact_ids,
                     account_id,
                     staff_email,
+                    meta["last_message_at"],
+                    meta["last_message_from"],
+                    meta["message_count"],
                 )
                 upserted += 1
             except Exception as e:
@@ -504,7 +598,9 @@ async def sync_gmail_for_staff(
         if not page_token:
             break
 
-    if not backfill_mode:
+    # A listing that died mid-pagination never saw its remaining pages; moving
+    # the watermark past them would skip those threads for good.
+    if not backfill_mode and listing_complete:
         await _set_watermark(conn, staff_email, upserted)
     logger.info("gmail sync %s: upserted=%d errors=%d", staff_email, upserted, errors)
     return {"staff_email": staff_email, "upserted": upserted, "errors": errors}

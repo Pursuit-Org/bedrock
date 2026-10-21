@@ -22,6 +22,7 @@ import { Toolbar } from "@/components/ui/Toolbar";
 import { totalWidth, useColumnWidths } from "@/lib/columnWidths";
 import { useColumnVisibility } from "@/lib/columnVisibility";
 import { fmtDate, initials, toExternalHref } from "@/lib/format";
+import { lastActivityDate } from "@/lib/lastActivity";
 import { searchMatcher } from "@/lib/search";
 import { sortBy, useSort } from "@/lib/sort";
 import { cn } from "@/lib/utils";
@@ -70,8 +71,7 @@ const CONTACTS_FILTERABLE = {
   lastActivity: {
     label: "Last activity",
     type: "date",
-    getValue: (c: SfContact) =>
-      c.Last_Activity_Date__c ?? c.LastActivityDate ?? null,
+    getValue: (c: SfContact) => lastActivityDate(c),
   },
 } satisfies Record<string, FieldMeta<SfContact>>;
 
@@ -155,7 +155,7 @@ function extractContact(c: SfContact, key: ColKey): unknown {
     case "owner":
       return c.Owner?.Name ?? "";
     case "lastActivity":
-      return c.Last_Activity_Date__c ?? c.LastActivityDate ?? null;
+      return lastActivityDate(c);
   }
 }
 
@@ -683,7 +683,7 @@ const ContactRow = memo(function ContactRow({
         className="cursor-pointer truncate text-[13px] tabular-nums text-ink-2"
         onClick={onOpen}
       >
-        {fmtDate(c.Last_Activity_Date__c ?? c.LastActivityDate)}
+        {fmtDate(lastActivityDate(c))}
       </span>
     ),
     linkedin: toExternalHref(c.LinkedIn_URL__c) ? (

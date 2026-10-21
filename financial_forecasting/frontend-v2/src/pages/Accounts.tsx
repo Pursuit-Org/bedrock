@@ -20,6 +20,7 @@ import {
 import { useColumnVisibility } from "@/lib/columnVisibility";
 import { totalWidth, useColumnWidths } from "@/lib/columnWidths";
 import { fmtMoney } from "@/lib/format";
+import { lastActivityDate } from "@/lib/lastActivity";
 import { searchMatcher } from "@/lib/search";
 import { sortBy, type SortState } from "@/lib/sort";
 import { cn } from "@/lib/utils";
@@ -109,7 +110,7 @@ const ACCOUNTS_FILTERABLE_BASE = {
   lastActivity: {
     label: "Last activity",
     type: "date",
-    getValue: (a: SfAccount) => a.Last_Activity_Date__c ?? null,
+    getValue: (a: SfAccount) => lastActivityDate(a),
   },
 } satisfies Record<string, FieldMeta<SfAccount>>;
 
