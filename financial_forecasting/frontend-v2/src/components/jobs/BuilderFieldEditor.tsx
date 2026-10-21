@@ -19,7 +19,8 @@ export type BuilderTriKey = "applying_regularly" | "networking_regularly";
 export type BuilderEditableField =
   | BuilderRatingKey | BuilderListKey | BuilderTriKey
   | "degree" | "university" | "graduation_year" | "min_salary"
-  | "current_location" | "open_to_relocate" | "relocation_notes";
+  | "current_location" | "open_to_relocate" | "relocation_notes"
+  | "site_visits";
 
 export const isBuilderRating = (k: string): k is BuilderRatingKey => BUILDER_RATING_FIELDS.some(([r]) => r === k);
 
@@ -117,6 +118,14 @@ export function BuilderFieldEditor({ field, values: p, onSave, className }: {
     return (
       <div className={className ?? "max-w-[240px]"} title={p.relocation_notes ?? undefined}>
         <InlineText value={p.relocation_notes} placeholder="e.g. East Coast only" onSave={(v) => put("intake", { relocation_notes: v.trim() || null })} />
+      </div>
+    );
+  }
+  // Site visits live in intake too, as free text.
+  if (field === "site_visits") {
+    return (
+      <div className={className ?? "max-w-[240px]"} title={p.site_visits ?? undefined}>
+        <InlineText value={p.site_visits} placeholder="Where, when, how it went" onSave={(v) => put("intake", { site_visits: v.trim() || null })} />
       </div>
     );
   }

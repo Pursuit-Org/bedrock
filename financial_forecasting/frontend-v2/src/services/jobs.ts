@@ -2913,6 +2913,8 @@ export interface BuilderProfileFields {
   /** Minimum salary expectation in dollars ($10k steps) — intake.min_salary,
    *  else the low end of the intake form's salary range. */
   min_salary: number | null;
+  /** Site visits: staff-entered free text, in intake. */
+  site_visits: string | null;
 }
 
 /** Coach competency scale — the values the Airtable import brought in. */
@@ -2987,6 +2989,7 @@ export interface BuilderJobProfile {
   min_salary: number | null;
   /** Computed server-side from intake (see BuilderProfileFields). */
   current_location: string | null; open_to_relocate: boolean | null; relocation_notes: string | null;
+  site_visits: string | null;
   pursuit_coach: string | null; gen_notes: string | null; coach_notes: string | null;
   coach_flags: string[]; improvement_tags: string[];
   ready_lookbook: boolean; ready_linkedin: boolean; ready_github: boolean; ready_cv: boolean; ready_mock: boolean;

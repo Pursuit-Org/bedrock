@@ -11248,6 +11248,12 @@ def _intake_location(intake: Optional[dict]) -> dict:
     }
 
 
+def _intake_site_visits(intake: Optional[dict]) -> dict:
+    """Site visits: one staff-entered free-text column, stored in intake like
+    the location columns."""
+    return {"site_visits": (intake or {}).get("site_visits")}
+
+
 # employment_records.program values that mark a deployment (nonprofit / SMB
 # pilots). A paid deployment also counts as a PT gig.
 DEPLOYMENT_PROGRAMS = (
@@ -11409,6 +11415,7 @@ async def builders_board(user=Depends(require_auth), conn=Depends(get_db)):
                 # Location columns (current location, open to relocating,
                 # relocation notes) live in intake; see _intake_location.
                 **_intake_location(_jsonb(prof["intake"]) if prof else None),
+                **_intake_site_visits(_jsonb(prof["intake"]) if prof else None),
                 # Dropdown in $10k steps; same intake storage (PATCH {intake: {min_salary}}).
                 "min_salary": _min_salary(_jsonb(prof["intake"])) if prof else None,
             },
@@ -11489,6 +11496,7 @@ async def builder_detail(user_id: int, user=Depends(require_auth), conn=Depends(
         profile["intake"] = _jsonb(profile.get("intake"))
         profile["min_salary"] = _min_salary(profile["intake"])
         profile.update(_intake_location(profile["intake"]))
+        profile.update(_intake_site_visits(profile["intake"]))
 
     return {"success": True, "data": {
         "identity": {

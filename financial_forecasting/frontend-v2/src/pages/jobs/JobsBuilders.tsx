@@ -40,13 +40,15 @@ type ColKey =
   | "name" | "status" | "coach" | "applications" | "interviews" | "placements" | "pt_count" | "deployments" | "readiness"
   | ArrayKey | RatingKey | `ready_${ReadyKey}` | TriKey
   | "degree" | "university" | "graduation_year" | "min_salary"
-  | "current_location" | "open_to_relocate" | "relocation_notes";
+  | "current_location" | "open_to_relocate" | "relocation_notes"
+  | "site_visits";
 
 const READY_KEYS: ReadyKey[] = ["lookbook", "linkedin", "github", "cv", "mock"];
 
 const COLUMN_ORDER: ColKey[] = [
   "name", "status", "coach", "applications", "interviews", "placements", "pt_count", "deployments", "readiness",
   "target_functions", "target_industries", "preferred_modes", "current_location", "open_to_relocate", "relocation_notes", "min_salary",
+  "site_visits",
   ...BUILDER_RATING_FIELDS.map(([k]) => k),
   ...READY_KEYS.map((k) => `ready_${k}` as const),
   "applying_regularly", "networking_regularly",
@@ -56,6 +58,7 @@ const COLUMN_ORDER: ColKey[] = [
 const DEFAULT_VISIBLE: ColKey[] = [
   "name", "status", "coach", "applications", "interviews", "placements", "pt_count", "deployments", "readiness",
   "target_functions", "target_industries", "preferred_modes", "current_location", "open_to_relocate", "relocation_notes", "min_salary",
+  "site_visits",
   ...BUILDER_RATING_FIELDS.map(([k]) => k),
 ];
 
@@ -65,6 +68,7 @@ const COL_LABELS: Record<ColKey, string> = {
   target_functions: "Target function", target_industries: "Target industry", preferred_modes: "Work mode",
   current_location: "Current location", open_to_relocate: "Open to relocating",
   relocation_notes: "Relocation notes", min_salary: "Min salary",
+  site_visits: "Site visits",
   ...(Object.fromEntries(BUILDER_RATING_FIELDS) as Record<RatingKey, string>),
   ready_lookbook: "Lookbook ready", ready_linkedin: "LinkedIn ready", ready_github: "GitHub ready",
   ready_cv: "CV ready", ready_mock: "Mock interview done",
@@ -82,7 +86,7 @@ const isReady = (k: ColKey): k is `ready_${ReadyKey}` => k.startsWith("ready_");
 const tagKey = (v: string) => v.replace(/,/g, "");
 const tagJoin = (vs: string[] | null | undefined) => (vs ?? []).map(tagKey).join(",");
 
-type Field = "status" | ArrayKey | RatingKey | `ready_${ReadyKey}` | TriKey | "degree" | "university" | "graduation_year" | "current_location" | "open_to_relocate" | "relocation_notes";
+type Field = "status" | ArrayKey | RatingKey | `ready_${ReadyKey}` | TriKey | "degree" | "university" | "graduation_year" | "current_location" | "open_to_relocate" | "relocation_notes" | "site_visits";
 
 const FILTERABLE: Record<Field, FieldMeta<BuilderBoardRow>> = {
   status: { label: "Status", type: "select", getValue: (b) => b.status },
@@ -92,6 +96,7 @@ const FILTERABLE: Record<Field, FieldMeta<BuilderBoardRow>> = {
   current_location: { label: "Current location", type: "text", getValue: (b) => b.profile.current_location ?? "" },
   open_to_relocate: { label: "Open to relocating", type: "select", getValue: (b) => triValue(b.profile.open_to_relocate) },
   relocation_notes: { label: "Relocation notes", type: "text", getValue: (b) => b.profile.relocation_notes ?? "" },
+  site_visits: { label: "Site visits", type: "text", getValue: (b) => b.profile.site_visits ?? "" },
   ...(Object.fromEntries(BUILDER_RATING_FIELDS.map(([k, label]) => [
     k, { label, type: "select", getValue: (b: BuilderBoardRow) => b.profile[k] ?? "" },
   ])) as Record<RatingKey, FieldMeta<BuilderBoardRow>>),
@@ -211,7 +216,8 @@ export function JobsBuilders() {
         case "degree":
         case "university":
         case "current_location":
-        case "relocation_notes": return (p[sortKey] ?? "~").toLowerCase();
+        case "relocation_notes":
+        case "site_visits": return (p[sortKey] ?? "~").toLowerCase();
         case "open_to_relocate": return p.open_to_relocate == null ? -1 : p.open_to_relocate ? 1 : 0;
       }
       if (isRating(sortKey)) return BUILDER_RATING_OPTIONS.indexOf(p[sortKey] as never);

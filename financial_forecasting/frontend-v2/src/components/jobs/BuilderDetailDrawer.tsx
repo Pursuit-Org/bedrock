@@ -42,6 +42,7 @@ const PREFERENCE_FIELDS: { key: BuilderEditableField; label: string }[] = [
   { key: "open_to_relocate", label: "Open to relocating" },
   { key: "relocation_notes", label: "Relocation notes" },
   { key: "min_salary", label: "Min salary" },
+  { key: "site_visits", label: "Site visits" },
   { key: "applying_regularly", label: "Applying regularly" },
   { key: "networking_regularly", label: "Networking regularly" },
 ];
@@ -88,6 +89,7 @@ export function BuilderDetailDrawer({ userId, onClose }: { userId: number | null
     open_to_relocate: p?.open_to_relocate ?? null,
     relocation_notes: p?.relocation_notes ?? null,
     min_salary: p?.min_salary ?? null,
+    site_visits: p?.site_visits ?? null,
   };
 
   return (
