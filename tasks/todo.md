@@ -111,3 +111,19 @@ PRs 2, 4✓, 8✓, 9, 10✓ ship independently.
 ## Future Considerations
 
 - **Pipeline Cleanup Tool**: Build a dedicated cleanup/hygiene feature for stale opportunities (past close date or no updates in 30+ days). Removed from Overview dashboard — belongs as its own tool, not on the main dashboard.
+
+## Node 22.23.4 security upgrade (2026-10-21)
+
+- [x] Pin local Node, CI, and both frontend Docker builders to 22.23.4.
+- [x] Validate clean frontend installs, tests, typecheck, and builds with Node 22.23.4.
+- [x] Prepare a dedicated upgrade PR with validation results; do not deploy.
+
+Review: Both frontend clean installs and production builds passed on Node 22.23.4.
+The active frontend passed typecheck and all 31 tests; the legacy frontend passed
+all 34 suites / 427 tests. CI now runs the active frontend tests in addition to
+typecheck and build. Dependency lockfiles are unchanged.
+
+The official `node:22.23.4-alpine` image is available for amd64 and arm64. Local
+container builds were not run because the Docker daemon is unavailable. Before
+production rollout, build the deployment image, smoke-test login/navigation/API
+flows in staging, and retain the previous image revision for rollback.

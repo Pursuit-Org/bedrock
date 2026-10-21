@@ -96,7 +96,7 @@ This POC provides a simplified dashboard where:
 
 **→ See [DEV_SETUP_GUIDE.md](DEV_SETUP_GUIDE.md)** for step-by-step setup, env vars, and run instructions.
 
-**Prerequisites:** Python 3.8+, Node.js 16+, Salesforce API access, Sage Intacct credentials (optional for POC).
+**Prerequisites:** Python 3.8+, Node.js 22.23.4 (run `nvm install && nvm use` from the repository root), Salesforce API access, Sage Intacct credentials (optional for POC).
 
 ## 📱 User Workflows
 
