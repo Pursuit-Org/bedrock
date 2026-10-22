@@ -3878,7 +3878,8 @@ def _flow_period(period_from: Optional[str], period_to: Optional[str]) -> tuple:
     return p_from, p_to
 
 
-async def _flow_moved(conn, owner_f, dt_f, p_from, p_to, have_history: bool, rt_f=None) -> list:
+async def _flow_moved(conn, owner_f, dt_f, p_from, p_to, have_history: bool, rt_f=None,
+                      camp_c: str = "TRUE", camp_o: str = "TRUE") -> list:
     """Every (record, stage) entry inside [p_from, p_to), both bands, each with
     the stage it came from where history records one."""
     moved: list = []
@@ -3893,7 +3894,7 @@ async def _flow_moved(conn, owner_f, dt_f, p_from, p_to, have_history: bool, rt_
         FROM bedrock.jobs_contact_membership m
         JOIN public.contacts c ON c.contact_id = m.contact_id
         WHERE m.stage <> 'not_a_fit'
-          AND ($1::text IS NULL OR lower({_FLOW_CONTACT_OWNER}) = $1)
+          AND ($1::text IS NULL OR lower({_FLOW_CONTACT_OWNER}) = $1) AND {camp_c}
           AND (m.assigned_at >= $2 AND m.assigned_at < $3
                OR m.first_outreach_at >= $2 AND m.first_outreach_at < $3
                OR m.converted_at >= $2 AND m.converted_at < $3)
@@ -3915,7 +3916,7 @@ async def _flow_moved(conn, owner_f, dt_f, p_from, p_to, have_history: bool, rt_
                 JOIN public.contacts c ON c.contact_id = h.contact_id
                 LEFT JOIN bedrock.jobs_contact_membership m ON m.contact_id = h.contact_id
                 WHERE h.changed_at >= $2 AND h.changed_at < $3
-                  AND ($1::text IS NULL OR lower({_FLOW_CONTACT_OWNER}) = $1)
+                  AND ($1::text IS NULL OR lower({_FLOW_CONTACT_OWNER}) = $1) AND {camp_c}
                 ORDER BY h.contact_id, h.to_stage, h.changed_at
             """, owner_f, p_from, p_to)
         except (asyncpg.exceptions.InsufficientPrivilegeError, asyncpg.exceptions.UndefinedTableError):
@@ -3952,7 +3953,7 @@ async def _flow_moved(conn, owner_f, dt_f, p_from, p_to, have_history: bool, rt_
         JOIN bedrock.jobs_opportunity o ON o.id = e.oid
         WHERE o.deleted_at IS NULL
           AND ($1::text IS NULL OR lower(o.owner_email) = $1)
-          AND {_deal_type_sql('o.deal_type', 2)} AND {_role_type_sql(rt_f)}
+          AND {_deal_type_sql('o.deal_type', 2)} AND {_role_type_sql(rt_f)} AND {camp_o}
     """, owner_f, dt_f, p_from, p_to)
     working = set(OPPORTUNITY_STAGES_ACTIVE)
     deal_seen: set = set()
@@ -3978,7 +3979,7 @@ async def _flow_moved(conn, owner_f, dt_f, p_from, p_to, have_history: bool, rt_
             JOIN bedrock.jobs_opportunity o ON o.id = h.opportunity_id
             WHERE h.changed_at < $4 AND o.deleted_at IS NULL
               AND ($1::text IS NULL OR lower(o.owner_email) = $1)
-              AND {_deal_type_sql('o.deal_type', 2)} AND {_role_type_sql(rt_f)}
+              AND {_deal_type_sql('o.deal_type', 2)} AND {_role_type_sql(rt_f)} AND {camp_o}
             ORDER BY h.opportunity_id, h.changed_at DESC
         ) last_change
         WHERE to_stage IN ({_FLOW_CLOSE_STAGES_SQL}) AND at >= $3
@@ -4042,6 +4043,50 @@ def _role_type_sql(rt: Optional[list], alias: str = "o") -> str:
     return "(" + " OR ".join(parts) + ")"
 
 
+# Campaign filter (Kwame 2026-10-22). A campaign is a contact tag (or a group
+# of them, see _campaign_key). Contacts match on their own tags. Deals carry a
+# tags column but none are tagged (0 of 46 open, 2026-10-22), so a deal also
+# matches through its contacts: a tagged contact linked to it, or at the same
+# company. That is the link the Contacts page's "Has deal" filter uses.
+_SAFE_SLUG = re.compile(r"^[a-z0-9_]+$")
+
+
+async def _campaign_slugs(conn, campaign: Optional[str]) -> Optional[list]:
+    """The catalog slugs behind a campaign key, or None for no filter."""
+    if not campaign or campaign == "all":
+        return None
+    cat = await conn.fetch("SELECT slug FROM bedrock.contact_tag_catalog WHERE active")
+    slugs = sorted(r["slug"] for r in cat
+                   if (r["slug"] == campaign or _campaign_key(r["slug"]) == campaign)
+                   and _SAFE_SLUG.match(r["slug"] or ""))
+    if not slugs:
+        raise HTTPException(400, f"Unknown campaign: {campaign}")
+    return slugs
+
+
+def _slug_array(slugs: list) -> str:
+    # Slugs come from the catalog and pass _SAFE_SLUG, so they are safe literals.
+    return "ARRAY[" + ",".join(f"'{x}'" for x in slugs) + "]::text[]"
+
+
+def _campaign_contact_sql(slugs: Optional[list], alias: str = "c") -> str:
+    return "TRUE" if not slugs else f"({alias}.tags && {_slug_array(slugs)})"
+
+
+def _campaign_deal_sql(slugs: Optional[list], has_tags: bool, alias: str = "o") -> str:
+    if not slugs:
+        return "TRUE"
+    arr = _slug_array(slugs)
+    own = f"{alias}.tags && {arr} OR " if has_tags else ""
+    return f"""({own}EXISTS (
+        SELECT 1 FROM public.contacts cc
+         WHERE cc.tags && {arr}
+           AND (('pub:' || cc.contact_id::text) = ANY({alias}.sf_contact_ids)
+                OR (cc.airtable_id IS NOT NULL AND ('airtable:' || cc.airtable_id) = ANY({alias}.sf_contact_ids))
+                OR (coalesce(trim(cc.current_company), '') <> ''
+                    AND lower(trim(cc.current_company)) = lower(trim({alias}.account_name))))))"""
+
+
 async def _flow_mark_advanced(conn, moved: list) -> None:
     """Stamp each Net New entry with where the record is now (`now`) and
     whether that is further along than the stage it entered (`advanced`)."""
@@ -4061,7 +4106,7 @@ async def _flow_mark_advanced(conn, moved: list) -> None:
         m["advanced"] = (now in rank and m["stage"] in rank and rank[now] > rank[m["stage"]])
 
 
-async def _flow_activity(conn, owner_f, p_from, p_to, span) -> tuple:
+async def _flow_activity(conn, owner_f, p_from, p_to, span, slugs: Optional[list] = None) -> tuple:
     """Sends and calls in [p_from, p_to) and the period before, per (metric,
     contact), from the Activity Pipeline's own event SQL. The Stage tab is the
     Jobs team; an owner is that person as the SENDER (who did the work), the
@@ -4070,6 +4115,9 @@ async def _flow_activity(conn, owner_f, p_from, p_to, span) -> tuple:
     kind_sql = (f"'call_' || coalesce(a.call_kind, '{CALL_KIND_DEFAULT}')" if has_call_kind
                 else f"'call_{CALL_KIND_DEFAULT}'")
     owner = owner_f if owner_f and _SAFE_EMAIL.match(owner_f) else None
+    # Under a campaign, only touches to that campaign's contacts.
+    camp = ("" if not slugs else
+            f" AND contact_id IN (SELECT contact_id FROM public.contacts WHERE tags && {_slug_array(slugs)})")
     rows = await conn.fetch(f"""
         WITH ev AS (
             {_send_events_sql("team", owner)}
@@ -4080,7 +4128,7 @@ async def _flow_activity(conn, owner_f, p_from, p_to, span) -> tuple:
                count(*) FILTER (WHERE ts >= $2 AND ts < $3) AS n_this,
                count(*) FILTER (WHERE ts >= $1 AND ts < $2) AS n_prev,
                max(ts) FILTER (WHERE ts >= $2 AND ts < $3) AS last_at
-        FROM ev WHERE ts >= $1 AND ts < $3
+        FROM ev WHERE ts >= $1 AND ts < $3{camp}
         GROUP BY metric, contact_id
     """, p_from - span, p_from, p_to)
     return rows, has_call_kind
@@ -4093,6 +4141,7 @@ async def get_stage_flow(
     owner: Optional[str] = Query(None),
     deal_type: Optional[str] = Query(None, description="Opportunities band only: contacts carry no deal type"),
     role_type: Optional[str] = Query(None, description="Opportunities band only: committed, open_market, none (comma list)"),
+    campaign: Optional[str] = Query(None, description="Campaign key from /tag-campaigns (e.g. operation_35)"),
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
@@ -4108,6 +4157,9 @@ async def get_stage_flow(
     owner_f = owner.strip().lower() if owner and owner != "all" else None
     dt_f = _parse_deal_types(deal_type)
     rt_f = _parse_role_types(role_type)
+    slugs = await _campaign_slugs(conn, campaign)
+    camp_c = _campaign_contact_sql(slugs)
+    camp_o = _campaign_deal_sql(slugs, slugs is not None and await _has_column("bedrock", "jobs_opportunity", "tags"))
     now = datetime.now(timezone.utc)
     span = p_to - p_from
     span_days = span.days
@@ -4138,17 +4190,17 @@ async def get_stage_flow(
         FROM bedrock.jobs_contact_membership m
         JOIN public.contacts c ON c.contact_id = m.contact_id
         WHERE m.stage IN ({stages})
-          AND ($1::text IS NULL OR lower({owner}) = $1)
+          AND ($1::text IS NULL OR lower({owner}) = $1) AND {camp}
     """
     hist_sub = ("(SELECT max(h.changed_at) FROM bedrock.jobs_membership_stage_history h "
                 "WHERE h.contact_id = m.contact_id AND h.to_stage = m.stage), ")
     have_history = True
     try:
-        crows = await conn.fetch(contact_sql.format(hist=hist_sub, stamp=stamp_case, stages=contact_in, owner=_FLOW_CONTACT_OWNER), owner_f)
+        crows = await conn.fetch(contact_sql.format(hist=hist_sub, stamp=stamp_case, stages=contact_in, owner=_FLOW_CONTACT_OWNER, camp=camp_c), owner_f)
     except (asyncpg.exceptions.InsufficientPrivilegeError, asyncpg.exceptions.UndefinedTableError):
         have_history = False
         logger.warning("stage-flow: no read on jobs_membership_stage_history — using stage stamps only")
-        crows = await conn.fetch(contact_sql.format(hist="", stamp=stamp_case, stages=contact_in, owner=_FLOW_CONTACT_OWNER), owner_f)
+        crows = await conn.fetch(contact_sql.format(hist="", stamp=stamp_case, stages=contact_in, owner=_FLOW_CONTACT_OWNER, camp=camp_c), owner_f)
     for r in crows:
         d = _days(r["entered_stage"])
         members.append({
@@ -4167,7 +4219,7 @@ async def get_stage_flow(
         FROM bedrock.jobs_opportunity o
         WHERE o.deleted_at IS NULL AND {_OPP_INSET}
           AND ($1::text IS NULL OR lower(o.owner_email) = $1)
-          AND {_deal_type_sql('o.deal_type', 2)} AND {_role_type_sql(rt_f)}
+          AND {_deal_type_sql('o.deal_type', 2)} AND {_role_type_sql(rt_f)} AND {camp_o}
     """, owner_f, dt_f)
     for r in drows:
         d = _days(r["entered_stage"])
@@ -4178,9 +4230,9 @@ async def get_stage_flow(
         })
 
     # ── Moved in: this period, and the one before for the Trend ──────────────
-    moved = await _flow_moved(conn, owner_f, dt_f, p_from, p_to, have_history, rt_f)
-    prev = await _flow_moved(conn, owner_f, dt_f, p_from - span, p_from, have_history, rt_f)
-    act_rows, has_call_kind = await _flow_activity(conn, owner_f, p_from, p_to, span)
+    moved = await _flow_moved(conn, owner_f, dt_f, p_from, p_to, have_history, rt_f, camp_c, camp_o)
+    prev = await _flow_moved(conn, owner_f, dt_f, p_from - span, p_from, have_history, rt_f, camp_c, camp_o)
+    act_rows, has_call_kind = await _flow_activity(conn, owner_f, p_from, p_to, span, slugs)
     await _flow_mark_advanced(conn, moved)
     moved.sort(key=lambda m: m["at"], reverse=True)
     members.sort(key=lambda m: -m["days"])
@@ -4321,7 +4373,8 @@ async def get_stage_flow(
         "prev_period": {"from": (p_from - span).date().isoformat(),
                         "to": (p_from - timedelta(days=1)).date().isoformat()},
         "filters": {"owner": owner_f, "deal_type": ",".join(dt_f) if dt_f is not None else None,
-                    "role_type": ",".join(rt_f) if rt_f else None},
+                    "role_type": ",".join(rt_f) if rt_f else None,
+                    "campaign": campaign if slugs else None},
         "buckets": [{"key": k, "label": lbl} for k, lbl in _OPP_AGE_BUCKETS],
         "bands": bands,
         "targets_available": stage_targets_on,

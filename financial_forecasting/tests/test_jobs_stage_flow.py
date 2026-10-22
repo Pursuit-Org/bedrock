@@ -479,3 +479,31 @@ def test_a_retired_on_hold_close_counts_as_closed_lost():
     rows = _rows(r.json()["data"])
     assert rows[("pipeline", "closed_lost")]["moved_in"] == 1
     assert rows[("pipeline", "closed")]["moved_in"] == 1
+
+
+CATALOG = "FROM bedrock.contact_tag_catalog WHERE active"
+
+
+def test_campaign_filters_contacts_by_tag_and_deals_through_their_contacts():
+    cat = [{"slug": "operation_35_lt"}, {"slug": "operation_35_staff"}, {"slug": "board"}]
+    conn = FakeConn(vals={"information_schema.columns": 1}, lists={CATALOG: cat})
+    c = make_jobs_client(conn)
+    r = c.get(f"/api/jobs/stage-flow?period_from={P_FROM}&period_to={P_TO}&campaign=operation_35")
+    assert r.status_code == 200
+    arr = "ARRAY['operation_35_lt','operation_35_staff']::text[]"
+    for needle in (CONTACTS_NOW, CONTACT_STAMPS, CONTACT_HISTORY):
+        q = next(x[1] for x in conn.calls if needle in x[1])
+        assert f"c.tags && {arr}" in q and "'board'" not in q, needle
+    for needle in (DEALS_NOW, DEAL_ENTRIES, DEAL_CLOSES):
+        q = next(x[1] for x in conn.calls if needle in x[1])
+        assert "FROM public.contacts cc" in q and f"cc.tags && {arr}" in q, needle
+    q = next(x[1] for x in conn.calls if ACTIVITY in x[1])
+    assert f"contact_id IN (SELECT contact_id FROM public.contacts WHERE tags && {arr})" in q
+    assert r.json()["data"]["filters"]["campaign"] == "operation_35"
+
+
+def test_no_campaign_means_no_campaign_predicate_and_unknown_is_a_400():
+    _, conn = _get({})
+    assert all("FROM public.contacts cc" not in x[1] and "c.tags &&" not in x[1] for x in conn.calls)
+    r, _ = _get({CATALOG: [{"slug": "board"}]}, campaign="nope")
+    assert r.status_code == 400

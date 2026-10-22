@@ -42,7 +42,10 @@ import {
 // (In stage, Net new, From) fit without scrolling. Columns adds the rest, and
 // the choice is remembered per browser.
 const DRILL_CONTACT_COLS: ColKey[] = ["name", "flag", "company", "title", "owner", "last_touch", "tasks"];
-const DRILL_OPP_COLS: OppColKey[] = ["company", "role", "stage", "deal_type", "owner", "target_close", "est_jobs", "tasks"];
+const DRILL_OPP_COLS: OppColKey[] = ["company", "role", "stage", "likelihood", "deal_type", "owner", "target_close", "est_jobs", "tasks"];
+// "role" holds the deal's title ("Vertech OP_Sep2026"), which is the
+// opportunity's name, so the drill calls it that (Kwame 2026-10-22).
+const DRILL_OPP_LABELS: Record<OppColKey, string> = { ...OPP_COL_LABELS, role: "Opportunity" };
 
 /** What the clicked number counted, one entry per record (a contact can appear
  *  under two stages of a summary row, so the stage travels with it). */
@@ -277,7 +280,7 @@ function OpportunitiesList({ isPool, contextHead, records, stageLabel, nameOf }:
   }, [records]);
   const ids = useMemo(() => [...byId.keys()], [byId]);
   const q = useJobsOpportunities({ ids, limit: 500 });
-  const { visible, toggle, move } = useColumnVisibility<OppColKey>("bedrock-v2:vis:stage-flow-drill-opps", OPP_COLUMN_ORDER, DRILL_OPP_COLS);
+  const { visible, toggle, move } = useColumnVisibility<OppColKey>("bedrock-v2:vis:stage-flow-drill-opps-v2", OPP_COLUMN_ORDER, DRILL_OPP_COLS);
 
   const [search, setSearch] = useState("");
   const [owner, setOwner] = useState("");
@@ -311,14 +314,14 @@ function OpportunitiesList({ isPool, contextHead, records, stageLabel, nameOf }:
     <div className="flex min-h-0 flex-1 flex-col">
       <Toolbar search={search} onSearch={setSearch} owners={owners} owner={owner} onOwner={setOwner}
         stages={stages} stage={stage} onStage={setStage} shown={rows.length} total={all.length}
-        columns={<ColumnChooser allColumns={OPP_COLUMN_ORDER} labels={OPP_COL_LABELS} visible={visible} required={["company"]} onToggle={toggle} onMove={stepMove(visible, move)} />} />
+        columns={<ColumnChooser allColumns={OPP_COLUMN_ORDER} labels={DRILL_OPP_LABELS} visible={visible} required={["company"]} onToggle={toggle} onMove={stepMove(visible, move)} />} />
       {q.isLoading ? <Loading /> : rows.length === 0 ? <Empty text={all.length ? "Nothing matches these filters." : "No opportunities here."} /> : (
         <div className="min-h-0 flex-1 overflow-auto">
           <table className="w-full border-collapse text-left">
             <thead className="sticky top-0 z-20 bg-surface-2">
               <tr className="text-[10.5px] uppercase tracking-wider text-ink-3">
                 {visible.map((k, i) => (
-                  <th key={k} className={cn("px-3 py-2 font-semibold", i === 0 && "sticky left-0 z-30 bg-surface-2")}>{OPP_COL_LABELS[k]}</th>
+                  <th key={k} className={cn("px-3 py-2 font-semibold", i === 0 && "sticky left-0 z-30 bg-surface-2")}>{DRILL_OPP_LABELS[k]}</th>
                 ))}
                 {extraHead.map((h) => <th key={h} className="border-l border-border px-3 py-2 font-semibold text-accent-ink">{h}</th>)}
               </tr>

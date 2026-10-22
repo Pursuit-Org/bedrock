@@ -30,6 +30,7 @@ import { ChevronDown, ChevronUp, SlidersHorizontal } from "lucide-react";
 import {
   useJobsStaff,
   useStageFlow,
+  useTagCampaigns,
   type OutreachGranularity,
   type StageFlow,
   type StageFlowBand,
@@ -96,6 +97,14 @@ export function StageFlowChart() {
   // Role type: every kind by default. Commitment lives on each role.
   const [roleTypes, setRoleTypes] = useState<string[]>(ALL_ROLE_TYPES);
   const roleParam = roleTypes.length === ALL_ROLE_TYPES.length ? "all" : roleTypes.join(",");
+  // A campaign is a contact tag (Performance › Campaigns). Applies to both bands:
+  // contacts by their tags, deals through their tagged contacts.
+  const [campaign, setCampaign] = useSessionState<string>("jobsOverview.stageFlow.campaign", "all");
+  const campaignsQ = useTagCampaigns();
+  const campaigns = useMemo(() => [...(campaignsQ.data ?? [])]
+    .filter((c) => c.contacts > 0).sort((a, b) => a.sort_order - b.sort_order || a.label.localeCompare(b.label)),
+  [campaignsQ.data]);
+  const campaignParam = campaigns.some((c) => c.key === campaign) ? campaign : "all";
   const [tab, setTab] = useSessionState<Tab>("jobsOverview.stageFlow.tab", "stage");
   const [byTime, setByTime] = useSessionState<boolean>("jobsOverview.stageFlow.byTime", false);
   // Which stages have their activity (sends, calls) folded open. Closed by default.
@@ -114,14 +123,14 @@ export function StageFlowChart() {
   const me = useCurrentUser().data?.email?.toLowerCase() ?? null;
   // The team list rides on the team-scoped response, so it is there before a
   // person is picked; keepPreviousData holds it while a person's data loads.
-  const teamQ = useStageFlow(range[0], range[1], "all", dealTypeParam(dealTypes), roleParam);
+  const teamQ = useStageFlow(range[0], range[1], "all", dealTypeParam(dealTypes), roleParam, campaignParam);
   // The Jobs team only (Settings › Targets › Jobs › Team), in its set order.
   const team = teamQ.data?.team ?? [];
   // Default to yourself when you're on the team, else the first member.
   const owner = tab === "owner"
     ? (ownerPick && team.includes(ownerPick) ? ownerPick : (me && team.includes(me) ? me : team[0] ?? "all"))
     : "all";
-  const personQ = useStageFlow(range[0], range[1], owner, dealTypeParam(dealTypes), roleParam);
+  const personQ = useStageFlow(range[0], range[1], owner, dealTypeParam(dealTypes), roleParam, campaignParam);
   const { data, isLoading, isError } = owner === "all" ? teamQ : personQ;
   const current = data && data.prev_period && data.stage_labels ? data : null;
 
@@ -158,10 +167,17 @@ export function StageFlowChart() {
               {team.map((email) => <option key={email} value={email}>{nameOf(email)}</option>)}
             </select>
           )}
+          <select value={campaignParam} onChange={(e) => setCampaign(e.target.value)} aria-label="Campaign"
+            title="Contacts tagged with the campaign, and deals linked to those contacts or their companies"
+            className={cn("ml-auto h-7 max-w-[220px] rounded-md border bg-surface px-2 text-[12px] outline-none focus:border-accent",
+              campaignParam === "all" ? "border-border-strong text-ink" : "border-accent text-accent")}>
+            <option value="all">All campaigns</option>
+            {campaigns.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
+          </select>
           {(
             <select value={byTime ? "time" : "off"} onChange={(e) => setByTime(e.target.value === "time")}
               title="Split the Pool by how long it has sat in the stage"
-              className="ml-auto h-7 rounded-md border border-border-strong bg-surface px-2 text-[12px] text-ink outline-none focus:border-accent">
+              className="h-7 rounded-md border border-border-strong bg-surface px-2 text-[12px] text-ink outline-none focus:border-accent">
               <option value="off">No breakdown</option>
               <option value="time">Pool by time in stage</option>
             </select>
@@ -193,7 +209,7 @@ export function StageFlowChart() {
             {current.targets_available ? "" : "; per-stage targets arrive with the stage-targets migration, and Converted to opportunity uses the Settings outreach target until then"}.
             Sends (under Initial outreach) and Discovery calls (under Discovery call) open the activity behind those stages, counted as events, not contacts: every send or call the team logged in the period, exactly as
             Outreach › Activity Pipeline counts it, against the Settings outreach targets.
-            The Pipeline band's Filter (deal type, role type) applies to opportunities only.
+            The Pipeline band's Filter (deal type, role type) applies to opportunities only. A campaign keeps contacts with that tag, and deals linked to those contacts or at their companies.
           </p>
         )}
       </div>

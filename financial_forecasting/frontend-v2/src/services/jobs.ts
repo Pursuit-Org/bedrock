@@ -3248,17 +3248,19 @@ export interface StageFlow {
   activity?: StageFlowActivity[];
 }
 
-export function useStageFlow(from: string, to: string, owner?: string, dealType?: string, roleType?: string) {
+export function useStageFlow(from: string, to: string, owner?: string, dealType?: string, roleType?: string, campaign?: string) {
   const o = owner && owner !== "all" ? owner : undefined;
   const dt = dealType && dealType !== "all" ? dealType : undefined;
   const rt = roleType && roleType !== "all" ? roleType : undefined;
+  const cp = campaign && campaign !== "all" ? campaign : undefined;
   return useQuery<StageFlow>({
-    queryKey: ["jobs", "stage-flow", from, to, o ?? "all", dt ?? "all", rt ?? "all"],
+    queryKey: ["jobs", "stage-flow", from, to, o ?? "all", dt ?? "all", rt ?? "all", cp ?? "all"],
     queryFn: async () => {
       const p = new URLSearchParams({ period_from: from, period_to: to });
       if (o) p.set("owner", o);
       if (dt) p.set("deal_type", dt);
       if (rt) p.set("role_type", rt);
+      if (cp) p.set("campaign", cp);
       const { data } = await api.get<ApiResponse<StageFlow>>(`/api/jobs/stage-flow?${p}`);
       return data.data;
     },
