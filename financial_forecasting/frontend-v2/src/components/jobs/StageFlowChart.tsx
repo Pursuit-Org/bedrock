@@ -15,9 +15,14 @@
  * Owner tab: the same stages, with Pool and Net New per Jobs team member, and
  * Others (anyone off the team, or nobody) so each row still adds up.
  *
- * A booked call ends one of three ways, so Contact closed sums Converted to
+ * A booked call ends one of three ways, so Outreach outcome sums Converted to
  * opportunity, Revisit and Not a fit, each indented beneath it. Closed does the
  * same for Closed Won and Closed Lost.
+ *
+ * Since [date] (Outreach only, Kwame 2026-10-22): distinct contacts that passed
+ * each step on or after one fixed date, so reading down it gives the funnel.
+ * Fixed, so it never moves with the period. Total contact pool heads the band:
+ * every jobs prospect, the universe the funnel draws from.
  *
  * Every number opens the records behind it. The drawer filters the same
  * `members` / `moved` arrays the counts were made from, so a list can never
@@ -54,14 +59,14 @@ type Tab = "stage" | "owner";
 type Drill = {
   /** "activity" = the contacts behind an activity row's sends or calls;
    *  "converted" = the Net New now further along. */
-  kind: "now" | "moved" | "activity" | "converted" | "ever";
+  kind: "now" | "moved" | "activity" | "converted" | "since";
   band: StageFlowBand;
   stages: string[];
   label: string;
   /** A narrower cell (a time bucket or an owner): its label and exactly the
    *  `${id}:${stage}` records it counted. Null = the whole row. */
   col: { label: string; keys: Set<string> } | null;
-  /** Activity drills: the row clicked (its key, unit and unlinked count). */
+  /** Activity and Since drills: the row clicked. */
   activity?: StageFlowRow;
 };
 
@@ -111,8 +116,7 @@ export function StageFlowChart() {
   const campaignParam = pickedCampaigns.length ? [...pickedCampaigns].sort().join(",") : "all";
   const [tab, setTab] = useSessionState<Tab>("jobsOverview.stageFlow.tab", "stage");
   const [byTime, setByTime] = useSessionState<boolean>("jobsOverview.stageFlow.byTime", false);
-  // Which stages have their activity (sends, calls) folded SHUT. Open by
-  // default, so the all-time Pool figures show without a click.
+  // Which stages have their activity (sends, calls) folded SHUT. Open by default.
   const [actClosed, setActClosed] = useSessionState<string[]>("jobsOverview.stageFlow.activityClosed", []);
   const actOpen = ["initial_outreach", "call_booked"].filter((k) => !actClosed.includes(k));
   const toggleAct = (stage: string) =>
@@ -144,7 +148,8 @@ export function StageFlowChart() {
     <div className="inline-flex items-center rounded-md border border-border-strong bg-surface p-0.5">
       {([["stage", "Stage"], ["owner", "Owner"]] as const).map(([k, label]) => (
         <button key={k} type="button" onClick={() => setTab(k)}
-          title={k === "stage" ? "The whole team: pool, activity, target and trend" : "One Jobs team member at a time, against their own targets"}
+          title={k === "stage" ? "The whole team: pool, activity, target and trend"
+            : "One Jobs team member at a time, against their own targets. Attributed to the current contact owner; past owner changes aren't stored."}
           className={cn("rounded px-2.5 py-0.5 text-[12px] font-medium transition-colors",
             tab === k ? "bg-accent-soft text-accent" : "text-ink-2 hover:bg-surface-2")}>
           {label}
@@ -209,6 +214,7 @@ export function StageFlowChart() {
             during the period. Closed Won and Closed Lost count closes that stuck. Targets are weekly, prorated to the
             period; the Owner tab shows each person against their own
             {current.targets_available ? "" : "; per-stage targets arrive with the stage-targets migration, and Converted to opportunity uses the Settings outreach target until then"}.
+            Since {current.since ? utcDay(current.since.date) : "the start date"} counts distinct contacts that passed each outreach step on or after that fixed date, whatever the period; each row counts its own activity, so the rows are not a single cohort.
             Sends (under Initial outreach) and Discovery calls (under Discovery call) open the activity behind those stages, counted as events, not contacts: every send or call the team logged in the period, exactly as
             Outreach › Activity Pipeline counts it, against the Settings outreach targets.
             The Pipeline band's Filter (deal type, role type) applies to opportunities only. A campaign keeps contacts with that tag, and deals linked to those contacts or at their companies.
@@ -273,6 +279,8 @@ function BandHeader({ band, cols, right, pool, netNew, poolTitle, netNewTitle, o
       <td className={cn(TD, HL, "py-2 text-[14px] font-bold")} title={poolTitle}>
         <NumButton n={pool} onClick={onPool} title={`${pool} in ${band.label} now`} />
       </td>
+      {/* Since has no band total: its rows are separate counts, not one cohort. */}
+      <td className={cn(TD, HL, "py-2")} />
       <td className={cn(TD, HL_ACT, "border-l-2 border-border-strong py-2 text-[14px] font-bold")} title={netNewTitle}>
         <NumButton n={netNew} onClick={onNetNew} title={`${netNew} unique ${band.unit} moved`} />
       </td>
@@ -332,20 +340,24 @@ function StageTable({ data, byTime, nameOf, onDrill, pipelineFilter, actOpen, on
   const cols = byTime ? data.buckets : [];
   // Blank for the team (the default); a person's name when the Owner filter picks one.
   const scopeLabel = data.target_scope === "team" ? "" : nameOf(data.target_scope);
+  const sinceLabel = data.since ? utcDay(data.since.date) : "start";
+  const sinceHeadTip = `Distinct contacts that passed this step since ${sinceLabel}. Fixed date: does not change with the period. `
+    + `Counts activity since ${sinceLabel} per row; rows are not a single cohort.`
+    + (data.target_scope === "team" ? "" : " Attributed to the current contact owner; past owner changes aren't stored.");
   return (
     <div className="overflow-x-auto">
       <table className={cn("w-full border-collapse", byTime ? "min-w-[1080px]" : "min-w-[860px]")}>
         <colgroup>
-          <col style={{ width: byTime ? "21%" : "28%" }} />
-          {[0, 1, 2, 3, 4, 5].map((i) => <col key={i} style={{ width: byTime ? "7.5%" : "12%" }} />)}
-          {cols.map((c) => <col key={c.key} style={{ width: "6.8%" }} />)}
+          <col style={{ width: byTime ? "19%" : "23%" }} />
+          {[0, 1, 2, 3, 4, 5, 6].map((i) => <col key={i} style={{ width: byTime ? "6.9%" : "11%" }} />)}
+          {cols.map((c) => <col key={c.key} style={{ width: "6.3%" }} />)}
         </colgroup>
         <thead>
           {/* Two groups the reader should never confuse: where things sit
               (Stage, as of today) and what happened (Activity, in the period). */}
           <tr className="bg-surface-2 text-[10px] uppercase tracking-[0.08em]">
             <th />
-            <th className={cn("px-3 pt-2.5", HL)}>
+            <th colSpan={2} className={cn("px-3 pt-2.5", HL)}>
               <GroupCap label="Stage" color={STAGE_ACCENT} />
             </th>
             <th colSpan={5} className="border-l-2 border-border-strong px-3 pt-2.5">
@@ -361,6 +373,9 @@ function StageTable({ data, byTime, nameOf, onDrill, pipelineFilter, actOpen, on
             <th className="py-2 pl-3.5 pr-2 text-left font-bold align-bottom">Stage</th>
             <th className={cn(TH, HL)} title="Sitting in this stage today">
               <span className="block">Pool</span><span className={SUB} />
+            </th>
+            <th className={cn(TH, HL)} title={sinceHeadTip}>
+              <span className="block">Since {sinceLabel}</span><span className={SUB}>fixed date</span>
             </th>
             <th className={cn(TH, HL_ACT, "border-l-2 border-border-strong")} title="Entered this stage during the period">
               <span className="block">Net New</span><span className={SUB} />
@@ -389,12 +404,12 @@ function StageTable({ data, byTime, nameOf, onDrill, pipelineFilter, actOpen, on
             const bandMembers = data.members.filter((m) => m.band === band.key);
             // Contacts being worked: the closed outcomes (Converted, Revisit,
             // Not a fit) sit in the table but are not the working pool.
-            const poolRows = band.rows.filter((r) => (r.depth ?? 0) === 0 && !r.children && r.kind !== "activity");
+            const poolRows = band.rows.filter((r) => (r.depth ?? 0) === 0 && !r.children && !r.kind);
             const poolStages = poolRows.flatMap(stagesOf);
             const pool = new Set(bandMembers.filter((m) => poolStages.includes(m.stage)).map((m) => m.id)).size;
             // Net New total: UNIQUE records that moved anywhere in the band this
             // period (a contact that moved twice counts once).
-            const flowStages = band.rows.filter((r) => r.kind !== "activity" && !r.children).map((r) => r.key);
+            const flowStages = band.rows.filter((r) => !r.kind && !r.children).map((r) => r.key);
             const movedIds = new Set(data.moved.filter((m) => m.band === band.key && flowStages.includes(m.stage)).map((m) => m.id));
             const unit = band.key === "outreach" ? "contacts" : "opportunities";
             return (
@@ -402,7 +417,7 @@ function StageTable({ data, byTime, nameOf, onDrill, pipelineFilter, actOpen, on
                 <BandHeader band={band} cols={cols.length} right={band.key === "pipeline" ? pipelineFilter : null}
                   pool={pool} netNew={movedIds.size}
                   poolTitle={band.key === "outreach"
-                    ? "Every contact in a working outreach stage today (Contact closed not included). Click for the list."
+                    ? "Every contact in a working outreach stage today (Outreach outcome and Total contact pool not included). Click for the list."
                     : "Every open opportunity today, all stages. Click for the list."}
                   netNewTitle={`Unique ${unit} that moved into any stage during the period, each counted once. Click for the list.`}
                   onPool={() => onDrill({ kind: "now", band: band.key, stages: poolStages,
@@ -415,9 +430,10 @@ function StageTable({ data, byTime, nameOf, onDrill, pipelineFilter, actOpen, on
                     const sibs = band.rows.filter((r) => r.kind === "activity" && r.parent === row.parent);
                     return <ActivityRow key={row.key} row={row} cols={cols.length}
                       last={sibs[sibs.length - 1] === row}
-                      onDrill={() => onDrill({ kind: "activity", band: band.key, stages: [row.key], label: row.label, col: null, activity: row })}
-                      onEver={() => onDrill({ kind: "ever", band: band.key, stages: [row.key],
-                        label: EVER_TITLE[row.key]?.label ?? row.label, col: null, activity: row })} />;
+                      onDrill={() => onDrill({ kind: "activity", band: band.key, stages: [row.key], label: row.label, col: null, activity: row })} />;
+                  }
+                  if (row.kind === "universe") {
+                    return <UniverseRow key={row.key} row={row} cols={cols.length} tip={sinceTip(row, data)} />;
                   }
                   const acts = band.rows.filter((r) => r.kind === "activity" && r.parent === row.key);
                   const stages = stagesOf(row);
@@ -443,6 +459,8 @@ function StageTable({ data, byTime, nameOf, onDrill, pipelineFilter, actOpen, on
                           </span>
                         )}
                       </td>
+                      <SinceCell row={row} data={data}
+                        onDrill={() => onDrill({ kind: "since", band: band.key, stages, label: row.label, col: null, activity: row })} />
                       <td className={cn(TD, HL_ACT, "border-l-2 border-border-strong", (row.depth ?? 0) === 0 && "font-semibold")}>
                         {pending ? <span className="text-ink-4">—</span>
                           : <NumButton n={row.moved_in} onClick={() => drillRow("moved")} title={`${row.moved_in} net new in ${row.label}`} />}
@@ -506,29 +524,83 @@ function ConversionCell({ row, pending, onDrill }: { row: StageFlowRow; pending:
   );
 }
 
+/** The Since cell's hover text, per row, with the start date filled in. */
+function sinceTip(row: StageFlowRow, data: StageFlow): string {
+  const meta = data.since;
+  const d = meta ? utcDay(meta.date) : "the start date";
+  switch (row.key) {
+    case "total_pool":
+      return "Contacts flagged as jobs prospects. With campaigns checked: contacts in any of them.";
+    case "assigned":
+      return `Contacts that entered the jobs pipeline since ${d}. Owner history isn't stored, so this is pipeline entry, not owner assignment.`;
+    case "initial_outreach":
+      return `Contacts whose first outreach from the Jobs team was sent since ${d} (email, LinkedIn, text, facilitated intro). Stage tags don't count.`;
+    case "scheduling":
+      if (meta && !meta.scheduling_available) return "Stage pending migration: no contact can enter Scheduling until it runs.";
+      return `Contacts that replied and are finding a time for a discovery call, since ${d}. `
+        + (meta?.scheduling_launched
+          ? `Stage introduced ${utcDay(meta.scheduling_launched)}; earlier contacts went straight to Discovery call.`
+          : "No contact has entered this stage yet; earlier contacts went straight to Discovery call.");
+    case "call_booked":
+      return `Contacts that entered Discovery call, or had a call logged as Discovery, since ${d}.`;
+    case "contact_closed":
+      return `Contacts that moved to Converted to opportunity, Revisit or Not a fit since ${d}, each counted once.`;
+    case "converted_to_opportunity":
+      // Before Jul 28 the window takes in the Jul 22 and 27 bulk entry.
+      return `Contacts that moved to Converted to opportunity since ${d}.`
+        + (meta && meta.date < "2026-07-28" ? " Includes the Jul 22 to 27 bulk entry." : "");
+    default:
+      return `Contacts that moved to ${row.label} since ${d}.`;
+  }
+}
+
+/** Since [date]: the row's distinct contacts since the fixed start date. */
+function SinceCell({ row, data, onDrill }: { row: StageFlowRow; data: StageFlow; onDrill: () => void }) {
+  const since = row.since;
+  const pendingStage = row.key === "scheduling" && data.since && !data.since.scheduling_available;
+  if (!since || pendingStage) {
+    return (
+      <td className={cn(TD, HL)} title={since ? sinceTip(row, data) : undefined}>
+        <span className="text-ink-4">—</span>
+      </td>
+    );
+  }
+  return (
+    <td className={cn(TD, HL, (row.depth ?? 0) === 0 && "font-semibold")} title={sinceTip(row, data)}>
+      {since.ids ? <NumButton n={since.total} onClick={onDrill} title={`${since.total} contacts`} />
+        : since.total.toLocaleString()}
+    </td>
+  );
+}
+
+/** Total contact pool: every jobs prospect. Count only, no movement. */
+function UniverseRow({ row, cols, tip }: { row: StageFlowRow; cols: number; tip: string }) {
+  const n = (row.since?.total ?? row.in_now?.total ?? 0).toLocaleString();
+  const dash = <span className="text-ink-4">—</span>;
+  return (
+    <tr className="border-b border-border text-[13.5px]" title={tip}>
+      <StageLabel row={row} />
+      <td className={cn(TD, HL, "font-semibold")}>{n}</td>
+      <td className={cn(TD, HL, "font-semibold")}>{n}</td>
+      <td className={cn(TD, HL_ACT, "border-l-2 border-border-strong")}>{dash}</td>
+      <td className={TD}>{dash}</td>
+      <td className={TD}>{dash}</td>
+      <td className={TD}>{dash}</td>
+      <td className={TD}>{dash}</td>
+      {Array.from({ length: cols }, (_, i) => (
+        <td key={i} className={cn("px-2 py-2.5", i === 0 && "border-l border-border-strong")} />
+      ))}
+    </tr>
+  );
+}
+
 /** Sends or calls logged in the period, under the stage that work moves. Same
  *  columns as a stage row so the target, gap and trend read across, but a
- *  violet bolt and a lighter weight mark it as a count of events: one contact
- *  emailed three times is 3 here and 1 on the stage row above. */
-const EVER_TITLE: Record<string, { label: string; caption: string; tip: string }> = {
-  outreach_sent: {
-    label: "Total ever outreached", caption: "ever reached",
-    tip: "Total ever outreached: unique contacts who have ever been sent at least one outreach by the Jobs team "
-      + "(email, LinkedIn, text or facilitated intro), all-time. Assigned or tagged in a stage does not count. "
-      + "Each contact once. Does not change with the period.",
-  },
-  discovery_calls_logged: {
-    label: "Ever had a discovery call", caption: "ever",
-    tip: "Contacts with at least one call logged as Discovery, all-time. Only tagged calls count. "
-      + "Does not change with the period.",
-  },
-};
-
-function ActivityRow({ row, cols, last, onDrill, onEver }: {
-  row: StageFlowRow; cols: number; last: boolean; onDrill: () => void; onEver: () => void;
+ *  lighter weight marks it as a count of events: one contact emailed three
+ *  times is 3 here and 1 on the stage row above. */
+function ActivityRow({ row, cols, last, onDrill }: {
+  row: StageFlowRow; cols: number; last: boolean; onDrill: () => void;
 }) {
-  const ever = row.ever;
-  const everMeta = EVER_TITLE[row.key];
   const pending = !row.available;
   const unit = row.key === "outreach_sent" ? "sends" : "calls";
   const targetTitle = row.target_weekly != null
@@ -537,7 +609,8 @@ function ActivityRow({ row, cols, last, onDrill, onEver }: {
   return (
     // A nested panel under its stage: one violet tint across the row and a
     // violet rule down the left, so it reads as that stage's detail, not as
-    // another stage. Pool is blank: activity has no pool.
+    // another stage. Pool and Since are blank: activity has no pool, and the
+    // stage row above carries the contacts since the start date.
     <tr className={cn("text-[12.5px] transition-colors hover:bg-surface-2/40",
         last ? "border-b border-border" : "border-b border-border/60")}
       title={`Activity: ${unit} logged in the period, as Outreach › Activity Pipeline counts them`}>
@@ -554,14 +627,8 @@ function ActivityRow({ row, cols, last, onDrill, onEver }: {
           </span>
         )}
       </td>
-      <td className={cn(TD, HL, "py-2")} title={ever && everMeta ? everMeta.tip : "Activity has no pool"}>
-        {ever && everMeta ? (
-          <span className="inline-flex flex-col items-center leading-tight">
-            <NumButton n={ever.total} onClick={onEver} title={`${ever.total} · ${everMeta.label}`} />
-            <span className="text-[10px] text-ink-4">{everMeta.caption}</span>
-          </span>
-        ) : null}
-      </td>
+      <td className={cn(TD, HL, "py-2")} title="Activity has no pool" />
+      <td className={cn(TD, HL, "py-2")} />
       <td className={cn(TD, HL_ACT, "border-l-2 border-border-strong py-2")}>
         {pending ? <span className="text-ink-4">—</span>
           : <NumButton n={row.moved_in} onClick={onDrill} title={`${row.moved_in} ${unit} logged`} />}
@@ -700,13 +767,13 @@ function StageFlowDrill({ drill, data, nameOf, onClose }: {
 
   // Exactly the records the clicked number counted; the workbench fetches
   // their full rows and keeps this as context (time in stage, when they moved).
-  if (drill.kind === "ever" && drill.activity?.ever) {
-    const ever = drill.activity.ever;
-    const recs: WorkbenchRecord[] = ever.ids.map((id) => ({ id, stage: drill.activity!.key, when: "", extra: [] }));
-    const unlinked = ever.unlinked_sends ? ` · ${ever.unlinked_sends} sends had no linked contact` : "";
+  if (drill.kind === "since" && drill.activity?.since?.ids) {
+    const since = drill.activity.since;
+    const recs: WorkbenchRecord[] = since.ids!.map((id) => ({ id, stage: drill.activity!.key, when: "", extra: [] }));
+    const d = data.since ? utcDay(data.since.date) : "the start date";
     return (
       <StageFlowWorkbench band="outreach" title={drill.label}
-        subtitle={`${ever.total.toLocaleString()} contacts · all-time, not affected by the period${unlinked}`}
+        subtitle={`${since.total.toLocaleString()} contacts · since ${d}, not affected by the period`}
         isPool={false} contextHead={[]} records={recs} stageLabel={stageLabel} nameOf={nameOf} onClose={onClose} />
     );
   }

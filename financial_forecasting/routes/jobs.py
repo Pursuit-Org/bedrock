@@ -3804,7 +3804,7 @@ async def opportunities_overview(
 # before (the Trend), and a weekly target prorated to the period.
 #
 # A discovery call ends one of three ways, so the contacts band closes with a
-# "Contact closed" row summing Converted to opportunity, Revisit and Not a fit,
+# "Outreach outcome" row summing Converted to opportunity, Revisit and Not a fit,
 # each beneath it. Closed Won and Closed Lost carry movement only: "how many are
 # in Closed Won now" is the all-time tally, not a pile-up anyone works.
 #
@@ -3821,7 +3821,7 @@ _FLOW_CONTACT_STAGES = [
     # activity rows beneath it (Kwame 2026-10-13).
     ("call_booked", "Discovery call"),
 ]
-# The three ways a contact leaves outreach. Summed on the Contact closed row.
+# The three ways a contact leaves outreach. Summed on the Outreach outcome row.
 _FLOW_CONTACT_CLOSED = [
     ("converted_to_opportunity", "Converted to opportunity"),
     ("revisit", "Revisit"),
@@ -3850,7 +3850,7 @@ _FLOW_ACTIVITY_ROWS = [
 ]
 # Stage keys that may carry a weekly stage target: every stage row (Kwame
 # 2026-10-13), from the one list Settings › Targets › Jobs › Stages edits.
-# Summary rows (Contact closed, Closed) are sums and carry none.
+# Summary rows (Outreach outcome, Closed) are sums and carry none.
 STAGE_FLOW_TARGET_KEYS = list(jobs_targets_store.STAGE_METRIC_KEYS)
 # Until a stage target is set, a stage that measures exactly what an existing
 # Settings › Targets › Jobs › Outreach metric measures borrows that target.
@@ -4111,44 +4111,117 @@ async def _flow_mark_advanced(conn, moved: list) -> None:
         m["advanced"] = (now in rank and m["stage"] in rank and rank[now] > rank[m["stage"]])
 
 
-# All-time counts for the activity rows' Pool cell (Kwame 2026-10-22). Same event
-# SQL as the period rows and the Activity Pipeline, with NO date window, so the
-# number never moves with the period filter. Contacts, not events: each once.
+# The Since column (Kwame 2026-10-22): distinct contacts that passed each
+# outreach step on or after one fixed date, so reading down it gives the funnel.
+# Fixed, not the period: the number never moves with the period selector. Aug 4
+# because membership history is written live from about then and the Jul 22-27
+# bulk entry (the Jul 27 mass assignment and the Jul 22 and 27 conversions)
+# falls before it. Each row counts
+# its own activity in the window; the rows are not one cohort.
+STAGE_FLOW_SINCE = date(2026, 8, 4)
 _FLOW_SEND_METRICS = ("direct_email_sent", "linkedin_message_sent", "text_sent", "facilitated_intro_sent")
+_FLOW_SINCE_KEYS = ("assigned", "initial_outreach", "scheduling", "call_booked",
+                    "converted_to_opportunity", "revisit", "not_a_fit")
 
 
-async def _flow_ever(conn, owner_f, slugs: Optional[list] = None) -> dict:
-    """Contacts the Jobs team has EVER sent outreach to (a real send: email,
-    LinkedIn, text or facilitated intro; never a stage tag or an assignment),
-    and contacts ever on a call logged as Discovery. With an owner, that person
-    as the sender; with a campaign, that campaign's contacts."""
+async def _flow_since(conn, owner_f, slugs: Optional[list] = None) -> dict:
+    """Per outreach row, the contacts that passed it since STAGE_FLOW_SINCE.
+
+    Assigned: entered the pipeline (assigned_at, or a history entry into
+    assigned). Owner history isn't stored, so this is pipeline entry.
+    Initial outreach: the contact's FIRST-EVER real send from the Jobs team
+    (email, LinkedIn, text, facilitated intro) fell in the window; stage tags
+    never count. Discovery call: entered call_booked, or was on a call logged
+    as Discovery. Converted / Revisit / Not a fit: entered that stage.
+    contact_closed is the union of the three. total_pool is every jobs
+    prospect, count only.
+
+    With an owner: stage rows by current contact owner (past owners aren't
+    stored), sends and calls by that person as the sender. With a campaign:
+    that campaign's contacts throughout."""
+    since = datetime(STAGE_FLOW_SINCE.year, STAGE_FLOW_SINCE.month, STAGE_FLOW_SINCE.day,
+                     tzinfo=timezone.utc)
+    owner = owner_f if owner_f and _SAFE_EMAIL.match(owner_f) else None
+    camp_c = _campaign_contact_sql(slugs)
+    sets: dict = {k: set() for k in _FLOW_SINCE_KEYS}
+
+    # Stage stamps, then membership history: entries on or after the date.
+    stamps = [("assigned", "m.assigned_at"), ("converted_to_opportunity", "m.converted_at")]
+    if await _has_column("bedrock", "jobs_contact_membership", "call_booked_at"):
+        stamps.append(("call_booked", "m.call_booked_at"))
+    stamp_sql = "\n        UNION ALL\n".join(f"""
+        SELECT '{k}' AS stage, m.contact_id
+        FROM bedrock.jobs_contact_membership m
+        JOIN public.contacts c ON c.contact_id = m.contact_id
+        WHERE {col} >= $2
+          AND ($1::text IS NULL OR lower({_FLOW_CONTACT_OWNER}) = $1) AND {camp_c}""" for k, col in stamps)
+    for r in await conn.fetch(stamp_sql, owner, since):
+        sets[r["stage"]].add(r["contact_id"])
+    scheduling_launched = None
+    try:
+        hrows = await conn.fetch(f"""
+            SELECT DISTINCT h.to_stage AS stage, h.contact_id
+            FROM bedrock.jobs_membership_stage_history h
+            JOIN public.contacts c ON c.contact_id = h.contact_id
+            LEFT JOIN bedrock.jobs_contact_membership m ON m.contact_id = h.contact_id
+            WHERE h.changed_at >= $2
+              AND ($1::text IS NULL OR lower({_FLOW_CONTACT_OWNER}) = $1) AND {camp_c}
+        """, owner, since)
+        scheduling_launched = await conn.fetchval(
+            "SELECT min(changed_at) FROM bedrock.jobs_membership_stage_history WHERE to_stage = 'scheduling'")
+    except (asyncpg.exceptions.InsufficientPrivilegeError, asyncpg.exceptions.UndefinedTableError):
+        hrows = []
+        logger.warning("stage-flow since: no read on jobs_membership_stage_history, using stage stamps only")
+    for r in hrows:
+        k = canon_membership_stage(r["stage"])
+        # Initial outreach counts real sends only (below), never a stage tag.
+        if k in sets and k != "initial_outreach":
+            sets[k].add(r["contact_id"])
+
+    # Sends and Discovery calls: the Activity Pipeline's own event SQL.
     has_call_kind = await _has_column("bedrock", "activity", "call_kind")
     kind_sql = (f"'call_' || coalesce(a.call_kind, '{CALL_KIND_DEFAULT}')" if has_call_kind
                 else f"'call_{CALL_KIND_DEFAULT}'")
-    owner = owner_f if owner_f and _SAFE_EMAIL.match(owner_f) else None
     camp = ("" if not slugs else
             f" AND contact_id IN (SELECT contact_id FROM public.contacts WHERE tags && {_slug_array(slugs)})")
     sends = ", ".join(f"'{m}'" for m in _FLOW_SEND_METRICS)
-    row = await conn.fetchrow(f"""
+    erows = await conn.fetch(f"""
         WITH ev AS (
             {_send_events_sql("team", owner)}
             UNION ALL
             {_call_events_sql("team", owner, kind_sql)}
         )
-        SELECT
-            array_agg(DISTINCT contact_id) FILTER (WHERE metric IN ({sends}) AND contact_id IS NOT NULL) AS sent_ids,
-            count(*) FILTER (WHERE metric IN ({sends}) AND contact_id IS NULL) AS unlinked_sends,
-            array_agg(DISTINCT contact_id) FILTER (WHERE metric = 'call_discovery' AND contact_id IS NOT NULL) AS disc_ids
-        FROM ev WHERE TRUE{camp}
-    """)
-    sent = sorted((row["sent_ids"] if row else None) or [])
-    disc = sorted((row["disc_ids"] if row else None) or [])
-    return {
-        "outreach_sent": {"total": len(sent), "ids": [str(i) for i in sent],
-                          "unlinked_sends": int((row["unlinked_sends"] if row else 0) or 0)},
-        "discovery_calls_logged": ({"total": len(disc), "ids": [str(i) for i in disc]}
-                                   if has_call_kind else None),
+        SELECT contact_id,
+               min(ts) FILTER (WHERE metric IN ({sends})) AS first_send,
+               bool_or(metric = 'call_discovery' AND ts >= $1) AS discovery
+        FROM ev WHERE contact_id IS NOT NULL{camp}
+        GROUP BY contact_id
+    """, since)
+    for r in erows:
+        if r["first_send"] is not None and r["first_send"] >= since:
+            sets["initial_outreach"].add(r["contact_id"])
+        if r["discovery"]:
+            sets["call_booked"].add(r["contact_id"])
+
+    pool = await conn.fetchval(f"""
+        SELECT count(*) FROM public.contacts c
+        LEFT JOIN bedrock.jobs_contact_membership m ON m.contact_id = c.contact_id
+        WHERE c.is_jobs_contact
+          AND ($1::text IS NULL OR lower({_FLOW_CONTACT_OWNER}) = $1) AND {camp_c}
+    """, owner)
+
+    sets["contact_closed"] = sets["converted_to_opportunity"] | sets["revisit"] | sets["not_a_fit"]
+    out = {k: {"total": len(v), "ids": [str(i) for i in sorted(v)]} for k, v in sets.items()}
+    out["total_pool"] = {"total": int(pool or 0), "ids": None}
+    mem = await _writable_stages(
+        "jobs_contact_membership", "jobs_contact_membership_stage_vals",
+        MEMBERSHIP_STAGES_NEW + ["on_hold"], settles_when="scheduling")
+    out["_meta"] = {
+        "date": STAGE_FLOW_SINCE.isoformat(),
+        "scheduling_available": "scheduling" in mem,
+        "scheduling_launched": scheduling_launched.date().isoformat() if scheduling_launched else None,
     }
+    return out
 
 
 async def _flow_activity(conn, owner_f, p_from, p_to, span, slugs: Optional[list] = None) -> tuple:
@@ -4278,7 +4351,8 @@ async def get_stage_flow(
     moved = await _flow_moved(conn, owner_f, dt_f, p_from, p_to, have_history, rt_f, camp_c, camp_o)
     prev = await _flow_moved(conn, owner_f, dt_f, p_from - span, p_from, have_history, rt_f, camp_c, camp_o)
     act_rows, has_call_kind = await _flow_activity(conn, owner_f, p_from, p_to, span, slugs)
-    ever = await _flow_ever(conn, owner_f, slugs)
+    since = await _flow_since(conn, owner_f, slugs)
+    since_meta = since.pop("_meta")
     await _flow_mark_advanced(conn, moved)
     moved.sort(key=lambda m: m["at"], reverse=True)
     members.sort(key=lambda m: -m["days"])
@@ -4346,6 +4420,8 @@ async def get_stage_flow(
             "delta": round(moved_in - target, 1) if target is not None else None,
             # Of the Net New, how many are further along today.
             "conversion": conversion,
+            # Since STAGE_FLOW_SINCE, period-independent (see _flow_since).
+            "since": since.get(key) if band == "outreach" else None,
         }
 
     # ── Activity rows ────────────────────────────────────────────────────────
@@ -4391,8 +4467,6 @@ async def get_stage_flow(
                           for m, lbl in leaves] if len(leaves) > 1 else None,
             "unlinked": sum(int(r["n_this"] or 0) for r in mine if r["contact_id"] is None),
             "conversion": None,
-            # All-time, period-independent (see _flow_ever).
-            "ever": ever.get(key),
         }
 
     def _outreach_stage_rows() -> list:
@@ -4403,15 +4477,26 @@ async def get_stage_flow(
         return out
 
     closed_keys = [k for k, _ in _FLOW_CONTACT_CLOSED]
+    # Every jobs prospect: the universe the funnel draws from. Not a stage, so
+    # it sits outside the band Total and carries no movement or target.
+    universe = {
+        "key": "total_pool", "label": "Total contact pool", "depth": 0, "kind": "universe",
+        "children": None, "available": True,
+        "in_now": {"total": since["total_pool"]["total"], "cells": None},
+        "moved_in": 0, "prev_moved_in": 0, "targetable": False,
+        "target_weekly": None, "target_source": None, "target_source_label": None,
+        "target": None, "delta": None, "conversion": None,
+        "since": since["total_pool"],
+    }
     bands = [
         {"key": "outreach", "label": "Outreach", "unit": "contacts",
-         "rows": _outreach_stage_rows()
-                 + [_row("outreach", "contact_closed", "Contact closed", True, children=closed_keys)]
+         "rows": [universe] + _outreach_stage_rows()
+                 + [_row("outreach", "contact_closed", "Outreach outcome", True, children=closed_keys)]
                  + [_row("outreach", k, lbl, True, depth=1) for k, lbl in _FLOW_CONTACT_CLOSED]},
         {"key": "pipeline", "label": "Pipeline", "unit": "opportunities",
          "rows": [_row("pipeline", k, STAGE_LABELS.get(k, k), True) for k in OPPORTUNITY_STAGES_ACTIVE]
                  # Closed sums the two outcomes, each indented beneath it, the
-                 # same shape as Contact closed (Kwame 2026-10-08).
+                 # same shape as Outreach outcome (Kwame 2026-10-08).
                  + [_row("pipeline", "closed", "Closed", False, children=[k for k, _ in _FLOW_DEAL_TERMINAL])]
                  + [_row("pipeline", k, lbl, False, depth=1) for k, lbl in _FLOW_DEAL_TERMINAL]},
     ]
@@ -4423,6 +4508,9 @@ async def get_stage_flow(
         "filters": {"owner": owner_f, "deal_type": ",".join(dt_f) if dt_f is not None else None,
                     "role_type": ",".join(rt_f) if rt_f else None,
                     "campaign": campaign if slugs else None},
+        # The Since column's fixed start date, and whether Scheduling can be
+        # entered yet (its migration) and when the first contact did.
+        "since": since_meta,
         "buckets": [{"key": k, "label": lbl} for k, lbl in _OPP_AGE_BUCKETS],
         "bands": bands,
         "targets_available": stage_targets_on,

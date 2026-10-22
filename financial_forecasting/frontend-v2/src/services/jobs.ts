@@ -3158,22 +3158,24 @@ export type StageFlowBand = "outreach" | "pipeline";
 export interface StageFlowRow {
   key: string;
   label: string;
-  /** 1 for a row indented under a summary row (the Contact closed paths). */
+  /** 1 for a row indented under a summary row (the Outreach outcome paths). */
   depth: number;
   /** Set on a summary row: the stages it sums. */
   children: string[] | null;
   /** "activity" = sends or calls logged (events, not contacts), shown under
-   *  `parent`. Absent on stage rows. */
-  kind?: "activity";
+   *  `parent`. "universe" = Total contact pool, every jobs prospect: not a
+   *  stage, so outside the band Total. Absent on stage rows. */
+  kind?: "activity" | "universe";
   parent?: string;
   /** Activity rows with several kinds: Email 12 · LinkedIn 3 … */
   breakdown?: { key: string; label: string; n: number }[] | null;
   /** Activity rows: touches counted with no linked contact (not listable). */
   unlinked?: number;
-  /** Activity rows: contacts EVER reached (Outreach sent) or ever on a logged
-   *  Discovery call, all-time; never changes with the period. Null while the
-   *  call-type migration is pending (Discovery only). */
-  ever?: { total: number; ids: string[]; unlinked_sends?: number } | null;
+  /** Outreach rows: distinct contacts that passed this step since
+   *  `StageFlow.since.date`; never changes with the period. `ids` is null on
+   *  Total contact pool (count only). Null on pipeline rows; absent on
+   *  activity rows and older APIs. */
+  since?: { total: number; ids: string[] | null } | null;
   /** Of the Net New, how many are further along today. Null on exits,
    *  summaries and activity rows; absent on older APIs. */
   conversion?: { on: number; of: number } | null;
@@ -3250,6 +3252,9 @@ export interface StageFlow {
   moved: StageFlowMove[];
   /** Activity rows' drill: one entry per contact touched. Absent on older APIs. */
   activity?: StageFlowActivity[];
+  /** The Since column's fixed start date (YYYY-MM-DD), and whether the
+   *  Scheduling stage can be entered yet and when the first contact did. */
+  since?: { date: string; scheduling_available: boolean; scheduling_launched: string | null };
 }
 
 export function useStageFlow(from: string, to: string, owner?: string, dealType?: string, roleType?: string, campaign?: string) {

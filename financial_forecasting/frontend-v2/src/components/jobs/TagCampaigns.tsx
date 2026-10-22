@@ -77,18 +77,16 @@ export function CampaignPicker({ all, selected, onChange }: {
       ? all.find((c) => chosen.has(c.key))?.label ?? "1 campaign"
       : `${chosen.size} campaigns`;
 
+  // "All campaigns" leads the list (Kwame 2026-10-22): checked when nothing is
+  // narrowed, and ticking it clears the selection. While it is on, the
+  // campaign boxes read unchecked, so ticking one shows just that campaign
+  // instead of hiding it from the full list.
   const toggle = (key: string) => {
-    // With nothing selected every box renders checked ("all"), so the first
-    // click has to mean "hide this one": seed from the full list and remove it.
-    // Toggling against the empty set did the opposite of what the checkbox
-    // showed — you unchecked a box and it became the only one selected.
-    const next = chosen.size === 0 ? new Set(all.map((c) => c.key)) : new Set(chosen);
+    const next = new Set(chosen);
     next.has(key) ? next.delete(key) : next.add(key);
-    // Never leave nothing showing: the last checked box won't uncheck, which
-    // beats an empty table you can't tell from a broken one.
-    if (next.size === 0) return;
-    // All selected is the same view as none selected — normalise to "all" so the
-    // header stops claiming a filter that isn't narrowing anything.
+    // Unchecking the last campaign, or checking every one, is the same view
+    // as All: normalise to "all" so the header never claims a filter that
+    // isn't narrowing anything, and the table is never empty.
     onChange(next.size === all.length ? [] : [...next]);
   };
 
@@ -106,17 +104,18 @@ export function CampaignPicker({ all, selected, onChange }: {
           {/* Backdrop closes the panel on any outside click. */}
           <div className="fixed inset-0 z-20" onClick={() => setOpen(false)} />
           <div className="absolute left-0 z-30 mt-1 max-h-[320px] w-[280px] overflow-y-auto rounded-lg border border-border-strong bg-surface p-1 shadow-lg">
-            <div className="flex items-center justify-between px-2 py-1">
+            <div className="px-2 py-1">
               <span className="text-[10.5px] font-bold uppercase tracking-wider text-ink-4">Show campaigns</span>
-              {chosen.size > 0 && (
-                <button type="button" onClick={() => onChange([])}
-                  className="text-[11px] font-medium text-accent hover:underline">Show all</button>
-              )}
             </div>
+            <label className="flex cursor-pointer items-center gap-2 rounded border-b border-border px-2 py-1 text-[12.5px] font-medium text-ink hover:bg-surface-2">
+              <input type="checkbox" checked={chosen.size === 0}
+                onChange={() => onChange([])} className="accent-[var(--accent)]" />
+              <span className="min-w-0 flex-1 truncate">All campaigns</span>
+            </label>
             {all.map((c) => (
               <label key={c.key}
                 className="flex cursor-pointer items-center gap-2 rounded px-2 py-1 text-[12.5px] text-ink hover:bg-surface-2">
-                <input type="checkbox" checked={chosen.size === 0 || chosen.has(c.key)}
+                <input type="checkbox" checked={chosen.has(c.key)}
                   onChange={() => toggle(c.key)} className="accent-[var(--accent)]" />
                 <span className="min-w-0 flex-1 truncate" title={c.label}>{c.label}</span>
                 <span className="shrink-0 tabular-nums text-[11px] text-ink-4">{c.in_pipeline.toLocaleString()}</span>
