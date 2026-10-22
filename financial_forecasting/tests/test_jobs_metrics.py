@@ -23,7 +23,7 @@ def _clear():
 def _placement(uid, builder, **ov):
     row = {"id": f"er{uid}", "user_id": uid, "builder": builder, "role_title": "Engineer",
            "company_name": "Acme", "employment_type": "full_time", "payment_amount": 90000,
-           "influenced": True, "source": "staff", "engagement_stage": None,
+           "influenced": True, "source": "staff", "engagement_stage": "active",
            "opportunity_id": None, "start_date": None, "job_application_id": None,
            "opp_id": None}
     row.update(ov)

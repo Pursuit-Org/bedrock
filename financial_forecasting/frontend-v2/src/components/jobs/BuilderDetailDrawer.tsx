@@ -38,7 +38,11 @@ const PREFERENCE_FIELDS: { key: BuilderEditableField; label: string }[] = [
   { key: "target_functions", label: "Target function" },
   { key: "target_industries", label: "Target industry" },
   { key: "preferred_modes", label: "Work mode" },
-  { key: "geo_preference", label: "Preferred location" },
+  { key: "current_location", label: "Current location" },
+  { key: "open_to_relocate", label: "Open to relocating" },
+  { key: "relocation_notes", label: "Relocation notes" },
+  { key: "min_salary", label: "Min salary" },
+  { key: "site_visits", label: "Site visits" },
   { key: "applying_regularly", label: "Applying regularly" },
   { key: "networking_regularly", label: "Networking regularly" },
 ];
@@ -81,7 +85,11 @@ export function BuilderDetailDrawer({ userId, onClose }: { userId: number | null
     applying_regularly: p?.applying_regularly ?? null, networking_regularly: p?.networking_regularly ?? null,
     degree: p?.degree ?? null, university: p?.university ?? null, graduation_year: p?.graduation_year ?? null,
     languages: p?.languages ?? null, certifications: p?.certifications ?? null,
-    geo_preference: (p?.intake?.geo_preference as string | undefined) ?? null,
+    current_location: p?.current_location ?? null,
+    open_to_relocate: p?.open_to_relocate ?? null,
+    relocation_notes: p?.relocation_notes ?? null,
+    min_salary: p?.min_salary ?? null,
+    site_visits: p?.site_visits ?? null,
   };
 
   return (

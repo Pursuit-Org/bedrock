@@ -6,6 +6,8 @@ import {
   BUILDER_INDUSTRY_OPTIONS,
   BUILDER_MODE_OPTIONS,
   BUILDER_DEGREE_OPTIONS,
+  BUILDER_MIN_SALARY_OPTIONS,
+  minSalaryLabel,
   type BuilderProfileFields,
 } from "@/services/jobs";
 
@@ -16,7 +18,9 @@ export type BuilderListKey = "target_functions" | "target_industries" | "preferr
 export type BuilderTriKey = "applying_regularly" | "networking_regularly";
 export type BuilderEditableField =
   | BuilderRatingKey | BuilderListKey | BuilderTriKey
-  | "degree" | "university" | "graduation_year" | "geo_preference";
+  | "degree" | "university" | "graduation_year" | "min_salary"
+  | "current_location" | "open_to_relocate" | "relocation_notes"
+  | "site_visits";
 
 export const isBuilderRating = (k: string): k is BuilderRatingKey => BUILDER_RATING_FIELDS.some(([r]) => r === k);
 
@@ -33,6 +37,7 @@ const withClear = (o: { value: string; label: string }[]) => [...o, { value: CLE
 const RATING_SELECT = withClear(opts(BUILDER_RATING_OPTIONS));
 const DEGREE_SELECT = withClear(opts(BUILDER_DEGREE_OPTIONS));
 const TRI_SELECT = withClear(YES_NO);
+const MIN_SALARY_SELECT = withClear(BUILDER_MIN_SALARY_OPTIONS.map((n) => ({ value: String(n), label: minSalaryLabel(n) })));
 
 const LIST_OPTIONS: Partial<Record<BuilderListKey, string[]>> = {
   target_functions: BUILDER_FUNCTION_OPTIONS,
@@ -90,12 +95,50 @@ export function BuilderFieldEditor({ field, values: p, onSave, className }: {
       />
     );
   }
-  if (field === "geo_preference") {
-    // Lives in intake (the intake form's geo answer); PATCH merges intake.
+  // Location fields live in intake; PATCH merges intake, and an explicit null
+  // is kept (so a cleared relocation note doesn't fall back to the old answer).
+  if (field === "current_location") {
     return (
-      <div className={className ?? "max-w-[240px]"} title={p.geo_preference ?? undefined}>
-        <InlineText value={p.geo_preference} placeholder="e.g. NYC, remote" onSave={(v) => put("intake", { geo_preference: v.trim() || null })} />
+      <div className={className ?? "max-w-[200px]"} title={p.current_location ?? undefined}>
+        <InlineText value={p.current_location} placeholder="City, State" onSave={(v) => put("intake", { current_location: v.trim() || null })} />
       </div>
+    );
+  }
+  if (field === "open_to_relocate") {
+    return (
+      <InlineSelect
+        value={triValue(p.open_to_relocate) || null}
+        options={TRI_SELECT}
+        onSave={(v) => put("intake", { open_to_relocate: v === CLEAR ? null : v === "yes" })}
+        className={className}
+      />
+    );
+  }
+  if (field === "relocation_notes") {
+    return (
+      <div className={className ?? "max-w-[240px]"} title={p.relocation_notes ?? undefined}>
+        <InlineText value={p.relocation_notes} placeholder="e.g. East Coast only" onSave={(v) => put("intake", { relocation_notes: v.trim() || null })} />
+      </div>
+    );
+  }
+  // Site visits live in intake too, as free text.
+  if (field === "site_visits") {
+    return (
+      <div className={className ?? "max-w-[240px]"} title={p.site_visits ?? undefined}>
+        <InlineText value={p.site_visits} placeholder="Where, when, how it went" onSave={(v) => put("intake", { site_visits: v.trim() || null })} />
+      </div>
+    );
+  }
+  if (field === "min_salary") {
+    // Lives in intake like the location fields; an explicit null keeps it cleared
+    // instead of falling back to the intake form's range again.
+    return (
+      <InlineSelect
+        value={p.min_salary != null ? String(p.min_salary) : null}
+        options={MIN_SALARY_SELECT}
+        onSave={(v) => put("intake", { min_salary: v === CLEAR ? null : Number(v) })}
+        className={className}
+      />
     );
   }
   if (field === "university") {

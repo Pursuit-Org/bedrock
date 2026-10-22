@@ -2848,17 +2848,17 @@ export function useDeleteOpportunity() {
 // ── Builders tab ──────────────────────────────────────────────────────────────
 
 export type BuilderStatus =
-  | "not_started" | "actively_applying" | "interviewing" | "placed" | "paused";
+  | "not_started" | "actively_applying" | "interviewing" | "ft_hired" | "paused";
 
 export const BUILDER_STATUS_ORDER: BuilderStatus[] = [
-  "actively_applying", "interviewing", "placed", "paused", "not_started",
+  "actively_applying", "interviewing", "ft_hired", "paused", "not_started",
 ];
 
 export const BUILDER_STATUS_LABELS: Record<BuilderStatus, string> = {
   not_started: "Not Started",
   actively_applying: "Actively Applying",
   interviewing: "Interviewing",
-  placed: "Placed",
+  ft_hired: "FT Hired",
   paused: "Paused",
 };
 
@@ -2866,7 +2866,7 @@ export const BUILDER_STATUS_STYLES: Record<BuilderStatus, string> = {
   not_started:       "text-ink-3 bg-surface-2",
   actively_applying: "text-[var(--accent)] bg-[var(--accent-soft)]",
   interviewing:      "text-[var(--amber)] bg-[var(--amber-soft)]",
-  placed:            "text-[var(--green)] bg-[var(--green-soft)]",
+  ft_hired:          "text-white bg-[var(--green)]",
   paused:            "text-ink-3 bg-surface-2",
 };
 
@@ -2881,8 +2881,14 @@ export interface BuilderBoardRow {
   l3plus_segment: string | null;
   status: BuilderStatus;
   status_overridden: boolean;
+  /** Paid part-time/contract gigs; the "PT gigs" column. */
+  pt_count: number;
+  /** Of those, the ones still active. */
+  pt_active: number;
+  /** Nonprofit / SMB pilot placements (paid ones also count as PT gigs). */
+  deployments: number;
   coach: string | null;
-  counts: { applications: number; interviews: number; placements: number; deal_matches: number };
+  counts: { applications: number; interviews: number; interviews_active: number; placements: number; deal_matches: number };
   readiness: { complete: number; total: number; lookbook: boolean; linkedin: boolean; github: boolean; cv: boolean; mock: boolean };
   prof_strength: string | null;
   technical_strength: string | null;
@@ -2899,8 +2905,16 @@ export interface BuilderProfileFields {
   applying_regularly: boolean | null; networking_regularly: boolean | null;
   degree: string | null; university: string | null; graduation_year: number | null;
   languages: string[] | null; certifications: string[] | null;
-  /** Where they want to work — intake.geo_preference, free text. */
-  geo_preference: string | null;
+  /** Location, all in intake. relocation_notes falls back to the old
+   *  write-in "Preferred location" (intake.geo_preference) until edited. */
+  current_location: string | null;
+  open_to_relocate: boolean | null;
+  relocation_notes: string | null;
+  /** Minimum salary expectation in dollars ($10k steps) — intake.min_salary,
+   *  else the low end of the intake form's salary range. */
+  min_salary: number | null;
+  /** Site visits: staff-entered free text, in intake. */
+  site_visits: string | null;
 }
 
 /** Coach competency scale — the values the Airtable import brought in. */
@@ -2917,12 +2931,13 @@ export const BUILDER_RATING_FIELDS = [
 export const BUILDER_FUNCTION_OPTIONS = [
   "Software Engineering",
   "Data & Analytics",
-  "Product & Project Management",
+  "Product Management",
   "Design / UX",
   "IT, Cloud & Security",
   "Sales & Customer Success",
   "Marketing & Communications",
-  "Operations & Finance",
+  "Operations",
+  "Finance",
   "HR / People",
   "AI Enablement & Training",
 ];
@@ -2943,6 +2958,11 @@ export const BUILDER_INDUSTRY_OPTIONS = [
 ];
 
 export const BUILDER_MODE_OPTIONS = ["Remote", "Hybrid", "On-site"];
+
+/** Minimum salary dropdown: $10k steps, the top one meaning "and up". */
+export const BUILDER_MIN_SALARY_OPTIONS = [50_000, 60_000, 70_000, 80_000, 90_000, 100_000, 110_000, 120_000];
+export const minSalaryLabel = (n: number | null | undefined) =>
+  n == null ? "" : `$${n / 1000}k${n >= 120_000 ? "+" : ""}`;
 
 export const BUILDER_DEGREE_OPTIONS = ["None", "Associate", "Bachelor's", "Master's", "Other"];
 
@@ -2965,6 +2985,11 @@ export interface BuilderDealMatch {
 }
 export interface BuilderJobProfile {
   job_search_status: string | null; status_overridden: boolean;
+  /** Computed server-side from intake (see BuilderProfileFields.min_salary). */
+  min_salary: number | null;
+  /** Computed server-side from intake (see BuilderProfileFields). */
+  current_location: string | null; open_to_relocate: boolean | null; relocation_notes: string | null;
+  site_visits: string | null;
   pursuit_coach: string | null; gen_notes: string | null; coach_notes: string | null;
   coach_flags: string[]; improvement_tags: string[];
   ready_lookbook: boolean; ready_linkedin: boolean; ready_github: boolean; ready_cv: boolean; ready_mock: boolean;
@@ -2983,6 +3008,9 @@ export interface BuilderDetail {
     cohort_completed: boolean; linkedin_url: string | null; github_url: string | null;
   };
   status: BuilderStatus; status_overridden: boolean; derived_status: BuilderStatus;
+  pt_count: number;
+  pt_active: number;
+  deployments: number;
   applications: BuilderApplication[];
   placements: BuilderPlacement[];
   deal_matches: BuilderDealMatch[];

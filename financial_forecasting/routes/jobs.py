@@ -11179,7 +11179,7 @@ async def log_activity(
 # the editable coach/readiness/competency overlay lives in
 # bedrock.builder_job_profile. Status is auto-derived with a manual override.
 
-BUILDER_STATUSES = {"not_started", "actively_applying", "interviewing", "placed", "paused"}
+BUILDER_STATUSES = {"not_started", "actively_applying", "interviewing", "ft_hired", "paused"}
 _READY_KEYS = ("ready_lookbook", "ready_linkedin", "ready_github", "ready_cv", "ready_mock")
 # Profile fields the Builders table shows as editable columns.
 _BOARD_PROFILE_KEYS = (
@@ -11190,9 +11190,12 @@ _BOARD_PROFILE_KEYS = (
 )
 
 
-def _derive_builder_status(placed: bool, interviewing: bool, applying: bool) -> str:
-    if placed:
-        return "placed"
+def _derive_builder_status(ft_hired: bool, interviewing: bool, applying: bool) -> str:
+    # Part-time / contract work isn't a status: a builder with only PT gigs is
+    # still searching, so they fall through to their search activity. The gig
+    # count is its own column (pt_count).
+    if ft_hired:
+        return "ft_hired"
     if interviewing:
         return "interviewing"
     if applying:
@@ -11200,11 +11203,91 @@ def _derive_builder_status(placed: bool, interviewing: bool, applying: bool) -> 
     return "not_started"
 
 
-def _is_placed(payment_amount, engagement_stage) -> bool:
-    # "Placed" = a PAID placement, consistent with the placements / North-Star
-    # definition. Unpaid active/completed freelance projects don't count — those
-    # builders are still job-searching.
-    return (payment_amount or 0) > 0
+def _resolve_builder_status(prof, derived: str, ft_hired: bool) -> str:
+    """A manual override wins over the derived status. Overrides saved as the
+    old "placed" status count as FT Hired only when the data says so;
+    otherwise the derived status stands."""
+    if not (prof and prof["status_overridden"] and prof["job_search_status"]):
+        return derived
+    if prof["job_search_status"] == "placed":
+        return "ft_hired" if ft_hired else derived
+    return prof["job_search_status"]
+
+
+# Application stages that count as hired on the Builders tab even before a
+# placement record exists — an offer or a hire ends the search.
+_PLACED_APP_STAGES = ("offer", "accepted")
+
+
+def _min_salary(intake: Optional[dict]) -> Optional[int]:
+    """Minimum salary expectation in dollars, a $10k step. intake.min_salary once
+    staff set it (an explicit null means cleared); until then, the low end of
+    the intake form's salary_expectation answer ("60-70k" -> 60000, "100k+" ->
+    100000), rounded down to $10k so it matches the dropdown."""
+    intake = intake or {}
+    if "min_salary" in intake:
+        return intake["min_salary"]
+    m = re.search(r"(\d+)", str(intake.get("salary_expectation") or ""))
+    if not m:
+        return None
+    n = int(m.group(1))
+    n = n * 1000 if n < 1000 else n
+    return n // 10_000 * 10_000 or None
+
+
+def _intake_location(intake: Optional[dict]) -> dict:
+    """Location columns, all stored in intake (PATCH {intake: {...}} merges).
+    relocation_notes falls back to the old write-in "Preferred location"
+    (intake.geo_preference) until staff edit it, so those answers carry over."""
+    intake = intake or {}
+    return {
+        "current_location": intake.get("current_location"),
+        "open_to_relocate": intake.get("open_to_relocate"),
+        "relocation_notes": (intake["relocation_notes"] if "relocation_notes" in intake
+                             else intake.get("geo_preference")),
+    }
+
+
+def _intake_site_visits(intake: Optional[dict]) -> dict:
+    """Site visits: one staff-entered free-text column, stored in intake like
+    the location columns."""
+    return {"site_visits": (intake or {}).get("site_visits")}
+
+
+# employment_records.program values that mark a deployment (nonprofit / SMB
+# pilots). A paid deployment also counts as a PT gig.
+DEPLOYMENT_PROGRAMS = (
+    "Goldman Sachs Nonprofit Pilots", "Mizuho Nonprofit Pilots",
+    "Google/Amazon SMB Pilot", "Google/Amazon/JFF SMB Pilot",
+)
+
+
+def _work_summary(placements, ft_offer: bool, other_offers: int) -> tuple[bool, int, int, int]:
+    """(ft_hired, pt_count, pt_active, deployments) for one builder. Only PAID
+    work counts toward FT Hired and the PT gig counts, consistent with the
+    placements / North-Star definition — unpaid freelance and pro bono projects
+    leave the builder job-searching.
+      ft_hired    — a paid full-time placement still active, or an offer/hire on
+                    a role typed full-time (ft_offer).
+      pt_count    — paid non-full-time placements (contract, freelance, …), any
+                    stage. A hire usually has both an application and a
+                    placement, so offers/hires not typed full-time only raise the
+                    count when they outnumber the placements recorded so far.
+      pt_active   — of those placements, the ones still active.
+      deployments — placements in a DEPLOYMENT_PROGRAMS program, paid or not."""
+    ft_hired = ft_offer
+    pt = pt_active = deployments = 0
+    for r in placements:
+        if r["program"] in DEPLOYMENT_PROGRAMS:
+            deployments += 1
+        if (r["payment_amount"] or 0) <= 0:
+            continue
+        if r["employment_type"] == "full_time":
+            ft_hired = ft_hired or r["engagement_stage"] == "active"
+        else:
+            pt += 1
+            pt_active += r["engagement_stage"] == "active"
+    return ft_hired, max(pt, other_offers), pt_active, deployments
 
 
 # ── Builders tab roster ───────────────────────────────────────────────────────
@@ -11255,23 +11338,36 @@ async def builders_board(user=Depends(require_auth), conn=Depends(get_db)):
     readiness, coach."""
     builders = await conn.fetch(f"WITH {_BUILDER_ROSTER} SELECT * FROM roster ORDER BY full_name")
 
+    # Job type of an offer/hire: its linked Bedrock role's, else the application's own.
     apps = await conn.fetch("""
-        SELECT builder_id,
-               count(*)                                                    AS total,
-               count(*) FILTER (WHERE stage = 'interview')                 AS interviews,
-               bool_or(date_applied >= CURRENT_DATE - INTERVAL '60 days')  AS recent
-        FROM public.job_applications
-        WHERE source_type = 'Pursuit_referred'
-        GROUP BY builder_id
-    """)
+        SELECT ja.builder_id,
+               count(*)                                                       AS total,
+               -- Interviewing now drives the status; the Interviews column is
+               -- every application that ever reached an interview: at interview
+               -- or past it (offer/accepted), or with an interview in its history.
+               count(*) FILTER (WHERE ja.stage = 'interview')                 AS interviewing_now,
+               count(*) FILTER (WHERE ja.stage = 'interview' OR ja.stage = ANY($1::text[])
+                       OR COALESCE(ja.stage_history, '[]'::jsonb) @> '[{"stage": "interview"}]'
+                   )                                                          AS interviews,
+               bool_or(ja.stage = ANY($1::text[])
+                       AND COALESCE(r.employment_type, NULLIF(ja.job_type, '')) = 'full_time') AS ft_offer,
+               count(*) FILTER (WHERE ja.stage = ANY($1::text[])
+                       AND COALESCE(r.employment_type, NULLIF(ja.job_type, ''), '') <> 'full_time') AS other_offers,
+               bool_or(ja.date_applied >= CURRENT_DATE - INTERVAL '60 days')  AS recent
+        FROM public.job_applications ja
+        LEFT JOIN bedrock.jobs_role r ON r.id = ja.jobs_role_id
+        GROUP BY ja.builder_id
+    """, list(_PLACED_APP_STAGES))
     apps_by = {r["builder_id"]: r for r in apps}
 
     plc_by: dict = {}
-    for r in await conn.fetch(f"SELECT user_id, payment_amount, engagement_stage, opportunity_id FROM bedrock.secured_jobs() WHERE {_live_placement()}"):
-        b = plc_by.setdefault(r["user_id"], {"count": 0, "placed": False, "deals": set()})
-        b["count"] += 1
-        if _is_placed(r["payment_amount"], r["engagement_stage"]):
-            b["placed"] = True
+    for r in await conn.fetch(f"""
+        SELECT s.user_id, s.payment_amount, s.employment_type, s.engagement_stage, s.opportunity_id, er.program
+        FROM bedrock.secured_jobs() s LEFT JOIN public.employment_records er ON er.id = s.id
+        WHERE {_live_placement('s')}
+    """):
+        b = plc_by.setdefault(r["user_id"], {"rows": [], "deals": set()})
+        b["rows"].append(r)
         if r["opportunity_id"]:
             b["deals"].add(r["opportunity_id"])
 
@@ -11284,11 +11380,13 @@ async def builders_board(user=Depends(require_auth), conn=Depends(get_db)):
         uid = b["user_id"]
         a, p, prof = apps_by.get(uid), plc_by.get(uid), profs.get(uid)
         interviews = a["interviews"] if a else 0
-        placed = bool(p and p["placed"])
+        interviewing_now = bool(a and a["interviewing_now"])
+        ft_hired, pt_count, pt_active, deployments = _work_summary(
+            p["rows"] if p else [], bool(a and a["ft_offer"]), a["other_offers"] if a else 0)
         applying = (uid in enrolled) or bool(a and a["recent"])
-        derived = _derive_builder_status(placed, interviews > 0, applying)
+        derived = _derive_builder_status(ft_hired, interviewing_now, applying)
         overridden = bool(prof and prof["status_overridden"])
-        status = prof["job_search_status"] if (overridden and prof and prof["job_search_status"]) else derived
+        status = _resolve_builder_status(prof, derived, ft_hired)
         status_counts[status] = status_counts.get(status, 0) + 1
         ready = {k: bool(prof[k]) if prof else False for k in _READY_KEYS}
         out.append({
@@ -11296,11 +11394,13 @@ async def builders_board(user=Depends(require_auth), conn=Depends(get_db)):
             "cohort": b["cohort"], "cohort_completed": b["cohort_completed"],
             "l3plus_segment": b["l3plus_segment"],
             "status": status, "status_overridden": overridden,
+            "pt_count": pt_count, "pt_active": pt_active, "deployments": deployments,
             "coach": prof["pursuit_coach"] if prof else None,
             "counts": {
                 "applications": (a["total"] if a else 0),
                 "interviews": interviews,
-                "placements": (p["count"] if p else 0),
+                "interviews_active": (a["interviewing_now"] if a else 0),
+                "placements": (len(p["rows"]) if p else 0),
                 "deal_matches": (len(p["deals"]) if p else 0),
             },
             "readiness": {"complete": sum(ready.values()), "total": len(_READY_KEYS),
@@ -11312,9 +11412,12 @@ async def builders_board(user=Depends(require_auth), conn=Depends(get_db)):
             # arrives with 2026-09-30-builder-target-functions.sql.
             "profile": {
                 **{k: (prof.get(k) if prof else None) for k in _BOARD_PROFILE_KEYS},
-                # Write-in "Preferred location": the intake form's geo answer,
-                # edited in place via PATCH {intake: {geo_preference}} (merged).
-                "geo_preference": ((_jsonb(prof["intake"]) or {}).get("geo_preference") if prof else None),
+                # Location columns (current location, open to relocating,
+                # relocation notes) live in intake; see _intake_location.
+                **_intake_location(_jsonb(prof["intake"]) if prof else None),
+                **_intake_site_visits(_jsonb(prof["intake"]) if prof else None),
+                # Dropdown in $10k steps; same intake storage (PATCH {intake: {min_salary}}).
+                "min_salary": _min_salary(_jsonb(prof["intake"])) if prof else None,
             },
         })
     return {"success": True, "data": {"builders": out, "status_counts": status_counts}}
@@ -11336,17 +11439,20 @@ async def builder_detail(user_id: int, user=Depends(require_auth), conn=Depends(
         raise HTTPException(404, "Builder not found in the L3 population")
 
     apps = await conn.fetch("""
-        SELECT job_application_id AS id, company_name, role_title, stage,
-               date_applied, salary, job_url, response_date
-        FROM public.job_applications
-        WHERE builder_id = $1 AND source_type = 'Pursuit_referred'
-        ORDER BY date_applied DESC NULLS LAST
+        SELECT ja.job_application_id AS id, ja.company_name, ja.role_title, ja.stage,
+               ja.date_applied, ja.salary, ja.job_url, ja.response_date,
+               COALESCE(r.employment_type, NULLIF(ja.job_type, '')) AS job_type
+        FROM public.job_applications ja
+        LEFT JOIN bedrock.jobs_role r ON r.id = ja.jobs_role_id
+        WHERE ja.builder_id = $1
+        ORDER BY ja.date_applied DESC NULLS LAST
     """, user_id)
     placements = await conn.fetch(f"""
-        SELECT id, role_title, company_name, employment_type, payment_amount,
-               engagement_stage, influenced, opportunity_id, start_date
-        FROM bedrock.secured_jobs() WHERE user_id = $1 AND {_live_placement()}
-        ORDER BY (payment_amount > 0) DESC NULLS LAST, payment_amount DESC NULLS LAST
+        SELECT s.id, s.role_title, s.company_name, s.employment_type, s.payment_amount,
+               s.engagement_stage, s.influenced, s.opportunity_id, s.start_date, er.program
+        FROM bedrock.secured_jobs() s LEFT JOIN public.employment_records er ON er.id = s.id
+        WHERE s.user_id = $1 AND {_live_placement('s')}
+        ORDER BY (s.payment_amount > 0) DESC NULLS LAST, s.payment_amount DESC NULLS LAST
     """, user_id)
     deal_ids = [r["opportunity_id"] for r in placements if r["opportunity_id"]]
     deals = []
@@ -11371,18 +11477,26 @@ async def builder_detail(user_id: int, user=Depends(require_auth), conn=Depends(
     """, user_id)
     prof = await conn.fetchrow("SELECT * FROM bedrock.builder_job_profile WHERE user_id = $1", user_id)
 
-    placed = any(_is_placed(r["payment_amount"], r["engagement_stage"]) for r in placements)
+    offers = [r for r in apps if r["stage"] in _PLACED_APP_STAGES]
+    ft_hired, pt_count, pt_active, deployments = _work_summary(
+        placements,
+        any(r["job_type"] == "full_time" for r in offers),
+        sum(1 for r in offers if r["job_type"] != "full_time"),
+    )
     interviewing = any(r["stage"] == "interview" for r in apps)
     recent = any(r["date_applied"] and (datetime.now().date() - r["date_applied"]).days <= 60 for r in apps)
     applying = enrollment is not None or recent
-    derived = _derive_builder_status(placed, interviewing, applying)
+    derived = _derive_builder_status(ft_hired, interviewing, applying)
     overridden = bool(prof and prof["status_overridden"])
-    status = prof["job_search_status"] if (overridden and prof and prof["job_search_status"]) else derived
+    status = _resolve_builder_status(prof, derived, ft_hired)
 
     profile = None
     if prof:
         profile = dict(prof)
         profile["intake"] = _jsonb(profile.get("intake"))
+        profile["min_salary"] = _min_salary(profile["intake"])
+        profile.update(_intake_location(profile["intake"]))
+        profile.update(_intake_site_visits(profile["intake"]))
 
     return {"success": True, "data": {
         "identity": {
@@ -11391,6 +11505,7 @@ async def builder_detail(user_id: int, user=Depends(require_auth), conn=Depends(
             "linkedin_url": ident["linkedin_url"], "github_url": ident["github_url"],
         },
         "status": status, "status_overridden": overridden, "derived_status": derived,
+        "pt_count": pt_count, "pt_active": pt_active, "deployments": deployments,
         "applications": [dict(r) for r in apps],
         "placements": [dict(r) for r in placements],
         "deal_matches": [dict(r) for r in deals],
@@ -11446,6 +11561,8 @@ async def update_builder_profile(user_id: int, body: BuilderProfileUpdate,
     status_overridden on; pass status_overridden=false to revert to derived.
     intake is merged (||) rather than replaced."""
     fields = body.dict(exclude_unset=True)
+    if fields.get("job_search_status") is not None and fields["job_search_status"] not in BUILDER_STATUSES:
+        raise HTTPException(400, f"Unknown job_search_status: {fields['job_search_status']}")
     if "job_search_status" in fields and "status_overridden" not in fields:
         fields["status_overridden"] = True
     if not fields:
