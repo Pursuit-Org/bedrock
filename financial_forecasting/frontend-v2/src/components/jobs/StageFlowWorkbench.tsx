@@ -27,6 +27,7 @@ import {
   type JobStage,
   type MembershipStage,
 } from "@/services/jobs";
+import { useAllJobsTasks } from "@/services/jobsTasks";
 import { Drawer } from "@/components/ui/Drawer";
 import { ColumnChooser } from "@/components/ui/ColumnChooser";
 import { CommittedRolesModal } from "@/components/jobs/CommittedRolesModal";
@@ -302,8 +303,37 @@ function OpportunitiesList({ isPool, contextHead, records, stageLabel, nameOf }:
   const stages = useMemo(() => [...new Set(all.map((o) => o.stage))]
     .map((s) => ({ value: s, label: STAGE_LABELS[s as JobStage] ?? s })), [all]);
 
-  const extraHead = contextHead ?? (isPool ? ["In stage"] : ["Net new", "From"]);
-  const extra = (id: string) => {
+  // Next step: the deal's open task due soonest, the same rule the
+  // Opportunities page uses, so "what happens next" reads from the drill.
+  const tasksQ = useAllJobsTasks();
+  const nextTask = useMemo(() => {
+    const m = new Map<string, { title: string; deadline: string | null }>();
+    for (const t of tasksQ.data ?? []) {
+      if (t.parent_type !== "opportunity" || t.status === "Completed") continue;
+      const cur = m.get(t.parent_id);
+      if (!cur || (t.deadline ?? "9999") < (cur.deadline ?? "9999")) m.set(t.parent_id, { title: t.title, deadline: t.deadline });
+    }
+    return m;
+  }, [tasksQ.data]);
+  const today = new Date().toISOString().slice(0, 10);
+  const nextStepCell = (id: string) => {
+    const t = nextTask.get(id);
+    if (!t) return <span className="text-ink-4">No open task</span>;
+    const overdue = t.deadline != null && t.deadline.slice(0, 10) < today;
+    return (
+      <span className="flex max-w-[260px] items-baseline gap-1.5" title={t.title}>
+        <span className="truncate text-ink-2">{t.title}</span>
+        {t.deadline && (
+          <span className={cn("shrink-0 text-[11px] tabular-nums", overdue ? "font-semibold text-red" : "text-ink-4")}>
+            {new Date(`${t.deadline.slice(0, 10)}T00:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
+          </span>
+        )}
+      </span>
+    );
+  };
+  const extraHead = [...(contextHead ?? (isPool ? ["In stage"] : ["Net new", "From"])), "Next step"];
+  const extra = (id: string): React.ReactNode[] => [...baseExtra(id), nextStepCell(id)];
+  const baseExtra = (id: string): React.ReactNode[] => {
     const r = byId.get(id);
     if (!r) return [];
     if (r.extra) return r.extra;

@@ -3170,6 +3170,10 @@ export interface StageFlowRow {
   breakdown?: { key: string; label: string; n: number }[] | null;
   /** Activity rows: touches counted with no linked contact (not listable). */
   unlinked?: number;
+  /** Activity rows: contacts EVER reached (Outreach sent) or ever on a logged
+   *  Discovery call, all-time; never changes with the period. Null while the
+   *  call-type migration is pending (Discovery only). */
+  ever?: { total: number; ids: string[]; unlinked_sends?: number } | null;
   /** Of the Net New, how many are further along today. Null on exits,
    *  summaries and activity rows; absent on older APIs. */
   conversion?: { on: number; of: number } | null;

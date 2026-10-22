@@ -507,3 +507,52 @@ def test_no_campaign_means_no_campaign_predicate_and_unknown_is_a_400():
     assert all("FROM public.contacts cc" not in x[1] and "c.tags &&" not in x[1] for x in conn.calls)
     r, _ = _get({CATALOG: [{"slug": "board"}]}, campaign="nope")
     assert r.status_code == 400
+
+
+EVER = "AS sent_ids"
+
+
+def _ever_client(sent_ids, disc_ids=None, unlinked=0):
+    conn = FakeConn(vals={"information_schema.columns": 1},
+                    rows={EVER: {"sent_ids": sent_ids, "unlinked_sends": unlinked, "disc_ids": disc_ids}})
+    return conn, make_jobs_client(conn)
+
+
+def test_total_ever_outreached_is_all_time_and_counts_contacts_once():
+    conn, c = _ever_client([7, 8, 9], disc_ids=[8], unlinked=2)
+    a = c.get(f"/api/jobs/stage-flow?period_from={P_FROM}&period_to={P_TO}").json()["data"]
+    b = c.get("/api/jobs/stage-flow?period_from=2026-01-01&period_to=2026-01-07").json()["data"]
+    for d in (a, b):
+        rows = _rows(d)
+        assert rows[("outreach", "outreach_sent")]["ever"] == {"total": 3, "ids": ["7", "8", "9"], "unlinked_sends": 2}
+        assert rows[("outreach", "discovery_calls_logged")]["ever"] == {"total": 1, "ids": ["8"]}
+        # Stage rows don't carry it.
+        assert "ever" not in rows[("outreach", "initial_outreach")]
+    q = next(x[1] for x in conn.calls if EVER in x[1])
+    # No date window at all, so the period can't move it.
+    assert "ts >=" not in q and "$1" not in q and "$2" not in q
+    # Real sends only: the four send metrics, and calls only for Discovery.
+    assert "metric IN ('direct_email_sent', 'linkedin_message_sent', 'text_sent', 'facilitated_intro_sent')" in q
+    assert "metric = 'call_discovery'" in q
+    # Never a stage, tag or assignment.
+    assert "jobs_contact_membership" not in q and "first_outreach_at" not in q
+
+
+def test_total_ever_outreached_follows_the_sender_and_the_campaign():
+    conn = FakeConn(vals={"information_schema.columns": 1},
+                    rows={EVER: {"sent_ids": [7], "unlinked_sends": 0, "disc_ids": None}},
+                    lists={CATALOG: [{"slug": "board"}, {"slug": "operation_35_lt"}]})
+    c = make_jobs_client(conn)
+    d = c.get(f"/api/jobs/stage-flow?period_from={P_FROM}&period_to={P_TO}"
+              "&owner=a@pursuit.org&campaign=board,operation_35").json()["data"]
+    q = next(x[1] for x in conn.calls if EVER in x[1])
+    assert "from_email ILIKE '%a@pursuit.org%'" in q
+    assert "tags && ARRAY['board','operation_35_lt']::text[]" in q
+    assert _rows(d)[("outreach", "discovery_calls_logged")]["ever"] == {"total": 0, "ids": []}
+
+
+def test_ever_discovery_is_pending_without_the_call_kind_column(monkeypatch):
+    from routes import jobs
+    monkeypatch.setitem(jobs._COLUMN_CACHE, ("bedrock", "activity", "call_kind"), False)
+    r, _ = _get({})
+    assert _rows(r.json()["data"])[("outreach", "discovery_calls_logged")]["ever"] is None

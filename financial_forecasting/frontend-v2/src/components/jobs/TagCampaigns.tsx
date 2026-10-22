@@ -64,7 +64,7 @@ type DrillKind = "contacts" | "accounts" | null;
  *  common case needs no selection. Checkbox list rather than a native multi-
  *  select: cmd-clicking options is not a discoverable way to pick "CISO and
  *  Board", and the counts help you decide what's worth looking at. */
-function CampaignPicker({ all, selected, onChange }: {
+export function CampaignPicker({ all, selected, onChange }: {
   all: TagCampaign[];
   selected: string[];
   onChange: (next: string[]) => void;

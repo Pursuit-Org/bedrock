@@ -4055,13 +4055,18 @@ async def _campaign_slugs(conn, campaign: Optional[str]) -> Optional[list]:
     """The catalog slugs behind a campaign key, or None for no filter."""
     if not campaign or campaign == "all":
         return None
+    keys = {k.strip() for k in campaign.split(",") if k.strip()}
+    if not keys:
+        return None
     cat = await conn.fetch("SELECT slug FROM bedrock.contact_tag_catalog WHERE active")
-    slugs = sorted(r["slug"] for r in cat
-                   if (r["slug"] == campaign or _campaign_key(r["slug"]) == campaign)
-                   and _SAFE_SLUG.match(r["slug"] or ""))
-    if not slugs:
-        raise HTTPException(400, f"Unknown campaign: {campaign}")
-    return slugs
+    found = {k: [r["slug"] for r in cat
+                 if (r["slug"] == k or _campaign_key(r["slug"]) == k) and _SAFE_SLUG.match(r["slug"] or "")]
+             for k in keys}
+    missing = sorted(k for k, v in found.items() if not v)
+    if missing:
+        raise HTTPException(400, f"Unknown campaign: {', '.join(missing)}")
+    # Several campaigns = any of them (the Campaigns tab's checkbox behaviour).
+    return sorted({sl for v in found.values() for sl in v})
 
 
 def _slug_array(slugs: list) -> str:
@@ -4106,6 +4111,46 @@ async def _flow_mark_advanced(conn, moved: list) -> None:
         m["advanced"] = (now in rank and m["stage"] in rank and rank[now] > rank[m["stage"]])
 
 
+# All-time counts for the activity rows' Pool cell (Kwame 2026-10-22). Same event
+# SQL as the period rows and the Activity Pipeline, with NO date window, so the
+# number never moves with the period filter. Contacts, not events: each once.
+_FLOW_SEND_METRICS = ("direct_email_sent", "linkedin_message_sent", "text_sent", "facilitated_intro_sent")
+
+
+async def _flow_ever(conn, owner_f, slugs: Optional[list] = None) -> dict:
+    """Contacts the Jobs team has EVER sent outreach to (a real send: email,
+    LinkedIn, text or facilitated intro; never a stage tag or an assignment),
+    and contacts ever on a call logged as Discovery. With an owner, that person
+    as the sender; with a campaign, that campaign's contacts."""
+    has_call_kind = await _has_column("bedrock", "activity", "call_kind")
+    kind_sql = (f"'call_' || coalesce(a.call_kind, '{CALL_KIND_DEFAULT}')" if has_call_kind
+                else f"'call_{CALL_KIND_DEFAULT}'")
+    owner = owner_f if owner_f and _SAFE_EMAIL.match(owner_f) else None
+    camp = ("" if not slugs else
+            f" AND contact_id IN (SELECT contact_id FROM public.contacts WHERE tags && {_slug_array(slugs)})")
+    sends = ", ".join(f"'{m}'" for m in _FLOW_SEND_METRICS)
+    row = await conn.fetchrow(f"""
+        WITH ev AS (
+            {_send_events_sql("team", owner)}
+            UNION ALL
+            {_call_events_sql("team", owner, kind_sql)}
+        )
+        SELECT
+            array_agg(DISTINCT contact_id) FILTER (WHERE metric IN ({sends}) AND contact_id IS NOT NULL) AS sent_ids,
+            count(*) FILTER (WHERE metric IN ({sends}) AND contact_id IS NULL) AS unlinked_sends,
+            array_agg(DISTINCT contact_id) FILTER (WHERE metric = 'call_discovery' AND contact_id IS NOT NULL) AS disc_ids
+        FROM ev WHERE TRUE{camp}
+    """)
+    sent = sorted((row["sent_ids"] if row else None) or [])
+    disc = sorted((row["disc_ids"] if row else None) or [])
+    return {
+        "outreach_sent": {"total": len(sent), "ids": [str(i) for i in sent],
+                          "unlinked_sends": int((row["unlinked_sends"] if row else 0) or 0)},
+        "discovery_calls_logged": ({"total": len(disc), "ids": [str(i) for i in disc]}
+                                   if has_call_kind else None),
+    }
+
+
 async def _flow_activity(conn, owner_f, p_from, p_to, span, slugs: Optional[list] = None) -> tuple:
     """Sends and calls in [p_from, p_to) and the period before, per (metric,
     contact), from the Activity Pipeline's own event SQL. The Stage tab is the
@@ -4141,7 +4186,7 @@ async def get_stage_flow(
     owner: Optional[str] = Query(None),
     deal_type: Optional[str] = Query(None, description="Opportunities band only: contacts carry no deal type"),
     role_type: Optional[str] = Query(None, description="Opportunities band only: committed, open_market, none (comma list)"),
-    campaign: Optional[str] = Query(None, description="Campaign key from /tag-campaigns (e.g. operation_35)"),
+    campaign: Optional[str] = Query(None, description="Campaign keys from /tag-campaigns, comma-separated (any of them)"),
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
@@ -4233,6 +4278,7 @@ async def get_stage_flow(
     moved = await _flow_moved(conn, owner_f, dt_f, p_from, p_to, have_history, rt_f, camp_c, camp_o)
     prev = await _flow_moved(conn, owner_f, dt_f, p_from - span, p_from, have_history, rt_f, camp_c, camp_o)
     act_rows, has_call_kind = await _flow_activity(conn, owner_f, p_from, p_to, span, slugs)
+    ever = await _flow_ever(conn, owner_f, slugs)
     await _flow_mark_advanced(conn, moved)
     moved.sort(key=lambda m: m["at"], reverse=True)
     members.sort(key=lambda m: -m["days"])
@@ -4345,6 +4391,8 @@ async def get_stage_flow(
                           for m, lbl in leaves] if len(leaves) > 1 else None,
             "unlinked": sum(int(r["n_this"] or 0) for r in mine if r["contact_id"] is None),
             "conversion": None,
+            # All-time, period-independent (see _flow_ever).
+            "ever": ever.get(key),
         }
 
     def _outreach_stage_rows() -> list:
