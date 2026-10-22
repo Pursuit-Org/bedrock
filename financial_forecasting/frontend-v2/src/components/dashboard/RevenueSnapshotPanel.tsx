@@ -495,8 +495,9 @@ export function RevenueSnapshotPanel({ year, bucket: recordBucket }: { year: num
         </div>
 
         {/* Segmented progress bar toward the $20M goal — the goal is a
-            Philanthropy-specific fundraising target, so it's meaningless
-            (and misleading) against PBC/Capital Grants/Other totals. */}
+            philanthropic fundraising target (Grant + Donation), so it's
+            meaningless (and misleading) against single-type, PBC, Capital
+            Grants, or Other totals. */}
         {recordBucket === "philanthropy" && (
           <div className="mt-3">
             <div className="mb-1.5 flex items-center justify-between text-[11px] text-ink-3">

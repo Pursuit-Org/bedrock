@@ -24,21 +24,23 @@ import {
   useUserTasks,
 } from "@/services/opportunities";
 import type { AccountStatus, SfOpportunity } from "@/types/salesforce";
+import { CAPITAL_GRANT_TYPE, RT_DONATION, RT_GRANT, RT_PBC } from "@/lib/recordTypes";
 
 // Record-type families surfaced as checkmarks on the Accounts tab so RMs
 // can see at a glance which types of business they've already won with a
-// given account. The canonical four mirror the cashflow bucket filter.
-const RECORD_TYPE_BUCKETS = ["Philanthropy", "PBC", "Capital Grants", "Other"] as const;
+// given account. Mirrors the cashflow bucket filter (lib/bucketFilter.ts).
+const RECORD_TYPE_BUCKETS = ["Grant", "Donation", "PBC", "Capital Grants", "Other"] as const;
 type RecordTypeBucket = typeof RECORD_TYPE_BUCKETS[number];
 
 /** Map an opp's RecordType.Name + Philanthropy_Type__c into one of the
- *  four buckets we show as checkmarks. Falls back to "Other". */
+ *  buckets we show as checkmarks. Falls back to "Other". */
 function recordTypeBucket(o: SfOpportunity): RecordTypeBucket {
   const rt = o.RecordType?.Name ?? "";
   const phType = o.Philanthropy_Type__c ?? "";
-  if (phType === "Capital Grant") return "Capital Grants";
-  if (rt === "Philanthropy") return "Philanthropy";
-  if (rt === "PBC") return "PBC";
+  if (phType === CAPITAL_GRANT_TYPE) return "Capital Grants";
+  if (rt === RT_GRANT) return "Grant";
+  if (rt === RT_DONATION) return "Donation";
+  if (rt === RT_PBC) return "PBC";
   return "Other";
 }
 export const OWNER_PANEL_HEIGHT = ROW_EXPAND_HEIGHT;
@@ -223,7 +225,7 @@ function OwnerAccounts({ ownerId }: { ownerId: string }) {
                     className="px-1 pb-1 text-center text-[9.5px] font-medium normal-case text-ink-4"
                     title={b}
                   >
-                    {b === "Capital Grants" ? "Cap." : b === "Philanthropy" ? "Phil." : b}
+                    {b === "Capital Grants" ? "Cap." : b === "Donation" ? "Don." : b}
                   </th>
                 ))}
                 <th colSpan={2}></th>

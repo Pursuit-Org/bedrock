@@ -20,6 +20,7 @@ export function OpportunityExpandPanel({
   opportunityId,
   oppAmount,
   oppCloseDate,
+  grantPeriod,
 }: {
   opportunityId: string;
   /** Used as the cap when creating/editing the payment schedule from
@@ -28,6 +29,10 @@ export function OpportunityExpandPanel({
   oppAmount?: number | null;
   /** Default first-payment date seed when creating a new schedule. */
   oppCloseDate?: string | null;
+  /** Grant opps only — shown above the payment schedule so the period
+   *  the payments should fall within is visible at a glance. Pass null
+   *  / omit for non-Grant record types. */
+  grantPeriod?: { start: string | null; end: string | null } | null;
 }) {
   return (
     <RowExpandPanel
@@ -45,6 +50,7 @@ export function OpportunityExpandPanel({
               opportunityId={opportunityId}
               oppAmount={oppAmount ?? null}
               oppCloseDate={oppCloseDate ?? null}
+              grantPeriod={grantPeriod ?? null}
             />
           ),
         },
@@ -126,10 +132,12 @@ function OppPayments({
   opportunityId,
   oppAmount,
   oppCloseDate,
+  grantPeriod,
 }: {
   opportunityId: string;
   oppAmount: number | null;
   oppCloseDate: string | null;
+  grantPeriod: { start: string | null; end: string | null } | null;
 }) {
   const { data: payments = [], isLoading } = useOpportunityPayments(opportunityId);
   const [builderOpen, setBuilderOpen] = useState(false);
@@ -154,6 +162,18 @@ function OppPayments({
 
   return (
     <div className="px-4 py-3">
+      {grantPeriod ? (
+        <div className="mb-2 text-[12px] text-ink-2">
+          <span className="text-[11px] uppercase tracking-wider text-ink-3">Grant period</span>{" "}
+          {grantPeriod.start || grantPeriod.end ? (
+            <span className="mono">
+              {grantPeriod.start ? fmtDate(grantPeriod.start) : "—"} – {grantPeriod.end ? fmtDate(grantPeriod.end) : "—"}
+            </span>
+          ) : (
+            <span className="text-ink-4">Not set</span>
+          )}
+        </div>
+      ) : null}
       <div className="mb-2 flex items-center justify-between text-[11px] uppercase tracking-wider text-ink-3">
         <span>
           {isLoading ? "…" : `${totals.count} payment${totals.count === 1 ? "" : "s"}`}

@@ -6,7 +6,8 @@ import { api } from "@/lib/api";
 import type { SfOpportunity, SfPayment, SfTask } from "@/types/salesforce";
 
 export interface OpportunityFilters {
-  recordType?: "Philanthropy" | "PBC" | string;
+  /** RecordType.Name, e.g. "Grant", "Donation", "PBC". */
+  recordType?: string;
   activeOnly?: boolean;
   limit?: number;
 }
@@ -205,6 +206,9 @@ export interface CreateOpportunityBody {
   OwnerId?: string | null;
   RecordTypeId?: string | null;
   Description?: string | null;
+  /** Grant record type only — see components/GrantPeriodInputs. */
+  Grant_Start_Date__c?: string | null;
+  Grant_End_Date__c?: string | null;
 }
 
 export function useCreateOpportunity() {

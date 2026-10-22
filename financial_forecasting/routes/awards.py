@@ -1,7 +1,7 @@
 """Awards API — read endpoints over bedrock.award.
 
 Award is a thin lifecycle entity layered over closed Opportunities across
-Philanthropy, PBC, Debt/Equity, and Other Fee For Service record types.
+Grant, Donation, PBC, Debt/Equity, and Other Fee For Service record types.
 Salesforce stays SoT for the Opportunity itself.
 
 Endpoints:

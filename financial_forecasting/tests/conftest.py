@@ -64,14 +64,14 @@ def make_sf_opportunity(overrides: Dict[str, Any] = None) -> Dict[str, Any]:
         "NextStep": "Submit proposal",
         "Description": "Test opportunity",
         # RecordType.Name is the canonical label for "how we categorize this
-        # opportunity" (e.g. Philanthropy vs. Other fee for service). The B2
+        # opportunity" (e.g. Grant vs. Other Fee For Service). The B2
         # 2026-04-19 fixture added Opportunity.Type with this value; A4
-        # (2026-04-21) corrected the misdiagnosis — "Other fee for service"
+        # (2026-04-21) corrected the misdiagnosis — "Other Fee For Service"
         # is a RecordType.Name value, not a Type value. RecordTypeId is a
         # mock 18-char ID; RecordType.Name round-trips via the SOQL join in
         # get_opportunities (main.py SELECT includes RecordType.Name).
         "RecordTypeId": "012TESTRECORDTYPE01",
-        "RecordType": {"Name": "Other fee for service"},
+        "RecordType": {"Name": "Other Fee For Service"},
         # RenewalRepeat__c — Pursuit custom picklist {New, Renewal, Upsell}.
         # Load-bearing for Progress.tsx isRenewal() forecast logic and the
         # OpportunityEditDialog Renewal/Repeat picker. A4 (2026-04-21)

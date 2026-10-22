@@ -16,6 +16,7 @@ from routes.permissions import check_permission
 from security import validate_salesforce_id, escape_soql_string
 from sf_errors import sf_http_error
 from services.awards_service import ensure_for_opp as ensure_award_for_opp
+from services.record_type_bucket import RT_GRANT
 from services.cache import cache, CACHE_TTL_STAGE_HISTORY
 
 logger = logging.getLogger(__name__)
@@ -348,7 +349,13 @@ async def _validate_stage_change_logic(
     new_stage: str,
     salesforce,
 ) -> Dict[str, Any]:
-    """Core validation: checks payment schedule before allowing 'Collecting / In Effect'."""
+    """Core validation before allowing 'Collecting / In Effect':
+
+    1. Grant opps must have a grant period (Grant_Start_Date__c and
+       Grant_End_Date__c) — the end date drives reporting and renewal
+       follow-up, so it can't be left blank once the grant is active.
+    2. A payment schedule must exist and total the opportunity amount.
+    """
     if new_stage != OpportunityStage.COLLECTING.value:
         return {"success": True, "can_proceed": True}
 
@@ -357,13 +364,31 @@ async def _validate_stage_change_logic(
 
     # Get opportunity
     opp_result = await salesforce.query(
-        f"SELECT Id, Name, Amount FROM Opportunity WHERE Id = '{safe_id}'"
+        f"SELECT Id, Name, Amount, RecordType.Name, "
+        f"Grant_Start_Date__c, Grant_End_Date__c "
+        f"FROM Opportunity WHERE Id = '{safe_id}'"
     )
     if not opp_result.get("records"):
         raise HTTPException(status_code=404, detail="Opportunity not found")
 
     opp = opp_result["records"][0]
     opp_amount = float(opp.get("Amount") or 0)
+
+    record_type_name = (opp.get("RecordType") or {}).get("Name")
+    if record_type_name == RT_GRANT and not (
+        opp.get("Grant_Start_Date__c") and opp.get("Grant_End_Date__c")
+    ):
+        return {
+            "success": False,
+            "can_proceed": False,
+            "error": "Grant period required",
+            "message": (
+                f"Cannot move a Grant to '{OpportunityStage.COLLECTING.value}' without "
+                "a grant start and end date.\n\n"
+                "Please set the grant period on the opportunity first."
+            ),
+            "action_required": "set_grant_period",
+        }
 
     # Check for payment schedule
     payment_result = await salesforce.query(
@@ -446,7 +471,8 @@ async def update_opportunity_stage(
     """Update opportunity stage with validation.
 
     Side effect: when an opp transitions into a closed/active-grant
-    Philanthropy stage, idempotently ensure a `bedrock.award` row exists.
+    award-eligible stage (see awards_service.ELIGIBLE_STAGES_BY_RECORD_TYPE),
+    idempotently ensure a `bedrock.award` row exists.
     Failures here are logged but do not fail the stage update — the SF
     write has already succeeded.
     """

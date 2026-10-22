@@ -33,6 +33,8 @@ import { useCreateOpportunity, useOppRecordTypes, useOpportunities, useOpportuni
 import { useActiveUsers } from "@/services/users";
 import { UpcomingDeliverablesPanel } from "@/components/UpcomingDeliverablesPanel";
 import type { SfContact, SfOpportunity } from "@/types/salesforce";
+import { RT_GRANT, grantPeriodError } from "@/lib/recordTypes";
+import { GrantPeriodInputs } from "@/components/GrantPeriodInputs";
 
 export function AccountDetailPage() {
   const { id = "" } = useParams<{ id: string }>();
@@ -2133,8 +2135,16 @@ function CreateOpportunityForAccountModal({
     Amount: "",
     OwnerId: "",
     RecordTypeId: "",
+    Grant_Start_Date__c: "",
+    Grant_End_Date__c: "",
   });
   const [error, setError] = useState<string | null>(null);
+  // Grant period inputs only appear for the Grant record type.
+  const isGrant =
+    recordTypes.find((rt) => rt.id === form.RecordTypeId)?.name === RT_GRANT;
+  const grantError = isGrant
+    ? grantPeriodError(form.Grant_Start_Date__c, form.Grant_End_Date__c)
+    : null;
 
   const set = (key: keyof typeof form) =>
     (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
@@ -2142,7 +2152,7 @@ function CreateOpportunityForAccountModal({
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!form.Name.trim() || !form.CloseDate) return;
+    if (!form.Name.trim() || !form.CloseDate || grantError) return;
     setError(null);
     // Optimistic close: dismiss the modal immediately, fire the
     // mutation in the background, toast progress + nav once we have
@@ -2157,6 +2167,12 @@ function CreateOpportunityForAccountModal({
       Amount: form.Amount ? Number(form.Amount.replace(/[^0-9.]/g, "")) : undefined,
       OwnerId: form.OwnerId || undefined,
       RecordTypeId: form.RecordTypeId || undefined,
+      ...(isGrant
+        ? {
+            Grant_Start_Date__c: form.Grant_Start_Date__c || undefined,
+            Grant_End_Date__c: form.Grant_End_Date__c || undefined,
+          }
+        : {}),
     };
     const toastId = `opp-create-${Date.now()}`;
     toast.loading(`Creating ${body.Name}…`, { id: toastId });
@@ -2201,6 +2217,17 @@ function CreateOpportunityForAccountModal({
               </select>
             </div>
           )}
+          {isGrant ? (
+            <GrantPeriodInputs
+              start={form.Grant_Start_Date__c}
+              end={form.Grant_End_Date__c}
+              onChange={({ start, end }) =>
+                setForm((f) => ({ ...f, Grant_Start_Date__c: start, Grant_End_Date__c: end }))
+              }
+              inputClassName={oppInputCls}
+              labelClassName="text-[11.5px] font-medium text-ink-3"
+            />
+          ) : null}
           <div className="flex flex-col gap-1">
             <label className="text-[11.5px] font-medium text-ink-3">Stage</label>
             <select value={form.StageName} onChange={set("StageName")} className={oppInputCls}>
@@ -2239,7 +2266,7 @@ function CreateOpportunityForAccountModal({
             </button>
             <button
               type="submit"
-              disabled={createOpp.isPending}
+              disabled={!!grantError || createOpp.isPending}
               className="rounded bg-ink px-3 py-1.5 text-[12.5px] font-medium text-surface hover:bg-ink-2 disabled:opacity-50"
             >
               {createOpp.isPending ? "Creating…" : "Create"}

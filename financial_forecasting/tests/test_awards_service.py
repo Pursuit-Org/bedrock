@@ -4,7 +4,7 @@ Covers:
   - is_award_eligible predicate (record type + stage gates)
   - initial_award_status (Closing vs. Active)
   - ensure_for_opp idempotency (existing → no-op; new → insert)
-  - ensure_for_opp eligibility (skips PBC/ISA, skips wrong stage)
+  - ensure_for_opp eligibility (skips ineligible record types / ISA, skips wrong stage)
   - ensure_for_opp SF lookup fallback when hints absent
 """
 
@@ -18,7 +18,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from services.awards_service import (
-    PHILANTHROPY_RECORD_TYPE_NAME,
+    ELIGIBLE_STAGES_BY_RECORD_TYPE,
     WON_PHILANTHROPY_STAGES,
     CLOSING_PHILANTHROPY_STAGES,
     is_award_eligible,
@@ -34,24 +34,37 @@ from services.awards_service import (
 
 class TestIsAwardEligible:
 
-    def test_philanthropy_closed_won_is_eligible(self):
-        assert is_award_eligible("Closed Won", "Philanthropy") is True
+    def test_grant_closed_won_is_eligible(self):
+        assert is_award_eligible("Closed Won", "Grant") is True
+
+    def test_donation_shares_grant_stages(self):
+        # Grant + Donation replaced the former 'Philanthropy' record type
+        # (2026-10-22) and inherit its stage allowlist.
+        assert ELIGIBLE_STAGES_BY_RECORD_TYPE["Donation"] == WON_PHILANTHROPY_STAGES
+        assert ELIGIBLE_STAGES_BY_RECORD_TYPE["Grant"] == WON_PHILANTHROPY_STAGES
+        assert is_award_eligible("Closed / Completed", "Donation") is True
+
+    def test_former_philanthropy_name_not_eligible(self):
+        # No SF opp carries 'Philanthropy' anymore — guard against the old
+        # hardcoded name creeping back in.
+        assert "Philanthropy" not in ELIGIBLE_STAGES_BY_RECORD_TYPE
 
     def test_canonical_closed_won_is_eligible(self):
-        assert is_award_eligible("closed-won", "Philanthropy") is True
+        assert is_award_eligible("closed-won", "Grant") is True
 
     def test_collecting_in_effect_is_eligible(self):
         # Both legacy stages are still in flight = post-award management applies.
-        assert is_award_eligible("Collecting", "Philanthropy") is True
-        assert is_award_eligible("In Effect", "Philanthropy") is True
+        assert is_award_eligible("Collecting", "Grant") is True
+        assert is_award_eligible("In Effect", "Grant") is True
 
     def test_closed_fulfilled_is_eligible(self):
-        assert is_award_eligible("Closed / Fulfilled", "Philanthropy") is True
+        assert is_award_eligible("Closed / Fulfilled", "Grant") is True
 
-    def test_pbc_record_type_never_eligible(self):
-        # Even on a "won" stage, PBC is out of scope per JP directive.
+    def test_unlisted_record_type_never_eligible(self):
+        # Record types without a stage allowlist (e.g. Other In-Kind) never
+        # get an award row, even on a "won" stage.
         for stage in WON_PHILANTHROPY_STAGES:
-            assert is_award_eligible(stage, "Other fee for service") is False
+            assert is_award_eligible(stage, "Other In-Kind") is False
 
     def test_isa_record_type_never_eligible(self):
         # ISA / Pursuit Bond — explicitly out of scope.
@@ -61,20 +74,20 @@ class TestIsAwardEligible:
     def test_pipeline_stage_not_eligible(self):
         for stage in ("identified", "qualified", "proposal-sent", "in-negotiation",
                       "verbal-commit", "Closed Lost", "closed-lost"):
-            assert is_award_eligible(stage, "Philanthropy") is False, (
+            assert is_award_eligible(stage, "Grant") is False, (
                 f"stage={stage!r} should not be award-eligible"
             )
 
     def test_in_collection_not_eligible(self):
-        # ISA legacy stage on Philanthropy record type — shouldn't happen,
+        # ISA legacy stage on Grant record type — shouldn't happen,
         # but if it does, we don't want to backfill.
-        assert is_award_eligible("In Collection", "Philanthropy") is False
+        assert is_award_eligible("In Collection", "Grant") is False
 
     def test_null_inputs_return_false(self):
-        assert is_award_eligible(None, "Philanthropy") is False
+        assert is_award_eligible(None, "Grant") is False
         assert is_award_eligible("Closed Won", None) is False
         assert is_award_eligible(None, None) is False
-        assert is_award_eligible("", "Philanthropy") is False
+        assert is_award_eligible("", "Grant") is False
 
 
 class TestInitialAwardStatus:
@@ -140,7 +153,7 @@ class TestEnsureForOpp:
         result = await ensure_for_opp(
             mock_conn, mock_sf, "006X000000ABCDE",
             stage_name_hint="Closed Won",
-            record_type_hint="Philanthropy",
+            record_type_hint="Grant",
         )
 
         assert result is not None
@@ -161,7 +174,7 @@ class TestEnsureForOpp:
         result = await ensure_for_opp(
             mock_conn, mock_sf, "006X000000ABCDE",
             stage_name_hint="Closed Won",
-            record_type_hint="Philanthropy",
+            record_type_hint="Grant",
         )
 
         assert result is not None
@@ -169,12 +182,12 @@ class TestEnsureForOpp:
         assert mock_conn.fetchrow.call_count == 2
 
     @pytest.mark.asyncio
-    async def test_skips_pbc_record_type(self, mock_conn, mock_sf):
-        """PBC opps never get an award row."""
+    async def test_skips_ineligible_record_type(self, mock_conn, mock_sf):
+        """Record types without a stage allowlist never get an award row."""
         result = await ensure_for_opp(
             mock_conn, mock_sf, "006X000000ABCDE",
             stage_name_hint="Closed Won",
-            record_type_hint="Other fee for service",
+            record_type_hint="Other In-Kind",
         )
 
         assert result is None
@@ -187,7 +200,7 @@ class TestEnsureForOpp:
         result = await ensure_for_opp(
             mock_conn, mock_sf, "006X000000ABCDE",
             stage_name_hint="proposal-sent",
-            record_type_hint="Philanthropy",
+            record_type_hint="Grant",
         )
 
         assert result is None
@@ -201,7 +214,7 @@ class TestEnsureForOpp:
                 "Id": "006X000000ABCDE",
                 "StageName": "Closed Won",
                 "CloseDate": "2024-07-15",
-                "RecordType": {"Name": "Philanthropy"},
+                "RecordType": {"Name": "Grant"},
             }]
         }
         new_row = _row_for_award()
@@ -247,7 +260,7 @@ class TestEnsureForOpp:
         result = await ensure_for_opp(
             mock_conn, mock_sf, "006X000000ABCDE",
             stage_name_hint="Closed Won",
-            record_type_hint="Philanthropy",
+            record_type_hint="Grant",
         )
 
         assert result is not None

@@ -25,7 +25,7 @@ from dependencies import require_sf_mcp_client
 from mcp_client import UnifiedMCPClient
 from routes.permissions import check_permission
 from services.cache import cache, CACHE_TTL_REVENUE_SNAPSHOT
-from services.record_type_bucket import bucket_soql_filter
+from services.record_type_bucket import BUCKET_PATTERN, bucket_soql_filter
 from sf_errors import sf_http_error
 
 
@@ -131,15 +131,15 @@ def _total(d: dict[str, float]) -> float:
 @router.get("")
 async def get_revenue_snapshot(
     year: int = Query(..., ge=2000, le=2100),
-    record_bucket: str = Query("all", regex="^(all|philanthropy|pbc|capital_grants|other)$"),
+    record_bucket: str = Query("all", regex=BUCKET_PATTERN),
     client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     _user=Depends(check_permission("view_revenue_dashboard")),
 ):
     """YTD revenue snapshot for the given fiscal year.
 
     Returns three cumulative revenue buckets plus a multi-year secured tracker.
-    `record_bucket` mirrors the dashboard's All/Philanthropy/PBC/Capital
-    Grants/Other record-type filter. Cached briefly (~1 min) since this data
+    `record_bucket` mirrors the dashboard's record-type filter (see
+    services/record_type_bucket.VALID_BUCKETS). Cached briefly (~1 min) since this data
     is meant to be SF-live.
     """
     cache_key = f"revenue_snapshot:{year}:{record_bucket}"
@@ -297,14 +297,13 @@ async def get_revenue_snapshot_detail(
     year: int = Query(..., ge=2000, le=2100),
     bucket: str = Query(...),
     source: str = Query(...),
-    record_bucket: str = Query("all", regex="^(all|philanthropy|pbc|capital_grants|other)$"),
+    record_bucket: str = Query("all", regex=BUCKET_PATTERN),
     client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     _user=Depends(check_permission("view_revenue_dashboard")),
 ):
     """Drill-down records for one bucket + source category.
 
-    `record_bucket` mirrors the dashboard's All/Philanthropy/PBC/Capital
-    Grants/Other record-type filter (unrelated to `bucket`, which selects
+    `record_bucket` mirrors the dashboard's record-type filter (unrelated to `bucket`, which selects
     revenue_closed/cash_secured/projected_total).
     """
     if bucket not in _BUCKET_LABELS:

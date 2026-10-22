@@ -119,7 +119,8 @@ type AccountField =
   | "amountWon"
   | "received"
   | "outstanding"
-  | "wonPhilanthropy"
+  | "wonGrant"
+  | "wonDonation"
   | "wonPBC"
   | "wonDebtEquity"
   | "wonOtherFFS";
@@ -139,7 +140,8 @@ type ColKey =
   | "amountWon"
   | "received"
   | "outstanding"
-  | "wonPhilanthropy"
+  | "wonGrant"
+  | "wonDonation"
   | "wonPBC"
   | "wonDebtEquity"
   | "wonOtherFFS";
@@ -155,7 +157,8 @@ const COLUMN_ORDER: ColKey[] = [
   "amountWon",
   "received",
   "outstanding",
-  "wonPhilanthropy",
+  "wonGrant",
+  "wonDonation",
   "wonPBC",
   "wonDebtEquity",
   "wonOtherFFS",
@@ -179,7 +182,8 @@ const DEFAULT_WIDTHS: Record<ColKey, number> = {
   amountWon: 130,
   received: 120,
   outstanding: 130,
-  wonPhilanthropy: 140,
+  wonGrant: 140,
+  wonDonation: 140,
   wonPBC: 110,
   wonDebtEquity: 140,
   wonOtherFFS: 140,
@@ -193,7 +197,8 @@ const COL_LABELS: Record<ColKey, string> = {
   amountWon: "Amount won",
   received: "Received",
   outstanding: "Outstanding",
-  wonPhilanthropy: "Won: Philanthropy",
+  wonGrant: "Won: Grant",
+  wonDonation: "Won: Donation",
   wonPBC: "Won: PBC",
   wonDebtEquity: "Won: Debt / Equity",
   wonOtherFFS: "Won: Other FFS",
@@ -221,7 +226,8 @@ function extractAccount(
     case "amountWon": return metrics.amountWon;
     case "received": return metrics.received;
     case "outstanding": return metrics.outstanding;
-    case "wonPhilanthropy": return metrics.wonByRecordType["Philanthropy"] ?? 0;
+    case "wonGrant": return metrics.wonByRecordType["Grant"] ?? 0;
+    case "wonDonation": return metrics.wonByRecordType["Donation"] ?? 0;
     case "wonPBC": return metrics.wonByRecordType["PBC"] ?? 0;
     case "wonDebtEquity": return metrics.wonByRecordType["Debt / Equity"] ?? 0;
     case "wonOtherFFS": return metrics.wonByRecordType["Other Fee For Service"] ?? 0;
@@ -326,11 +332,17 @@ export function AccountsPage() {
         getValue: (a: SfAccount) =>
           metricsByAccount.get(a.Id)?.outstanding ?? 0,
       },
-      wonPhilanthropy: {
-        label: "Won: Philanthropy",
+      wonGrant: {
+        label: "Won: Grant",
         type: "number",
         getValue: (a: SfAccount) =>
-          metricsByAccount.get(a.Id)?.wonByRecordType["Philanthropy"] ?? 0,
+          metricsByAccount.get(a.Id)?.wonByRecordType["Grant"] ?? 0,
+      },
+      wonDonation: {
+        label: "Won: Donation",
+        type: "number",
+        getValue: (a: SfAccount) =>
+          metricsByAccount.get(a.Id)?.wonByRecordType["Donation"] ?? 0,
       },
       wonPBC: {
         label: "Won: PBC",
@@ -857,7 +869,8 @@ export function AccountsPage() {
                     amountWon: fmtMoney(totals.amountWon),
                     received: fmtMoney(totals.received),
                     outstanding: fmtMoney(totals.outstanding),
-                    wonPhilanthropy: fmtMoney(totals.wonByRecordType["Philanthropy"] ?? 0),
+                    wonGrant: fmtMoney(totals.wonByRecordType["Grant"] ?? 0),
+                    wonDonation: fmtMoney(totals.wonByRecordType["Donation"] ?? 0),
                     wonPBC: fmtMoney(totals.wonByRecordType["PBC"] ?? 0),
                     wonDebtEquity: fmtMoney(totals.wonByRecordType["Debt / Equity"] ?? 0),
                     wonOtherFFS: fmtMoney(totals.wonByRecordType["Other Fee For Service"] ?? 0),
@@ -1114,8 +1127,10 @@ const AccountRow = memo(function AccountRow({
     amountWon: m.amountWon > 0 ? fmtMoney(m.amountWon) : dash,
     received: m.received > 0 ? fmtMoney(m.received) : dash,
     outstanding: m.outstanding > 0 ? fmtMoney(m.outstanding) : dash,
-    wonPhilanthropy: (m.wonByRecordType["Philanthropy"] ?? 0) > 0
-      ? fmtMoney(m.wonByRecordType["Philanthropy"]!) : dash,
+    wonGrant: (m.wonByRecordType["Grant"] ?? 0) > 0
+      ? fmtMoney(m.wonByRecordType["Grant"]!) : dash,
+    wonDonation: (m.wonByRecordType["Donation"] ?? 0) > 0
+      ? fmtMoney(m.wonByRecordType["Donation"]!) : dash,
     wonPBC: (m.wonByRecordType["PBC"] ?? 0) > 0
       ? fmtMoney(m.wonByRecordType["PBC"]!) : dash,
     wonDebtEquity: (m.wonByRecordType["Debt / Equity"] ?? 0) > 0
@@ -1124,7 +1139,8 @@ const AccountRow = memo(function AccountRow({
       ? fmtMoney(m.wonByRecordType["Other Fee For Service"]!) : dash,
   };
 
-  const wonP = m.wonByRecordType["Philanthropy"] ?? 0;
+  const wonG = m.wonByRecordType["Grant"] ?? 0;
+  const wonD = m.wonByRecordType["Donation"] ?? 0;
   const wonPBCVal = m.wonByRecordType["PBC"] ?? 0;
   const wonDE = m.wonByRecordType["Debt / Equity"] ?? 0;
   const wonOFFS = m.wonByRecordType["Other Fee For Service"] ?? 0;
@@ -1137,7 +1153,8 @@ const AccountRow = memo(function AccountRow({
     amountWon: cn(numCell, m.amountWon > 0 && "font-semibold text-green"),
     received: cn(numCell, m.received > 0 && "font-medium text-green"),
     outstanding: cn(numCell, m.outstanding > 0 && "font-medium text-amber"),
-    wonPhilanthropy: cn(numCell, wonP > 0 && "font-medium text-green"),
+    wonGrant: cn(numCell, wonG > 0 && "font-medium text-green"),
+    wonDonation: cn(numCell, wonD > 0 && "font-medium text-green"),
     wonPBC: cn(numCell, wonPBCVal > 0 && "font-medium text-green"),
     wonDebtEquity: cn(numCell, wonDE > 0 && "font-medium text-green"),
     wonOtherFFS: cn(numCell, wonOFFS > 0 && "font-medium text-green"),
@@ -1145,7 +1162,7 @@ const AccountRow = memo(function AccountRow({
 
   const clickable = new Set<ColKey>([
     "openPipeline", "amountWon", "received", "outstanding",
-    "wonPhilanthropy", "wonPBC", "wonDebtEquity", "wonOtherFFS",
+    "wonGrant", "wonDonation", "wonPBC", "wonDebtEquity", "wonOtherFFS",
   ]);
 
   return (

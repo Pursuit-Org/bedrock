@@ -202,5 +202,17 @@
       "invoice_amount": 100000.0,
       "invoice_date": "10/01/2025"
     }
+  },
+  "INV-100": {
+    "opportunity_id": "006OPP100",
+    "confidence": "Confirmed",
+    "notes": "Test match",
+    "matched_at": "2026-10-22T12:58:55.571881",
+    "matched_by": "test_user",
+    "invoice_data": {
+      "customer_name": "Test Corp",
+      "invoice_amount": 25000.0,
+      "invoice_date": "2026-03-01"
+    }
   }
 }

@@ -340,12 +340,12 @@ class TestSalesforceOpportunities:
         assert len(data) == 1
         assert data[0]["Id"] == opp["Id"]
         # RecordType round-trip: the 2026-04-17 B2 incident root cause was
-        # that the "Other fee for service" categorization wasn't surfacing.
+        # that the "Other Fee For Service" categorization wasn't surfacing.
         # The Type field was misdiagnosed (A4 2026-04-21 deletion); the
         # canonical label field is RecordType.Name. This assertion guards
         # the API contract so regressions here get caught even if the
         # frontend regresses separately.
-        assert data[0]["RecordType"]["Name"] == "Other fee for service"
+        assert data[0]["RecordType"]["Name"] == "Other Fee For Service"
         # SOQL-inclusion guard for RenewalRepeat__c — A4 adversarial
         # verification caught it was missing from the SELECT despite being
         # bound in OpportunityEditDialog + Progress.tsx isRenewal.

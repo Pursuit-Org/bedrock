@@ -52,7 +52,7 @@ export function useStageChangeGate() {
   const request = useCallback(
     (opp: SfOpportunity, newStage: string): Promise<void> => {
       const fromStage = opp.StageName ?? "";
-      const spec = getStageGate(fromStage, newStage);
+      const spec = getStageGate(fromStage, newStage, opp.RecordType?.Name);
       if (!spec) {
         // No gate — fire the mutation directly. Existing optimistic
         // update + awards handshake apply.

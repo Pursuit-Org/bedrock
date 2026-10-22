@@ -8,6 +8,7 @@ import {
   useCreateAwardReport,
 } from "@/services/awards";
 import { useCreateTask, useOpportunities, useUpdateOpportunity } from "@/services/opportunities";
+import { RT_GRANT, grantPeriodError } from "@/lib/recordTypes";
 import {
   useCreateProject,
   useLinkProjectToOpportunity,
@@ -62,6 +63,13 @@ export function AwardSetupDialog({
   // ahead of the award (e.g. via the Grant Period section on the opp page),
   // so the user confirms instead of re-typing. Seed once, never clobber input.
   const { data: seedOpps } = useOpportunities();
+  // Grant period is a Grant-record-type concept — other award-eligible
+  // types (Donation, PBC, Debt / Equity, Other FFS) skip Section 1.
+  // Prefer the award row's record type (SF-enriched, always fetched);
+  // fall back to the cached opp list.
+  const seedOpp = seedOpps?.find((o) => o.Id === opportunityId);
+  const showDates =
+    (award?.record_type_name ?? seedOpp?.RecordType?.Name) === RT_GRANT;
   const [datesSeeded, setDatesSeeded] = useState(false);
   useEffect(() => {
     if (datesSeeded || !seedOpps) return;
@@ -76,6 +84,11 @@ export function AwardSetupDialog({
   const saveDates = () => {
     if (!startDate && !endDate) {
       toast.error("Set at least one date or use Remind me later");
+      return;
+    }
+    const dateErr = grantPeriodError(startDate, endDate);
+    if (startDate && endDate && dateErr) {
+      toast.error(dateErr);
       return;
     }
     // Optimistic: mark this section done immediately. The SF write
@@ -255,7 +268,9 @@ export function AwardSetupDialog({
     ).then(() => setProjectSaved(true));
   };
 
-  const allDone = datesSaved && reportingSaved && projectSaved;
+  const allDone = (!showDates || datesSaved) && reportingSaved && projectSaved;
+  // Section numbers shift when the Grant-only dates section is hidden.
+  const n = (i: number) => (showDates ? i : i - 1);
 
   return (
     <div
@@ -291,11 +306,12 @@ export function AwardSetupDialog({
 
         <div className="flex-1 overflow-y-auto px-5 py-4">
           <p className="mb-4 text-[12.5px] leading-relaxed text-ink-2">
-            The award record auto-generated from this stage change. Confirm the dates, reporting plan, and project setup
+            The award record auto-generated from this stage change. Confirm {showDates ? "the dates, reporting plan, and project setup" : "the reporting plan and project setup"}
             below — or use <strong>Remind me later</strong> on any section to drop a task on the opportunity (due in 1 week).
           </p>
 
           <div className="flex flex-col gap-3">
+            {showDates ? (
             <SetupSection
               label="1 · Grant start + end dates"
               saved={datesSaved}
@@ -322,15 +338,17 @@ export function AwardSetupDialog({
                   <input
                     type="date"
                     value={endDate}
+                    min={startDate || undefined}
                     onChange={(e) => setEndDate(e.target.value)}
                     className={inputCls}
                   />
                 </label>
               </div>
             </SetupSection>
+            ) : null}
 
             <SetupSection
-              label="2 · Reporting deliverables"
+              label={`${n(2)} · Reporting deliverables`}
               saved={reportingSaved}
               saving={false}
               onSave={saveReporting}
@@ -421,7 +439,7 @@ export function AwardSetupDialog({
             </SetupSection>
 
             <SetupSection
-              label="3 · Project (if implementation required)"
+              label={`${n(3)} · Project (if implementation required)`}
               saved={projectSaved}
               saving={createProject.isPending || linkProject.isPending}
               onSave={projectMode === "none" ? null : saveProject}

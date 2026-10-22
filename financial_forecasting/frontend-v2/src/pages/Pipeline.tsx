@@ -56,6 +56,8 @@ import {
 import { usePerm } from "@/services/permissions";
 import { useActiveUsers, useUsers } from "@/services/users";
 import type { SfOpportunity } from "@/types/salesforce";
+import { RT_DONATION, RT_GRANT, RT_PBC, grantPeriodError, isGrantOpp } from "@/lib/recordTypes";
+import { GrantPeriodInputs } from "@/components/GrantPeriodInputs";
 import { toast } from "sonner";
 
 // Three-pill scope toggle. "All" was dropped per JR — when no scope
@@ -72,10 +74,18 @@ type Scope = "open" | "won" | "lost" | "all";
 
 const RECORD_TYPES = [
   { value: "All", label: "All" },
-  { value: "Philanthropy", label: "Philanthropy" },
-  { value: "PBC", label: "PBC" },
+  { value: RT_GRANT, label: RT_GRANT },
+  { value: RT_DONATION, label: RT_DONATION },
+  { value: RT_PBC, label: RT_PBC },
 ] as const;
 type RecordType = (typeof RECORD_TYPES)[number]["value"];
+
+/** Saved views persisted before the 2026-10-22 SF split stored
+ *  "Philanthropy" — the same SF record type, now named "Grant". */
+function normalizeSavedRecordType(v: string | undefined): RecordType {
+  if (v === "Philanthropy") return RT_GRANT;
+  return RECORD_TYPES.some((r) => r.value === v) ? (v as RecordType) : "All";
+}
 
 /** Fields the toolbar search matches (see lib/search for the rules). */
 const oppSearchFields = (o: SfOpportunity) => [o.Name, o.Account?.Name, o.Owner?.Name];
@@ -124,7 +134,8 @@ type PipelineField = keyof typeof PIPELINE_FILTERABLE;
  *  pre-columns) still load cleanly. */
 interface PipelineSavedView {
   scope?: Scope;
-  recordType?: RecordType;
+  /** May hold the legacy "Philanthropy" value — see normalizeSavedRecordType. */
+  recordType?: string;
   rules?: FilterRule<PipelineField>[];
   /** Visible column keys, in display order. */
   visibleCols?: ColKey[];
@@ -630,7 +641,7 @@ export function PipelinePage() {
               // Tolerate older saved views that pre-date the rules /
               // visibleCols / widths fields by defaulting to current.
               setScope(v.scope ?? "open");
-              setRecordType(v.recordType ?? "All");
+              setRecordType(normalizeSavedRecordType(v.recordType));
               setRules(v.rules ?? []);
               setStageFilter(null);
               if (v.visibleCols && v.visibleCols.length > 0) {
@@ -774,6 +785,11 @@ export function PipelinePage() {
                               opportunityId={o.Id}
                               oppAmount={o.Amount ?? null}
                               oppCloseDate={o.CloseDate ?? null}
+                              grantPeriod={
+                                isGrantOpp(o)
+                                  ? { start: o.Grant_Start_Date__c ?? null, end: o.Grant_End_Date__c ?? null }
+                                  : null
+                              }
                             />
                           </td>
                         </tr>
@@ -884,9 +900,17 @@ function CreateOpportunityModal({
     Amount: "",
     OwnerId: "",
     RecordTypeId: "",
+    Grant_Start_Date__c: "",
+    Grant_End_Date__c: "",
   });
   const [accountQ, setAccountQ] = useState("");
   const [error, setError] = useState<string | null>(null);
+  // Grant period inputs only appear for the Grant record type.
+  const isGrant =
+    recordTypes.find((rt) => rt.id === form.RecordTypeId)?.name === RT_GRANT;
+  const grantError = isGrant
+    ? grantPeriodError(form.Grant_Start_Date__c, form.Grant_End_Date__c)
+    : null;
 
   const set = (key: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
     setForm((f) => ({ ...f, [key]: e.target.value }));
@@ -897,7 +921,7 @@ function CreateOpportunityModal({
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!form.Name.trim() || !form.CloseDate || !form.AccountId) return;
+    if (!form.Name.trim() || !form.CloseDate || !form.AccountId || grantError) return;
     setError(null);
     // Optimistic close: dismiss the modal immediately and toast the
     // background save. Once the SF id arrives, navigate to the detail
@@ -912,6 +936,12 @@ function CreateOpportunityModal({
       Amount: form.Amount ? Number(form.Amount.replace(/[^0-9.]/g, "")) : undefined,
       OwnerId: form.OwnerId || undefined,
       RecordTypeId: form.RecordTypeId || undefined,
+      ...(isGrant
+        ? {
+            Grant_Start_Date__c: form.Grant_Start_Date__c || undefined,
+            Grant_End_Date__c: form.Grant_End_Date__c || undefined,
+          }
+        : {}),
     };
     const toastId = `opp-create-${Date.now()}`;
     toast.loading(`Creating ${body.Name}…`, { id: toastId });
@@ -992,6 +1022,17 @@ function CreateOpportunityModal({
               </select>
             </ModalField>
           )}
+          {isGrant ? (
+            <GrantPeriodInputs
+              start={form.Grant_Start_Date__c}
+              end={form.Grant_End_Date__c}
+              onChange={({ start, end }) =>
+                setForm((f) => ({ ...f, Grant_Start_Date__c: start, Grant_End_Date__c: end }))
+              }
+              inputClassName={modalInputCls}
+              labelClassName="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3"
+            />
+          ) : null}
           <ModalField label="Stage">
             <select value={form.StageName} onChange={set("StageName")} className={modalInputCls}>
               {SF_STAGE_OPTIONS.map((s: { value: string; label: string }) => (
@@ -1035,7 +1076,7 @@ function CreateOpportunityModal({
             </button>
             <button
               type="submit"
-              disabled={!form.Name.trim() || !form.CloseDate || !form.AccountId || createOpp.isPending}
+              disabled={!form.Name.trim() || !form.CloseDate || !form.AccountId || !!grantError || createOpp.isPending}
               className="rounded border border-ink bg-ink px-3 py-1.5 text-[12.5px] font-medium text-surface hover:opacity-90 disabled:opacity-50"
             >
               {createOpp.isPending ? "Creating…" : "Create opportunity"}

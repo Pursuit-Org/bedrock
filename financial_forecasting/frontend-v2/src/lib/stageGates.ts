@@ -12,6 +12,7 @@
  * have forced — `getStageGate` returns the union so a single dialog
  * still enforces everything the user would have hit step-by-step.
  */
+import { RT_GRANT } from "@/lib/recordTypes";
 import { STAGE_RANK } from "@/lib/stages";
 
 /** Which checklist items the gate requires. */
@@ -22,6 +23,7 @@ export interface StageGateSpec {
     | "contracting-to-collecting"
     | "withdrawn"
     | "closed-lost"
+    | "grant-period"
     | "multi-step";
   title: string;
   description: string;
@@ -34,6 +36,11 @@ export interface StageGateSpec {
   confirmProbability?: boolean;
   /** Show the payment-schedule builder. */
   confirmPaymentSchedule?: boolean;
+  /** Confirm + edit Grant_Start_Date__c / Grant_End_Date__c. Set only
+   *  for Grant record-type opps entering Collecting / In Effect — the
+   *  backend's _validate_stage_change_logic rejects the move without
+   *  both dates. */
+  confirmGrantPeriod?: boolean;
   /** File pickers tied to filename hints (e.g. "proposal" /
    *  "contract"). The user must have at least one matching file
    *  attached to the opp before the gate's primary button enables.
@@ -146,12 +153,41 @@ function mergeGates(
     confirmAmount: gates.some((g) => g.confirmAmount),
     confirmProbability: gates.some((g) => g.confirmProbability),
     confirmPaymentSchedule: gates.some((g) => g.confirmPaymentSchedule),
+    confirmGrantPeriod: gates.some((g) => g.confirmGrantPeriod),
     fileAttachments: [...fileMap.values()],
     closeReason: gates.some((g) => g.closeReason),
   };
 }
 
-export function getStageGate(fromStage: string | null | undefined, toStage: string): StageGateSpec | null {
+const COLLECTING_STAGE = "Collecting / In Effect";
+
+/** Resolve the gate for a stage change. `recordTypeName` adds record-
+ *  type-specific requirements on top of the stage playbook — currently
+ *  the Grant period when a Grant enters Collecting / In Effect. */
+export function getStageGate(
+  fromStage: string | null | undefined,
+  toStage: string,
+  recordTypeName?: string | null,
+): StageGateSpec | null {
+  const base = stagePlaybookGate(fromStage, toStage);
+  const needsGrantPeriod =
+    !!fromStage && recordTypeName === RT_GRANT && toStage === COLLECTING_STAGE
+    && fromStage !== COLLECTING_STAGE;
+  if (!needsGrantPeriod) return base;
+  if (base) return { ...base, confirmGrantPeriod: true };
+  return {
+    id: "grant-period",
+    title: "Set the grant period before moving to Collecting / In Effect",
+    description: "Grants need a start and end date once they're active — the end date drives reporting deadlines and renewal follow-up. Confirm the payment schedule too.",
+    confirmGrantPeriod: true,
+    // Backend requires a matching payment schedule for every move into
+    // Collecting / In Effect; without this the gate would bypass the
+    // page's schedule-builder fallback and fail server-side.
+    confirmPaymentSchedule: true,
+  };
+}
+
+function stagePlaybookGate(fromStage: string | null | undefined, toStage: string): StageGateSpec | null {
   if (!fromStage) return null;
 
   // Terminal closing states — single gate regardless of from. Don't

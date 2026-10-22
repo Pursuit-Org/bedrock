@@ -17,6 +17,7 @@ import { useActiveUsers } from "@/services/users";
 import type { SfOpportunity } from "@/types/salesforce";
 import type { CashflowBucket } from "@/services/cashflow";
 import { filterByBucket } from "@/lib/bucketFilter";
+import { BUCKET_OPTIONS } from "@/lib/recordTypes";
 
 // ── Year helper ──────────────────────────────────────────────────────────
 
@@ -49,7 +50,7 @@ export function DashboardPage() {
 
         {/* Record-type filter */}
         <div className="inline-flex flex-wrap gap-1.5">
-          {(["all", "philanthropy", "pbc", "capital_grants", "other"] as const).map((b) => (
+          {BUCKET_OPTIONS.map(({ value: b, label }) => (
             <button
               key={b}
               type="button"
@@ -61,7 +62,7 @@ export function DashboardPage() {
               }
               aria-pressed={bucket === b}
             >
-              {{all:"All",philanthropy:"Philanthropy",pbc:"PBC",capital_grants:"Capital Grants",other:"Other"}[b]}
+              {label}
             </button>
           ))}
         </div>

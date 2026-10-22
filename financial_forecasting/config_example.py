@@ -29,7 +29,7 @@ Set the vars below via .env (dev) or Cloud Run env (prod).
 # skip all Intacct writes. Stays off until the F2 bundle ships:
 #   - expanded stage filter via WON_STAGES_SET (multiple win stages, not just Closed Won)
 #   - Donorbox exclusion (Campaign.Name = 'Online Donations' OR Name LIKE '%Donorbox%')
-#   - RecordType = 'Philanthropy' filter (exclude ISA + PBC records)
+#   - RecordType IN ('Grant', 'Donation') filter (exclude ISA + PBC records)
 #   - CloseDate date guard (only new deals flow through auto-invoice)
 #   - pre-flight Invoice_Status__c backfill on historical records
 #   - HITL review queue (finance approves before Intacct writes)
