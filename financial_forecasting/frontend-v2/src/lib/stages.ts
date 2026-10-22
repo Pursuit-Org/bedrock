@@ -21,7 +21,7 @@ import type { SfOpportunity } from "@/types/salesforce";
  * Keep in sync if the backend list changes.
  */
 export const AWARD_ELIGIBLE_STAGES: ReadonlySet<string> = new Set([
-  // Philanthropy
+  // Grant + Donation (formerly the Philanthropy record type)
   "closed-won",
   "Closed Won",
   "Closed / Completed",

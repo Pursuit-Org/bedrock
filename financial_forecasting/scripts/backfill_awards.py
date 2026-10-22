@@ -1,4 +1,6 @@
-"""Backfill bedrock.award rows for all currently-won Philanthropy opportunities.
+"""Backfill bedrock.award rows for all currently-won award-eligible opportunities
+(Grant, Donation, PBC, Debt / Equity, Other Fee For Service — see
+services/awards_service.ELIGIBLE_STAGES_BY_RECORD_TYPE).
 
 One-shot, idempotent. Re-running creates no duplicates (relies on the
 partial UNIQUE INDEX on opportunity_id WHERE deleted_at IS NULL).
@@ -7,7 +9,7 @@ Authenticates to Salesforce using credentials in .env — no browser token neede
 
 Usage (from financial_forecasting/):
 
-    # Verify which Philanthropy stages exist and which are eligible
+    # Verify which stages exist per record type and which are eligible
     python -m scripts.backfill_awards --verify-stages
 
     # Dry-run — counts only, no DB writes
@@ -209,7 +211,7 @@ async def _main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--dry-run", action="store_true",
                         help="Count only, no DB writes.")
     parser.add_argument("--verify-stages", action="store_true",
-                        help="Print Philanthropy stage distribution and exit.")
+                        help="Print per-record-type stage distribution and exit.")
     parser.add_argument("--yes", action="store_true",
                         help="Confirm production write.")
     args = parser.parse_args(argv)

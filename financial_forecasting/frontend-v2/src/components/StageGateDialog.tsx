@@ -14,6 +14,7 @@ import {
 } from "@/services/payments";
 import { fmtMoney, fmtMoneyFull } from "@/lib/format";
 import { STAGE_DEFAULT_PROBABILITY } from "@/lib/stages";
+import { grantPeriodError } from "@/lib/recordTypes";
 import type { StageGateSpec } from "@/lib/stageGates";
 import { cn } from "@/lib/utils";
 import type { SfOpportunity } from "@/types/salesforce";
@@ -58,6 +59,8 @@ export function StageGateDialog({
   // probability to the new stage's default. Use stage-default as the
   // seed; the manager override still wins if one is set.
   const [closeDate, setCloseDate] = useState<string>(opp.CloseDate ?? "");
+  const [grantStart, setGrantStart] = useState<string>((opp.Grant_Start_Date__c ?? "").slice(0, 10));
+  const [grantEnd, setGrantEnd] = useState<string>((opp.Grant_End_Date__c ?? "").slice(0, 10));
   const [amountStr, setAmountStr] = useState<string>(opp.Amount != null ? String(opp.Amount) : "");
   const [probabilityStr, setProbabilityStr] = useState<string>(() => {
     if (opp.Manager_Probability_Override__c != null) {
@@ -111,6 +114,13 @@ export function StageGateDialog({
   // Validation — what's required for the primary button to enable.
   const errors: string[] = [];
   if (spec.confirmCloseDate && !closeDate) errors.push("Close date is required");
+  if (spec.confirmGrantPeriod) {
+    if (!grantStart || !grantEnd) errors.push("Grant start and end dates are required");
+    else {
+      const gErr = grantPeriodError(grantStart, grantEnd);
+      if (gErr) errors.push(gErr);
+    }
+  }
   if (spec.confirmAmount && (!amountStr || !Number.isFinite(amountNum) || amountNum <= 0))
     errors.push("Amount must be > 0");
   if (spec.confirmProbability) {
@@ -139,6 +149,10 @@ export function StageGateDialog({
     const patch: Record<string, unknown> = {};
     if (spec.confirmCloseDate && closeDate !== opp.CloseDate) patch.CloseDate = closeDate;
     if (spec.confirmAmount && amountNum !== opp.Amount) patch.Amount = amountNum;
+    if (spec.confirmGrantPeriod) {
+      if (grantStart !== (opp.Grant_Start_Date__c ?? "").slice(0, 10)) patch.Grant_Start_Date__c = grantStart;
+      if (grantEnd !== (opp.Grant_End_Date__c ?? "").slice(0, 10)) patch.Grant_End_Date__c = grantEnd;
+    }
     if (spec.confirmProbability) {
       const p = Number(probabilityStr);
       // Mirror SF's UI: write Probability AND the manager override
@@ -315,6 +329,35 @@ export function StageGateDialog({
                     />
                   </label>
                 ) : null}
+              </div>
+            ) : null}
+
+            {spec.confirmGrantPeriod ? (
+              <div className="flex flex-col gap-1.5">
+                <div className="grid grid-cols-3 gap-3">
+                  <label className="flex flex-col gap-1">
+                    <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">Grant start date</span>
+                    <input
+                      type="date"
+                      value={grantStart}
+                      onChange={(e) => setGrantStart(e.target.value)}
+                      className="h-8 rounded border border-border-strong bg-surface px-2 text-[12.5px] outline-none focus:border-accent"
+                    />
+                  </label>
+                  <label className="flex flex-col gap-1">
+                    <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">Grant end date</span>
+                    <input
+                      type="date"
+                      value={grantEnd}
+                      min={grantStart || undefined}
+                      onChange={(e) => setGrantEnd(e.target.value)}
+                      className="h-8 rounded border border-border-strong bg-surface px-2 text-[12.5px] outline-none focus:border-accent"
+                    />
+                  </label>
+                </div>
+                <p className="text-[11.5px] text-ink-3">
+                  The full period the funds cover. The end date drives reporting deadlines and renewal follow-up.
+                </p>
               </div>
             ) : null}
 

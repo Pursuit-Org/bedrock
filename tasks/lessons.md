@@ -3,6 +3,10 @@
 > Updated after every correction or mistake. Patterns to avoid repeating.
 > Review at session start.
 
+## 2026-10-22 — Salesforce record-type split (Philanthropy → Grant + Donation)
+
+1. **Never scatter Salesforce picklist / record-type names as string literals.** `'Philanthropy'` was hardcoded in ~10 backend + frontend files (SOQL bucket filters, award eligibility, pills, Won-by-type columns, owner panel). When SF renamed it to Grant and split out Donation, every one silently degraded (empty pills, opps falling into "Other", no award rows) — nothing errored. **Rule**: SF record-type names live in one constants module per side (`services/record_type_bucket.py`, `frontend-v2/src/lib/recordTypes.ts`); bucket regexes derive from `VALID_BUCKETS`. Before shipping anything keyed on a record-type name, check the live org (`SELECT Name, DeveloperName, IsActive, LastModifiedDate FROM RecordType WHERE SobjectType='Opportunity'`) — a rename keeps the Id but changes `Name`.
+
 ## 2026-04-16 — F1 buckets + Intacct kill switch (2 lessons)
 
 1. **Prefer env vars + `os.getenv` over a `config.py` indirection module.** When adding a feature flag (e.g., `INTACCT_AUTO_INVOICE_ENABLED`) in PR #135, my first draft added it to `financial_forecasting/config.py`. Turned out: (a) `config.py` is intentionally gitignored (legacy credentials file), (b) the only real consumer was `routes/auth.py` for Salesforce OAuth app creds — 8 call sites easily swapped to `os.getenv`. JP's call: retire `config.py` entirely, don't perpetuate the indirection. **Rule**: for any new backend config value, read env directly via a call-time helper (`def _flag_enabled() -> bool: return os.getenv(...).strip().lower() == "true"`). Tests flip with `monkeypatch.setenv` — standard pytest, no module-attr monkeypatching. Keep `.gitignore`'s `config.py` line as a safety net with a comment explaining the retirement, so a future contributor with old muscle memory can't accidentally re-introduce secrets-in-source.

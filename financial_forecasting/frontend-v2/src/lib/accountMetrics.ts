@@ -15,7 +15,8 @@ import type { SfOpportunity } from "@/types/salesforce";
  * Source: services/awards_service.py:ELIGIBLE_STAGES_BY_RECORD_TYPE.
  */
 export const TRACKED_RECORD_TYPES = [
-  "Philanthropy",
+  "Grant",
+  "Donation",
   "PBC",
   "Debt / Equity",
   "Other Fee For Service",

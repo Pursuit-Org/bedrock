@@ -99,8 +99,11 @@ const NewOpportunity: React.FC = () => {
 
   // Opportunity RecordTypes
   const RECORD_TYPES = [
-    { id: '0121U0000002h3SQAQ', name: 'Philanthropy', description: 'Foundation/grant funding' },
-    { id: '0121U0000002h3LQAQ', name: 'Employer Service', description: 'Employer partnerships' },
+    // Legacy app — names synced to SF on 2026-10-22 (Philanthropy → Grant,
+    // Donation split out). frontend-v2 reads record types dynamically.
+    { id: '0121U0000002h3SQAQ', name: 'Grant', description: 'Institutional or corporate grants' },
+    { id: '0121U000000p3ZQQAY', name: 'Donation', description: 'Donations (does not include grants)' },
+    { id: '0121U0000002h3LQAQ', name: 'PBC', description: 'Paid and contracted services to employers' },
     { id: '0121U0000002h3PQAQ', name: 'Debt / Equity', description: 'Financial instruments' },
     { id: '0121U0000002h3OQAQ', name: 'Networked Fellow Hiring', description: 'Fellow placements (non-guaranteed)' },
     { id: '0121U0000002h3NQAQ', name: 'Other Fee For Service', description: 'Other paid services' },
@@ -110,7 +113,7 @@ const NewOpportunity: React.FC = () => {
   // Form state
   const [formData, setFormData] = useState({
     name: '',
-    recordTypeId: '0121U0000002h3SQAQ', // Default to Philanthropy
+    recordTypeId: '0121U0000002h3SQAQ', // Default to Grant
     accountId: '',
     contactId: '',
     amount: '',

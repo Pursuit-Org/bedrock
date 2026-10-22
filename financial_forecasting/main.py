@@ -91,7 +91,7 @@ from services.entity_owner import find_org_user, notify_owner_changed, resolve_e
 from services.notifications import TYPE_ACCOUNT_FILE_UPLOADED, enqueue_notification
 from services.record_type_bucket import (
     bucket_soql_filter as _cashflow_bucket_soql,
-    VALID_BUCKETS as _VALID_CASHFLOW_BUCKETS,
+    BUCKET_PATTERN as _CASHFLOW_BUCKET_PATTERN,
 )
 
 # Configure logging
@@ -515,7 +515,7 @@ async def get_opportunities(
     stage: Optional[OpportunityStage] = None,
     stages: Optional[List[str]] = Query(None),
     limit: Optional[int] = Query(None, le=2000),
-    record_type: Optional[str] = Query(None, description="Filter by RecordType.Name (e.g. 'Philanthropy')"),
+    record_type: Optional[str] = Query(None, description="Filter by RecordType.Name (e.g. 'Grant')"),
     active_only: bool = Query(False, description="Only return Active_Opportunity__c = true"),
     client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user = Depends(require_auth)
@@ -1803,7 +1803,7 @@ async def get_opportunity_payments(
 @app.get("/api/salesforce/payments/acv-summary")
 async def get_acv_summary(
     year: int = Query(..., ge=2000, le=2100),
-    bucket: str = Query("all", regex="^(all|philanthropy|pbc|capital_grants|other)$"),
+    bucket: str = Query("all", regex=_CASHFLOW_BUCKET_PATTERN),
     client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user=Depends(require_auth),
 ):
@@ -1877,7 +1877,7 @@ async def get_acv_summary(
 @app.get("/api/salesforce/cashflow")
 async def get_cashflow(
     year: int = Query(..., ge=2000, le=2100),
-    bucket: str = Query("all", regex="^(all|philanthropy|pbc|capital_grants|other)$"),
+    bucket: str = Query("all", regex=_CASHFLOW_BUCKET_PATTERN),
     client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user=Depends(require_auth),
 ):
@@ -2032,7 +2032,7 @@ async def get_cashflow_detail(
     year: int = Query(..., ge=2000, le=2100),
     month: int = Query(..., ge=1, le=12),
     type: str = Query(..., regex="^(actuals|scheduled|outstanding|projected)$"),
-    bucket: str = Query("all", regex="^(all|philanthropy|pbc|capital_grants|other)$"),
+    bucket: str = Query("all", regex=_CASHFLOW_BUCKET_PATTERN),
     client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user=Depends(require_auth),
 ):

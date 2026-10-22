@@ -72,7 +72,8 @@ const ACCOUNT_FILTERABLE = {
   owner: { label: "Owner", type: "select", getValue: (a: AccountWithMetrics) => a.OwnerId ?? "" },
   openPipeline: { label: "Open pipeline", type: "number", getValue: (a: AccountWithMetrics) => a._metrics.openPipeline },
   amountWon: { label: "Lifetime won", type: "number", getValue: (a: AccountWithMetrics) => a._metrics.amountWon },
-  wonPhilanthropy: { label: "Won: Philanthropy", type: "number", getValue: (a: AccountWithMetrics) => a._metrics.wonByRecordType["Philanthropy"] ?? 0 },
+  wonGrant: { label: "Won: Grant", type: "number", getValue: (a: AccountWithMetrics) => a._metrics.wonByRecordType["Grant"] ?? 0 },
+  wonDonation: { label: "Won: Donation", type: "number", getValue: (a: AccountWithMetrics) => a._metrics.wonByRecordType["Donation"] ?? 0 },
   wonPBC: { label: "Won: PBC", type: "number", getValue: (a: AccountWithMetrics) => a._metrics.wonByRecordType["PBC"] ?? 0 },
   wonDebtEquity: { label: "Won: Debt / Equity", type: "number", getValue: (a: AccountWithMetrics) => a._metrics.wonByRecordType["Debt / Equity"] ?? 0 },
   wonOtherFFS: { label: "Won: Other FFS", type: "number", getValue: (a: AccountWithMetrics) => a._metrics.wonByRecordType["Other Fee For Service"] ?? 0 },
@@ -108,7 +109,8 @@ type ColKey =
   | "status"
   | "openPipeline"
   | "amountWon"
-  | "wonPhilanthropy"
+  | "wonGrant"
+  | "wonDonation"
   | "wonPBC"
   | "wonDebtEquity"
   | "wonOtherFFS"
@@ -126,7 +128,8 @@ const COL_LABELS: Record<ColKey, string> = {
   status: "Status",
   openPipeline: "Open pipeline",
   amountWon: "Lifetime won",
-  wonPhilanthropy: "Won: Philanthropy",
+  wonGrant: "Won: Grant",
+  wonDonation: "Won: Donation",
   wonPBC: "Won: PBC",
   wonDebtEquity: "Won: Debt / Equity",
   wonOtherFFS: "Won: Other FFS",
@@ -145,7 +148,8 @@ const COL_WIDTHS: Record<ColKey, number> = {
   status: 130,
   openPipeline: 130,
   amountWon: 130,
-  wonPhilanthropy: 140,
+  wonGrant: 140,
+  wonDonation: 140,
   wonPBC: 110,
   wonDebtEquity: 140,
   wonOtherFFS: 130,
@@ -164,7 +168,8 @@ const COLUMN_ORDER: ColKey[] = [
   "status",
   "openPipeline",
   "amountWon",
-  "wonPhilanthropy",
+  "wonGrant",
+  "wonDonation",
   "wonPBC",
   "wonDebtEquity",
   "wonOtherFFS",
@@ -193,7 +198,8 @@ const ACCOUNT_CSV_COLUMNS: CsvColumn<AccountWithMetrics>[] = [
   { label: "Owner Id", getValue: (a) => a.OwnerId },
   { label: "Open Pipeline", getValue: (a) => a._metrics.openPipeline || "" },
   { label: "Lifetime Won", getValue: (a) => a._metrics.amountWon || "" },
-  { label: "Won: Philanthropy", getValue: (a) => a._metrics.wonByRecordType["Philanthropy"] || "" },
+  { label: "Won: Grant", getValue: (a) => a._metrics.wonByRecordType["Grant"] || "" },
+  { label: "Won: Donation", getValue: (a) => a._metrics.wonByRecordType["Donation"] || "" },
   { label: "Won: PBC", getValue: (a) => a._metrics.wonByRecordType["PBC"] || "" },
   { label: "Won: Debt / Equity", getValue: (a) => a._metrics.wonByRecordType["Debt / Equity"] || "" },
   { label: "Won: Other FFS", getValue: (a) => a._metrics.wonByRecordType["Other Fee For Service"] || "" },
@@ -227,7 +233,8 @@ function extract(a: AccountWithMetrics, key: ColKey): unknown {
     case "status": return a.account_status ?? "";
     case "openPipeline": return a._metrics.openPipeline;
     case "amountWon": return a._metrics.amountWon;
-    case "wonPhilanthropy": return a._metrics.wonByRecordType["Philanthropy"] ?? 0;
+    case "wonGrant": return a._metrics.wonByRecordType["Grant"] ?? 0;
+    case "wonDonation": return a._metrics.wonByRecordType["Donation"] ?? 0;
     case "wonPBC": return a._metrics.wonByRecordType["PBC"] ?? 0;
     case "wonDebtEquity": return a._metrics.wonByRecordType["Debt / Equity"] ?? 0;
     case "wonOtherFFS": return a._metrics.wonByRecordType["Other Fee For Service"] ?? 0;
@@ -748,7 +755,8 @@ const AccountRow = memo(function AccountRow({
       </td>
       <MoneyCell value={m.openPipeline} />
       <MoneyCell value={m.amountWon} />
-      <MoneyCell value={m.wonByRecordType["Philanthropy"] ?? 0} />
+      <MoneyCell value={m.wonByRecordType["Grant"] ?? 0} />
+      <MoneyCell value={m.wonByRecordType["Donation"] ?? 0} />
       <MoneyCell value={m.wonByRecordType["PBC"] ?? 0} />
       <MoneyCell value={m.wonByRecordType["Debt / Equity"] ?? 0} />
       <MoneyCell value={m.wonByRecordType["Other Fee For Service"] ?? 0} />

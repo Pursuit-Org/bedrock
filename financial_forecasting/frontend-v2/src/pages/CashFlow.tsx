@@ -17,6 +17,7 @@ import { fmtMoney } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { useCashflow, useCashflowDetail, type CashflowBucket, type CashflowType } from "@/services/cashflow";
 import { fmtDate } from "@/lib/format";
+import { BUCKET_OPTIONS } from "@/lib/recordTypes";
 
 const MONTH_NAMES = [
   "Jan", "Feb", "Mar", "Apr", "May", "Jun",
@@ -54,15 +55,6 @@ function HeaderCell({ children, className }: { children: ReactNode; className?: 
     </th>
   );
 }
-
-
-const BUCKET_OPTIONS: { value: CashflowBucket; label: string }[] = [
-  { value: "all",            label: "All" },
-  { value: "philanthropy",   label: "Philanthropy" },
-  { value: "pbc",            label: "PBC" },
-  { value: "capital_grants", label: "Capital Grants" },
-  { value: "other",          label: "Other" },
-];
 
 export function CashFlowPage() {
   const navigate = useNavigate();

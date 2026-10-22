@@ -45,7 +45,9 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
         // v4 — 2026-08-18: jobs/staff-sourced changed from a flat application
         // array to grouped {company_name, role_title, applications: [...]} —
         // old cached shape has no .applications, crashing render on hydrate.
-        buster: "v4",
+        // v5 — 2026-10-22: SF split the Philanthropy record type into Grant +
+        // Donation; record-type bucket keys and cached opp shapes changed.
+        buster: "v5",
         dehydrateOptions: {
           // Only persist queries that finished successfully — pending /
           // error states carry a state.promise field that doesn't survive

@@ -52,7 +52,8 @@ export function useOpportunityData(
     async () => {
       const params: any = {};
       if (philanthropyOnly) {
-        params.record_type = 'Philanthropy';
+        // SF renamed Philanthropy → Grant on 2026-10-22 (Donation split out).
+        params.record_type = 'Grant';
         params.active_only = true;
       }
       const response = await apiService.getOpportunities(

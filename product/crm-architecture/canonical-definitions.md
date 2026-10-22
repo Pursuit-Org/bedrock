@@ -130,6 +130,28 @@ Rules:
 - **Not stored** on Accounts — inferred at query time from child Opportunities.
 - **Not set** on Contacts, Prospects, Tasks, Activities — these are stream-agnostic.
 
+### Opportunity Record Types (Salesforce)
+
+`RecordType.Name` on Opportunity is the authoritative "what kind of money is this" field. On **2026-10-21/22** Salesforce split the former **Philanthropy** record type: it was **renamed to Grant** (same Id) and donation-style opps were moved to **Donation**. No opportunity carries `Philanthropy` anymore — never hardcode that name.
+
+| Record type | SF Id | Stream | Bedrock bucket | Award-eligible |
+|---|---|---|---|---|
+| Grant | `0121U0000002h3SQAQ` | nonprofit | `grant` (+ `philanthropy`) | Yes |
+| Donation | `0121U000000p3ZQQAY` | nonprofit | `donation` (+ `philanthropy`) | Yes |
+| Other In-Kind | `0121U0000002h3RQAQ` | nonprofit | `other` | No |
+| PBC | `0121U0000002h3LQAQ` | pbc | `pbc` | Yes |
+| Debt / Equity | `0121U0000002h3PQAQ` | — | `other` | Yes (`Closed / Completed`) |
+| Other Fee For Service | `0121U0000002h3NQAQ` | pbc | `other` | Yes (`Closed / Completed`) |
+| ISA | `0121U0000003c1EQAQ` | — | excluded everywhere | No |
+
+Rules:
+- **Buckets** (dashboard / cash flow / revenue snapshot `bucket` param): `all · philanthropy (Grant + Donation) · grant · donation · pbc · capital_grants · other`. Defined once in `services/record_type_bucket.py` (backend) and `frontend-v2/src/lib/recordTypes.ts` + `lib/bucketFilter.ts` (frontend).
+- **Capital Grants** are Grant opps with `Philanthropy_Type__c = 'Capital Grant'`; they're carved out of `grant` / `philanthropy` / `other` into `capital_grants`.
+- **$20M fundraising goal** counts `philanthropy` (Grant + Donation).
+- **ISA** opps are excluded from every Bedrock view at the SOQL layer.
+- **Grant period** (`Grant_Start_Date__c`, `Grant_End_Date__c`) applies to **Grant only**. Optional in pipeline; **required** before a Grant moves to `Collecting / In Effect` (enforced by the stage gate and `_validate_stage_change_logic`). The end date drives reporting deadlines and renewal follow-up.
+- Award eligibility per record type: `services/awards_service.py` `ELIGIBLE_STAGES_BY_RECORD_TYPE`.
+
 ---
 
 ## 6. Entity Status Enums

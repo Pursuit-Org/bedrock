@@ -1,7 +1,9 @@
 """Awards service — manages bedrock.award rows.
 
 Award is a thin lifecycle entity layered over closed Opportunities across
-Philanthropy, PBC, Debt/Equity, and Other Fee For Service record types.
+Grant, Donation, PBC, Debt/Equity, and Other Fee For Service record types.
+(Grant + Donation replaced the former 'Philanthropy' record type on
+2026-10-22 — Grant is the same SF record type, renamed.)
 Salesforce stays SoT for the Opportunity itself; this service owns only the
 post-award lifecycle bits (status, period, notes) that don't belong on the
 Opportunity record.
@@ -35,20 +37,24 @@ logger = logging.getLogger(__name__)
 #   'Did Not Fulfill'— award was made but not fulfilled
 # ---------------------------------------------------------------------------
 
-PHILANTHROPY_RECORD_TYPE_NAME = "Philanthropy"
+# Stages eligible for an award row on philanthropic record types (Grant and
+# Donation share the stage picklist inherited from the former 'Philanthropy'
+# record type).
+_PHILANTHROPY_STAGES: frozenset = frozenset({
+    "closed-won",
+    "Closed Won",
+    "Closed / Completed",
+    "Closed / Fulfilled",
+    "Collecting / In Effect",
+    "Collecting",
+    "In Effect",
+    "Closed / Did not Fulfill",
+})
 
 # Stages eligible for an award row, per record type.
 ELIGIBLE_STAGES_BY_RECORD_TYPE: Dict[str, frozenset] = {
-    "Philanthropy": frozenset({
-        "closed-won",
-        "Closed Won",
-        "Closed / Completed",
-        "Closed / Fulfilled",
-        "Collecting / In Effect",
-        "Collecting",
-        "In Effect",
-        "Closed / Did not Fulfill",
-    }),
+    "Grant": _PHILANTHROPY_STAGES,
+    "Donation": _PHILANTHROPY_STAGES,
     "PBC": frozenset({
         "Closed / Completed",
         "Collecting / In Effect",
@@ -68,7 +74,7 @@ ELIGIBLE_STAGES_BY_RECORD_TYPE: Dict[str, frozenset] = {
 }
 
 # Convenience flat set for fast lookups when record type is already known eligible.
-WON_PHILANTHROPY_STAGES: frozenset[str] = ELIGIBLE_STAGES_BY_RECORD_TYPE["Philanthropy"]
+WON_PHILANTHROPY_STAGES: frozenset[str] = _PHILANTHROPY_STAGES
 
 # Stage → award_status mapping (applies across all record types).
 _DID_NOT_FULFILL_STAGES: frozenset[str] = frozenset({
@@ -138,7 +144,7 @@ async def ensure_for_opp(
     stage_name_hint: Optional[str] = None,
     record_type_hint: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Idempotently ensure a bedrock.award row exists for a Philanthropy opp
+    """Idempotently ensure a bedrock.award row exists for an award-eligible opp
     that has reached a closed/active-grant stage.
 
     Returns the award row (existing or newly created), or None if the opp

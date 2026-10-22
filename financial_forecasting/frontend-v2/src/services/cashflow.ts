@@ -12,7 +12,14 @@ export type CashflowType = "actuals" | "scheduled" | "outstanding" | "projected"
 
 /** Record-type buckets the cashflow page can filter to. Matches the
  *  backend `bucket` query param on /cashflow + /cashflow/detail. */
-export type CashflowBucket = "all" | "philanthropy" | "pbc" | "capital_grants" | "other";
+export type CashflowBucket =
+  | "all"
+  | "philanthropy" // Grant + Donation
+  | "grant"
+  | "donation"
+  | "pbc"
+  | "capital_grants"
+  | "other";
 
 export interface CashflowDetailRecord {
   payment_id: string | null;
