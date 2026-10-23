@@ -19,9 +19,10 @@
  * opportunity, Revisit and Not a fit, each indented beneath it. Closed does the
  * same for Closed Won and Closed Lost.
  *
- * Total contact pool sits in its own
- * Outreach Pool band above Outreach (Kwame 2026-10-23): every jobs prospect,
- * the universe the funnel draws from, kept apart from the pipeline stages.
+ * The Target List sits in its own Outreach Pool band above Outreach (Kwame
+ * 2026-10-23). The total contact pool (every jobs prospect, or every one in the
+ * checked campaigns) is no longer a row: Summarize outreach states it beside
+ * the Target List count, as the universe the list was drawn from.
  *
  * Every number opens the records behind it. The drawer filters the same
  * `members` / `moved` arrays the counts were made from, so a list can never
@@ -234,6 +235,8 @@ export function StageFlowChart() {
           </div>
         ) : (
           <StageTable data={current} byTime={byTime} nameOf={nameOf} onDrill={setDrill} searching={!!found}
+            campaignLabel={pickedCampaigns.length === 0 ? null : pickedCampaigns.length === 1
+              ? campaigns.find((c) => c.key === pickedCampaigns[0])?.label ?? null : `${pickedCampaigns.length} campaigns`}
             actOpen={actOpen} onToggleAct={toggleAct}
             pipelineFilter={<PipelineFilter dealTypes={dealTypes} onDealTypes={setDealTypes}
               roleTypes={roleTypes} onRoleTypes={setRoleTypes} />} />
@@ -326,12 +329,12 @@ function BandHeader({ band, cols, right, pool, netNew, poolTitle, netNewTitle, o
   );
 }
 
-function StageLabel({ row, toggle, plain }: { row: StageFlowRow; toggle?: React.ReactNode; plain?: boolean }) {
+function StageLabel({ row, toggle }: { row: StageFlowRow; toggle?: React.ReactNode }) {
   const depth = row.depth ?? 0;
   const pending = !row.available;
   return (
     <td className={cn("whitespace-nowrap py-2.5 pr-4 text-left",
-      depth === 0 && !plain ? "font-semibold" : "font-normal",
+      depth === 0 ? "font-semibold" : "font-normal",
       pending ? "text-ink-4" : "text-ink")}
       style={{ paddingLeft: `${14 + depth * 20}px` }}>
       {depth > 0 && <span className="mr-1.5 text-ink-4">↳</span>}
@@ -368,16 +371,24 @@ function NumButton({ n, onClick, title, className }: { n: number; onClick: () =>
 
 // ── Stage tab ────────────────────────────────────────────────────────────────
 
-function StageTable({ data, byTime, nameOf, onDrill, pipelineFilter, actOpen, onToggleAct, searching }: {
+function StageTable({ data, byTime, nameOf, onDrill, pipelineFilter, actOpen, onToggleAct, searching, campaignLabel }: {
   data: StageFlow; byTime: boolean; nameOf: (e: string | null) => string; onDrill: (d: Drill) => void;
   /** A search is narrowing the data: Trend and the pool total have no basis. */
   searching: boolean;
+  /** The checked campaign(s), to name the contact pool the Target List is drawn from. */
+  campaignLabel: string | null;
   pipelineFilter: React.ReactNode; actOpen: string[]; onToggleAct: (stage: string) => void;
 }) {
   const cols = byTime ? data.buckets : [];
   // Blank for the team (the default); a person's name when the Owner filter picks one.
   const scopeLabel = data.target_scope === "team" ? "" : nameOf(data.target_scope);
-  const universe = data.bands.flatMap((b) => b.rows.filter((r) => r.kind === "universe"));
+  // Outreach Pool band: the Target List row. The total contact pool rides
+  // along as context in its Summarize outreach, not as a row of its own.
+  const universeRows = data.bands.flatMap((b) => b.rows.filter((r) => r.kind === "universe"));
+  const universe = universeRows.filter((r) => r.key !== "total_pool");
+  const poolRow = universeRows.find((r) => r.key === "total_pool");
+  // A count with no ids, so a search can't narrow it: dropped while searching.
+  const contactPool = searching || !poolRow?.in_now ? null : poolRow.in_now.total;
   // Bands folded shut: "pool", "outreach", "pipeline". Open by default.
   const [folded, setFolded] = useSessionState<string[]>("jobsOverview.stageFlow.bandsFolded", []);
   const fold = (k: string) => setFolded(folded.includes(k) ? folded.filter((x) => x !== k) : [...folded, k]);
@@ -440,7 +451,8 @@ function StageTable({ data, byTime, nameOf, onDrill, pipelineFilter, actOpen, on
                 right={null} pool={null} netNew={null}
                 collapsed={folded.includes("pool")} onToggle={() => fold("pool")} />
               {!folded.includes("pool") && universe.map((row) => (
-                <UniverseRow key={row.key} row={row} cols={cols.length} onDrill={onDrill} searching={searching} />
+                <UniverseRow key={row.key} row={row} cols={cols.length} onDrill={onDrill}
+                  contactPool={contactPool} campaignLabel={campaignLabel} />
               ))}
             </>
           )}
@@ -462,7 +474,7 @@ function StageTable({ data, byTime, nameOf, onDrill, pipelineFilter, actOpen, on
                   pool={pool} netNew={movedIds.size}
                   collapsed={folded.includes(band.key)} onToggle={() => fold(band.key)}
                   poolTitle={band.key === "outreach"
-                    ? "Every contact in a working outreach stage today (Contact Outcome, Total contact pool and Target List not included). Click for the list."
+                    ? "Every contact in a working outreach stage today (Contact Outcome and Target List not included). Click for the list."
                     : "Every open opportunity today, all stages. Click for the list."}
                   netNewTitle={`Unique ${unit} that moved into any stage during the period, each counted once. Click for the list.`}
                   onPool={() => onDrill({ kind: "now", band: band.key, stages: poolStages,
@@ -477,7 +489,7 @@ function StageTable({ data, byTime, nameOf, onDrill, pipelineFilter, actOpen, on
                       last={sibs[sibs.length - 1] === row}
                       onDrill={() => onDrill({ kind: "activity", band: band.key, stages: [row.key], label: row.label, col: null, activity: row })} />;
                   }
-                  // Total contact pool renders in its own band above.
+                  // The Target List renders in its own band above.
                   if (row.kind === "universe") return null;
                   const acts = band.rows.filter((r) => r.kind === "activity" && r.parent === row.key);
                   const stages = stagesOf(row);
@@ -566,16 +578,21 @@ function ConversionCell({ row, pending, onDrill }: { row: StageFlowRow; pending:
   );
 }
 
-const UNIVERSE_TIP: Record<string, string> = {
-  total_pool: "Contacts flagged as jobs prospects. With campaigns checked: contacts in any of them.",
-  target_set: "Jobs prospects chosen for outreach (add them from Contacts › Add to Target List). "
-    + "Summarize outreach shows how many have closed, are in pipeline, or aren't in the pipeline yet.",
-};
+const TARGET_LIST_TIP = "Jobs prospects chosen for outreach (add them from Contacts › Add to Target List). "
+  + "Summarize outreach shows how many have closed, are in pipeline, or aren't in the pipeline yet, "
+  + "against the contact pool the list is drawn from.";
 
-/** Outreach Pool rows: every jobs prospect, and the Target List beneath it with
- *  where it stands (Summarize outreach). Counts only, no movement. */
-function UniverseRow({ row, cols, onDrill, searching }: {
-  row: StageFlowRow; cols: number; onDrill: (d: Drill) => void; searching: boolean;
+/** "7,745 jobs prospects", or "449 in Operation 35" with a campaign checked. */
+function poolPhrase(n: number, campaignLabel: string | null) {
+  return campaignLabel ? `${n.toLocaleString()} in ${campaignLabel}` : `${n.toLocaleString()} jobs prospects`;
+}
+
+/** The Outreach Pool row: the Target List and where it stands (Summarize
+ *  outreach). Counts only, no movement. */
+function UniverseRow({ row, cols, onDrill, contactPool, campaignLabel }: {
+  row: StageFlowRow; cols: number; onDrill: (d: Drill) => void;
+  /** Total contact pool (jobs prospects, campaign-scoped); null while searching. */
+  contactPool: number | null; campaignLabel: string | null;
 }) {
   const dash = <span className="text-ink-4">—</span>;
   const split = row.target_set;
@@ -598,18 +615,13 @@ function UniverseRow({ row, cols, onDrill, searching }: {
         )}
       </span>
     );
-  } else if (!pending && !searching) {
-    // Total contact pool is a count with no ids, so a search can't narrow it.
-    cell = (row.in_now?.total ?? 0).toLocaleString();
   }
-  // Total contact pool is reference, not a number we index on (Kwame
-  // 2026-10-23): regular weight, so Target List below reads as the headline.
-  const plain = row.key === "total_pool";
+  const tip = contactPool != null ? `${TARGET_LIST_TIP} Contact pool: ${poolPhrase(contactPool, campaignLabel)}.` : TARGET_LIST_TIP;
   return (
     <>
-    <tr className="border-b border-border text-[13.5px]" title={UNIVERSE_TIP[row.key]}>
-      <StageLabel row={row} plain={plain} />
-      <td className={cn(TD, HL, plain ? "font-normal" : (row.depth ?? 0) === 0 && "font-semibold")}>{cell}</td>
+    <tr className="border-b border-border text-[13.5px]" title={tip}>
+      <StageLabel row={row} />
+      <td className={cn(TD, HL, "font-semibold")}>{cell}</td>
       <td className={cn(TD, HL_ACT, "border-l-2 border-border-strong")}>{dash}</td>
       <td className={TD}>{dash}</td>
       <td className={TD}>{dash}</td>
@@ -622,7 +634,7 @@ function UniverseRow({ row, cols, onDrill, searching }: {
     {summary && split && !pending && (
       <tr className="border-b border-border bg-bg">
         <td colSpan={7 + cols} className="px-4 py-3">
-          <TargetSetSummary split={split} onList={list} />
+          <TargetSetSummary split={split} onList={list} contactPool={contactPool} campaignLabel={campaignLabel} />
         </td>
       </tr>
     )}
@@ -651,9 +663,10 @@ const TS_STAGE_LABEL: Record<string, string> = {
   assigned: "Assigned",
 };
 
-function TargetSetSummary({ split, onList }: {
+function TargetSetSummary({ split, onList, contactPool, campaignLabel }: {
   split: NonNullable<StageFlowRow["target_set"]>;
   onList: (ids: string[], label: string, note: string) => void;
+  contactPool: number | null; campaignLabel: string | null;
 }) {
   const by = split.by_stage ?? {};
   const known = new Set(TS_GROUPS.flatMap((g) => g.stages));
@@ -674,7 +687,15 @@ function TargetSetSummary({ split, onList }: {
   const shown = groups.filter((g) => g.ids.length > 0);
   return (
     <div className="flex flex-col gap-2.5">
-      <div className="text-[12px] font-semibold text-ink">Target List · {total.toLocaleString()} contacts</div>
+      <div className="flex flex-wrap items-baseline gap-x-1.5 text-[12px]">
+        <span className="font-semibold text-ink">Target List · {total.toLocaleString()} contacts</span>
+        {/* The universe the list is drawn from: context, so quiet. */}
+        {contactPool != null && (
+          <span className="text-ink-4" title="Total contact pool: every jobs prospect, or every one in the checked campaigns">
+            (of {poolPhrase(contactPool, campaignLabel)})
+          </span>
+        )}
+      </div>
       {/* One 100% bar: segments in progress order, 2px surface gaps, rounded
           outer ends. Each segment opens its contacts. */}
       <div className="flex h-4 w-full gap-[2px]" role="img"
