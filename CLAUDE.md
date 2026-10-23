@@ -1,3 +1,7 @@
+# Code reviews
+
+Before reviewing code, read and follow [REVIEW.md](REVIEW.md) for finding selection and response format. These rules apply to reviews only; project guidance below still applies.
+
 ## gstack
 
 Use the `/browse` skill from gstack for all web browsing. Never use `mcp__claude-in-chrome__*` tools.
