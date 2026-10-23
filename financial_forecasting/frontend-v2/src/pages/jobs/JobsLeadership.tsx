@@ -5,6 +5,7 @@ import { usePlacements, useBuilderSegments } from "@/services/jobs";
 import { JobsFunnels } from "@/components/jobs/JobsFunnels";
 import { MetricDrawer } from "@/components/jobs/MetricDrawer";
 import { JobsStatBubble } from "@/components/jobs/JobsStatBubble";
+import { StageFlowChart } from "@/components/jobs/StageFlowChart";
 
 
 // ── Section wrapper ───────────────────────────────────────────────────────
@@ -122,6 +123,12 @@ export function JobsLeadership() {
       {/* ── ZONE 2 · The Funnel (the engine) ──────────────────────────── */}
       {/* Open on Overview: here the funnel is the content, not context. */}
       <JobsFunnels builderSegment={segment} defaultOpen />
+
+      {/* ── ZONE 3 · Stage Flow (the weekly meeting, level by level) ──────
+          Outreach and pipeline in one table: what sits in each stage now and
+          what moved in this period, against target (Kwame 2026-10-08). Has its
+          own period bar: the rest of Overview is all-time. */}
+      <StageFlowChart />
 
       {/* Hygiene line removed 2026-08-04. "Won, open tasks" is a summary card on
           the Pipeline page and the no-prospect accounts surface in Outreach's

@@ -57,6 +57,7 @@ function invalidateOppDependents(qc: QueryClient, extra: string[][] = []) {
 export type JobStage =
   | "lead_submitted"
   | "active_in_discussions"
+  | "engaging"
   | "ask_submitted"
   | "active_opportunity_confirmed"
   | "builder_submitted"
@@ -207,6 +208,8 @@ export interface OpportunityFilters {
   account_id?: string;
   /** One deal type, or a comma-separated list ("ft,unset"). "unset" = untagged. */
   deal_type?: string;
+  /** Only these opportunities (the Stage Flow drill). An empty list returns none. */
+  ids?: string[];
   limit?: number;
   offset?: number;
 }
@@ -214,7 +217,9 @@ export interface OpportunityFilters {
 // ── Labels & metadata ────────────────────────────────────────────────────────
 
 export const STAGE_LABELS: Record<JobStage, string> = {
-  active_in_discussions:        "In Discussions",
+  // Renamed 2026-10-08: the label changed, the stored key did not.
+  active_in_discussions:        "Initial Opportunity",
+  engaging:                     "Engaging",
   ask_submitted:                "Ask Submitted",
   active_opportunity_confirmed: "Opportunity Confirmed",
   builder_submitted:            "Builder Submitted",
@@ -241,7 +246,8 @@ export const DEAL_TYPE_LABELS: Record<DealType, string> = {
   pilot:       "Pilot",
 };
 
-/** Board columns and pickers, in pipeline order. Eight stages as of 2026-09-21,
+/** Board columns and pickers, in pipeline order. Nine stages as of 2026-10-08
+ *  (Engaging added after Initial Opportunity); eight as of 2026-09-21,
  *  when the middle of the funnel split from one step into four and Lead
  *  Submitted was retired — it described a contact, not a deal, and that work
  *  lives in the membership pipeline.
@@ -250,6 +256,7 @@ export const DEAL_TYPE_LABELS: Record<DealType, string> = {
  *  and moves to a current stage on the next edit. */
 export const STAGES_ORDERED: JobStage[] = [
   "active_in_discussions",
+  "engaging",
   "ask_submitted",
   "active_opportunity_confirmed",
   "builder_submitted",
@@ -264,6 +271,7 @@ export const STAGES_ORDERED: JobStage[] = [
  *  routes/jobs.py. */
 export const STAGE_DESCRIPTIONS: Partial<Record<JobStage, string>> = {
   active_in_discussions:        "Confirmed hiring appetite and a named decision maker.",
+  engaging:                     "Follow-up set. Working the relationship toward a specific ask.",
   ask_submitted:                "A specific ask is with the employer — role, scope or option set. Awaiting yes or no.",
   active_opportunity_confirmed: "They said yes. A real role or engagement exists.",
   builder_submitted:            "Named builder profiles sent to the employer.",
@@ -286,6 +294,7 @@ export const LEGACY_STAGES: JobStage[] = [
 
 export const ACTIVE_STAGES: JobStage[] = [
   "active_in_discussions",
+  "engaging",
   "ask_submitted",
   "active_opportunity_confirmed",
   "builder_submitted",
@@ -301,6 +310,8 @@ interface ListResponse<T> { success: boolean; data: T[]; total: number }
 export interface JobContactWithDeal extends JobContact {
   airtable_id: string | null;
   is_jobs_contact?: boolean;
+  /** In the Target List; null until its migration runs. */
+  in_target_set?: boolean | null;
   owner_email?: string | null;     // org-wide contact owner (distinct from membership_owner)
   crm_tags?: string[];             // curated tags only — system markers never reach the UI
   deal: { id: string; account_name: string; stage: JobStage; owner_email?: string | null } | null;
@@ -341,7 +352,8 @@ export const MEMBERSHIP_STAGES: MembershipStage[] = [
 ];
 export const MEMBERSHIP_STAGE_LABELS: Record<MembershipStage, string> = {
   assigned: "Assigned", initial_outreach: "Initial outreach", scheduling: "Scheduling",
-  call_booked: "Call booked",
+  // Labelled "Discovery call" since 2026-10-13; the stored key is unchanged.
+  call_booked: "Discovery call",
   converted_to_opportunity: "Converted to opportunity", revisit: "Revisit", not_a_fit: "Not a fit",
   on_hold: "On hold",
 };
@@ -407,6 +419,8 @@ export interface ContactFilters {
   /** Serialized Filter-menu rules — translated to SQL server-side so filters
    *  see the full 47k universe, never just the loaded page. */
   rules?: { field: string; op: string; values: string[] }[];
+  /** Only these contacts (the Stage Flow drill); scope is ignored. An empty list returns none. */
+  ids?: number[];
 }
 
 export interface ConnectedStaff {
@@ -496,6 +510,7 @@ export function useJobsContacts(filters: ContactFilters = {}) {
   if (filters.has_open_roles) params.set("has_open_roles", "true");
   if (filters.scope) params.set("scope", filters.scope);
   if (filters.rules && filters.rules.length > 0) params.set("filters", JSON.stringify(filters.rules));
+  if (filters.ids) params.set("ids", filters.ids.join(","));
   params.set("limit", String(filters.limit ?? 200));
 
   return useQuery<{ data: JobContactWithDeal[]; total: number }>({
@@ -570,6 +585,22 @@ export function useBulkContactOwner() {
       toast.success(`Owner set on ${d?.updated ?? 0} contact${(d?.updated ?? 0) === 1 ? "" : "s"}`);
     },
     onError: () => toast.error("Failed to set owner"),
+  });
+}
+
+/** Clear one contact's jobs stage: back to no stage. Same DELETE as the
+ *  Contacts bulk "Clear stage"; history logs it as 'unflagged'. The prospect
+ *  flag and Target List are untouched. */
+export function useClearContactStage() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (contact_id: number) => { await api.delete(`/api/jobs/contacts/${contact_id}/jobs-membership`); },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["jobs", "contacts"] });
+      qc.invalidateQueries({ queryKey: ["jobs", "accounts"] });
+      qc.invalidateQueries({ queryKey: ["jobs", "stage-flow"] });
+    },
+    onError: () => toast.error("Couldn't clear the stage"),
   });
 }
 
@@ -1801,6 +1832,7 @@ export function useJobsOpportunities(filters: OpportunityFilters = {}) {
   if (filters.owner_email) params.set("owner_email",  filters.owner_email);
   if (filters.account_id)  params.set("account_id",   filters.account_id);
   if (filters.deal_type)   params.set("deal_type",    filters.deal_type);
+  if (filters.ids)         params.set("ids",          filters.ids.join(","));
   params.set("limit",  String(filters.limit  ?? 200));
   params.set("offset", String(filters.offset ?? 0));
 
@@ -1942,6 +1974,29 @@ export function useStaff(q?: string) {
 }
 
 export interface Builder { user_id: number; email: string; name: string; cohort: string }
+
+/** Add contacts to (value true) or remove them from the Target List. Adding also
+ *  marks them as jobs prospects. 409 until the target-set migration runs. */
+export function useBulkTargetSet() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (body: { contact_ids: number[]; value: boolean }) => {
+      const { data } = await api.post<ApiResponse<{ updated: number }>>("/api/jobs/contacts/bulk-target-set", body);
+      return data.data;
+    },
+    onSuccess: (d, vars) => {
+      qc.invalidateQueries({ queryKey: ["jobs", "contacts"] });
+      qc.invalidateQueries({ queryKey: ["jobs", "contact"] });
+      qc.invalidateQueries({ queryKey: ["jobs", "stage-flow"] });
+      const n = d?.updated ?? 0;
+      toast.success(`${vars.value ? "Added" : "Removed"} ${n} ${n === 1 ? "contact" : "contacts"} ${vars.value ? "to" : "from"} the Target List`);
+    },
+    onError: (e: unknown) => {
+      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      toast.error(detail ?? "Failed to update the Target List");
+    },
+  });
+}
 
 export function useBulkProspect() {
   const qc = useQueryClient();
@@ -3135,6 +3190,133 @@ export function useOpportunitiesOverview(owner?: string, dealType?: string, week
       return data.data;
     },
     staleTime: 30_000,
+  });
+}
+
+// ── Stage flow (Overview): outreach + pipeline in one stage table ────────────
+export type StageFlowBand = "outreach" | "pipeline";
+
+export interface StageFlowRow {
+  key: string;
+  label: string;
+  /** 1 for a row indented under a summary row (the Outreach outcome paths). */
+  depth: number;
+  /** Set on a summary row: the stages it sums. */
+  children: string[] | null;
+  /** "activity" = sends or calls logged (events, not contacts), shown under
+   *  `parent`. "universe" = Total contact pool, every jobs prospect: not a
+   *  stage, so outside the band Total. Absent on stage rows. */
+  kind?: "activity" | "universe";
+  parent?: string;
+  /** Activity rows with several kinds: Email 12 · LinkedIn 3 … */
+  breakdown?: { key: string; label: string; n: number }[] | null;
+  /** Activity rows: touches counted with no linked contact (not listable). */
+  unlinked?: number;
+  /** Target List row only: contact ids with any outreach stage (processed) and
+   *  with none yet (outstanding). Null until its migration runs. */
+  target_set?: { processed: string[]; outstanding: string[]; by_stage?: Record<string, string[]> } | null;
+  /** Of the Net New, how many are further along today. Null on exits,
+   *  summaries and activity rows; absent on older APIs. */
+  conversion?: { on: number; of: number } | null;
+  /** False while the database doesn't accept the stage yet (pending migration). */
+  available: boolean;
+  /** Null on movement-only rows (Closed Won, the off-ramps). */
+  in_now: { total: number; cells: number[] } | null;
+  moved_in: number;
+  /** The same count for the period before, same length: the Trend. */
+  prev_moved_in: number;
+  /** False for rows that never carry a target (off-ramps). */
+  targetable: boolean;
+  target_weekly: number | null;
+  /** "stage" = a stage target; "outreach" = borrowed from the Settings outreach target. */
+  target_source: "stage" | "outreach" | null;
+  /** The Settings › Outreach metric a borrowed target comes from, e.g. "Discovery calls". */
+  target_source_label?: string | null;
+  /** The weekly target prorated to the period's length. */
+  target: number | null;
+  /** Moved in minus target; positive is ahead. Null without a target. */
+  delta: number | null;
+}
+
+export interface StageFlowActivity {
+  /** The activity row's key, e.g. "outreach_sent". */
+  row: string;
+  id: string;
+  /** Touches to this contact in the period. */
+  n: number;
+  at: string | null;
+}
+
+export interface StageFlowMember {
+  band: StageFlowBand;
+  stage: string;
+  id: string;
+  name: string | null;
+  /** Company for a contact, opportunity title for a deal. */
+  detail: string | null;
+  owner: string | null;
+  days: number;
+  /** True when no stage-history row or stage stamp exists: days counts from
+   *  the last edit, so the real time in stage is at least this. */
+  days_floor?: boolean;
+  bucket: number;
+}
+
+export interface StageFlowMove {
+  band: StageFlowBand;
+  stage: string;
+  id: string;
+  name: string | null;
+  detail: string | null;
+  owner: string | null;
+  at: string;
+  /** The stage it came from, where history records one. */
+  from: string | null;
+  /** Where it is today, and whether that is further along (Conversion). */
+  now?: string | null;
+  advanced?: boolean;
+}
+
+export interface StageFlow {
+  period: { from: string; to: string; days: number };
+  prev_period: { from: string; to: string };
+  buckets: { key: string; label: string }[];
+  bands: { key: StageFlowBand; label: string; unit: "contacts" | "opportunities"; rows: StageFlowRow[] }[];
+  /** Stage key → label, both bands, for the drawer's Stage and From columns. */
+  stage_labels: Record<string, string>;
+  /** False until the stage-targets migration runs. */
+  targets_available: boolean;
+  /** Whose targets the Target column carries: an owner's email, or "team". */
+  target_scope: string;
+  /** The Jobs team, in its set order: the Owner filter and Owner tab list only these. */
+  team: string[];
+  members: StageFlowMember[];
+  moved: StageFlowMove[];
+  /** Activity rows' drill: one entry per contact touched. Absent on older APIs. */
+  activity?: StageFlowActivity[];
+  /** Name and company for contacts counted by id alone (Target List with no
+   *  stage, contacts behind Sends and Calls), for the search box. */
+  directory?: { id: string; name: string | null; detail: string | null }[];
+}
+
+export function useStageFlow(from: string, to: string, owner?: string, dealType?: string, roleType?: string, campaign?: string) {
+  const o = owner && owner !== "all" ? owner : undefined;
+  const dt = dealType && dealType !== "all" ? dealType : undefined;
+  const rt = roleType && roleType !== "all" ? roleType : undefined;
+  const cp = campaign && campaign !== "all" ? campaign : undefined;
+  return useQuery<StageFlow>({
+    queryKey: ["jobs", "stage-flow", from, to, o ?? "all", dt ?? "all", rt ?? "all", cp ?? "all"],
+    queryFn: async () => {
+      const p = new URLSearchParams({ period_from: from, period_to: to });
+      if (o) p.set("owner", o);
+      if (dt) p.set("deal_type", dt);
+      if (rt) p.set("role_type", rt);
+      if (cp) p.set("campaign", cp);
+      const { data } = await api.get<ApiResponse<StageFlow>>(`/api/jobs/stage-flow?${p}`);
+      return data.data;
+    },
+    staleTime: 30_000,
+    placeholderData: keepPreviousData,
   });
 }
 

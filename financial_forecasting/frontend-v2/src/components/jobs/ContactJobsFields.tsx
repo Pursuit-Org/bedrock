@@ -18,7 +18,7 @@ import { InlineSelect } from "@/components/ui/InlineEdit";
 import { useContactStageChange } from "@/lib/useContactStageChange";
 import { cn } from "@/lib/utils";
 import {
-  useAddContactToJobs, useContactTagCatalog, useFlagContactsForJobs, useStaff, useUpdateContact,
+  useAddContactToJobs, useBulkTargetSet, useContactTagCatalog, useFlagContactsForJobs, useStaff, useUpdateContact,
   MEMBERSHIP_STAGE_LABELS, type MembershipStage,
 } from "@/services/jobs";
 
@@ -86,6 +86,8 @@ export interface ContactJobsFieldsValue {
   membership_stage?: string | null;
   crm_tags?: string[];
   is_jobs_contact?: boolean;
+  /** Null until the target-set migration runs. */
+  in_target_set?: boolean | null;
 }
 
 /** Owner, jobs stage, tags and prospect as EditFields. Renders a fragment so
@@ -93,6 +95,7 @@ export interface ContactJobsFieldsValue {
 export function ContactJobsFields({ contact }: { contact: ContactJobsFieldsValue }) {
   const updateContact = useUpdateContact();
   const addToJobs = useAddContactToJobs();
+  const targetSet = useBulkTargetSet();
   const flagOne = useFlagContactsForJobs();
   const stageChange = useContactStageChange();
   const { data: staffList = [] } = useStaff();
@@ -127,9 +130,10 @@ export function ContactJobsFields({ contact }: { contact: ContactJobsFieldsValue
           value={stage}
           options={stageChange.options}
           emptyLabel="—"
-          renderValue={(v) => stageChip(v || stage)}
+          clearLabel={stage ? "No stage" : undefined}
+          renderValue={(v) => stageChip(v === "" ? "" : v || stage)}
           onSave={(v) => {
-            if (!v) return Promise.resolve();
+            if (!v) return stage ? stageChange.clear(id, name) : Promise.resolve();
             // With a membership, the shared handler writes the stage (and asks
             // for a date on Revisit). Without one, the membership has to be
             // created first, because PATCH /jobs-membership is update-only.
@@ -155,6 +159,19 @@ export function ContactJobsFields({ contact }: { contact: ContactJobsFieldsValue
             className="h-4 w-4 accent-[color:var(--accent,#4242EA)]"
           />
           {contact.is_jobs_contact ? "In the jobs pipeline" : "Not a prospect"}
+        </label>
+      </EditField>
+      <EditField label="Target List">
+        <label className="inline-flex cursor-pointer items-center gap-2 text-[12.5px] text-ink-2"
+          title={contact.in_target_set == null ? "Needs migration 2026-10-23-jobs-target-set.sql" : undefined}>
+          <input
+            type="checkbox"
+            checked={!!contact.in_target_set}
+            disabled={contact.in_target_set == null || targetSet.isPending}
+            onChange={() => targetSet.mutate({ contact_ids: [id], value: !contact.in_target_set })}
+            className="h-4 w-4 accent-[color:var(--accent,#4242EA)] disabled:opacity-40"
+          />
+          {contact.in_target_set == null ? "Pending migration" : contact.in_target_set ? "Yes" : "No"}
         </label>
       </EditField>
       {/* Revisit asks for a date in a dialog, rendered once for this contact. */}

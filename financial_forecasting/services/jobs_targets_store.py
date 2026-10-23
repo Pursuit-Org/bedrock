@@ -2,8 +2,10 @@
 
 Settings > Targets > Jobs edits two tables (migration 2026-09-29-jobs-targets):
   bedrock.jobs_team_member  who is "the Jobs team"
-  bedrock.jobs_target       weekly outreach targets (per person + team rows)
-                            and quarterly jobs targets (pipeline)
+  bedrock.jobs_target       weekly outreach targets (per person + team rows),
+                            quarterly jobs targets (pipeline), and weekly
+                            team targets per funnel stage (stage; migration
+                            2026-10-08-jobs-stage-targets widens the CHECKs)
 
 Many Jobs query builders are synchronous and interpolate the team's addresses
 into SQL, so this module keeps a process-wide snapshot that those builders read
@@ -48,6 +50,30 @@ OUTREACH_METRICS = [
 ]
 OUTREACH_METRIC_KEYS = [k for k, _ in OUTREACH_METRICS]
 
+# Every Stage Flow row that can carry a weekly target, in chart order: the key,
+# its label, and which band it sits in. The Overview chart and Settings ›
+# Targets › Jobs › Stages both read this list, so they can't drift apart.
+# Summary rows (Contact closed, Closed) are sums of these and carry none.
+STAGE_METRICS = [
+    ("assigned",                     "Assigned",                 "outreach"),
+    ("initial_outreach",             "Initial outreach",         "outreach"),
+    ("scheduling",                   "Scheduling",               "outreach"),
+    ("call_booked",                  "Discovery call",           "outreach"),
+    ("converted_to_opportunity",     "Converted to opportunity", "outreach"),
+    ("revisit",                      "Revisit",                  "outreach"),
+    ("not_a_fit",                    "Not a fit",                "outreach"),
+    ("active_in_discussions",        "Initial Opportunity",      "pipeline"),
+    ("engaging",                     "Engaging",                 "pipeline"),
+    ("ask_submitted",                "Ask Submitted",            "pipeline"),
+    ("active_opportunity_confirmed", "Opportunity Confirmed",    "pipeline"),
+    ("builder_submitted",            "Builder Submitted",        "pipeline"),
+    ("builder_interviewing",         "Builder Interviewing",     "pipeline"),
+    ("offer_contracting",            "Offer Contracting",        "pipeline"),
+    ("closed_won",                   "Closed Won",               "pipeline"),
+    ("closed_lost",                  "Closed Lost",              "pipeline"),
+]
+STAGE_METRIC_KEYS = [k for k, _, _ in STAGE_METRICS]
+
 TTL_SECONDS = 60
 
 
@@ -66,6 +92,14 @@ class _Snapshot:
         self.team_cfg: dict[str, dict] = {}
         # quarter start -> jobs target
         self.pipeline: dict[date, int] = {}
+        # Stage targets need the 2026-10-08 migration, which widens the
+        # section CHECK to admit 'stage'. Until then the Overview's Stage Flow
+        # target column reads "pending migration".
+        self.stage_available = False
+        # Same shape as outreach: owner -> stage -> weekly value, and
+        # stage -> {"mode": "sum"|"set", "value"} for the team line.
+        self.stage_owner: dict[str, dict[str, Optional[int]]] = {}
+        self.stage_team: dict[str, dict] = {}
 
 
 _snap = _Snapshot()
@@ -106,16 +140,33 @@ async def refresh(pool, force: bool = False) -> None:
         logger.warning(f"jobs targets refresh failed, keeping previous snapshot: {e}")
         _snap.loaded_at = time.monotonic()
         return
+    # Separate from the reads above: a failed probe only means "no stage
+    # targets yet", never a lost team or outreach snapshot.
+    try:
+        section_check = await pool.fetchval(
+            "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+            "WHERE conrelid = 'bedrock.jobs_target'::regclass "
+            "AND conname = 'jobs_target_section_check'")
+    except Exception as e:
+        logger.warning(f"jobs targets: stage-target probe failed, treating as pending: {e}")
+        section_check = None
 
     fresh = _Snapshot()
     fresh.available = True
     fresh.loaded_at = time.monotonic()
     team = [m["email"] for m in members if valid_email(m["email"])]
     fresh.team = team or list(DEFAULT_TEAM)
+    fresh.stage_available = isinstance(section_check, str) and "'stage'" in section_check
     for t in targets:
         if t["section"] == "pipeline":
             if t["period_start"] is not None and t["value"] is not None:
                 fresh.pipeline[t["period_start"]] = int(t["value"])
+        elif t["section"] == "stage":
+            if t["owner_email"]:
+                if valid_email(t["owner_email"]):
+                    fresh.stage_owner.setdefault(t["owner_email"], {})[t["metric"]] = t["value"]
+            else:
+                fresh.stage_team[t["metric"]] = {"mode": t["team_mode"] or "sum", "value": t["value"]}
         elif t["owner_email"]:
             if valid_email(t["owner_email"]):
                 fresh.owner.setdefault(t["owner_email"], {})[t["metric"]] = t["value"]
@@ -172,9 +223,44 @@ def pipeline_targets() -> dict[date, int]:
     return dict(_snap.pipeline)
 
 
+def stage_targets_available() -> bool:
+    """True once the stage-targets migration has run."""
+    return _snap.available and _snap.stage_available
+
+
+def stage_weekly(stage: str, owner: Optional[str] = None) -> Optional[int]:
+    """Weekly target for entries into `stage`: one person's when `owner` is
+    given (None if they aren't on the team or carry no target), otherwise the
+    team's, set directly or summed from the team's people, exactly as
+    team_weekly() does for outreach."""
+    if owner:
+        e = owner.strip().lower()
+        return _snap.stage_owner.get(e, {}).get(stage) if e in _snap.team else None
+    cfg = _snap.stage_team.get(stage)
+    if cfg is None:
+        return None
+    if cfg["mode"] == "set":
+        return cfg["value"]
+    vals = [_snap.stage_owner.get(e, {}).get(stage) for e in _snap.team]
+    vals = [v for v in vals if v is not None]
+    return sum(vals) if vals else None
+
+
+def stage_team_mode(stage: str) -> Optional[str]:
+    cfg = _snap.stage_team.get(stage)
+    return cfg["mode"] if cfg else None
+
+
 def snapshot_for_api() -> dict:
     """Everything the Settings page needs to render, as plain JSON."""
     return {
+        "stages": {
+            "available": stage_targets_available(),
+            "owners": {e: {k: _snap.stage_owner.get(e, {}).get(k) for k in STAGE_METRIC_KEYS
+                           if k in _snap.stage_owner.get(e, {})} for e in _snap.team},
+            "team": {k: {"mode": stage_team_mode(k), "value": (_snap.stage_team.get(k) or {}).get("value"),
+                         "effective": stage_weekly(k)} for k in STAGE_METRIC_KEYS},
+        },
         "available": _snap.available,
         "team": team_emails(),
         "owners": {e: {m: _snap.owner.get(e, {}).get(m) for m in OUTREACH_METRIC_KEYS

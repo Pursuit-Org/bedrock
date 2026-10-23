@@ -68,21 +68,21 @@ const DIMS: { key: OppBreakdownDim; label: string }[] = [
 // Deal-type filter options. "unset" is the API token for opportunities with no
 // deal type, shown as Untagged so they can be pulled into (or kept out of) a view.
 const DEAL_TYPE_UNSET = "unset";
-const DEAL_TYPE_OPTIONS: { value: string; label: string }[] = [
+export const DEAL_TYPE_OPTIONS: { value: string; label: string }[] = [
   ...(Object.entries(DEAL_TYPE_LABELS) as [DealType, string][]).map(([value, label]) => ({ value, label })),
   { value: DEAL_TYPE_UNSET, label: "Untagged" },
 ];
-const ALL_DEAL_TYPES = DEAL_TYPE_OPTIONS.map((o) => o.value);
+export const ALL_DEAL_TYPES = DEAL_TYPE_OPTIONS.map((o) => o.value);
 
 /** Selection → the `deal_type` query value: "all" when every box is ticked,
  *  otherwise a comma-separated list the API reads as OR. */
-function dealTypeParam(selected: string[]): string {
+export function dealTypeParam(selected: string[]): string {
   return selected.length === ALL_DEAL_TYPES.length
     ? "all"
     : ALL_DEAL_TYPES.filter((v) => selected.includes(v)).join(",");
 }
 
-function dealTypeSummary(selected: string[]): string {
+export function dealTypeSummary(selected: string[]): string {
   if (selected.length === ALL_DEAL_TYPES.length) return "All deal types";
   const labels = DEAL_TYPE_OPTIONS.filter((o) => selected.includes(o.value)).map((o) => o.label);
   return labels.length <= 2 ? labels.join(" + ") : `${labels[0]} + ${labels.length - 1} more`;
@@ -91,7 +91,7 @@ function dealTypeSummary(selected: string[]): string {
 /** Checkbox popover for deal type. At least one box stays ticked: an empty
  *  selection would either show nothing or quietly mean "all", and both read
  *  as a bug. "All" ticks every box, Untagged included. */
-function DealTypeFilter({ selected, onChange }: { selected: string[]; onChange: (next: string[]) => void }) {
+export function DealTypeFilter({ selected, onChange }: { selected: string[]; onChange: (next: string[]) => void }) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -1460,7 +1460,7 @@ const ACTIVITY_META: Record<OppActivityEvent["type"], { label: string; color: st
 // "concern" shading: the gradient is the single signal, so a dark cell in an
 // older column is the whole story without a second visual language on top.
 
-function heatBlue(n: number, max: number): { background: string; color: string } {
+export function heatBlue(n: number, max: number): { background: string; color: string } {
   if (n <= 0) return { background: "var(--surface-2)", color: "var(--ink-4)" };
   const t = max > 0 ? n / max : 0;
   const alpha = 0.16 + 0.84 * t;

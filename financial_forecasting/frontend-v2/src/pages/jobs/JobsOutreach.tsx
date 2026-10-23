@@ -80,7 +80,7 @@ function priorDayRange(fromISO: string, toISO: string): [string, string] {
   const lastStart = new Date(lastEnd); lastStart.setDate(lastEnd.getDate() - (days - 1));
   return [iso(lastStart), iso(lastEnd)];
 }
-function Trend({ current, prior, unit = "pct" }: { current: number; prior: number; unit?: "pct" | "pt" }) {
+export function Trend({ current, prior, unit = "pct" }: { current: number; prior: number; unit?: "pct" | "pt" }) {
   if (unit === "pct") {
     if (!prior) return <span className="text-ink-4">—</span>;
     const v = (current - prior) / prior;

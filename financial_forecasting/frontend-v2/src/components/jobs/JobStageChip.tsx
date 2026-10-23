@@ -5,6 +5,7 @@ import { DEAL_TYPE_LABELS, STAGE_LABELS } from "@/services/jobs";
 const STAGE_STYLES: Record<JobStage, string> = {
   lead_submitted:               "bg-stone-100 text-stone-600",
   active_in_discussions:        "bg-amber-50 text-amber-700",
+  engaging:                     "bg-amber-100 text-amber-800",
   // Warming through the middle of the funnel, so a glance at a board column
   // reads as progress rather than as six unrelated colours.
   ask_submitted:                "bg-orange-50 text-orange-700",

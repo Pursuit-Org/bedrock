@@ -233,3 +233,57 @@ def test_put_outreach_duplicate_email_is_400():
     r = c.put("/api/jobs/targets/outreach", json={
         "owners": {"A@pursuit.org": {"total_calls": 1}, "a@pursuit.org": {"total_calls": 2}}, "team": {}})
     assert r.status_code == 400
+
+
+# ── stage targets (Overview › Stage Flow) ──────────────────────────────────────
+
+_STAGE_CHECK = "CHECK ((section = ANY (ARRAY['outreach'::text, 'pipeline'::text, 'stage'::text])))"
+
+
+def _stage_conn(stage_ready=True, **kw):
+    conn = _conn(**kw)
+    conn.vals = {"pg_get_constraintdef": _STAGE_CHECK if stage_ready else
+                 "CHECK ((section = ANY (ARRAY['outreach'::text, 'pipeline'::text])))", **conn.vals}
+    return conn
+
+
+def test_get_lists_every_stage_and_reports_stage_readiness():
+    c = make_jobs_client(_stage_conn(stage_ready=False))
+    d = c.get("/api/jobs/targets").json()["data"]
+    assert [m["key"] for m in d["stage_metrics"]] == store.STAGE_METRIC_KEYS
+    assert {m["band"] for m in d["stage_metrics"]} == {"outreach", "pipeline"}
+    assert d["stages"]["available"] is False
+
+
+def test_put_stages_refused_until_stage_migration():
+    c = make_jobs_client(_stage_conn(stage_ready=False))
+    r = c.put("/api/jobs/targets/stages", json={"owners": {}, "team": {}})
+    assert r.status_code == 409
+
+
+def test_put_stages_replaces_section():
+    conn = _stage_conn()
+    c = make_jobs_client(conn)
+    r = c.put("/api/jobs/targets/stages", json={
+        "owners": {"a@pursuit.org": {"call_booked": 3, "revisit": None}},
+        "team": {"call_booked": {"mode": "sum"}, "closed_won": {"mode": "set", "value": 2}},
+    })
+    assert r.status_code == 200, r.text
+    assert conn.executed("DELETE FROM bedrock.jobs_target WHERE section = 'stage'")
+    inserts = [x[2][:4] for x in conn.executed("INSERT INTO bedrock.jobs_target")]
+    assert sorted(inserts, key=str) == sorted([
+        ("call_booked", "a@pursuit.org", 3, None),
+        ("call_booked", None, None, "sum"),
+        ("closed_won", None, 2, "set"),
+    ], key=str)
+
+
+def test_put_stages_rejects_unknown_stage_and_non_member():
+    c = make_jobs_client(_stage_conn())
+    assert c.put("/api/jobs/targets/stages", json={"owners": {}, "team": {"contact_closed": {"mode": "sum"}}}).status_code == 400
+    assert c.put("/api/jobs/targets/stages", json={"owners": {"z@pursuit.org": {"call_booked": 1}}}).status_code == 400
+
+
+def test_put_stages_needs_permission():
+    c = make_jobs_client(_stage_conn(user_row=RM_ROW))
+    assert c.put("/api/jobs/targets/stages", json={"owners": {}, "team": {}}).status_code == 403

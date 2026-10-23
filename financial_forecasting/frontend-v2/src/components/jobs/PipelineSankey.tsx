@@ -58,7 +58,7 @@ const LABELS: Record<PipelineBucket, string> = {
   contacted: "Contacted",
   awaiting: "Awaiting contact",
   converted: "Converted to oppty",
-  call_booked: "Call booked",
+  call_booked: "Discovery call",
   in_outreach: "In outreach",
   revisit: "Revisit",
   not_a_fit: "Not a fit",

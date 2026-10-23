@@ -272,6 +272,9 @@ interface InlineSelectProps<T extends string> {
    *  confirmation dialog intercepts the save — the cell should stay at the
    *  old value while the dialog is open and only flip if the user confirms. */
   noOptimistic?: boolean;
+  /** When set, the empty option is a real choice with this label (e.g. "No
+   *  stage") and saves "". Without it the empty option is only a placeholder. */
+  clearLabel?: string;
 }
 
 export function InlineSelect<T extends string>({
@@ -282,6 +285,7 @@ export function InlineSelect<T extends string>({
   renderValue,
   className,
   noOptimistic = false,
+  clearLabel,
 }: InlineSelectProps<T>) {
   const [saving, setSaving] = useState(false);
   const [showSpinner, setShowSpinner] = useState(false);
@@ -380,8 +384,8 @@ export function InlineSelect<T extends string>({
         className="absolute inset-0 cursor-pointer appearance-none border-0 bg-transparent text-transparent opacity-0 outline-none focus:opacity-0"
         aria-label="Edit"
       >
-        <option value="" disabled>
-          {emptyLabel}
+        <option value="" disabled={!clearLabel}>
+          {clearLabel ?? emptyLabel}
         </option>
         {options.map((o) => (
           <option key={o.value} value={o.value} disabled={o.disabled} title={o.title}>

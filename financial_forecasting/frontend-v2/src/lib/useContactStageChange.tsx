@@ -17,7 +17,7 @@ import { useRef, useState } from "react";
 import { toast } from "sonner";
 
 import {
-  useStageVocabulary, useUpdateJobsMembership,
+  useClearContactStage, useStageVocabulary, useUpdateJobsMembership,
   MEMBERSHIP_STAGES, MEMBERSHIP_STAGE_LABELS,
   type MembershipStage,
 } from "@/services/jobs";
@@ -27,6 +27,7 @@ const FALLBACK = MEMBERSHIP_STAGES.map((s) => ({ value: s, label: MEMBERSHIP_STA
 
 export function useContactStageChange() {
   const update = useUpdateJobsMembership();
+  const clearStage = useClearContactStage();
   const { data: vocab } = useStageVocabulary();
   const [pending, setPending] =
     useState<{ id: number; name: string; ensure?: () => Promise<unknown> } | null>(null);
@@ -93,6 +94,21 @@ export function useContactStageChange() {
       });
     });
 
+  /** Take a contact back to no stage (the picker's "No stage" option). Asks
+   *  first: clearing drops the stage's own details (a Revisit date, the
+   *  opportunity link). Rejecting on cancel rolls the picker back. */
+  const clear = (contactId: number, name: string) =>
+    new Promise<void>((resolve, reject) => {
+      if (!window.confirm(`Clear the stage for ${name}? They go back to no stage.`)) {
+        reject(new Error("cancelled"));
+        return;
+      }
+      clearStage.mutate(contactId, {
+        onSuccess: () => { toast.success(`Cleared the stage for ${name}`); resolve(); },
+        onError: reject,
+      });
+    });
+
   /** Render this somewhere in the calling component's tree. */
   const dialog = pending ? (
     <RevisitDialog
@@ -120,5 +136,5 @@ export function useContactStageChange() {
     />
   ) : null;
 
-  return { options, change, dialog, isPending: update.isPending };
+  return { options, change, clear, dialog, isPending: update.isPending || clearStage.isPending };
 }

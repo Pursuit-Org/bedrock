@@ -44,7 +44,7 @@ import {
   useJobsContacts, useAddContactToJobs, useJobsAccounts, type JobsAccount,
   useContactDetail, useCreateContact, STAGE_LABELS,
   useFlagContactsForJobs, useUnflagJobsContact, useUpdateJobsMembership, MEMBERSHIP_STAGE_LABELS, MEMBERSHIP_STAGES,
-  useContactTagCatalog, useStaff, useStaffNameResolver, useUpdateContact, useBulkContactOwner, useBulkProspect,
+  useContactTagCatalog, useStaff, useStaffNameResolver, useUpdateContact, useBulkContactOwner, useBulkProspect, useBulkTargetSet,
   type JobStage, type JobContactWithDeal, type ContactSearchResult, type ContactCreateBody, type MembershipStage,
   exportJobsRows,
 } from "@/services/jobs";
@@ -62,25 +62,26 @@ function relativeDays(iso: string | null | undefined): string {
 }
 
 // ── columns ──────────────────────────────────────────────────────────────────
-type ColKey = "name" | "prospect" | "flag" | "title" | "company" | "tags" | "owner" | "industry" | "last_touch" | "listings" | "tasks" | "connected" | "deal" | "email" | "linkedin";
-const COLUMN_ORDER: ColKey[] = ["name", "prospect", "flag", "title", "company", "tags", "owner", "industry", "last_touch", "listings", "tasks", "connected", "deal", "email", "linkedin"];
-const DEFAULT_VISIBLE: ColKey[] = ["name", "prospect", "flag", "title", "company", "tags", "owner", "connected", "last_touch", "listings"];
-const COL_LABELS: Record<ColKey, string> = {
-  name: "Name", prospect: "Jobs prospect", flag: "Jobs stage", title: "Title", company: "Company", tags: "Tags", owner: "Owner", industry: "Industry",
+export type ColKey = "name" | "prospect" | "target_set" | "flag" | "title" | "company" | "tags" | "owner" | "industry" | "last_touch" | "listings" | "tasks" | "connected" | "deal" | "email" | "linkedin";
+export const COLUMN_ORDER: ColKey[] = ["name", "prospect", "target_set", "flag", "title", "company", "tags", "owner", "industry", "last_touch", "listings", "tasks", "connected", "deal", "email", "linkedin"];
+export const DEFAULT_VISIBLE: ColKey[] = ["name", "prospect", "target_set", "flag", "title", "company", "tags", "owner", "connected", "last_touch", "listings"];
+export const COL_LABELS: Record<ColKey, string> = {
+  name: "Name", prospect: "Jobs prospect", target_set: "Target List", flag: "Jobs stage", title: "Title", company: "Company", tags: "Tags", owner: "Owner", industry: "Industry",
   last_touch: "Last touch", listings: "Job listings", tasks: "Open tasks", connected: "Connected staff", deal: "Linked deal", email: "Email", linkedin: "LinkedIn",
 };
 // Default pixel widths — user-resizable via drag handles (useColumnWidths),
 // same grid components as the Opportunities table.
-const DEFAULT_WIDTHS: Record<ColKey, number> = {
-  name: 190, prospect: 90, flag: 130, title: 150, company: 160, tags: 190, owner: 150, industry: 130, last_touch: 105, listings: 105, tasks: 85, connected: 155, deal: 145, email: 170, linkedin: 60,
+export const DEFAULT_WIDTHS: Record<ColKey, number> = {
+  name: 190, prospect: 90, target_set: 85, flag: 130, title: 150, company: 160, tags: 190, owner: 150, industry: 130, last_touch: 105, listings: 105, tasks: 85, connected: 155, deal: 145, email: 170, linkedin: 60,
 };
-const SORTABLE = new Set<ColKey>(["name", "prospect", "flag", "title", "company", "tags", "owner", "industry", "last_touch", "listings", "tasks"]);
+const SORTABLE = new Set<ColKey>(["name", "prospect", "target_set", "flag", "title", "company", "tags", "owner", "industry", "last_touch", "listings", "tasks"]);
 const MEMBERSHIP_STAGE_OPTIONS = MEMBERSHIP_STAGES.map((s) => ({ value: s, label: MEMBERSHIP_STAGE_LABELS[s] }));
 
 function extract(c: JobContactWithDeal, key: ColKey): string | number {
   switch (key) {
     case "name": return (c.full_name ?? "").toLowerCase();
     case "prospect": return c.is_jobs_contact ? 0 : 1;
+    case "target_set": return c.in_target_set ? 0 : 1;
     case "owner": return (c.owner_email ?? "").toLowerCase();
     case "flag": return c.membership_stage ?? "";
     case "title": return (c.current_title ?? "").toLowerCase();
@@ -94,7 +95,7 @@ function extract(c: JobContactWithDeal, key: ColKey): string | number {
 }
 
 // ── filters + grouping ─────────────────────────────────────────────────────────
-type Field = "name" | "title" | "company" | "industry" | "flag" | "is_jobs" | "owner" | "tags" | "listings" | "has_deal" | "connected" | "connection_count" | "last_activity" | "first_contact_date" | "last_contact_date";
+type Field = "name" | "title" | "company" | "industry" | "flag" | "is_jobs" | "target_set" | "owner" | "tags" | "listings" | "has_deal" | "connected" | "connection_count" | "last_activity" | "first_contact_date" | "last_contact_date";
 const FILTERABLE: Record<Field, FieldMeta<JobContactWithDeal>> = {
   name: { label: "Name", type: "text", getValue: (c) => c.full_name ?? "" },
   title: { label: "Title", type: "text", getValue: (c) => c.current_title ?? "" },
@@ -102,6 +103,7 @@ const FILTERABLE: Record<Field, FieldMeta<JobContactWithDeal>> = {
   industry: { label: "Industry", type: "text", getValue: (c) => c.company_industry ?? "" },
   flag: { label: "Jobs stage", type: "select", getValue: (c) => c.membership_stage ?? "" },
   is_jobs: { label: "Jobs prospect", type: "select", getValue: (c) => (c.is_jobs_contact ? "yes" : "no") },
+  target_set: { label: "Target List", type: "select", getValue: (c) => (c.in_target_set ? "yes" : "no") },
   owner: { label: "Owner", type: "select", getValue: (c) => c.owner_email ?? "" },
   tags: { label: "Tags", type: "tags", getValue: (c) => (c.crm_tags ?? []).join(",") },
   listings: { label: "Job listings (sourced + applied)", type: "number", getValue: (c) => (c.open_roles ?? 0) + (c.builder_apps ?? 0) },
@@ -395,11 +397,15 @@ function NewContactModal({ onClose, initialCompany }: { onClose: () => void; ini
 }
 
 // ── row ──────────────────────────────────────────────────────────────────────
-function ContactRow({ contact, expanded, onOpen, visibleCols, selected, onToggleSelect }: { contact: JobContactWithDeal; expanded: boolean; onOpen: () => void; visibleCols: ColKey[]; selected: boolean; onToggleSelect: () => void }) {
+/** One contact row: the Contacts page's cells, inline editors and expand panel.
+ *  Exported for the Overview Stage Flow drill, which appends its own context
+ *  cells (time in stage, when they moved) through `extraCells`. */
+export function ContactRow({ contact, expanded, onOpen, visibleCols, selected, onToggleSelect, extraCells }: { contact: JobContactWithDeal; expanded: boolean; onOpen: () => void; visibleCols: ColKey[]; selected: boolean; onToggleSelect: () => void; extraCells?: React.ReactNode[] }) {
   const updateMembership = useUpdateJobsMembership();
   const stageChange = useContactStageChange();
   const flagOne = useFlagContactsForJobs();
   const addToJobs = useAddContactToJobs();
+  const targetSet = useBulkTargetSet();
   const updateContact = useUpdateContact();
   const { data: staffList = [] } = useStaff();
   const staffOptions = useMemo(
@@ -431,6 +437,22 @@ function ContactRow({ contact, expanded, onOpen, visibleCols, selected, onToggle
         />
       </span>
     ),
+    // Yes/no, one click (Kwame 2026-10-23). Null = the migration hasn't run.
+    target_set: (
+      <span className="flex items-center justify-center"
+        title={contact.in_target_set == null ? "Target List needs migration 2026-10-23-jobs-target-set.sql"
+          : contact.in_target_set ? "In the Target List — click to remove" : "Add to the Target List"}>
+        <input
+          type="checkbox"
+          checked={!!contact.in_target_set}
+          disabled={contact.in_target_set == null || targetSet.isPending}
+          onClick={(e) => e.stopPropagation()}
+          onChange={() => targetSet.mutate({ contact_ids: [contact.contact_id], value: !contact.in_target_set })}
+          className="h-4 w-4 cursor-pointer accent-[color:var(--accent,#4242EA)] disabled:cursor-not-allowed disabled:opacity-40"
+          aria-label="Target List"
+        />
+      </span>
+    ),
     owner: (
       <InlineSelect<string>
         value={contact.owner_email ?? ""}
@@ -446,10 +468,10 @@ function ContactRow({ contact, expanded, onOpen, visibleCols, selected, onToggle
     // a muted "—" (in pipeline via the prospect checkbox); the picker sets a
     // real stage, creating the membership.
     flag: contact.membership_stage
-      ? <InlineSelect<string> value={contact.membership_stage} options={stageChange.options}
-          renderValue={(v) => <span className="rounded-full bg-accent-soft px-1.5 py-0.5 text-[10.5px] font-medium text-accent-ink">{MEMBERSHIP_STAGE_LABELS[(v ?? contact.membership_stage) as MembershipStage] ?? v}</span>}
+      ? <InlineSelect<string> value={contact.membership_stage} options={stageChange.options} clearLabel="No stage"
+          renderValue={(v) => v === "" ? <span className="text-[11px] text-ink-4">—</span> : <span className="rounded-full bg-accent-soft px-1.5 py-0.5 text-[10.5px] font-medium text-accent-ink">{MEMBERSHIP_STAGE_LABELS[(v ?? contact.membership_stage) as MembershipStage] ?? v}</span>}
           onSave={(v) => {
-            if (!v) return Promise.resolve();
+            if (!v) return stageChange.clear(contact.contact_id, contact.full_name ?? "this contact");
             // Revisit asks for a date first (shared handler); anything else
             // writes straight through.
             if (v === "revisit") return stageChange.change(contact.contact_id, contact.full_name ?? "contact", v);
@@ -518,10 +540,11 @@ function ContactRow({ contact, expanded, onOpen, visibleCols, selected, onToggle
             name cell stayed white while every other column greyed. It now
             tracks the row via group-hover and the expanded state. */}
         {visibleCols.map((key, i) => (
-          <td key={key} className={cn("overflow-hidden px-3 py-1.5 align-middle", i === 0 && cn("sticky left-0 z-10 group-hover:bg-surface-2", expanded ? "bg-surface-2" : "bg-surface"))} onClick={["flag", "prospect", "owner", "tags"].includes(key) ? (e) => e.stopPropagation() : undefined}>{cells[key]}</td>
+          <td key={key} className={cn("overflow-hidden px-3 py-1.5 align-middle", i === 0 && cn("sticky left-0 z-10 group-hover:bg-surface-2", expanded ? "bg-surface-2" : "bg-surface"))} onClick={["flag", "prospect", "target_set", "owner", "tags"].includes(key) ? (e) => e.stopPropagation() : undefined}>{cells[key]}</td>
         ))}
+        {extraCells?.map((c, i) => <td key={`x${i}`} className="whitespace-nowrap px-3 py-1.5 align-middle text-[12px] text-ink-3">{c}</td>)}
       </tr>
-      {expanded && <tr className="bg-surface-2"><td colSpan={visibleCols.length} className="p-0"><ContactExpandTabs contactId={contact.contact_id} /></td></tr>}
+      {expanded && <tr className="bg-surface-2"><td colSpan={visibleCols.length + (extraCells?.length ?? 0)} className="p-0"><ContactExpandTabs contactId={contact.contact_id} /></td></tr>}
       {/* Rendered outside the cells: a modal can't live inside a <td> in a
           ternary, and only the row you clicked has a pending revisit. */}
       {stageChange.dialog}
@@ -568,6 +591,7 @@ export function JobsContacts({ initialQuery, initialContactId, initialConnectedO
   const flagContacts = useFlagContactsForJobs();
   const bulkOwner = useBulkContactOwner();
   const bulkProspect = useBulkProspect();
+  const bulkTargetSet = useBulkTargetSet();
   const unflag = useUnflagJobsContact();
   const toggleSelect = useCallback((id: number) => setSelected((p) => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; }), []);
   const { sort, toggle, setSort } = useSort<ColKey>({ key: "name", direction: "asc" });
@@ -641,7 +665,7 @@ export function JobsContacts({ initialQuery, initialContactId, initialConnectedO
     return orders.length ? Math.min(...orders) : Infinity;
   }, [tagOrder]);
   const selectOptions: Partial<Record<Field, { value: string; label: string }[]>> = useMemo(() => ({
-    has_deal: YESNO, is_jobs: YESNO, last_activity: RECENCY_OPTIONS,
+    has_deal: YESNO, is_jobs: YESNO, target_set: YESNO, last_activity: RECENCY_OPTIONS,
     flag: MEMBERSHIP_STAGES.map((s) => ({ value: s, label: MEMBERSHIP_STAGE_LABELS[s] })),
     tags: tagCatalog.map((t) => ({ value: t.slug, label: t.label })),
     owner: staffForFilter.map((s) => ({ value: s.email, label: s.name })),
@@ -866,6 +890,8 @@ export function JobsContacts({ initialQuery, initialContactId, initialConnectedO
             className="inline-flex h-7 items-center gap-1 rounded bg-accent px-3 font-medium text-white hover:opacity-90 disabled:opacity-50"><Zap size={12} /> {bulkBusy ? "Updating…" : "Bulk update"}</button>
           <span className="mx-1 h-4 w-px bg-accent/30" />
           <button type="button" disabled={bulkBusy || bulkProspect.isPending} onClick={() => bulkProspect.mutate({ contact_ids: [...selected], value: true }, { onSuccess: () => setSelected(new Set()) })} className="inline-flex h-7 items-center gap-1 rounded border border-accent bg-surface px-3 font-medium text-accent hover:bg-accent-soft disabled:opacity-50" title="Mark as jobs prospects (no pipeline stage)"><Plus size={12} /> Add as prospect</button>
+          <button type="button" disabled={bulkBusy || bulkTargetSet.isPending} onClick={() => bulkTargetSet.mutate({ contact_ids: [...selected], value: true }, { onSuccess: () => setSelected(new Set()) })} className="inline-flex h-7 items-center gap-1 rounded border border-accent bg-surface px-3 font-medium text-accent hover:bg-accent-soft disabled:opacity-50" title="Add to the Target List: the jobs prospects chosen for outreach (also marks them as prospects)"><Plus size={12} /> Add to Target List</button>
+          <button type="button" disabled={bulkBusy || bulkTargetSet.isPending} onClick={() => { const ids = [...selected]; if (!window.confirm(`Remove ${ids.length} contact${ids.length === 1 ? "" : "s"} from the Target List?`)) return; bulkTargetSet.mutate({ contact_ids: ids, value: false }, { onSuccess: () => setSelected(new Set()) }); }} className="h-7 rounded border border-border-strong bg-surface px-3 text-ink-2 hover:text-ink disabled:opacity-50" title="Remove from the Target List (stage and prospect flag unchanged)">Remove from Target List</button>
           <button type="button" disabled={bulkBusy} onClick={async () => { const ids = [...selected]; if (!window.confirm(`Clear the jobs stage from ${ids.length} contact${ids.length === 1 ? "" : "s"}?`)) return; setBulkBusy(true); const r = await Promise.allSettled(ids.map((id) => unflag.mutateAsync(id))); setBulkBusy(false); const failed = r.filter((x) => x.status === "rejected").length; if (failed) toast.error(`${failed} of ${ids.length} could not be cleared`); setSelected(new Set()); }} className="h-7 rounded border border-border-strong bg-surface px-3 text-ink-2 hover:text-ink disabled:opacity-50" title="Remove the jobs stage (membership) from the selected contacts">Clear stage</button>
           {/* Export the selection as .xlsx. Read-only, so it sits after the
               mutating actions and never clears the selection — you may well want

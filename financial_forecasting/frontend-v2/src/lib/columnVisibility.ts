@@ -15,6 +15,14 @@ function orderBy<K extends string>(cols: K[], allColumns: K[]): K[] {
   );
 }
 
+/** `col` placed before the first column that follows it canonically. */
+function insertNearIn<K extends string>(prev: K[], col: K, allColumns: K[]): K[] {
+  if (prev.includes(col)) return prev;
+  const rank = allColumns.indexOf(col);
+  const at = prev.findIndex((k) => allColumns.indexOf(k) > rank);
+  return at === -1 ? [...prev, col] : [...prev.slice(0, at), col, ...prev.slice(at)];
+}
+
 export function useColumnVisibility<K extends string>(
   storageKey: string,
   allColumns: K[],
@@ -52,7 +60,10 @@ export function useColumnVisibility<K extends string>(
             (k) => !known.includes(k) && defaults.includes(k),
           );
           if (valid.length > 0 || newDefaults.length > 0) {
-            const merged = orderBy([...valid, ...newDefaults], allColumns);
+            // Keep the saved order (move() persists it); orderBy() here put
+            // every reordered layout back in default order on the next load.
+            // Columns new since the save slot in by their canonical position.
+            const merged = newDefaults.reduce<K[]>((acc, k) => insertNearIn(acc, k, allColumns), [...valid]);
             if (newDefaults.length > 0) persist(merged);
             return merged;
           }
@@ -67,12 +78,7 @@ export function useColumnVisibility<K extends string>(
    *  undoing a manual arrangement every time a column is toggled. Instead the
    *  column lands before the first visible column that follows it canonically
    *  — identical to orderBy() when the layout is untouched. */
-  const insertNear = (prev: K[], col: K): K[] => {
-    const rank = allColumns.indexOf(col);
-    const at = prev.findIndex((k) => allColumns.indexOf(k) > rank);
-    if (at === -1) return [...prev, col];
-    return [...prev.slice(0, at), col, ...prev.slice(at)];
-  };
+  const insertNear = (prev: K[], col: K): K[] => insertNearIn(prev, col, allColumns);
 
   const toggle = (col: K) => {
     setVisible((prev) => {

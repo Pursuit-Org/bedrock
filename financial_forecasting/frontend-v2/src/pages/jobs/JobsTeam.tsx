@@ -1229,26 +1229,26 @@ const DEAL_TYPE_OPTIONS: { value: DealType; label: string }[] = (
 
 // ── Column model (mirrors the portfolio Accounts table) ───────────────────────
 
-type OppColKey =
+export type OppColKey =
   | "company" | "role" | "salary" | "stage" | "status" | "deal_type"
   | "priority" | "segment" | "likelihood" | "num_roles" | "owner" | "target_close" | "est_jobs" | "tasks" | "recent" | "updated";
 
-const OPP_COLUMN_ORDER: OppColKey[] = [
+export const OPP_COLUMN_ORDER: OppColKey[] = [
   "company", "role", "salary", "stage", "status", "deal_type",
   "priority", "segment", "likelihood", "num_roles", "owner", "target_close", "est_jobs", "tasks", "recent", "updated",
 ];
 
-const OPP_DEFAULT_VISIBLE: OppColKey[] = [
+export const OPP_DEFAULT_VISIBLE: OppColKey[] = [
   "company", "role", "salary", "stage", "status", "deal_type", "priority", "segment", "owner", "target_close", "est_jobs", "tasks",
 ];
 
-const OPP_COL_LABELS: Record<OppColKey, string> = {
+export const OPP_COL_LABELS: Record<OppColKey, string> = {
   company: "Company", role: "Role", salary: "Salary", stage: "Stage", status: "Status",
   deal_type: "Deal Type", priority: "Priority", segment: "Segment", likelihood: "Likelihood",
   num_roles: "# Roles", owner: "Owner", target_close: "Target close", est_jobs: "Est. jobs", tasks: "Open tasks", recent: "Recent activity", updated: "Updated",
 };
 
-const OPP_DEFAULT_WIDTHS: Record<OppColKey, number> = {
+export const OPP_DEFAULT_WIDTHS: Record<OppColKey, number> = {
   company: 280, role: 210, salary: 120, stage: 210, status: 104, deal_type: 140,
   priority: 96, segment: 150, likelihood: 116, num_roles: 84, owner: 190, target_close: 118, est_jobs: 92, tasks: 96, recent: 120, updated: 120,
 };
@@ -1316,7 +1316,10 @@ const OPP_EDITABLE_COLS = new Set<OppColKey>([
   "role", "salary", "stage", "deal_type", "likelihood", "priority", "segment", "num_roles", "owner", "target_close", "est_jobs",
 ]);
 
-function DealRow({
+/** One opportunity row: the Pipeline page's cells, inline editors and expand
+ *  panel. Exported for the Overview Stage Flow drill, which appends its own
+ *  context cells through `extraCells`. */
+export function DealRow({
   deal,
   isExpanded,
   onToggle,
@@ -1324,6 +1327,7 @@ function DealRow({
   onCommittedRoles,
   onClosedLost,
   visibleCols,
+  extraCells,
 }: {
   deal: JobsOpportunity;
   isExpanded: boolean;
@@ -1332,6 +1336,7 @@ function DealRow({
   onCommittedRoles: (deal: { id: string; account_name: string }) => void;
   onClosedLost: (deal: { id: string; account_name: string }) => void;
   visibleCols: OppColKey[];
+  extraCells?: React.ReactNode[];
 }) {
   const updateOpp = useUpdateOpportunity();
 
@@ -1514,11 +1519,12 @@ function DealRow({
             {cells[key]}
           </td>
         ))}
+        {extraCells?.map((c, i) => <td key={`x${i}`} className="whitespace-nowrap px-3 py-1.5 align-middle text-[12px] text-ink-3">{c}</td>)}
       </tr>
 
       {isExpanded ? (
         <tr>
-          <td colSpan={visibleCols.length} className="p-0">
+          <td colSpan={visibleCols.length + (extraCells?.length ?? 0)} className="p-0">
             <DealExpandPanel deal={deal} />
           </td>
         </tr>
