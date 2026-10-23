@@ -109,7 +109,13 @@ def require_sf_mcp_client(request: Request) -> UnifiedMCPClient:
                 "message": "Salesforce authentication failed — reconnect in Settings.",
             },
         )
-    return get_mcp_client(request)
+    client = get_mcp_client(request)
+    if not isinstance(client, _PerRequestMCPClient):
+        raise HTTPException(
+            status_code=503,
+            detail="Cannot initialize your Salesforce session — try again later",
+        )
+    return client
 
 
 def get_mcp_client(request: Request = None) -> UnifiedMCPClient:

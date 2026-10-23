@@ -26,6 +26,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 import dependencies
 from dependencies import _PerRequestMCPClient, get_mcp_client
+from fastapi import HTTPException
 from mcp_client import UnifiedMCPClient
 
 
@@ -94,6 +95,26 @@ def test_no_cookie_returns_base_client(base_client):
     request = _make_request(cookies={})
     result = get_mcp_client(request)
     assert result is base_client
+
+
+def test_strict_dependency_rejects_construction_fallback(base_client_with_service_account):
+    request = _make_request(cookies={"sf_tokens": "valid-blob"})
+    with (patch("auth.decrypt_tokens", return_value=_valid_tokens()),
+          patch("simple_salesforce.Salesforce", side_effect=RuntimeError("synthetic construction failure"))):
+        with pytest.raises(HTTPException) as error:
+            dependencies.require_sf_mcp_client(request)
+        assert error.value.status_code == 503
+        # Background/permissive callers keep their explicitly shared service.
+        assert get_mcp_client(request) is base_client_with_service_account
+
+
+def test_strict_dependency_accepts_personal_wrapper(base_client_with_service_account):
+    request = _make_request(cookies={"sf_tokens": "valid-blob"})
+    with (patch("auth.decrypt_tokens", return_value=_valid_tokens()),
+          patch("simple_salesforce.Salesforce", return_value=MagicMock())):
+        result = dependencies.require_sf_mcp_client(request)
+        assert isinstance(result, _PerRequestMCPClient)
+        assert result.salesforce is not base_client_with_service_account.salesforce
 
 
 def test_invalid_cookie_falls_through_to_base(base_client):
