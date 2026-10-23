@@ -534,11 +534,11 @@ function ConversionCell({ row, pending, onDrill }: { row: StageFlowRow; pending:
 const UNIVERSE_TIP: Record<string, string> = {
   total_pool: "Contacts flagged as jobs prospects. With campaigns checked: contacts in any of them.",
   target_set: "Jobs prospects chosen for outreach (add them from Contacts › Add to target set). "
-    + "Processed: has any outreach stage, Assigned through Not a fit. Outstanding: no stage yet.",
+    + "Summarize outreach shows how many have closed, are in pipeline, or haven't been outreached yet.",
 };
 
 /** Outreach Pool rows: every jobs prospect, and the target set beneath it with
- *  how much of it has been processed. Counts only, no movement. */
+ *  where it stands (Summarize outreach). Counts only, no movement. */
 function UniverseRow({ row, cols, onDrill }: { row: StageFlowRow; cols: number; onDrill: (d: Drill) => void }) {
   const dash = <span className="text-ink-4">—</span>;
   const split = row.target_set;
@@ -549,25 +549,10 @@ function UniverseRow({ row, cols, onDrill }: { row: StageFlowRow; cols: number; 
   let cell: React.ReactNode = dash;
   if (!pending && split) {
     const all = [...split.processed, ...split.outstanding];
-    const pct = all.length ? Math.round((split.processed.length / all.length) * 100) : 0;
     cell = (
       <span className="inline-flex flex-col items-center leading-tight">
         <NumButton n={all.length} onClick={() => list(all, "Target set", "every contact in the target set")}
           title={`${all.length} in the target set`} />
-        {all.length > 0 && (
-          <span className="mt-0.5 whitespace-nowrap text-[10.5px] font-normal text-ink-4"
-            title={`${split.processed.length} of ${all.length} have an outreach stage (${pct}%); ${split.outstanding.length} have none yet`}>
-            <button type="button" className="hover:text-accent hover:underline"
-              onClick={() => list(split.processed, "Target set · processed", "has an outreach stage")}>
-              {split.processed.length.toLocaleString()} processed
-            </button>
-            {" · "}
-            <button type="button" className="hover:text-accent hover:underline"
-              onClick={() => list(split.outstanding, "Target set · outstanding", "no outreach stage yet")}>
-              {split.outstanding.length.toLocaleString()} outstanding
-            </button>
-          </span>
-        )}
         {all.length > 0 && (
           <button type="button" onClick={() => setSummary(!summary)} aria-expanded={summary}
             className="mt-1 inline-flex items-center gap-0.5 text-[10.5px] font-medium text-ink-3 hover:text-accent">
@@ -605,21 +590,23 @@ function UniverseRow({ row, cols, onDrill }: { row: StageFlowRow; cols: number; 
 }
 
 // Summarize outreach (Kwame 2026-10-23): where everyone in the target set is
-// now. Four groups that always add up to the Target set number, ordered by how
-// far along they are. One blue ramp, light (not started) to dark (done),
-// validated as an ordinal palette (one hue, monotone lightness, light end
-// clears the surface at 2:1).
-const TS_GROUPS: { key: string; label: string; color: string; stages: string[] | null; hint: string }[] = [
+// now. Three groups that always add up to the Target set number, ordered by
+// how far along they are: closed, in pipeline, not outreached yet (Assigned
+// counts here: assigned but not contacted). One blue ramp, light (not started)
+// to dark (done), validated as an ordinal palette (one hue, monotone
+// lightness, light end clears the surface at 2:1).
+const TS_GROUPS: { key: string; label: string; color: string; stages: string[]; unstaged?: boolean; hint: string }[] = [
   { key: "outcome", label: "Contact outcome", color: "#14356B",
     stages: ["converted_to_opportunity", "revisit", "not_a_fit"], hint: "Converted, Revisit or Not a fit" },
   { key: "pipeline", label: "In pipeline", color: "#2563C4",
     stages: ["initial_outreach", "scheduling", "call_booked"], hint: "Initial outreach, Scheduling or Discovery call" },
-  { key: "assigned", label: "Assigned", color: "#4E90E8", stages: ["assigned"], hint: "assigned for outreach, not yet contacted" },
-  { key: "none", label: "Not outreached", color: "#8AB6EF", stages: null, hint: "no outreach stage yet" },
+  { key: "none", label: "Not outreached", color: "#8AB6EF", stages: ["assigned"], unstaged: true,
+    hint: "Assigned but not contacted, or no stage yet" },
 ];
 const TS_STAGE_LABEL: Record<string, string> = {
   converted_to_opportunity: "Converted", revisit: "Revisit", not_a_fit: "Not a fit",
   initial_outreach: "Initial outreach", scheduling: "Scheduling", call_booked: "Discovery call",
+  assigned: "Assigned",
 };
 
 function TargetSetSummary({ split, onList }: {
@@ -627,17 +614,17 @@ function TargetSetSummary({ split, onList }: {
   onList: (ids: string[], label: string, note: string) => void;
 }) {
   const by = split.by_stage ?? {};
-  const known = new Set(TS_GROUPS.flatMap((g) => g.stages ?? []));
+  const known = new Set(TS_GROUPS.flatMap((g) => g.stages));
   const groups = TS_GROUPS.map((g) => {
-    let ids: string[];
-    if (g.stages === null) ids = split.outstanding;
-    else {
-      ids = g.stages.flatMap((st) => by[st] ?? []);
-      // Any stage outside the map (a future one) rides with In pipeline, so
-      // the four groups always add up to the target set.
-      if (g.key === "pipeline") ids = ids.concat(Object.entries(by).filter(([st]) => !known.has(st)).flatMap(([, v]) => v));
+    let ids = g.stages.flatMap((st) => by[st] ?? []);
+    // Any stage outside the map (a future one) rides with In pipeline, so the
+    // three groups always add up to the target set.
+    if (g.key === "pipeline") ids = ids.concat(Object.entries(by).filter(([st]) => !known.has(st)).flatMap(([, v]) => v));
+    const parts = g.stages.map((st) => ({ label: TS_STAGE_LABEL[st] ?? st, n: (by[st] ?? []).length }));
+    if (g.unstaged) {
+      ids = ids.concat(split.outstanding);
+      parts.push({ label: "No stage", n: split.outstanding.length });
     }
-    const parts = (g.stages ?? []).map((st) => ({ label: TS_STAGE_LABEL[st] ?? st, n: (by[st] ?? []).length })).filter((x) => x.n > 0);
     return { ...g, ids, parts };
   });
   const total = groups.reduce((a, g) => a + g.ids.length, 0);
@@ -645,13 +632,7 @@ function TargetSetSummary({ split, onList }: {
   const shown = groups.filter((g) => g.ids.length > 0);
   return (
     <div className="flex flex-col gap-2.5">
-      <div className="flex items-baseline justify-between text-[12px]">
-        <span className="font-semibold text-ink">Target set · {total.toLocaleString()} contacts</span>
-        <span className="text-ink-4">
-          {(total - split.outstanding.length).toLocaleString()} processed ({pct(total - split.outstanding.length)}%)
-          {" · "}{split.outstanding.length.toLocaleString()} outstanding ({pct(split.outstanding.length)}%)
-        </span>
-      </div>
+      <div className="text-[12px] font-semibold text-ink">Target set · {total.toLocaleString()} contacts</div>
       {/* One 100% bar: segments in progress order, 2px surface gaps, rounded
           outer ends. Each segment opens its contacts. */}
       <div className="flex h-4 w-full gap-[2px]" role="img"
@@ -666,7 +647,7 @@ function TargetSetSummary({ split, onList }: {
         ))}
       </div>
       {/* Legend: identity never by color alone, and every number is here. */}
-      <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 sm:grid-cols-4">
+      <div className="grid grid-cols-1 gap-x-6 gap-y-1.5 sm:grid-cols-3">
         {groups.map((g) => (
           <button key={g.key} type="button" disabled={g.ids.length === 0}
             onClick={() => onList(g.ids, `Target set · ${g.label}`, g.hint)}
@@ -678,7 +659,7 @@ function TargetSetSummary({ split, onList }: {
                 <span className="ml-1 tabular-nums text-ink-4">{pct(g.ids.length)}%</span>
               </span>
               <span className="text-[10.5px] text-ink-4">
-                {(g.stages?.length ?? 0) > 1 && g.parts.length ? g.parts.map((x) => `${x.label} ${x.n}`).join(" · ") : g.hint}
+                {g.parts.map((x) => `${x.label} ${x.n.toLocaleString()}`).join(" · ")}
               </span>
             </span>
           </button>
