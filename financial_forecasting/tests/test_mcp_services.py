@@ -242,6 +242,7 @@ class TestSalesforceMCPService:
         assert svc._config["user_id"] == "005USER001"
         assert svc._config["user_name"] == "Test User"
         assert svc._config["instance_url"] == "test.salesforce.com"
+        assert "session_id" not in svc._config
 
     @pytest.mark.asyncio
     @patch("mcp_client.services.salesforce.Salesforce")
@@ -390,6 +391,27 @@ class TestSalesforceMCPService:
         assert info["authenticated"] is True
         assert "available_tools" in info
         assert "salesforce_query" in info["available_tools"]
+
+    @pytest.mark.asyncio
+    async def test_service_info_projects_nonsecret_config(self):
+        svc = self._make_service()
+        svc._authenticated = True
+        svc._config = {
+            "user_id": "005U",
+            "user_name": "Synthetic User",
+            "instance_url": "example.salesforce.com",
+            "session_id": "synthetic-bearer-do-not-serialize",
+            "future_secret": {"value": "synthetic-future-secret"},
+        }
+
+        info = await svc.get_service_info()
+
+        assert info["config"] == {
+            "user_id": "005U",
+            "user_name": "Synthetic User",
+            "instance_url": "example.salesforce.com",
+        }
+        assert info["config"] is not svc._config
 
 
 # ---------------------------------------------------------------------------

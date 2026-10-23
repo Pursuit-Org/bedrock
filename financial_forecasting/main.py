@@ -481,12 +481,11 @@ async def services_health_check(
             health_status[service_name] = {
                 "status": "healthy" if info["authenticated"] else "unhealthy",
                 "authenticated": info["authenticated"],
-                "config": info.get("config", {})
             }
-        except Exception as e:
+        except Exception:
             health_status[service_name] = {
                 "status": "error",
-                "error": str(e)
+                "error": "Service health check failed",
             }
 
     return ApiResponse(success=True, data=health_status)

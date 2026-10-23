@@ -140,7 +140,6 @@ class SalesforceMCPService(BaseMCPService):
                     "user_id": user_info["records"][0]["Id"],
                     "user_name": user_info["records"][0]["Name"],
                     "instance_url": self.sf_client.sf_instance,
-                    "session_id": self.sf_client.session_id,
                 })
                 logger.info(f"Salesforce authenticated as {self._config['user_name']}")
                 return True
@@ -242,7 +241,11 @@ class SalesforceMCPService(BaseMCPService):
         return {
             "service": "salesforce",
             "authenticated": self._authenticated,
-            "config": self._config,
+            "config": {
+                key: self._config[key]
+                for key in ("user_id", "user_name", "instance_url")
+                if key in self._config
+            },
             "available_tools": await self._get_available_tools(),
         }
 
