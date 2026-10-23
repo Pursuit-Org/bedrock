@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 from jose import jwt, JWTError
 from cryptography.fernet import Fernet
 from fastapi import Request, HTTPException
+from identity_status import require_active_identity
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +68,10 @@ async def get_current_user(request: Request) -> Optional[Dict]:
         return None
     payload = verify_token(token)
     if payload:
+        await require_active_identity(
+            payload.get("email"),
+            conn=getattr(request.state, "_bedrock_db_connection", None),
+        )
         # Backward compat: main.py endpoints reference user["user_id"]
         payload["user_id"] = payload.get("email", "unknown")
     return payload

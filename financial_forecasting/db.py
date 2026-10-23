@@ -7,7 +7,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import asyncpg
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 
 logger = logging.getLogger(__name__)
 
@@ -176,15 +176,27 @@ def get_pool() -> asyncpg.Pool:
     return _pool
 
 
-async def get_db() -> asyncpg.Connection:
+async def get_db(request: Request = None) -> asyncpg.Connection:
     """FastAPI dependency — yields a connection from the pool."""
+    # Authentication can run after a route has already acquired its connection.
+    # Share that connection for the request instead of waiting for a second slot.
+    existing = getattr(request.state, "_bedrock_db_connection", None) if request is not None else None
+    if existing is not None:
+        yield existing
+        return
     if _pool is None:
         raise HTTPException(status_code=503, detail="Database not available — check server logs")
     # 10-second acquire timeout: if all 10 pool connections are busy we
     # return 503 immediately rather than queuing requests forever.
     try:
         async with _pool.acquire(timeout=10) as conn:
-            yield conn
+            if request is not None:
+                request.state._bedrock_db_connection = conn
+            try:
+                yield conn
+            finally:
+                if request is not None:
+                    del request.state._bedrock_db_connection
     except asyncpg.exceptions.TooManyConnectionsError:
         raise HTTPException(status_code=503, detail="Database connection pool exhausted — try again shortly")
     except asyncio.TimeoutError:
