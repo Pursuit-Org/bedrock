@@ -310,6 +310,8 @@ interface ListResponse<T> { success: boolean; data: T[]; total: number }
 export interface JobContactWithDeal extends JobContact {
   airtable_id: string | null;
   is_jobs_contact?: boolean;
+  /** In the target set; null until its migration runs. */
+  in_target_set?: boolean | null;
   owner_email?: string | null;     // org-wide contact owner (distinct from membership_owner)
   crm_tags?: string[];             // curated tags only — system markers never reach the UI
   deal: { id: string; account_name: string; stage: JobStage; owner_email?: string | null } | null;
@@ -1984,6 +1986,7 @@ export function useBulkTargetSet() {
     },
     onSuccess: (d, vars) => {
       qc.invalidateQueries({ queryKey: ["jobs", "contacts"] });
+      qc.invalidateQueries({ queryKey: ["jobs", "contact"] });
       qc.invalidateQueries({ queryKey: ["jobs", "stage-flow"] });
       const n = d?.updated ?? 0;
       toast.success(`${vars.value ? "Added" : "Removed"} ${n} ${n === 1 ? "contact" : "contacts"} ${vars.value ? "to" : "from"} the target set`);

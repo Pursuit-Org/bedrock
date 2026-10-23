@@ -277,7 +277,6 @@ function BandHeader({ band, cols, right, pool, netNew, poolTitle, netNewTitle, o
           <span className="rounded-full bg-surface-2 px-2 py-0.5 text-[10.5px] font-medium text-ink-3">
             {band.unit.charAt(0).toUpperCase() + band.unit.slice(1)}
           </span>
-          {pool != null && <span className="text-[10.5px] font-semibold uppercase tracking-wide text-ink-4">Total</span>}
         </button>
       </td>
       <td className={cn(TD, HL, total)} title={poolTitle}>

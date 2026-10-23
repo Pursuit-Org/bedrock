@@ -8563,6 +8563,10 @@ async def list_contacts(
         "owner":    ("select", "c.owner_email"),
         "tags":     ("tags",   "c.tags"),
         "is_jobs":  ("boolean", "(c.is_jobs_contact = true)"),
+        # "false" before the migration: the filter then matches nobody rather
+        # than erroring on a missing table.
+        "target_set": ("boolean", "EXISTS (SELECT 1 FROM bedrock.jobs_target_set ts2 WHERE ts2.contact_id = c.contact_id)"
+                       if await _has_target_set() else "false"),
         "flag":     ("select", "(SELECT m2.stage FROM bedrock.jobs_contact_membership m2 WHERE m2.contact_id = c.contact_id)"),
         "connected":        ("text", "(SELECT string_agg(sm.display_name, ', ') FROM public.staff_contact_relationships scr "
                                      "JOIN bedrock.staff_user_id_map sm ON sm.staff_user_id = scr.staff_user_id "
@@ -8713,6 +8717,10 @@ async def list_contacts(
         f" WHERE h.contact_id = c.contact_id AND h.to_stage = m.stage), {_stamp_fallback}, m.assigned_at)"
         if await has_membership_history(conn)
         else f"COALESCE({_stamp_fallback}, m.assigned_at)")
+    # In the target set: null until its migration runs, so the checkbox can say
+    # so instead of reading "no" for everyone.
+    target_sql = ("EXISTS (SELECT 1 FROM bedrock.jobs_target_set ts WHERE ts.contact_id = c.contact_id)"
+                  if await _has_target_set() else "NULL::boolean")
     rows = await conn.fetch(
         f"""
         SELECT
@@ -8727,6 +8735,7 @@ async def list_contacts(
             c.linkedin_url,
             c.airtable_id,
             c.is_jobs_contact,
+            {target_sql} AS in_target_set,
             c.owner_email,
             -- user-facing tags only: intersection with the curated catalog, so
             -- system markers (email_review) never reach the UI
@@ -8970,6 +8979,9 @@ async def get_contact(
 
     deal_id    = row["deal_id"] or row["deal_id2"]
     deal_id2   = row["deal_id2"]
+    in_target_set = (bool(await conn.fetchval(
+        "SELECT EXISTS (SELECT 1 FROM bedrock.jobs_target_set WHERE contact_id = $1)", contact_id))
+        if await _has_target_set() else None)
     contact_email = row["email"]
     contact_name  = row["full_name"] or ""
     first_name    = contact_name.split()[0] if contact_name else ""
@@ -9123,6 +9135,7 @@ async def get_contact(
             # the detail page and drawer can edit them too (Kwame 2026-09-24).
             "owner_email":     row["owner_email"],
             "is_jobs_contact": row["is_jobs_contact"],
+            "in_target_set":   in_target_set,
             "crm_tags":        list(crm_tags or []),
             "deal":            deal,
             "activity":        [dict(a) for a in activity],

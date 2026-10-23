@@ -62,25 +62,26 @@ function relativeDays(iso: string | null | undefined): string {
 }
 
 // ── columns ──────────────────────────────────────────────────────────────────
-export type ColKey = "name" | "prospect" | "flag" | "title" | "company" | "tags" | "owner" | "industry" | "last_touch" | "listings" | "tasks" | "connected" | "deal" | "email" | "linkedin";
-export const COLUMN_ORDER: ColKey[] = ["name", "prospect", "flag", "title", "company", "tags", "owner", "industry", "last_touch", "listings", "tasks", "connected", "deal", "email", "linkedin"];
-export const DEFAULT_VISIBLE: ColKey[] = ["name", "prospect", "flag", "title", "company", "tags", "owner", "connected", "last_touch", "listings"];
+export type ColKey = "name" | "prospect" | "target_set" | "flag" | "title" | "company" | "tags" | "owner" | "industry" | "last_touch" | "listings" | "tasks" | "connected" | "deal" | "email" | "linkedin";
+export const COLUMN_ORDER: ColKey[] = ["name", "prospect", "target_set", "flag", "title", "company", "tags", "owner", "industry", "last_touch", "listings", "tasks", "connected", "deal", "email", "linkedin"];
+export const DEFAULT_VISIBLE: ColKey[] = ["name", "prospect", "target_set", "flag", "title", "company", "tags", "owner", "connected", "last_touch", "listings"];
 export const COL_LABELS: Record<ColKey, string> = {
-  name: "Name", prospect: "Jobs prospect", flag: "Jobs stage", title: "Title", company: "Company", tags: "Tags", owner: "Owner", industry: "Industry",
+  name: "Name", prospect: "Jobs prospect", target_set: "Target set", flag: "Jobs stage", title: "Title", company: "Company", tags: "Tags", owner: "Owner", industry: "Industry",
   last_touch: "Last touch", listings: "Job listings", tasks: "Open tasks", connected: "Connected staff", deal: "Linked deal", email: "Email", linkedin: "LinkedIn",
 };
 // Default pixel widths — user-resizable via drag handles (useColumnWidths),
 // same grid components as the Opportunities table.
 export const DEFAULT_WIDTHS: Record<ColKey, number> = {
-  name: 190, prospect: 90, flag: 130, title: 150, company: 160, tags: 190, owner: 150, industry: 130, last_touch: 105, listings: 105, tasks: 85, connected: 155, deal: 145, email: 170, linkedin: 60,
+  name: 190, prospect: 90, target_set: 85, flag: 130, title: 150, company: 160, tags: 190, owner: 150, industry: 130, last_touch: 105, listings: 105, tasks: 85, connected: 155, deal: 145, email: 170, linkedin: 60,
 };
-const SORTABLE = new Set<ColKey>(["name", "prospect", "flag", "title", "company", "tags", "owner", "industry", "last_touch", "listings", "tasks"]);
+const SORTABLE = new Set<ColKey>(["name", "prospect", "target_set", "flag", "title", "company", "tags", "owner", "industry", "last_touch", "listings", "tasks"]);
 const MEMBERSHIP_STAGE_OPTIONS = MEMBERSHIP_STAGES.map((s) => ({ value: s, label: MEMBERSHIP_STAGE_LABELS[s] }));
 
 function extract(c: JobContactWithDeal, key: ColKey): string | number {
   switch (key) {
     case "name": return (c.full_name ?? "").toLowerCase();
     case "prospect": return c.is_jobs_contact ? 0 : 1;
+    case "target_set": return c.in_target_set ? 0 : 1;
     case "owner": return (c.owner_email ?? "").toLowerCase();
     case "flag": return c.membership_stage ?? "";
     case "title": return (c.current_title ?? "").toLowerCase();
@@ -94,7 +95,7 @@ function extract(c: JobContactWithDeal, key: ColKey): string | number {
 }
 
 // ── filters + grouping ─────────────────────────────────────────────────────────
-type Field = "name" | "title" | "company" | "industry" | "flag" | "is_jobs" | "owner" | "tags" | "listings" | "has_deal" | "connected" | "connection_count" | "last_activity" | "first_contact_date" | "last_contact_date";
+type Field = "name" | "title" | "company" | "industry" | "flag" | "is_jobs" | "target_set" | "owner" | "tags" | "listings" | "has_deal" | "connected" | "connection_count" | "last_activity" | "first_contact_date" | "last_contact_date";
 const FILTERABLE: Record<Field, FieldMeta<JobContactWithDeal>> = {
   name: { label: "Name", type: "text", getValue: (c) => c.full_name ?? "" },
   title: { label: "Title", type: "text", getValue: (c) => c.current_title ?? "" },
@@ -102,6 +103,7 @@ const FILTERABLE: Record<Field, FieldMeta<JobContactWithDeal>> = {
   industry: { label: "Industry", type: "text", getValue: (c) => c.company_industry ?? "" },
   flag: { label: "Jobs stage", type: "select", getValue: (c) => c.membership_stage ?? "" },
   is_jobs: { label: "Jobs prospect", type: "select", getValue: (c) => (c.is_jobs_contact ? "yes" : "no") },
+  target_set: { label: "Target set", type: "select", getValue: (c) => (c.in_target_set ? "yes" : "no") },
   owner: { label: "Owner", type: "select", getValue: (c) => c.owner_email ?? "" },
   tags: { label: "Tags", type: "tags", getValue: (c) => (c.crm_tags ?? []).join(",") },
   listings: { label: "Job listings (sourced + applied)", type: "number", getValue: (c) => (c.open_roles ?? 0) + (c.builder_apps ?? 0) },
@@ -403,6 +405,7 @@ export function ContactRow({ contact, expanded, onOpen, visibleCols, selected, o
   const stageChange = useContactStageChange();
   const flagOne = useFlagContactsForJobs();
   const addToJobs = useAddContactToJobs();
+  const targetSet = useBulkTargetSet();
   const updateContact = useUpdateContact();
   const { data: staffList = [] } = useStaff();
   const staffOptions = useMemo(
@@ -431,6 +434,22 @@ export function ContactRow({ contact, expanded, onOpen, visibleCols, selected, o
           onChange={() => addToJobs.mutate({ id: contact.contact_id, add: !contact.is_jobs_contact })}
           className="h-4 w-4 cursor-pointer accent-[color:var(--accent,#4242EA)]"
           aria-label="Jobs prospect"
+        />
+      </span>
+    ),
+    // Yes/no, one click (Kwame 2026-10-23). Null = the migration hasn't run.
+    target_set: (
+      <span className="flex items-center justify-center"
+        title={contact.in_target_set == null ? "Target set needs migration 2026-10-23-jobs-target-set.sql"
+          : contact.in_target_set ? "In the target set — click to remove" : "Add to the target set"}>
+        <input
+          type="checkbox"
+          checked={!!contact.in_target_set}
+          disabled={contact.in_target_set == null || targetSet.isPending}
+          onClick={(e) => e.stopPropagation()}
+          onChange={() => targetSet.mutate({ contact_ids: [contact.contact_id], value: !contact.in_target_set })}
+          className="h-4 w-4 cursor-pointer accent-[color:var(--accent,#4242EA)] disabled:cursor-not-allowed disabled:opacity-40"
+          aria-label="Target set"
         />
       </span>
     ),
@@ -521,7 +540,7 @@ export function ContactRow({ contact, expanded, onOpen, visibleCols, selected, o
             name cell stayed white while every other column greyed. It now
             tracks the row via group-hover and the expanded state. */}
         {visibleCols.map((key, i) => (
-          <td key={key} className={cn("overflow-hidden px-3 py-1.5 align-middle", i === 0 && cn("sticky left-0 z-10 group-hover:bg-surface-2", expanded ? "bg-surface-2" : "bg-surface"))} onClick={["flag", "prospect", "owner", "tags"].includes(key) ? (e) => e.stopPropagation() : undefined}>{cells[key]}</td>
+          <td key={key} className={cn("overflow-hidden px-3 py-1.5 align-middle", i === 0 && cn("sticky left-0 z-10 group-hover:bg-surface-2", expanded ? "bg-surface-2" : "bg-surface"))} onClick={["flag", "prospect", "target_set", "owner", "tags"].includes(key) ? (e) => e.stopPropagation() : undefined}>{cells[key]}</td>
         ))}
         {extraCells?.map((c, i) => <td key={`x${i}`} className="whitespace-nowrap px-3 py-1.5 align-middle text-[12px] text-ink-3">{c}</td>)}
       </tr>
@@ -646,7 +665,7 @@ export function JobsContacts({ initialQuery, initialContactId, initialConnectedO
     return orders.length ? Math.min(...orders) : Infinity;
   }, [tagOrder]);
   const selectOptions: Partial<Record<Field, { value: string; label: string }[]>> = useMemo(() => ({
-    has_deal: YESNO, is_jobs: YESNO, last_activity: RECENCY_OPTIONS,
+    has_deal: YESNO, is_jobs: YESNO, target_set: YESNO, last_activity: RECENCY_OPTIONS,
     flag: MEMBERSHIP_STAGES.map((s) => ({ value: s, label: MEMBERSHIP_STAGE_LABELS[s] })),
     tags: tagCatalog.map((t) => ({ value: t.slug, label: t.label })),
     owner: staffForFilter.map((s) => ({ value: s.email, label: s.name })),
