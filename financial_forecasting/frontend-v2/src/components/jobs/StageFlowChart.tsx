@@ -21,8 +21,9 @@
  *
  * Since [date] (Outreach only, Kwame 2026-10-22): distinct contacts that passed
  * each step on or after one fixed date, so reading down it gives the funnel.
- * Fixed, so it never moves with the period. Total contact pool heads the band:
- * every jobs prospect, the universe the funnel draws from.
+ * Fixed, so it never moves with the period. Total contact pool sits in its own
+ * Outreach Pool band above Outreach (Kwame 2026-10-23): every jobs prospect,
+ * the universe the funnel draws from, kept apart from the pipeline stages.
  *
  * Every number opens the records behind it. The drawer filters the same
  * `members` / `moved` arrays the counts were made from, so a list can never
@@ -43,7 +44,7 @@ import {
   type StageFlowRow,
 } from "@/services/jobs";
 import { StageFlowWorkbench, type WorkbenchRecord } from "@/components/jobs/StageFlowWorkbench";
-import { CampaignPicker } from "@/components/jobs/TagCampaigns";
+import { CampaignChecklist } from "@/components/jobs/TagCampaigns";
 import { DeltaChip } from "@/components/jobs/DeltaChip";
 import { PeriodBar } from "@/components/jobs/PeriodBar";
 import {
@@ -178,17 +179,10 @@ export function StageFlowChart() {
               {team.map((email) => <option key={email} value={email}>{nameOf(email)}</option>)}
             </select>
           )}
-          <div className="ml-auto" title="Contacts tagged with a checked campaign, and deals linked to those contacts or their companies">
-            <CampaignPicker all={campaigns} selected={pickedCampaigns} onChange={setCampaignPick} />
+          <div className="ml-auto">
+            <ViewMenu byTime={byTime} onByTime={setByTime}
+              campaigns={campaigns} picked={pickedCampaigns} onPicked={setCampaignPick} />
           </div>
-          {(
-            <select value={byTime ? "time" : "off"} onChange={(e) => setByTime(e.target.value === "time")}
-              title="Split the Pool by how long it has sat in the stage"
-              className="h-7 rounded-md border border-border-strong bg-surface px-2 text-[12px] text-ink outline-none focus:border-accent">
-              <option value="off">No breakdown</option>
-              <option value="time">Pool by time in stage</option>
-            </select>
-          )}
         </div>
         {isLoading && !data ? (
           <div className="m-4 h-72 animate-pulse rounded-lg bg-surface-2" />
@@ -217,7 +211,7 @@ export function StageFlowChart() {
             Since {current.since ? utcDay(current.since.date) : "the start date"} counts distinct contacts that passed each outreach step on or after that fixed date, whatever the period; each row counts its own activity, so the rows are not a single cohort.
             Sends (under Initial outreach) and Discovery calls (under Discovery call) open the activity behind those stages, counted as events, not contacts: every send or call the team logged in the period, exactly as
             Outreach › Activity Pipeline counts it, against the Settings outreach targets.
-            The Pipeline band's Filter (deal type, role type) applies to opportunities only. A campaign keeps contacts with that tag, and deals linked to those contacts or at their companies.
+            The Pipeline band's Filter (deal type, role type) applies to opportunities only. Segment by campaign keeps contacts with that tag, and deals linked to those contacts or at their companies.
           </p>
         )}
       </div>
@@ -260,10 +254,14 @@ const stagesOf = (row: StageFlowRow) => row.children ?? [row.key];
 /** The band's label row, carrying the band totals in the Pool and Net New
  *  columns: everything in the band now, and the unique records that moved. */
 function BandHeader({ band, cols, right, pool, netNew, poolTitle, netNewTitle, onPool, onNetNew }: {
-  band: StageFlow["bands"][number]; cols: number; right: React.ReactNode;
-  pool: number; netNew: number; poolTitle: string; netNewTitle: string;
-  onPool: () => void; onNetNew: () => void;
+  band: { key: StageFlowBand; label: string; unit: string }; cols: number; right: React.ReactNode;
+  /** Null on a band with no totals (Outreach Pool). */
+  pool: number | null; netNew: number | null; poolTitle?: string; netNewTitle?: string;
+  onPool?: () => void; onNetNew?: () => void;
 }) {
+  // The totals are reference, not the headline (Kwame 2026-10-23): row-sized,
+  // grey and regular weight, still clickable for the list.
+  const total = "py-2 text-[13.5px] font-normal text-ink-4";
   return (
     <tr className="border-t-2 border-border bg-bg">
       <td className="py-2 pl-3.5 pr-4">
@@ -273,16 +271,16 @@ function BandHeader({ band, cols, right, pool, netNew, poolTitle, netNewTitle, o
           <span className="rounded-full bg-surface-2 px-2 py-0.5 text-[10.5px] font-medium text-ink-3">
             {band.unit.charAt(0).toUpperCase() + band.unit.slice(1)}
           </span>
-          <span className="text-[10.5px] font-semibold uppercase tracking-wide text-ink-4">Total</span>
+          {pool != null && <span className="text-[10.5px] font-semibold uppercase tracking-wide text-ink-4">Total</span>}
         </div>
-      </td>
-      <td className={cn(TD, HL, "py-2 text-[14px] font-bold")} title={poolTitle}>
-        <NumButton n={pool} onClick={onPool} title={`${pool} in ${band.label} now`} />
       </td>
       {/* Since has no band total: its rows are separate counts, not one cohort. */}
       <td className={cn(TD, HL, "py-2")} />
-      <td className={cn(TD, HL_ACT, "border-l-2 border-border-strong py-2 text-[14px] font-bold")} title={netNewTitle}>
-        <NumButton n={netNew} onClick={onNetNew} title={`${netNew} unique ${band.unit} moved`} />
+      <td className={cn(TD, HL, total)} title={poolTitle}>
+        {pool != null && onPool && <NumButton n={pool} onClick={onPool} title={`${pool} in ${band.label} now`} />}
+      </td>
+      <td className={cn(TD, HL_ACT, "border-l-2 border-border-strong", total)} title={netNewTitle}>
+        {netNew != null && onNetNew && <NumButton n={netNew} onClick={onNetNew} title={`${netNew} unique ${band.unit} moved`} />}
       </td>
       <td colSpan={4 + cols} className="py-2 pr-4">
         <div className="flex justify-end">{right}</div>
@@ -341,6 +339,7 @@ function StageTable({ data, byTime, nameOf, onDrill, pipelineFilter, actOpen, on
   // Blank for the team (the default); a person's name when the Owner filter picks one.
   const scopeLabel = data.target_scope === "team" ? "" : nameOf(data.target_scope);
   const sinceLabel = data.since ? utcDay(data.since.date) : "start";
+  const universe = data.bands.flatMap((b) => b.rows.filter((r) => r.kind === "universe"));
   const sinceHeadTip = `Distinct contacts that passed this step since ${sinceLabel}. Fixed date: does not change with the period. `
     + `Counts activity since ${sinceLabel} per row; rows are not a single cohort.`
     + (data.target_scope === "team" ? "" : " Attributed to the current contact owner; past owner changes aren't stored.");
@@ -371,11 +370,11 @@ function StageTable({ data, byTime, nameOf, onDrill, pipelineFilter, actOpen, on
           </tr>
           <tr className="bg-surface-2 text-[10.5px] uppercase tracking-wide text-ink-3">
             <th className="py-2 pl-3.5 pr-2 text-left font-bold align-bottom">Stage</th>
-            <th className={cn(TH, HL)} title="Sitting in this stage today">
-              <span className="block">Pool</span><span className={SUB} />
-            </th>
             <th className={cn(TH, HL)} title={sinceHeadTip}>
               <span className="block">Since {sinceLabel}</span><span className={SUB}>fixed date</span>
+            </th>
+            <th className={cn(TH, HL)} title="Sitting in this stage today">
+              <span className="block">Pool</span><span className={SUB} />
             </th>
             <th className={cn(TH, HL_ACT, "border-l-2 border-border-strong")} title="Entered this stage during the period">
               <span className="block">Net New</span><span className={SUB} />
@@ -400,6 +399,15 @@ function StageTable({ data, byTime, nameOf, onDrill, pipelineFilter, actOpen, on
           </tr>
         </thead>
         <tbody>
+          {universe.length > 0 && (
+            <>
+              <BandHeader band={{ key: "outreach", label: "Outreach Pool", unit: "contacts" }} cols={cols.length}
+                right={null} pool={null} netNew={null} />
+              {universe.map((row) => (
+                <UniverseRow key={row.key} row={row} cols={cols.length} tip={sinceTip(row, data)} />
+              ))}
+            </>
+          )}
           {data.bands.map((band) => {
             const bandMembers = data.members.filter((m) => m.band === band.key);
             // Contacts being worked: the closed outcomes (Converted, Revisit,
@@ -432,9 +440,8 @@ function StageTable({ data, byTime, nameOf, onDrill, pipelineFilter, actOpen, on
                       last={sibs[sibs.length - 1] === row}
                       onDrill={() => onDrill({ kind: "activity", band: band.key, stages: [row.key], label: row.label, col: null, activity: row })} />;
                   }
-                  if (row.kind === "universe") {
-                    return <UniverseRow key={row.key} row={row} cols={cols.length} tip={sinceTip(row, data)} />;
-                  }
+                  // Total contact pool renders in its own band above.
+                  if (row.kind === "universe") return null;
                   const acts = band.rows.filter((r) => r.kind === "activity" && r.parent === row.key);
                   const stages = stagesOf(row);
                   const inRow = bandMembers.filter((m) => stages.includes(m.stage));
@@ -451,6 +458,8 @@ function StageTable({ data, byTime, nameOf, onDrill, pipelineFilter, actOpen, on
                       <StageLabel row={row} toggle={acts.length > 0 && (
                         <ActivityToggle lead={acts[0]} open={actOpen.includes(row.key)} onToggle={() => onToggleAct(row.key)} />
                       )} />
+                      <SinceCell row={row} data={data}
+                        onDrill={() => onDrill({ kind: "since", band: band.key, stages, label: row.label, col: null, activity: row })} />
                       <td className={cn(TD, HL)}>
                         {pending || !row.in_now ? <span className="text-ink-4">—</span> : (
                           <span className={cn((row.depth ?? 0) === 0 && "font-semibold")}>
@@ -459,8 +468,6 @@ function StageTable({ data, byTime, nameOf, onDrill, pipelineFilter, actOpen, on
                           </span>
                         )}
                       </td>
-                      <SinceCell row={row} data={data}
-                        onDrill={() => onDrill({ kind: "since", band: band.key, stages, label: row.label, col: null, activity: row })} />
                       <td className={cn(TD, HL_ACT, "border-l-2 border-border-strong", (row.depth ?? 0) === 0 && "font-semibold")}>
                         {pending ? <span className="text-ink-4">—</span>
                           : <NumButton n={row.moved_in} onClick={() => drillRow("moved")} title={`${row.moved_in} net new in ${row.label}`} />}
@@ -627,8 +634,8 @@ function ActivityRow({ row, cols, last, onDrill }: {
           </span>
         )}
       </td>
-      <td className={cn(TD, HL, "py-2")} title="Activity has no pool" />
       <td className={cn(TD, HL, "py-2")} />
+      <td className={cn(TD, HL, "py-2")} title="Activity has no pool" />
       <td className={cn(TD, HL_ACT, "border-l-2 border-border-strong py-2")}>
         {pending ? <span className="text-ink-4">—</span>
           : <NumButton n={row.moved_in} onClick={onDrill} title={`${row.moved_in} ${unit} logged`} />}
@@ -648,6 +655,63 @@ function ActivityRow({ row, cols, last, onDrill }: {
         <td key={i} className={cn("px-2 py-2", i === 0 && "border-l border-border-strong")} />
       ))}
     </tr>
+  );
+}
+
+// ── View menu ────────────────────────────────────────────────────────────────
+
+/** One menu for how the table is cut (Kwame 2026-10-23): the Pool breakdown
+ *  (none, or by time in stage) and Segment by campaign. The two are
+ *  independent: a campaign stays applied whichever breakdown is picked. */
+function ViewMenu({ byTime, onByTime, campaigns, picked, onPicked }: {
+  byTime: boolean; onByTime: (v: boolean) => void;
+  campaigns: TagCampaign[]; picked: string[]; onPicked: (next: string[]) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [campOpen, setCampOpen] = useState(false);
+  const campLabel = picked.length === 0 ? null
+    : picked.length === 1 ? campaigns.find((c) => c.key === picked[0])?.label ?? "1 campaign"
+      : `${picked.length} campaigns`;
+  const option = (on: boolean, label: string, onClick: () => void, title?: string) => (
+    <button type="button" onClick={onClick} title={title}
+      className="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-[12.5px] text-ink hover:bg-surface-2">
+      <span className={cn("h-3 w-3 shrink-0 rounded-full border", on ? "border-accent bg-accent" : "border-border-strong")} />
+      {label}
+    </button>
+  );
+  return (
+    <div className="relative">
+      <button type="button" onClick={() => { setOpen((v) => !v); setCampOpen(picked.length > 0); }}
+        title="Pool breakdown and campaign segment"
+        className={cn("flex h-7 items-center gap-1.5 rounded-md border px-2 text-[12px] font-medium",
+          campLabel ? "border-accent/40 bg-accent-soft text-accent" : "border-border-strong bg-surface text-ink-2 hover:bg-surface-2")}>
+        {byTime ? "Pool by time in stage" : "No breakdown"}
+        {campLabel && <span className="font-normal">· {campLabel}</span>}
+        <ChevronDown size={12} />
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-20" onClick={() => setOpen(false)} />
+          <div className="absolute right-0 z-30 mt-1 max-h-[420px] w-[280px] overflow-y-auto rounded-lg border border-border-strong bg-surface p-1 shadow-lg">
+            <div className="px-2 py-1 text-[10.5px] font-bold uppercase tracking-wider text-ink-4">Breakdown</div>
+            {option(!byTime, "No breakdown", () => onByTime(false))}
+            {option(byTime, "Pool by time in stage", () => onByTime(true), "Split the Pool by how long it has sat in the stage")}
+            <div className="my-1 border-t border-border" />
+            <button type="button" onClick={() => setCampOpen((v) => !v)} aria-expanded={campOpen}
+              title="Contacts tagged with a checked campaign, and deals linked to those contacts or their companies"
+              className="flex w-full items-center justify-between rounded px-2 py-1 text-left text-[12.5px] font-medium text-ink hover:bg-surface-2">
+              <span>Segment by campaign{campLabel ? <span className="ml-1 font-normal text-accent">· {campLabel}</span> : null}</span>
+              {campOpen ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+            </button>
+            {campOpen && (
+              <div className="pl-2">
+                <CampaignChecklist all={campaigns} selected={picked} onChange={onPicked} />
+              </div>
+            )}
+          </div>
+        </>
+      )}
+    </div>
   );
 }
 

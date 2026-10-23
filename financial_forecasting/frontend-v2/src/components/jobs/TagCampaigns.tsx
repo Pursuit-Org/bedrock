@@ -77,19 +77,6 @@ export function CampaignPicker({ all, selected, onChange }: {
       ? all.find((c) => chosen.has(c.key))?.label ?? "1 campaign"
       : `${chosen.size} campaigns`;
 
-  // "All campaigns" leads the list (Kwame 2026-10-22): checked when nothing is
-  // narrowed, and ticking it clears the selection. While it is on, the
-  // campaign boxes read unchecked, so ticking one shows just that campaign
-  // instead of hiding it from the full list.
-  const toggle = (key: string) => {
-    const next = new Set(chosen);
-    next.has(key) ? next.delete(key) : next.add(key);
-    // Unchecking the last campaign, or checking every one, is the same view
-    // as All: normalise to "all" so the header never claims a filter that
-    // isn't narrowing anything, and the table is never empty.
-    onChange(next.size === all.length ? [] : [...next]);
-  };
-
   return (
     <div className="relative">
       <button type="button" onClick={() => setOpen((v) => !v)}
@@ -107,24 +94,50 @@ export function CampaignPicker({ all, selected, onChange }: {
             <div className="px-2 py-1">
               <span className="text-[10.5px] font-bold uppercase tracking-wider text-ink-4">Show campaigns</span>
             </div>
-            <label className="flex cursor-pointer items-center gap-2 rounded border-b border-border px-2 py-1 text-[12.5px] font-medium text-ink hover:bg-surface-2">
-              <input type="checkbox" checked={chosen.size === 0}
-                onChange={() => onChange([])} className="accent-[var(--accent)]" />
-              <span className="min-w-0 flex-1 truncate">All campaigns</span>
-            </label>
-            {all.map((c) => (
-              <label key={c.key}
-                className="flex cursor-pointer items-center gap-2 rounded px-2 py-1 text-[12.5px] text-ink hover:bg-surface-2">
-                <input type="checkbox" checked={chosen.has(c.key)}
-                  onChange={() => toggle(c.key)} className="accent-[var(--accent)]" />
-                <span className="min-w-0 flex-1 truncate" title={c.label}>{c.label}</span>
-                <span className="shrink-0 tabular-nums text-[11px] text-ink-4">{c.in_pipeline.toLocaleString()}</span>
-              </label>
-            ))}
+            <CampaignChecklist all={all} selected={selected} onChange={onChange} />
           </div>
         </>
       )}
     </div>
+  );
+}
+
+/** The checkbox list behind CampaignPicker, on its own so another menu (Stage
+ *  Flow's view menu) can embed it. "All campaigns" leads the list (Kwame
+ *  2026-10-22): checked when nothing is narrowed, and ticking it clears the
+ *  selection. While it is on, the campaign boxes read unchecked, so ticking
+ *  one shows just that campaign instead of hiding it from the full list. */
+export function CampaignChecklist({ all, selected, onChange }: {
+  all: TagCampaign[];
+  selected: string[];
+  onChange: (next: string[]) => void;
+}) {
+  const chosen = new Set(selected);
+  const toggle = (key: string) => {
+    const next = new Set(chosen);
+    next.has(key) ? next.delete(key) : next.add(key);
+    // Unchecking the last campaign, or checking every one, is the same view
+    // as All: normalise to "all" so the header never claims a filter that
+    // isn't narrowing anything, and the table is never empty.
+    onChange(next.size === all.length ? [] : [...next]);
+  };
+  return (
+    <>
+      <label className="flex cursor-pointer items-center gap-2 rounded border-b border-border px-2 py-1 text-[12.5px] font-medium text-ink hover:bg-surface-2">
+        <input type="checkbox" checked={chosen.size === 0}
+          onChange={() => onChange([])} className="accent-[var(--accent)]" />
+        <span className="min-w-0 flex-1 truncate">All campaigns</span>
+      </label>
+      {all.map((c) => (
+        <label key={c.key}
+          className="flex cursor-pointer items-center gap-2 rounded px-2 py-1 text-[12.5px] text-ink hover:bg-surface-2">
+          <input type="checkbox" checked={chosen.has(c.key)}
+            onChange={() => toggle(c.key)} className="accent-[var(--accent)]" />
+          <span className="min-w-0 flex-1 truncate" title={c.label}>{c.label}</span>
+          <span className="shrink-0 tabular-nums text-[11px] text-ink-4">{c.in_pipeline.toLocaleString()}</span>
+        </label>
+      ))}
+    </>
   );
 }
 
