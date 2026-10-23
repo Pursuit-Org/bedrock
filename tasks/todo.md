@@ -1,5 +1,23 @@
 # Bedrock PR Roadmap
 
+## bedrock-inactive-access — October 22, 2026
+
+Enforce canonical active status in session use, OAuth issuance, permission resolution and Pebble grants. Preserve first-login/null-active/service identity contracts, deny explicit deactivation and fail closed when status cannot be established.
+
+- [x] Reconcile fresh independent investigation with implementation and callers.
+- [x] Establish focused failing security and legitimate controls.
+- [x] Implement and run focused, alternate-input and neighboring checks.
+- [x] Complete independent read-only candidate review and correct its confirmed pool-starvation finding.
+
+Independent uncommitted security patch; no live provider/database calls or deployment.
+
+Initial local validation: 228 tests passed, including 29 focused identity/revocation controls.
+After review, authentication reuses an already-acquired request connection; 34
+focused tests pass, including ten-concurrent-request bounded-pool regressions.
+Python syntax/import and diff checks pass. The single review cycle is complete;
+the parent confirmed the correction against the source, with no broad rerun or additional review.
+Revocation takes effect at the next authorization check; already-running work is not cancelled.
+
 > Master tracker for all planned PRs. Each PR has a detailed plan in `tasks/prs/`.
 > Update checkboxes as work progresses.
 

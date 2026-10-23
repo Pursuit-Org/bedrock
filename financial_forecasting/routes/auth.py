@@ -22,6 +22,7 @@ from auth import (
     FRONTEND_URL,
 )
 from security import validate_salesforce_id
+from identity_status import require_active_identity
 
 logger = logging.getLogger(__name__)
 
@@ -188,29 +189,25 @@ async def auth_google_callback(request: Request):
                 logger.warning(f"Rejected login: {email} not in ALLOWED_EMAILS")
                 return RedirectResponse(url=f"{FRONTEND_URL}/login?error=access_denied")
 
-        # Cache Google API tokens in memory
+        # Check canonical status before storing provider tokens or issuing cookies.
+        await require_active_identity(email)
         google_token_data = {
             'access_token': token.get('access_token'),
             'refresh_token': token.get('refresh_token'),
             'expires_at': token.get('expires_at'),
             'token_type': token.get('token_type', 'Bearer'),
         }
-        _google_tokens[email] = google_token_data
-        logger.info(f"Stored Google tokens for {email} (has refresh: {bool(token.get('refresh_token'))})")
 
         # Provision the org_users row + stamp last_login_at. Doing this
         # here (rather than waiting for the first permission-gated route
         # to lazy-create it) ensures every successful login leaves a
         # trace that the Users tab can filter on.
-        try:
-            from db import get_pool
-            from routes.permissions import record_bedrock_login
-            pool = get_pool()
-            if pool is not None:
-                async with pool.acquire() as conn:
-                    await record_bedrock_login(email, user_info.get('name', ''), conn)
-        except Exception as e:
-            logger.warning(f"record_bedrock_login failed for {email}: {e}")
+        from db import get_pool
+        from routes.permissions import record_bedrock_login
+        async with get_pool().acquire(timeout=10) as conn:
+            await record_bedrock_login(email, user_info.get('name', ''), conn)
+
+        _google_tokens[email] = google_token_data
 
         # Create JWT
         access_token = create_access_token({
@@ -234,6 +231,9 @@ async def auth_google_callback(request: Request):
 
         return response
 
+    except HTTPException as e:
+        error = "access_denied" if e.status_code in (401, 403) else "auth_failed"
+        return RedirectResponse(url=f"{FRONTEND_URL}/login?error={error}")
     except Exception as e:
         logger.error(f"OAuth callback error: {e}")
         return RedirectResponse(url=f"{FRONTEND_URL}/login?error=auth_failed")

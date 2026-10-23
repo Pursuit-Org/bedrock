@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from auth import require_auth, require_auth_or_internal, decrypt_tokens
 from db import get_db
+from identity_status import reject_inactive_identity
 from security import validate_salesforce_id, escape_soql_string
 
 logger = logging.getLogger(__name__)
@@ -94,7 +95,8 @@ async def record_bedrock_login(email: str, name: str, db) -> None:
     try:
         org = await _ensure_org_user(email, name, db)
         if not org or not org.get("id"):
-            return
+            raise HTTPException(503, "Cannot establish account identity — try again later")
+        reject_inactive_identity(org)
         org_user_id = org["id"]
         await db.execute(
             "INSERT INTO bedrock.user_config (org_user_id, last_login_at) "
@@ -103,8 +105,10 @@ async def record_bedrock_login(email: str, name: str, db) -> None:
             "SET last_login_at = now(), updated_at = now()",
             org_user_id,
         )
-    except Exception as e:
-        logger.warning(f"record_bedrock_login failed for {email}: {e}")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(503, "Cannot record account login — try again later")
 
 
 async def get_user_permissions(email: str, db) -> Dict[str, Any]:
@@ -127,11 +131,11 @@ async def get_user_permissions(email: str, db) -> Dict[str, Any]:
             email,
         )
     except Exception:
-        # Fallback for local dev without public.org_users
-        row = None
+        raise HTTPException(503, "Cannot verify account permissions — try again later")
 
     if row:
         result = dict(row)
+        reject_inactive_identity(result)
         result["org_user_id"] = result["id"]  # canonical — org_users.id IS the user id
         if result.get("profile_id") is not None:
             # User has user_config — resolve permissions
@@ -171,9 +175,8 @@ async def get_user_permissions(email: str, db) -> Dict[str, Any]:
     # No org_users row — create one and provision
     org_user = await _ensure_org_user(email, "", db)
     if not org_user:
-        # Can't create org_users (local dev) — return minimal permissions
-        return {"id": None, "email": email, "permissions": {}, "profile_name": None,
-                "sf_user_id": None, "is_active": True, "name": "", "org_user_id": None}
+        raise HTTPException(503, "Cannot establish account identity — try again later")
+    reject_inactive_identity(org_user)
 
     config_count = await db.fetchval("SELECT COUNT(*) FROM bedrock.user_config")
     if config_count == 0:

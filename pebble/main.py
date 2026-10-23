@@ -14,6 +14,7 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
+from httpx import HTTPStatusError
 
 
 # ---------------------------------------------------------------------------
@@ -35,10 +36,8 @@ async def verify_api_key(request: Request):
 
 
 # ---------------------------------------------------------------------------
-# Permission verification (Bedrock callback + in-memory cache)
+# Permission verification (fresh Bedrock callback for every operation)
 # ---------------------------------------------------------------------------
-_permission_cache: dict[str, dict] = {}
-_PERMISSION_CACHE_TTL = 300  # 5 minutes
 
 DAILY_COST_LIMIT = float(os.getenv("PEBBLE_DAILY_COST_LIMIT_USD", "5.0"))
 
@@ -56,35 +55,22 @@ def require_pebble_permission(permission_key: str):
     """FastAPI dependency: verify user has a specific Pebble permission.
 
     Reads X-User-Email header (NOT body — avoids double body consumption).
-    Calls Bedrock to resolve permissions, caches result for 5 min.
+    Calls Bedrock to resolve current permissions on every request.
     Stores verified email + full permission map on request.state.
     """
     async def _check(request: Request):
-        user_email = request.headers.get("X-User-Email", "").strip()
+        user_email = request.headers.get("X-User-Email", "").strip().lower()
         if not user_email:
             raise HTTPException(status_code=403, detail="X-User-Email header required")
 
-        now = time.time()
-        cached = _permission_cache.get(user_email)
-        if cached and cached["expires"] > now:
-            perms = cached["permissions"]
-        else:
-            try:
-                perms = await _fetch_user_permissions(user_email)
-                _permission_cache[user_email] = {
-                    "permissions": perms, "expires": now + _PERMISSION_CACHE_TTL,
-                }
-            except Exception as e:
-                logging.getLogger("pebble.main").warning(
-                    "Permission check failed for %s: %s", user_email, e,
-                )
-                if cached:
-                    perms = cached["permissions"]
-                else:
-                    raise HTTPException(
-                        status_code=503,
-                        detail="Cannot verify permissions — try again later",
-                    )
+        try:
+            perms = await _fetch_user_permissions(user_email)
+        except HTTPStatusError as e:
+            if e.response.status_code in (401, 403):
+                raise HTTPException(403, "Account access denied")
+            raise HTTPException(503, "Cannot verify permissions — try again later")
+        except Exception:
+            raise HTTPException(503, "Cannot verify permissions — try again later")
 
         if not perms.get(permission_key, False):
             raise HTTPException(
