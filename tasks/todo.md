@@ -7,6 +7,22 @@ lock, opportunity and automation candidates. Preserve explicitly permissive back
 callers. Validate per-request-client tests with the isolated provider/network harness.
 No production calls, migration, merge or deployment.
 
+## bedrock-opportunity-authority — October 22, 2026
+
+Share the existing owner guard through a dependency-safe module and enforce owner, lock and reassignment policy on direct, stage, bulk and human DELETE opportunity mutations. Preserve the internal service DELETE contract, bulk partial results, stage-payment validation and award/cache side effects; fail closed on missing identity/owner evidence.
+
+- [x] Reconcile completed independent investigation with source and callers.
+- [x] Reproduce missing authorization and establish legitimate controls.
+- [x] Implement and validate real routes, alternate inputs and nearest checks.
+- [ ] Complete one independent read-only candidate review.
+
+Atomic uncommitted patch; no live providers, shared database, publication or deployment.
+
+Validation: 260 tests passed with the network-disabled Python 3.11 harness;
+syntax/import compilation and diff whitespace checks passed. The shared
+authorization module matches the automation authority branch byte for byte;
+the strict personal-client adapter matches that branch and lock-claim.
+
 > Master tracker for all planned PRs. Each PR has a detailed plan in `tasks/prs/`.
 > Update checkboxes as work progresses.
 
