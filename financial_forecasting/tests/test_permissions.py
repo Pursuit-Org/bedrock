@@ -262,7 +262,8 @@ class TestUpdateUser:
 
 
 class TestLockOpportunity:
-    def test_owner_can_lock(self, admin_client, mock_db):
+    def test_owner_can_lock(self, admin_client, mock_db, mock_client):
+        mock_client.salesforce.query = AsyncMock(return_value={"records": [{"OwnerId": SF_USER_ID}]})
         mock_db.fetchrow = AsyncMock(side_effect=[
             make_admin_user(),  # permission check
             MockDBRow(sf_opportunity_id=OPP_ID, locked_by=SF_USER_ID, locked_at="2026-01-01"),  # insert
@@ -270,7 +271,8 @@ class TestLockOpportunity:
         resp = admin_client.post(f"/api/opportunities/{OPP_ID}/lock", json={"owner_id": SF_USER_ID})
         assert resp.status_code == 200
 
-    def test_non_owner_cannot_lock(self, admin_client, mock_db):
+    def test_non_owner_cannot_lock(self, admin_client, mock_db, mock_client):
+        mock_client.salesforce.query = AsyncMock(return_value={"records": [{"OwnerId": "005DIFFERENTUSER"}]})
         mock_db.fetchrow = AsyncMock(return_value=make_admin_user())
         resp = admin_client.post(f"/api/opportunities/{OPP_ID}/lock", json={"owner_id": "005DIFFERENTUSER"})
         assert resp.status_code == 403

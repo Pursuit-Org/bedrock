@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from auth import require_auth, require_auth_or_internal, decrypt_tokens
 from db import get_db
+from dependencies import require_sf_mcp_client
 from security import validate_salesforce_id, escape_soql_string
 
 logger = logging.getLogger(__name__)
@@ -797,13 +798,14 @@ async def get_all_locks(user=Depends(require_auth), db=Depends(get_db)):
 
 
 class LockRequest(BaseModel):
-    """Frontend must pass the opportunity's OwnerId so we can verify ownership."""
-    owner_id: str  # The opportunity's OwnerId from Salesforce data
+    """Legacy display input; ownership is always read from Salesforce."""
+    owner_id: str
 
 
 @opp_router.post("/{opportunity_id}/lock")
 async def lock_opportunity(
-    opportunity_id: str, body: LockRequest, user=Depends(require_auth), db=Depends(get_db)
+    opportunity_id: str, body: LockRequest, user=Depends(require_auth), db=Depends(get_db),
+    client=Depends(require_sf_mcp_client),
 ):
     """Lock an opportunity. Only the actual owner can lock (must have lock_own_opportunities)."""
     validate_salesforce_id(opportunity_id, "opportunity_id")
@@ -814,8 +816,19 @@ async def lock_opportunity(
     sf_user_id = user_data.get("sf_user_id")
     if not sf_user_id:
         raise HTTPException(400, "Your account is not linked to a Salesforce user. Contact an admin.")
-    # Verify the user is the actual owner of this opportunity
-    if body.owner_id != sf_user_id:
+    try:
+        result = await client.salesforce.query(
+            f"SELECT OwnerId FROM Opportunity WHERE Id = '{escape_soql_string(opportunity_id)}' LIMIT 1"
+        )
+        records = result.get("records", [])
+    except Exception:
+        raise HTTPException(503, "Cannot verify opportunity ownership — try again later")
+    if not records:
+        raise HTTPException(404, "Opportunity not found")
+    actual_owner = records[0].get("OwnerId")
+    if not actual_owner:
+        raise HTTPException(503, "Cannot verify opportunity ownership — try again later")
+    if actual_owner != sf_user_id:
         raise HTTPException(403, "You can only lock opportunities you own")
     row = await db.fetchrow(
         "INSERT INTO bedrock.opportunity_lock (sf_opportunity_id, locked_by) VALUES ($1, $2) "
