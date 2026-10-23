@@ -317,6 +317,45 @@ class TestHealthEndpoints:
         response = no_services_client.get("/health/services")
         assert response.status_code == 503
 
+    def test_services_health_does_not_serialize_integration_config(self, client, mock_salesforce):
+        mock_salesforce.get_service_info.return_value = {
+            "authenticated": True,
+            "config": {"session_id": "synthetic-bearer", "nested": {"key": "synthetic-key"}},
+            "future_credential": "synthetic-secret",
+        }
+
+        response = client.get("/health/services")
+
+        assert response.status_code == 200
+        assert response.json()["data"]["salesforce"] == {
+            "status": "healthy",
+            "authenticated": True,
+        }
+        assert "synthetic-" not in response.text
+
+    def test_services_health_does_not_serialize_provider_exceptions(self, client, mock_salesforce):
+        mock_salesforce.get_service_info.side_effect = RuntimeError("synthetic-secret-in-provider-error")
+
+        response = client.get("/health/services")
+
+        assert response.status_code == 200
+        assert response.json()["data"]["salesforce"] == {
+            "status": "error",
+            "error": "Service health check failed",
+        }
+        assert "synthetic-secret" not in response.text
+
+    def test_services_health_preserves_unhealthy_status(self, client, mock_salesforce):
+        mock_salesforce.get_service_info.return_value = {"authenticated": False, "config": {}}
+
+        response = client.get("/health/services")
+
+        assert response.status_code == 200
+        assert response.json()["data"]["salesforce"] == {
+            "status": "unhealthy",
+            "authenticated": False,
+        }
+
 
 # ===================================================================
 # 2. Salesforce Opportunities

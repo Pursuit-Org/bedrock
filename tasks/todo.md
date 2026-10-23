@@ -1,5 +1,15 @@
 # Bedrock PR Roadmap
 
+## Service-health credential boundary (2026-10-22)
+
+- Scope: keep integration credentials out of service diagnostics and authenticated health responses, including error paths. Preserve authentication, status reporting and nonsecret internal service metadata.
+- [x] Reconcile independent boundary investigation with all service-info callers and existing tests.
+- [x] Demonstrate the disclosure with synthetic credentials and mocked integrations.
+- [x] Remove credential copies and project only explicitly public health fields.
+- [x] Run focused security/legitimate controls, neighboring tests and syntax checks; obtain an independent read-only patch review.
+- Validation: focused controls 19 passed / 1 existing skip; neighboring endpoint and service suites 168 passed / 8 existing skips; Python syntax checks passed. Python 3.11.12, synthetic identities, provider mocks and network disabled. Fresh read-only review found no actionable issues. Live-provider behavior and deployed configuration are unverified.
+- No provider credentials, live services, deployment, commit or credential rotation is part of this patch. Rotation remains separate incident-response work.
+
 > Master tracker for all planned PRs. Each PR has a detailed plan in `tasks/prs/`.
 > Update checkboxes as work progresses.
 
