@@ -310,7 +310,7 @@ interface ListResponse<T> { success: boolean; data: T[]; total: number }
 export interface JobContactWithDeal extends JobContact {
   airtable_id: string | null;
   is_jobs_contact?: boolean;
-  /** In the target set; null until its migration runs. */
+  /** In the Target List; null until its migration runs. */
   in_target_set?: boolean | null;
   owner_email?: string | null;     // org-wide contact owner (distinct from membership_owner)
   crm_tags?: string[];             // curated tags only — system markers never reach the UI
@@ -590,7 +590,7 @@ export function useBulkContactOwner() {
 
 /** Clear one contact's jobs stage: back to no stage. Same DELETE as the
  *  Contacts bulk "Clear stage"; history logs it as 'unflagged'. The prospect
- *  flag and target set are untouched. */
+ *  flag and Target List are untouched. */
 export function useClearContactStage() {
   const qc = useQueryClient();
   return useMutation({
@@ -1975,7 +1975,7 @@ export function useStaff(q?: string) {
 
 export interface Builder { user_id: number; email: string; name: string; cohort: string }
 
-/** Add contacts to (value true) or remove them from the target set. Adding also
+/** Add contacts to (value true) or remove them from the Target List. Adding also
  *  marks them as jobs prospects. 409 until the target-set migration runs. */
 export function useBulkTargetSet() {
   const qc = useQueryClient();
@@ -1989,11 +1989,11 @@ export function useBulkTargetSet() {
       qc.invalidateQueries({ queryKey: ["jobs", "contact"] });
       qc.invalidateQueries({ queryKey: ["jobs", "stage-flow"] });
       const n = d?.updated ?? 0;
-      toast.success(`${vars.value ? "Added" : "Removed"} ${n} ${n === 1 ? "contact" : "contacts"} ${vars.value ? "to" : "from"} the target set`);
+      toast.success(`${vars.value ? "Added" : "Removed"} ${n} ${n === 1 ? "contact" : "contacts"} ${vars.value ? "to" : "from"} the Target List`);
     },
     onError: (e: unknown) => {
       const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      toast.error(detail ?? "Failed to update the target set");
+      toast.error(detail ?? "Failed to update the Target List");
     },
   });
 }
@@ -3212,7 +3212,7 @@ export interface StageFlowRow {
   breakdown?: { key: string; label: string; n: number }[] | null;
   /** Activity rows: touches counted with no linked contact (not listable). */
   unlinked?: number;
-  /** Target set row only: contact ids with any outreach stage (processed) and
+  /** Target List row only: contact ids with any outreach stage (processed) and
    *  with none yet (outstanding). Null until its migration runs. */
   target_set?: { processed: string[]; outstanding: string[]; by_stage?: Record<string, string[]> } | null;
   /** Of the Net New, how many are further along today. Null on exits,
@@ -3256,6 +3256,9 @@ export interface StageFlowMember {
   detail: string | null;
   owner: string | null;
   days: number;
+  /** True when no stage-history row or stage stamp exists: days counts from
+   *  the last edit, so the real time in stage is at least this. */
+  days_floor?: boolean;
   bucket: number;
 }
 

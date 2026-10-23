@@ -161,7 +161,7 @@ export function ContactJobsFields({ contact }: { contact: ContactJobsFieldsValue
           {contact.is_jobs_contact ? "In the jobs pipeline" : "Not a prospect"}
         </label>
       </EditField>
-      <EditField label="Target set">
+      <EditField label="Target List">
         <label className="inline-flex cursor-pointer items-center gap-2 text-[12.5px] text-ink-2"
           title={contact.in_target_set == null ? "Needs migration 2026-10-23-jobs-target-set.sql" : undefined}>
           <input

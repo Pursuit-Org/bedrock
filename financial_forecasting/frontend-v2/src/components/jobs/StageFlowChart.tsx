@@ -15,7 +15,7 @@
  * Owner tab: the same stages, with Pool and Net New per Jobs team member, and
  * Others (anyone off the team, or nobody) so each row still adds up.
  *
- * A booked call ends one of three ways, so Contact outcome sums Converted to
+ * A booked call ends one of three ways, so Contact Outcome sums Converted to
  * opportunity, Revisit and Not a fit, each indented beneath it. Closed does the
  * same for Closed Won and Closed Lost.
  *
@@ -58,7 +58,7 @@ type Tab = "stage" | "owner";
 type Drill = {
   /** "activity" = the contacts behind an activity row's sends or calls;
    *  "converted" = the Net New now further along. */
-  /** "ids" = a fixed list of contacts (Target set and its split). */
+  /** "ids" = a fixed list of contacts (Target List and its split). */
   kind: "now" | "moved" | "activity" | "converted" | "ids";
   band: StageFlowBand;
   stages: string[];
@@ -212,7 +212,7 @@ export function StageFlowChart() {
             {current.targets_available ? "" : "; per-stage targets arrive with the stage-targets migration, and Converted to opportunity uses the Settings outreach target until then"}.
             Sends (under Initial outreach) and Discovery calls (under Discovery call) open the activity behind those stages, counted as events, not contacts: every send or call the team logged in the period, exactly as
             Outreach › Activity Pipeline counts it, against the Settings outreach targets.
-            The Pipeline band's Filter (deal type, role type) applies to opportunities only. Segment by campaign keeps contacts with that tag, and deals linked to those contacts or at their companies.
+            The Pipeline band's Filter (deal type, role type) applies to opportunities only. Segment by campaign keeps contacts with that tag, and deals tagged with it or linked to one of those contacts.
           </p>
         )}
       </div>
@@ -292,13 +292,13 @@ function BandHeader({ band, cols, right, pool, netNew, poolTitle, netNewTitle, o
   );
 }
 
-function StageLabel({ row, toggle, muted }: { row: StageFlowRow; toggle?: React.ReactNode; muted?: boolean }) {
+function StageLabel({ row, toggle, plain }: { row: StageFlowRow; toggle?: React.ReactNode; plain?: boolean }) {
   const depth = row.depth ?? 0;
   const pending = !row.available;
   return (
     <td className={cn("whitespace-nowrap py-2.5 pr-4 text-left",
-      depth === 0 && !muted ? "font-semibold" : "font-normal",
-      pending || muted ? "text-ink-4" : "text-ink")}
+      depth === 0 && !plain ? "font-semibold" : "font-normal",
+      pending ? "text-ink-4" : "text-ink")}
       style={{ paddingLeft: `${14 + depth * 20}px` }}>
       {depth > 0 && <span className="mr-1.5 text-ink-4">↳</span>}
       {row.label}
@@ -426,7 +426,7 @@ function StageTable({ data, byTime, nameOf, onDrill, pipelineFilter, actOpen, on
                   pool={pool} netNew={movedIds.size}
                   collapsed={folded.includes(band.key)} onToggle={() => fold(band.key)}
                   poolTitle={band.key === "outreach"
-                    ? "Every contact in a working outreach stage today (Contact outcome, Total contact pool and Target set not included). Click for the list."
+                    ? "Every contact in a working outreach stage today (Contact Outcome, Total contact pool and Target List not included). Click for the list."
                     : "Every open opportunity today, all stages. Click for the list."}
                   netNewTitle={`Unique ${unit} that moved into any stage during the period, each counted once. Click for the list.`}
                   onPool={() => onDrill({ kind: "now", band: band.key, stages: poolStages,
@@ -532,11 +532,11 @@ function ConversionCell({ row, pending, onDrill }: { row: StageFlowRow; pending:
 
 const UNIVERSE_TIP: Record<string, string> = {
   total_pool: "Contacts flagged as jobs prospects. With campaigns checked: contacts in any of them.",
-  target_set: "Jobs prospects chosen for outreach (add them from Contacts › Add to target set). "
+  target_set: "Jobs prospects chosen for outreach (add them from Contacts › Add to Target List). "
     + "Summarize outreach shows how many have closed, are in pipeline, or aren't in the pipeline yet.",
 };
 
-/** Outreach Pool rows: every jobs prospect, and the target set beneath it with
+/** Outreach Pool rows: every jobs prospect, and the Target List beneath it with
  *  where it stands (Summarize outreach). Counts only, no movement. */
 function UniverseRow({ row, cols, onDrill }: { row: StageFlowRow; cols: number; onDrill: (d: Drill) => void }) {
   const dash = <span className="text-ink-4">—</span>;
@@ -550,8 +550,8 @@ function UniverseRow({ row, cols, onDrill }: { row: StageFlowRow; cols: number; 
     const all = [...split.processed, ...split.outstanding];
     cell = (
       <span className="inline-flex flex-col items-center leading-tight">
-        <NumButton n={all.length} onClick={() => list(all, "Target set", "every contact in the target set")}
-          title={`${all.length} in the target set`} />
+        <NumButton n={all.length} onClick={() => list(all, "Target List", "every contact in the Target List")}
+          title={`${all.length} in the Target List`} />
         {all.length > 0 && (
           <button type="button" onClick={() => setSummary(!summary)} aria-expanded={summary}
             className="mt-1 inline-flex items-center gap-0.5 whitespace-nowrap text-[10.5px] font-medium text-ink-3 hover:text-accent">
@@ -564,13 +564,13 @@ function UniverseRow({ row, cols, onDrill }: { row: StageFlowRow; cols: number; 
     cell = (row.in_now?.total ?? 0).toLocaleString();
   }
   // Total contact pool is reference, not a number we index on (Kwame
-  // 2026-10-23): grey label and number, regular weight.
-  const muted = row.key === "total_pool";
+  // 2026-10-23): regular weight, so Target List below reads as the headline.
+  const plain = row.key === "total_pool";
   return (
     <>
     <tr className="border-b border-border text-[13.5px]" title={UNIVERSE_TIP[row.key]}>
-      <StageLabel row={row} muted={muted} />
-      <td className={cn(TD, HL, muted ? "font-normal text-ink-4" : (row.depth ?? 0) === 0 && "font-semibold")}>{cell}</td>
+      <StageLabel row={row} plain={plain} />
+      <td className={cn(TD, HL, plain ? "font-normal" : (row.depth ?? 0) === 0 && "font-semibold")}>{cell}</td>
       <td className={cn(TD, HL_ACT, "border-l-2 border-border-strong")}>{dash}</td>
       <td className={TD}>{dash}</td>
       <td className={TD}>{dash}</td>
@@ -591,14 +591,14 @@ function UniverseRow({ row, cols, onDrill }: { row: StageFlowRow; cols: number; 
   );
 }
 
-// Summarize outreach (Kwame 2026-10-23): where everyone in the target set is
-// now. Three groups that always add up to the Target set number, ordered by
+// Summarize outreach (Kwame 2026-10-23): where everyone in the Target List is
+// now. Three groups that always add up to the Target List number, ordered by
 // how far along they are: closed, in pipeline (Assigned included), not in
 // pipeline (no stage at all). One blue ramp, light (not started)
 // to dark (done), validated as an ordinal palette (one hue, monotone
 // lightness, light end clears the surface at 2:1).
 const TS_GROUPS: { key: string; label: string; color: string; stages: string[]; unstaged?: boolean; hint: string }[] = [
-  { key: "outcome", label: "Contact outcome", color: "#14356B",
+  { key: "outcome", label: "Contact Outcome", color: "#14356B",
     stages: ["converted_to_opportunity", "revisit", "not_a_fit"], hint: "Converted, Revisit or Not a fit" },
   { key: "pipeline", label: "In pipeline", color: "#2563C4",
     stages: ["assigned", "initial_outreach", "scheduling", "call_booked"],
@@ -621,7 +621,7 @@ function TargetSetSummary({ split, onList }: {
   const groups = TS_GROUPS.map((g) => {
     let ids = g.stages.flatMap((st) => by[st] ?? []);
     // Any stage outside the map (a future one) rides with In pipeline, so the
-    // three groups always add up to the target set.
+    // three groups always add up to the Target List.
     if (g.key === "pipeline") ids = ids.concat(Object.entries(by).filter(([st]) => !known.has(st)).flatMap(([, v]) => v));
     const parts = g.stages.map((st) => ({ label: TS_STAGE_LABEL[st] ?? st, n: (by[st] ?? []).length }));
     if (g.unstaged) {
@@ -635,14 +635,14 @@ function TargetSetSummary({ split, onList }: {
   const shown = groups.filter((g) => g.ids.length > 0);
   return (
     <div className="flex flex-col gap-2.5">
-      <div className="text-[12px] font-semibold text-ink">Target set · {total.toLocaleString()} contacts</div>
+      <div className="text-[12px] font-semibold text-ink">Target List · {total.toLocaleString()} contacts</div>
       {/* One 100% bar: segments in progress order, 2px surface gaps, rounded
           outer ends. Each segment opens its contacts. */}
       <div className="flex h-4 w-full gap-[2px]" role="img"
         aria-label={groups.map((g) => `${g.label} ${g.ids.length}`).join(", ")}>
         {shown.map((g, i) => (
           <button key={g.key} type="button"
-            onClick={() => onList(g.ids, `Target set · ${g.label}`, g.hint)}
+            onClick={() => onList(g.ids, `Target List · ${g.label}`, g.hint)}
             title={`${g.label}: ${g.ids.length.toLocaleString()} (${pct(g.ids.length)}%), ${g.hint}. Click to list them.`}
             className={cn("h-full min-w-[3px] transition-opacity hover:opacity-80",
               i === 0 && "rounded-l", i === shown.length - 1 && "rounded-r")}
@@ -653,7 +653,7 @@ function TargetSetSummary({ split, onList }: {
       <div className="grid grid-cols-1 gap-x-6 gap-y-1.5 sm:grid-cols-3">
         {groups.map((g) => (
           <button key={g.key} type="button" disabled={g.ids.length === 0}
-            onClick={() => onList(g.ids, `Target set · ${g.label}`, g.hint)}
+            onClick={() => onList(g.ids, `Target List · ${g.label}`, g.hint)}
             className="flex items-start gap-2 rounded text-left disabled:cursor-default enabled:hover:bg-surface-2">
             <span className="mt-[3px] h-2.5 w-2.5 shrink-0 rounded-sm" style={{ background: g.color }} />
             <span className="flex flex-col leading-tight">
@@ -767,7 +767,7 @@ function ViewMenu({ byTime, onByTime, campaigns, picked, onPicked }: {
             {option(byTime, "Pool by time in stage", () => onByTime(true), "Split the Pool by how long it has sat in the stage")}
             <div className="my-1 border-t border-border" />
             <button type="button" onClick={() => setCampOpen((v) => !v)} aria-expanded={campOpen}
-              title="Contacts tagged with a checked campaign, and deals linked to those contacts or their companies"
+              title="Contacts tagged with a checked campaign, and deals tagged with it or linked to those contacts"
               className="flex w-full items-center justify-between rounded px-2 py-1 text-left text-[12.5px] font-medium text-ink hover:bg-surface-2">
               <span>Segment by campaign{campLabel ? <span className="ml-1 font-normal text-accent">· {campLabel}</span> : null}</span>
               {campOpen ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
@@ -926,7 +926,7 @@ function StageFlowDrill({ drill, data, nameOf, onClose }: {
   const records: WorkbenchRecord[] = drill.kind === "now"
     ? data.members
         .filter((m) => m.band === drill.band && drill.stages.includes(m.stage) && inCell(m))
-        .map((m) => ({ id: m.id, stage: m.stage, when: `${m.days}d` }))
+        .map((m) => ({ id: m.id, stage: m.stage, when: `${m.days}d${m.days_floor ? "+" : ""}` }))
     : data.moved
         .filter((m) => m.band === drill.band && drill.stages.includes(m.stage) && inCell(m))
         .map((m) => ({ id: m.id, stage: m.stage, when: utcDay(m.at), from: m.from }));

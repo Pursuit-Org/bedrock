@@ -66,7 +66,7 @@ export type ColKey = "name" | "prospect" | "target_set" | "flag" | "title" | "co
 export const COLUMN_ORDER: ColKey[] = ["name", "prospect", "target_set", "flag", "title", "company", "tags", "owner", "industry", "last_touch", "listings", "tasks", "connected", "deal", "email", "linkedin"];
 export const DEFAULT_VISIBLE: ColKey[] = ["name", "prospect", "target_set", "flag", "title", "company", "tags", "owner", "connected", "last_touch", "listings"];
 export const COL_LABELS: Record<ColKey, string> = {
-  name: "Name", prospect: "Jobs prospect", target_set: "Target set", flag: "Jobs stage", title: "Title", company: "Company", tags: "Tags", owner: "Owner", industry: "Industry",
+  name: "Name", prospect: "Jobs prospect", target_set: "Target List", flag: "Jobs stage", title: "Title", company: "Company", tags: "Tags", owner: "Owner", industry: "Industry",
   last_touch: "Last touch", listings: "Job listings", tasks: "Open tasks", connected: "Connected staff", deal: "Linked deal", email: "Email", linkedin: "LinkedIn",
 };
 // Default pixel widths — user-resizable via drag handles (useColumnWidths),
@@ -103,7 +103,7 @@ const FILTERABLE: Record<Field, FieldMeta<JobContactWithDeal>> = {
   industry: { label: "Industry", type: "text", getValue: (c) => c.company_industry ?? "" },
   flag: { label: "Jobs stage", type: "select", getValue: (c) => c.membership_stage ?? "" },
   is_jobs: { label: "Jobs prospect", type: "select", getValue: (c) => (c.is_jobs_contact ? "yes" : "no") },
-  target_set: { label: "Target set", type: "select", getValue: (c) => (c.in_target_set ? "yes" : "no") },
+  target_set: { label: "Target List", type: "select", getValue: (c) => (c.in_target_set ? "yes" : "no") },
   owner: { label: "Owner", type: "select", getValue: (c) => c.owner_email ?? "" },
   tags: { label: "Tags", type: "tags", getValue: (c) => (c.crm_tags ?? []).join(",") },
   listings: { label: "Job listings (sourced + applied)", type: "number", getValue: (c) => (c.open_roles ?? 0) + (c.builder_apps ?? 0) },
@@ -440,8 +440,8 @@ export function ContactRow({ contact, expanded, onOpen, visibleCols, selected, o
     // Yes/no, one click (Kwame 2026-10-23). Null = the migration hasn't run.
     target_set: (
       <span className="flex items-center justify-center"
-        title={contact.in_target_set == null ? "Target set needs migration 2026-10-23-jobs-target-set.sql"
-          : contact.in_target_set ? "In the target set — click to remove" : "Add to the target set"}>
+        title={contact.in_target_set == null ? "Target List needs migration 2026-10-23-jobs-target-set.sql"
+          : contact.in_target_set ? "In the Target List — click to remove" : "Add to the Target List"}>
         <input
           type="checkbox"
           checked={!!contact.in_target_set}
@@ -449,7 +449,7 @@ export function ContactRow({ contact, expanded, onOpen, visibleCols, selected, o
           onClick={(e) => e.stopPropagation()}
           onChange={() => targetSet.mutate({ contact_ids: [contact.contact_id], value: !contact.in_target_set })}
           className="h-4 w-4 cursor-pointer accent-[color:var(--accent,#4242EA)] disabled:cursor-not-allowed disabled:opacity-40"
-          aria-label="Target set"
+          aria-label="Target List"
         />
       </span>
     ),
@@ -890,8 +890,8 @@ export function JobsContacts({ initialQuery, initialContactId, initialConnectedO
             className="inline-flex h-7 items-center gap-1 rounded bg-accent px-3 font-medium text-white hover:opacity-90 disabled:opacity-50"><Zap size={12} /> {bulkBusy ? "Updating…" : "Bulk update"}</button>
           <span className="mx-1 h-4 w-px bg-accent/30" />
           <button type="button" disabled={bulkBusy || bulkProspect.isPending} onClick={() => bulkProspect.mutate({ contact_ids: [...selected], value: true }, { onSuccess: () => setSelected(new Set()) })} className="inline-flex h-7 items-center gap-1 rounded border border-accent bg-surface px-3 font-medium text-accent hover:bg-accent-soft disabled:opacity-50" title="Mark as jobs prospects (no pipeline stage)"><Plus size={12} /> Add as prospect</button>
-          <button type="button" disabled={bulkBusy || bulkTargetSet.isPending} onClick={() => bulkTargetSet.mutate({ contact_ids: [...selected], value: true }, { onSuccess: () => setSelected(new Set()) })} className="inline-flex h-7 items-center gap-1 rounded border border-accent bg-surface px-3 font-medium text-accent hover:bg-accent-soft disabled:opacity-50" title="Add to the target set: the jobs prospects chosen for outreach (also marks them as prospects)"><Plus size={12} /> Add to target set</button>
-          <button type="button" disabled={bulkBusy || bulkTargetSet.isPending} onClick={() => { const ids = [...selected]; if (!window.confirm(`Remove ${ids.length} contact${ids.length === 1 ? "" : "s"} from the target set?`)) return; bulkTargetSet.mutate({ contact_ids: ids, value: false }, { onSuccess: () => setSelected(new Set()) }); }} className="h-7 rounded border border-border-strong bg-surface px-3 text-ink-2 hover:text-ink disabled:opacity-50" title="Remove from the target set (stage and prospect flag unchanged)">Remove from target set</button>
+          <button type="button" disabled={bulkBusy || bulkTargetSet.isPending} onClick={() => bulkTargetSet.mutate({ contact_ids: [...selected], value: true }, { onSuccess: () => setSelected(new Set()) })} className="inline-flex h-7 items-center gap-1 rounded border border-accent bg-surface px-3 font-medium text-accent hover:bg-accent-soft disabled:opacity-50" title="Add to the Target List: the jobs prospects chosen for outreach (also marks them as prospects)"><Plus size={12} /> Add to Target List</button>
+          <button type="button" disabled={bulkBusy || bulkTargetSet.isPending} onClick={() => { const ids = [...selected]; if (!window.confirm(`Remove ${ids.length} contact${ids.length === 1 ? "" : "s"} from the Target List?`)) return; bulkTargetSet.mutate({ contact_ids: ids, value: false }, { onSuccess: () => setSelected(new Set()) }); }} className="h-7 rounded border border-border-strong bg-surface px-3 text-ink-2 hover:text-ink disabled:opacity-50" title="Remove from the Target List (stage and prospect flag unchanged)">Remove from Target List</button>
           <button type="button" disabled={bulkBusy} onClick={async () => { const ids = [...selected]; if (!window.confirm(`Clear the jobs stage from ${ids.length} contact${ids.length === 1 ? "" : "s"}?`)) return; setBulkBusy(true); const r = await Promise.allSettled(ids.map((id) => unflag.mutateAsync(id))); setBulkBusy(false); const failed = r.filter((x) => x.status === "rejected").length; if (failed) toast.error(`${failed} of ${ids.length} could not be cleared`); setSelected(new Set()); }} className="h-7 rounded border border-border-strong bg-surface px-3 text-ink-2 hover:text-ink disabled:opacity-50" title="Remove the jobs stage (membership) from the selected contacts">Clear stage</button>
           {/* Export the selection as .xlsx. Read-only, so it sits after the
               mutating actions and never clears the selection — you may well want

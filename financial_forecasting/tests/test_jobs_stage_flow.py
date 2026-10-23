@@ -34,9 +34,9 @@ def ago(days: float) -> datetime:
     return NOW - timedelta(days=days)
 
 
-def _contact(cid, stage, entered_days, owner="a@pursuit.org"):
+def _contact(cid, stage, entered_days, owner="a@pursuit.org", estimated=False):
     return {"contact_id": cid, "name": f"C{cid}", "company": f"Co{cid}", "owner": owner,
-            "stage": stage, "entered_stage": ago(entered_days)}
+            "stage": stage, "entered_stage": ago(entered_days), "entered_estimated": estimated}
 
 
 def _deal(i, stage, entered_days, owner="a@pursuit.org"):
@@ -86,6 +86,16 @@ def test_in_now_buckets_by_time_in_stage_and_bands_keep_their_units():
     # Each count is a slice of `members`, so the drill matches the number.
     cb = [m for m in d["members"] if m["band"] == "outreach" and m["stage"] == "call_booked"]
     assert len(cb) == 2 and {m["bucket"] for m in cb} == {0, 1}
+
+
+def test_time_in_stage_from_last_edit_is_flagged_as_a_floor():
+    r, conn = _get({CONTACTS_NOW: [_contact(1, "revisit", 72, estimated=True), _contact(2, "call_booked", 3)]})
+    assert r.status_code == 200, r.text
+    by_id = {m["id"]: m for m in r.json()["data"]["members"] if m["band"] == "outreach"}
+    assert by_id["1"]["days"] == 72 and by_id["1"]["days_floor"] is True
+    assert by_id["2"]["days_floor"] is False
+    sql = next(c[1] for c in conn.calls if CONTACTS_NOW in c[1])
+    assert "IS NULL AS entered_estimated" in sql
 
 
 def test_contact_closed_sums_its_three_paths():
@@ -522,7 +532,7 @@ def test_total_contact_pool_leads_outreach_and_stays_out_of_the_band_total():
     assert pool["moved_in"] == 0 and pool["targetable"] is False
     # The Since column is gone (Kwame 2026-10-23).
     assert "since" not in d and all("since" not in r for b in d["bands"] for r in b["rows"])
-    assert _rows(d)[("outreach", "contact_closed")]["label"] == "Contact outcome"
+    assert _rows(d)[("outreach", "contact_closed")]["label"] == "Contact Outcome"
 
 
 def test_total_contact_pool_follows_the_owner_and_the_campaign():
@@ -591,3 +601,12 @@ def test_bulk_target_set_is_409_before_the_migration(_no_target_cache):
     conn = FakeConn(vals={TS_PROBE: False})
     r = make_jobs_client(conn).post("/api/jobs/contacts/bulk-target-set", json={"contact_ids": [5], "value": True})
     assert r.status_code == 409 and "2026-10-23-jobs-target-set.sql" in r.json()["detail"]
+
+
+def test_campaign_deals_match_by_tag_or_linked_contact_not_company():
+    from routes import jobs
+    sql = jobs._campaign_deal_sql(["operation_35_lt"], has_tags=True)
+    assert "o.tags && ARRAY['operation_35_lt']::text[]" in sql
+    assert "= ANY(o.sf_contact_ids)" in sql
+    # A tagged contact merely working at the deal's company no longer counts.
+    assert "current_company" not in sql and "account_name" not in sql

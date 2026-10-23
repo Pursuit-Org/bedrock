@@ -3804,7 +3804,7 @@ async def opportunities_overview(
 # before (the Trend), and a weekly target prorated to the period.
 #
 # A discovery call ends one of three ways, so the contacts band closes with a
-# "Contact outcome" row summing Converted to opportunity, Revisit and Not a fit,
+# "Contact Outcome" row summing Converted to opportunity, Revisit and Not a fit,
 # each beneath it. Closed Won and Closed Lost carry movement only: "how many are
 # in Closed Won now" is the all-time tally, not a pile-up anyone works.
 #
@@ -3821,7 +3821,7 @@ _FLOW_CONTACT_STAGES = [
     # activity rows beneath it (Kwame 2026-10-13).
     ("call_booked", "Discovery call"),
 ]
-# The three ways a contact leaves outreach. Summed on the Contact outcome row.
+# The three ways a contact leaves outreach. Summed on the Contact Outcome row.
 _FLOW_CONTACT_CLOSED = [
     ("converted_to_opportunity", "Converted to opportunity"),
     ("revisit", "Revisit"),
@@ -3850,7 +3850,7 @@ _FLOW_ACTIVITY_ROWS = [
 ]
 # Stage keys that may carry a weekly stage target: every stage row (Kwame
 # 2026-10-13), from the one list Settings › Targets › Jobs › Stages edits.
-# Summary rows (Contact outcome, Closed) are sums and carry none.
+# Summary rows (Contact Outcome, Closed) are sums and carry none.
 STAGE_FLOW_TARGET_KEYS = list(jobs_targets_store.STAGE_METRIC_KEYS)
 # Until a stage target is set, a stage that measures exactly what an existing
 # Settings › Targets › Jobs › Outreach metric measures borrows that target.
@@ -4044,10 +4044,9 @@ def _role_type_sql(rt: Optional[list], alias: str = "o") -> str:
 
 
 # Campaign filter (Kwame 2026-10-22). A campaign is a contact tag (or a group
-# of them, see _campaign_key). Contacts match on their own tags. Deals carry a
-# tags column but none are tagged (0 of 46 open, 2026-10-22), so a deal also
-# matches through its contacts: a tagged contact linked to it, or at the same
-# company. That is the link the Contacts page's "Has deal" filter uses.
+# of them, see _campaign_key). Contacts match on their own tags. A deal matches
+# when it is tagged with the campaign (Jobs Team › deal tags) or a contact
+# linked to it is (see _campaign_deal_sql).
 _SAFE_SLUG = re.compile(r"^[a-z0-9_]+$")
 
 
@@ -4083,13 +4082,16 @@ def _campaign_deal_sql(slugs: Optional[list], has_tags: bool, alias: str = "o") 
         return "TRUE"
     arr = _slug_array(slugs)
     own = f"{alias}.tags && {arr} OR " if has_tags else ""
+    # A deal belongs to a campaign when it carries the tag itself, or a contact
+    # LINKED to it carries the tag (Kwame 2026-10-23). The old third rule,
+    # "a tagged contact works at the same company", matched 51 deals for
+    # Operation 35 against 7 real links (Blackstone alone: 7 deals from 3
+    # tagged employees), so it was dropped.
     return f"""({own}EXISTS (
         SELECT 1 FROM public.contacts cc
          WHERE cc.tags && {arr}
            AND (('pub:' || cc.contact_id::text) = ANY({alias}.sf_contact_ids)
-                OR (cc.airtable_id IS NOT NULL AND ('airtable:' || cc.airtable_id) = ANY({alias}.sf_contact_ids))
-                OR (coalesce(trim(cc.current_company), '') <> ''
-                    AND lower(trim(cc.current_company)) = lower(trim({alias}.account_name))))))"""
+                OR (cc.airtable_id IS NOT NULL AND ('airtable:' || cc.airtable_id) = ANY({alias}.sf_contact_ids)))))"""
 
 
 async def _flow_mark_advanced(conn, moved: list) -> None:
@@ -4131,7 +4133,7 @@ async def _has_target_set() -> bool:
 
 
 async def _flow_target_set(conn, owner_f, slugs: Optional[list] = None) -> Optional[dict]:
-    """The target set, split into processed (any outreach stage, Assigned
+    """The Target List, split into processed (any outreach stage, Assigned
     included) and outstanding (no stage yet). Same owner and campaign cut as
     Total contact pool. None until the migration runs."""
     if not await _has_target_set():
@@ -4247,7 +4249,8 @@ async def get_stage_flow(
     contact_sql = """
         SELECT m.contact_id, c.full_name AS name, c.current_company AS company,
                {owner} AS owner, m.stage,
-               COALESCE({hist}{stamp}, m.updated_at) AS entered_stage
+               COALESCE({hist}{stamp}, m.updated_at) AS entered_stage,
+               COALESCE({hist}{stamp}) IS NULL AS entered_estimated
         FROM bedrock.jobs_contact_membership m
         JOIN public.contacts c ON c.contact_id = m.contact_id
         WHERE m.stage IN ({stages})
@@ -4268,6 +4271,11 @@ async def get_stage_flow(
             "band": "outreach", "stage": canon_membership_stage(r["stage"]), "id": str(r["contact_id"]),
             "name": r["name"], "detail": r["company"], "owner": r["owner"],
             "days": d, "bucket": _opp_age_bucket(d),
+            # No history row and no stage stamp: the date is the last edit, so
+            # the real time in stage is at least this. 63 Revisit contacts were
+            # moved from On Hold in one direct update on 2026-08-12 without a
+            # history row; their true entry date isn't stored.
+            "days_floor": bool(r["entered_estimated"]),
         })
 
     # ── Opportunities in now ─────────────────────────────────────────────────
@@ -4432,7 +4440,7 @@ async def get_stage_flow(
     # (same weight, Kwame 2026-10-23), with how many
     # have been processed (any stage) and how many are still outstanding.
     target_row = {
-        **universe, "key": "target_set", "label": "Target set",
+        **universe, "key": "target_set", "label": "Target List",
         "available": target_set is not None,
         "in_now": {"total": target_set["total"], "cells": None} if target_set else None,
         "target_set": ({"processed": target_set["processed"], "outstanding": target_set["outstanding"],
@@ -4441,12 +4449,12 @@ async def get_stage_flow(
     bands = [
         {"key": "outreach", "label": "Outreach", "unit": "contacts",
          "rows": [universe, target_row] + _outreach_stage_rows()
-                 + [_row("outreach", "contact_closed", "Contact outcome", True, children=closed_keys)]
+                 + [_row("outreach", "contact_closed", "Contact Outcome", True, children=closed_keys)]
                  + [_row("outreach", k, lbl, True, depth=1) for k, lbl in _FLOW_CONTACT_CLOSED]},
         {"key": "pipeline", "label": "Pipeline", "unit": "opportunities",
          "rows": [_row("pipeline", k, STAGE_LABELS.get(k, k), True) for k in OPPORTUNITY_STAGES_ACTIVE]
                  # Closed sums the two outcomes, each indented beneath it, the
-                 # same shape as Contact outcome (Kwame 2026-10-08).
+                 # same shape as Contact Outcome (Kwame 2026-10-08).
                  + [_row("pipeline", "closed", "Closed", False, children=[k for k, _ in _FLOW_DEAL_TERMINAL])]
                  + [_row("pipeline", k, lbl, False, depth=1) for k, lbl in _FLOW_DEAL_TERMINAL]},
     ]
@@ -8717,7 +8725,7 @@ async def list_contacts(
         f" WHERE h.contact_id = c.contact_id AND h.to_stage = m.stage), {_stamp_fallback}, m.assigned_at)"
         if await has_membership_history(conn)
         else f"COALESCE({_stamp_fallback}, m.assigned_at)")
-    # In the target set: null until its migration runs, so the checkbox can say
+    # In the Target List: null until its migration runs, so the checkbox can say
     # so instead of reading "no" for everyone.
     target_sql = ("EXISTS (SELECT 1 FROM bedrock.jobs_target_set ts WHERE ts.contact_id = c.contact_id)"
                   if await _has_target_set() else "NULL::boolean")
@@ -9801,7 +9809,7 @@ async def bulk_set_contact_owner(
 
 class BulkTargetSet(BaseModel):
     contact_ids: list[int]
-    value: bool = True   # true = add to the target set; false = remove
+    value: bool = True   # true = add to the Target List; false = remove
 
 
 @router.post("/contacts/bulk-target-set")
@@ -9810,13 +9818,13 @@ async def bulk_set_target_set(
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
-    """Add contacts to (or remove them from) the target set. Adding also marks
-    them as jobs prospects, so the target set stays inside Total contact pool."""
+    """Add contacts to (or remove them from) the Target List. Adding also marks
+    them as jobs prospects, so the Target List stays inside Total contact pool."""
     ids = sorted({int(i) for i in body.contact_ids})
     if not ids:
         return {"success": True, "data": {"updated": 0}}
     if not await _has_target_set():
-        raise HTTPException(409, f"Target set needs migration {_TARGET_SET_MIGRATION}")
+        raise HTTPException(409, f"Target List needs migration {_TARGET_SET_MIGRATION}")
     async with conn.transaction():
         if body.value:
             res = await conn.execute(
