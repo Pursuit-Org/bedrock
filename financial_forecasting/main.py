@@ -31,6 +31,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from mcp_client import UnifiedMCPClient
+from mcp_client.services.sage_intacct import InvalidSageQuery
 from models import (
     SalesforceOpportunity, SalesforceAccount, IntacctInvoice, IntacctPayment,
     PaymentForecast, CashFlowProjection, ForecastingMetrics, ForecastingReport,
@@ -3812,6 +3813,8 @@ async def get_invoices(
         
         return invoices
         
+    except InvalidSageQuery as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Error fetching invoices: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -3882,6 +3885,8 @@ async def get_payments(
         
         return payments
         
+    except InvalidSageQuery as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Error fetching payments: {e}")
         raise HTTPException(status_code=500, detail=str(e))
