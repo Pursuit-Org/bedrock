@@ -15,7 +15,7 @@
  * Owner tab: the same stages, with Pool and Net New per Jobs team member, and
  * Others (anyone off the team, or nobody) so each row still adds up.
  *
- * A booked call ends one of three ways, so Outreach outcome sums Converted to
+ * A booked call ends one of three ways, so Contact outcome sums Converted to
  * opportunity, Revisit and Not a fit, each indented beneath it. Closed does the
  * same for Closed Won and Closed Lost.
  *
@@ -29,7 +29,7 @@
  */
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { format } from "date-fns";
-import { ChevronDown, ChevronUp, SlidersHorizontal } from "lucide-react";
+import { ChevronDown, ChevronRight, ChevronUp, SlidersHorizontal } from "lucide-react";
 
 import {
   useJobsStaff,
@@ -58,7 +58,8 @@ type Tab = "stage" | "owner";
 type Drill = {
   /** "activity" = the contacts behind an activity row's sends or calls;
    *  "converted" = the Net New now further along. */
-  kind: "now" | "moved" | "activity" | "converted";
+  /** "ids" = a fixed list of contacts (Target set and its split). */
+  kind: "now" | "moved" | "activity" | "converted" | "ids";
   band: StageFlowBand;
   stages: string[];
   label: string;
@@ -67,6 +68,9 @@ type Drill = {
   col: { label: string; keys: Set<string> } | null;
   /** Activity drills: the row clicked (its key, unit and unlinked count). */
   activity?: StageFlowRow;
+  /** "ids" drills: the contacts, and the line under the title. */
+  ids?: string[];
+  note?: string;
 };
 
 /** Band accents: a thin rule on the band header, so the two units read apart. */
@@ -250,8 +254,10 @@ const stagesOf = (row: StageFlowRow) => row.children ?? [row.key];
 
 /** The band's label row, carrying the band totals in the Pool and Net New
  *  columns: everything in the band now, and the unique records that moved. */
-function BandHeader({ band, cols, right, pool, netNew, poolTitle, netNewTitle, onPool, onNetNew }: {
+function BandHeader({ band, cols, right, pool, netNew, poolTitle, netNewTitle, onPool, onNetNew, collapsed, onToggle }: {
   band: { key: StageFlowBand; label: string; unit: string }; cols: number; right: React.ReactNode;
+  /** Click the band label to fold its rows away (Kwame 2026-10-23). */
+  collapsed: boolean; onToggle: () => void;
   /** Null on a band with no totals (Outreach Pool). */
   pool: number | null; netNew: number | null; poolTitle?: string; netNewTitle?: string;
   onPool?: () => void; onNetNew?: () => void;
@@ -262,14 +268,17 @@ function BandHeader({ band, cols, right, pool, netNew, poolTitle, netNewTitle, o
   return (
     <tr className="border-t-2 border-border bg-bg">
       <td className="py-2 pl-3.5 pr-4">
-        <div className="flex items-center gap-2 whitespace-nowrap">
+        <button type="button" onClick={onToggle} aria-expanded={!collapsed}
+          title={collapsed ? `Show the ${band.label} rows` : `Hide the ${band.label} rows`}
+          className="flex items-center gap-2 whitespace-nowrap rounded text-left hover:opacity-80">
           <span className="h-3.5 w-1 rounded-full" style={{ background: BAND_ACCENT[band.key] }} />
+          {collapsed ? <ChevronRight size={13} className="text-ink-3" /> : <ChevronDown size={13} className="text-ink-3" />}
           <span className="text-[11px] font-bold uppercase tracking-wider text-ink-2">{band.label}</span>
           <span className="rounded-full bg-surface-2 px-2 py-0.5 text-[10.5px] font-medium text-ink-3">
             {band.unit.charAt(0).toUpperCase() + band.unit.slice(1)}
           </span>
           {pool != null && <span className="text-[10.5px] font-semibold uppercase tracking-wide text-ink-4">Total</span>}
-        </div>
+        </button>
       </td>
       <td className={cn(TD, HL, total)} title={poolTitle}>
         {pool != null && onPool && <NumButton n={pool} onClick={onPool} title={`${pool} in ${band.label} now`} />}
@@ -334,6 +343,9 @@ function StageTable({ data, byTime, nameOf, onDrill, pipelineFilter, actOpen, on
   // Blank for the team (the default); a person's name when the Owner filter picks one.
   const scopeLabel = data.target_scope === "team" ? "" : nameOf(data.target_scope);
   const universe = data.bands.flatMap((b) => b.rows.filter((r) => r.kind === "universe"));
+  // Bands folded shut: "pool", "outreach", "pipeline". Open by default.
+  const [folded, setFolded] = useSessionState<string[]>("jobsOverview.stageFlow.bandsFolded", []);
+  const fold = (k: string) => setFolded(folded.includes(k) ? folded.filter((x) => x !== k) : [...folded, k]);
   return (
     <div className="overflow-x-auto">
       <table className={cn("w-full border-collapse", byTime ? "min-w-[1080px]" : "min-w-[860px]")}>
@@ -390,9 +402,10 @@ function StageTable({ data, byTime, nameOf, onDrill, pipelineFilter, actOpen, on
           {universe.length > 0 && (
             <>
               <BandHeader band={{ key: "outreach", label: "Outreach Pool", unit: "contacts" }} cols={cols.length}
-                right={null} pool={null} netNew={null} />
-              {universe.map((row) => (
-                <UniverseRow key={row.key} row={row} cols={cols.length} tip={UNIVERSE_TIP} />
+                right={null} pool={null} netNew={null}
+                collapsed={folded.includes("pool")} onToggle={() => fold("pool")} />
+              {!folded.includes("pool") && universe.map((row) => (
+                <UniverseRow key={row.key} row={row} cols={cols.length} onDrill={onDrill} />
               ))}
             </>
           )}
@@ -412,15 +425,16 @@ function StageTable({ data, byTime, nameOf, onDrill, pipelineFilter, actOpen, on
               <Fragment key={band.key}>
                 <BandHeader band={band} cols={cols.length} right={band.key === "pipeline" ? pipelineFilter : null}
                   pool={pool} netNew={movedIds.size}
+                  collapsed={folded.includes(band.key)} onToggle={() => fold(band.key)}
                   poolTitle={band.key === "outreach"
-                    ? "Every contact in a working outreach stage today (Outreach outcome and Total contact pool not included). Click for the list."
+                    ? "Every contact in a working outreach stage today (Contact outcome, Total contact pool and Target set not included). Click for the list."
                     : "Every open opportunity today, all stages. Click for the list."}
                   netNewTitle={`Unique ${unit} that moved into any stage during the period, each counted once. Click for the list.`}
                   onPool={() => onDrill({ kind: "now", band: band.key, stages: poolStages,
                     label: band.key === "outreach" ? "Outreach (all working stages)" : "Pipeline (all stages)", col: null })}
                   onNetNew={() => onDrill({ kind: "moved", band: band.key, stages: flowStages,
                     label: band.key === "outreach" ? "Outreach (any stage)" : "Pipeline (any stage)", col: null })} />
-                {band.rows.map((row) => {
+                {!folded.includes(band.key) && band.rows.map((row) => {
                   if (row.kind === "activity") {
                     if (!row.parent || !actOpen.includes(row.parent)) return null;
                     const sibs = band.rows.filter((r) => r.kind === "activity" && r.parent === row.parent);
@@ -517,16 +531,51 @@ function ConversionCell({ row, pending, onDrill }: { row: StageFlowRow; pending:
   );
 }
 
-const UNIVERSE_TIP = "Contacts flagged as jobs prospects. With campaigns checked: contacts in any of them.";
+const UNIVERSE_TIP: Record<string, string> = {
+  total_pool: "Contacts flagged as jobs prospects. With campaigns checked: contacts in any of them.",
+  target_set: "Jobs prospects chosen for outreach (add them from Contacts › Add to target set). "
+    + "Processed: has any outreach stage, Assigned through Not a fit. Outstanding: no stage yet.",
+};
 
-/** Total contact pool: every jobs prospect. Count only, no movement. */
-function UniverseRow({ row, cols, tip }: { row: StageFlowRow; cols: number; tip: string }) {
-  const n = (row.in_now?.total ?? 0).toLocaleString();
+/** Outreach Pool rows: every jobs prospect, and the target set beneath it with
+ *  how much of it has been processed. Counts only, no movement. */
+function UniverseRow({ row, cols, onDrill }: { row: StageFlowRow; cols: number; onDrill: (d: Drill) => void }) {
   const dash = <span className="text-ink-4">—</span>;
+  const split = row.target_set;
+  const list = (ids: string[], label: string, note: string) =>
+    onDrill({ kind: "ids", band: "outreach", stages: [row.key], label, col: null, ids, note });
+  const pending = !row.available || !row.in_now;
+  let cell: React.ReactNode = dash;
+  if (!pending && split) {
+    const all = [...split.processed, ...split.outstanding];
+    const pct = all.length ? Math.round((split.processed.length / all.length) * 100) : 0;
+    cell = (
+      <span className="inline-flex flex-col items-center leading-tight">
+        <NumButton n={all.length} onClick={() => list(all, "Target set", "every contact in the target set")}
+          title={`${all.length} in the target set`} />
+        {all.length > 0 && (
+          <span className="mt-0.5 whitespace-nowrap text-[10.5px] font-normal text-ink-4"
+            title={`${split.processed.length} of ${all.length} have an outreach stage (${pct}%); ${split.outstanding.length} have none yet`}>
+            <button type="button" className="hover:text-accent hover:underline"
+              onClick={() => list(split.processed, "Target set · processed", "has an outreach stage")}>
+              {split.processed.length.toLocaleString()} processed
+            </button>
+            {" · "}
+            <button type="button" className="hover:text-accent hover:underline"
+              onClick={() => list(split.outstanding, "Target set · outstanding", "no outreach stage yet")}>
+              {split.outstanding.length.toLocaleString()} outstanding
+            </button>
+          </span>
+        )}
+      </span>
+    );
+  } else if (!pending) {
+    cell = (row.in_now?.total ?? 0).toLocaleString();
+  }
   return (
-    <tr className="border-b border-border text-[13.5px]" title={tip}>
+    <tr className="border-b border-border text-[13.5px]" title={UNIVERSE_TIP[row.key]}>
       <StageLabel row={row} />
-      <td className={cn(TD, HL, "font-semibold")}>{n}</td>
+      <td className={cn(TD, HL, (row.depth ?? 0) === 0 && "font-semibold")}>{cell}</td>
       <td className={cn(TD, HL_ACT, "border-l-2 border-border-strong")}>{dash}</td>
       <td className={TD}>{dash}</td>
       <td className={TD}>{dash}</td>
@@ -767,6 +816,14 @@ function StageFlowDrill({ drill, data, nameOf, onClose }: {
 
   // Exactly the records the clicked number counted; the workbench fetches
   // their full rows and keeps this as context (time in stage, when they moved).
+  if (drill.kind === "ids" && drill.ids) {
+    const recs: WorkbenchRecord[] = drill.ids.map((id) => ({ id, stage: "target_set", when: "", extra: [] }));
+    return (
+      <StageFlowWorkbench band="outreach" title={drill.label}
+        subtitle={`${recs.length.toLocaleString()} contacts · ${drill.note ?? ""}`}
+        isPool={false} contextHead={[]} records={recs} stageLabel={stageLabel} nameOf={nameOf} onClose={onClose} />
+    );
+  }
   if (drill.kind === "activity" && drill.activity) {
     return <ActivityDrill drill={drill} row={drill.activity} data={data} nameOf={nameOf} onClose={onClose} />;
   }

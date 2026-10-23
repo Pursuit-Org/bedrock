@@ -1957,6 +1957,28 @@ export function useStaff(q?: string) {
 
 export interface Builder { user_id: number; email: string; name: string; cohort: string }
 
+/** Add contacts to (value true) or remove them from the target set. Adding also
+ *  marks them as jobs prospects. 409 until the target-set migration runs. */
+export function useBulkTargetSet() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (body: { contact_ids: number[]; value: boolean }) => {
+      const { data } = await api.post<ApiResponse<{ updated: number }>>("/api/jobs/contacts/bulk-target-set", body);
+      return data.data;
+    },
+    onSuccess: (d, vars) => {
+      qc.invalidateQueries({ queryKey: ["jobs", "contacts"] });
+      qc.invalidateQueries({ queryKey: ["jobs", "stage-flow"] });
+      const n = d?.updated ?? 0;
+      toast.success(`${vars.value ? "Added" : "Removed"} ${n} ${n === 1 ? "contact" : "contacts"} ${vars.value ? "to" : "from"} the target set`);
+    },
+    onError: (e: unknown) => {
+      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      toast.error(detail ?? "Failed to update the target set");
+    },
+  });
+}
+
 export function useBulkProspect() {
   const qc = useQueryClient();
   return useMutation({
@@ -3171,6 +3193,9 @@ export interface StageFlowRow {
   breakdown?: { key: string; label: string; n: number }[] | null;
   /** Activity rows: touches counted with no linked contact (not listable). */
   unlinked?: number;
+  /** Target set row only: contact ids with any outreach stage (processed) and
+   *  with none yet (outstanding). Null until its migration runs. */
+  target_set?: { processed: string[]; outstanding: string[] } | null;
   /** Of the Net New, how many are further along today. Null on exits,
    *  summaries and activity rows; absent on older APIs. */
   conversion?: { on: number; of: number } | null;

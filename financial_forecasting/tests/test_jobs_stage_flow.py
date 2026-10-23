@@ -352,7 +352,7 @@ def test_activity_rows_sit_under_their_stages_and_count_events():
     c = make_jobs_client(conn)
     d = c.get(f"/api/jobs/stage-flow?period_from={P_FROM}&period_to={P_TO}").json()["data"]
     keys = [r["key"] for r in d["bands"][0]["rows"]]
-    assert keys[:7] == ["total_pool", "assigned", "initial_outreach", "outreach_sent", "scheduling",
+    assert keys[:8] == ["total_pool", "target_set", "assigned", "initial_outreach", "outreach_sent", "scheduling",
                         "call_booked", "discovery_calls_logged"]
     assert ("outreach", "calls_logged") not in _rows(d)
     rows = _rows(d)
@@ -522,7 +522,7 @@ def test_total_contact_pool_leads_outreach_and_stays_out_of_the_band_total():
     assert pool["moved_in"] == 0 and pool["targetable"] is False
     # The Since column is gone (Kwame 2026-10-23).
     assert "since" not in d and all("since" not in r for b in d["bands"] for r in b["rows"])
-    assert _rows(d)[("outreach", "contact_closed")]["label"] == "Outreach outcome"
+    assert _rows(d)[("outreach", "contact_closed")]["label"] == "Contact outcome"
 
 
 def test_total_contact_pool_follows_the_owner_and_the_campaign():
@@ -532,3 +532,58 @@ def test_total_contact_pool_follows_the_owner_and_the_campaign():
     call = next(x for x in conn.calls if POOL in x[1])
     assert "c.tags && ARRAY['board','operation_35_lt']::text[]" in call[1]
     assert "a@pursuit.org" in call[2]
+
+
+TS_PROBE = "to_regclass('bedrock.jobs_target_set')"
+TS_ROWS = "FROM bedrock.jobs_target_set t"
+
+
+@pytest.fixture
+def _no_target_cache():
+    from routes import jobs
+    jobs._TABLE_SEEN.discard("jobs_target_set")
+    yield
+    jobs._TABLE_SEEN.discard("jobs_target_set")
+
+
+def test_target_set_sits_under_the_pool_split_processed_and_outstanding(_no_target_cache):
+    conn = FakeConn(vals={TS_PROBE: True, POOL: 7745},
+                    lists={TS_ROWS: [{"contact_id": 3, "processed": True}, {"contact_id": 1, "processed": False},
+                                     {"contact_id": 2, "processed": False}]})
+    d = make_jobs_client(conn).get(f"/api/jobs/stage-flow?period_from={P_FROM}&period_to={P_TO}").json()["data"]
+    rows = d["bands"][0]["rows"]
+    assert [r["key"] for r in rows[:2]] == ["total_pool", "target_set"]
+    ts = rows[1]
+    assert ts["kind"] == "universe" and ts["available"] is True and ts["depth"] == 1
+    assert ts["in_now"] == {"total": 3, "cells": None}
+    assert ts["target_set"] == {"processed": ["3"], "outstanding": ["1", "2"]}
+    # Processed = any membership stage at all; the universe filters still apply.
+    q = next(x[1] for x in conn.calls if TS_ROWS in x[1])
+    assert "LEFT JOIN bedrock.jobs_contact_membership m" in q and "m.contact_id IS NOT NULL" in q
+
+
+def test_target_set_reads_pending_until_its_migration(_no_target_cache):
+    conn = FakeConn(vals={TS_PROBE: False})
+    d = make_jobs_client(conn).get(f"/api/jobs/stage-flow?period_from={P_FROM}&period_to={P_TO}").json()["data"]
+    ts = _rows(d)[("outreach", "target_set")]
+    assert ts["available"] is False and ts["in_now"] is None and ts["target_set"] is None
+    assert not any(TS_ROWS in x[1] for x in conn.calls)
+
+
+def test_bulk_target_set_adds_marks_prospects_and_removes(_no_target_cache):
+    conn = FakeConn(vals={TS_PROBE: True, "INSERT INTO bedrock.jobs_target_set": "INSERT 0 2",
+                          "DELETE FROM bedrock.jobs_target_set": "DELETE 1"})
+    c = make_jobs_client(conn)
+    r = c.post("/api/jobs/contacts/bulk-target-set", json={"contact_ids": [5, 6, 5], "value": True})
+    assert r.status_code == 200 and r.json()["data"]["updated"] == 2
+    ins = conn.executed("INSERT INTO bedrock.jobs_target_set")[0]
+    assert ins[2][0] == [5, 6]
+    assert conn.executed("SET is_jobs_contact = true")
+    r = c.post("/api/jobs/contacts/bulk-target-set", json={"contact_ids": [5], "value": False})
+    assert r.json()["data"]["updated"] == 1
+
+
+def test_bulk_target_set_is_409_before_the_migration(_no_target_cache):
+    conn = FakeConn(vals={TS_PROBE: False})
+    r = make_jobs_client(conn).post("/api/jobs/contacts/bulk-target-set", json={"contact_ids": [5], "value": True})
+    assert r.status_code == 409 and "2026-10-23-jobs-target-set.sql" in r.json()["detail"]

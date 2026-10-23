@@ -44,7 +44,7 @@ import {
   useJobsContacts, useAddContactToJobs, useJobsAccounts, type JobsAccount,
   useContactDetail, useCreateContact, STAGE_LABELS,
   useFlagContactsForJobs, useUnflagJobsContact, useUpdateJobsMembership, MEMBERSHIP_STAGE_LABELS, MEMBERSHIP_STAGES,
-  useContactTagCatalog, useStaff, useStaffNameResolver, useUpdateContact, useBulkContactOwner, useBulkProspect,
+  useContactTagCatalog, useStaff, useStaffNameResolver, useUpdateContact, useBulkContactOwner, useBulkProspect, useBulkTargetSet,
   type JobStage, type JobContactWithDeal, type ContactSearchResult, type ContactCreateBody, type MembershipStage,
   exportJobsRows,
 } from "@/services/jobs";
@@ -572,6 +572,7 @@ export function JobsContacts({ initialQuery, initialContactId, initialConnectedO
   const flagContacts = useFlagContactsForJobs();
   const bulkOwner = useBulkContactOwner();
   const bulkProspect = useBulkProspect();
+  const bulkTargetSet = useBulkTargetSet();
   const unflag = useUnflagJobsContact();
   const toggleSelect = useCallback((id: number) => setSelected((p) => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; }), []);
   const { sort, toggle, setSort } = useSort<ColKey>({ key: "name", direction: "asc" });
@@ -870,6 +871,8 @@ export function JobsContacts({ initialQuery, initialContactId, initialConnectedO
             className="inline-flex h-7 items-center gap-1 rounded bg-accent px-3 font-medium text-white hover:opacity-90 disabled:opacity-50"><Zap size={12} /> {bulkBusy ? "Updating…" : "Bulk update"}</button>
           <span className="mx-1 h-4 w-px bg-accent/30" />
           <button type="button" disabled={bulkBusy || bulkProspect.isPending} onClick={() => bulkProspect.mutate({ contact_ids: [...selected], value: true }, { onSuccess: () => setSelected(new Set()) })} className="inline-flex h-7 items-center gap-1 rounded border border-accent bg-surface px-3 font-medium text-accent hover:bg-accent-soft disabled:opacity-50" title="Mark as jobs prospects (no pipeline stage)"><Plus size={12} /> Add as prospect</button>
+          <button type="button" disabled={bulkBusy || bulkTargetSet.isPending} onClick={() => bulkTargetSet.mutate({ contact_ids: [...selected], value: true }, { onSuccess: () => setSelected(new Set()) })} className="inline-flex h-7 items-center gap-1 rounded border border-accent bg-surface px-3 font-medium text-accent hover:bg-accent-soft disabled:opacity-50" title="Add to the target set: the jobs prospects chosen for outreach (also marks them as prospects)"><Plus size={12} /> Add to target set</button>
+          <button type="button" disabled={bulkBusy || bulkTargetSet.isPending} onClick={() => { const ids = [...selected]; if (!window.confirm(`Remove ${ids.length} contact${ids.length === 1 ? "" : "s"} from the target set?`)) return; bulkTargetSet.mutate({ contact_ids: ids, value: false }, { onSuccess: () => setSelected(new Set()) }); }} className="h-7 rounded border border-border-strong bg-surface px-3 text-ink-2 hover:text-ink disabled:opacity-50" title="Remove from the target set (stage and prospect flag unchanged)">Remove from target set</button>
           <button type="button" disabled={bulkBusy} onClick={async () => { const ids = [...selected]; if (!window.confirm(`Clear the jobs stage from ${ids.length} contact${ids.length === 1 ? "" : "s"}?`)) return; setBulkBusy(true); const r = await Promise.allSettled(ids.map((id) => unflag.mutateAsync(id))); setBulkBusy(false); const failed = r.filter((x) => x.status === "rejected").length; if (failed) toast.error(`${failed} of ${ids.length} could not be cleared`); setSelected(new Set()); }} className="h-7 rounded border border-border-strong bg-surface px-3 text-ink-2 hover:text-ink disabled:opacity-50" title="Remove the jobs stage (membership) from the selected contacts">Clear stage</button>
           {/* Export the selection as .xlsx. Read-only, so it sits after the
               mutating actions and never clears the selection — you may well want

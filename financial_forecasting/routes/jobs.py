@@ -3804,7 +3804,7 @@ async def opportunities_overview(
 # before (the Trend), and a weekly target prorated to the period.
 #
 # A discovery call ends one of three ways, so the contacts band closes with a
-# "Outreach outcome" row summing Converted to opportunity, Revisit and Not a fit,
+# "Contact outcome" row summing Converted to opportunity, Revisit and Not a fit,
 # each beneath it. Closed Won and Closed Lost carry movement only: "how many are
 # in Closed Won now" is the all-time tally, not a pile-up anyone works.
 #
@@ -3821,7 +3821,7 @@ _FLOW_CONTACT_STAGES = [
     # activity rows beneath it (Kwame 2026-10-13).
     ("call_booked", "Discovery call"),
 ]
-# The three ways a contact leaves outreach. Summed on the Outreach outcome row.
+# The three ways a contact leaves outreach. Summed on the Contact outcome row.
 _FLOW_CONTACT_CLOSED = [
     ("converted_to_opportunity", "Converted to opportunity"),
     ("revisit", "Revisit"),
@@ -3850,7 +3850,7 @@ _FLOW_ACTIVITY_ROWS = [
 ]
 # Stage keys that may carry a weekly stage target: every stage row (Kwame
 # 2026-10-13), from the one list Settings › Targets › Jobs › Stages edits.
-# Summary rows (Outreach outcome, Closed) are sums and carry none.
+# Summary rows (Contact outcome, Closed) are sums and carry none.
 STAGE_FLOW_TARGET_KEYS = list(jobs_targets_store.STAGE_METRIC_KEYS)
 # Until a stage target is set, a stage that measures exactly what an existing
 # Settings › Targets › Jobs › Outreach metric measures borrows that target.
@@ -4115,6 +4115,40 @@ async def _flow_mark_advanced(conn, moved: list) -> None:
 # the outreach funnel draws from. The same is_jobs_contact predicate /contacts
 # (scope=jobs) and /tag-campaigns use. With an owner, the current contact
 # owner; with a campaign, that campaign's contacts.
+_TARGET_SET_MIGRATION = "2026-10-23-jobs-target-set.sql"
+_TABLE_SEEN: set = set()
+
+
+async def _has_target_set() -> bool:
+    """Whether bedrock.jobs_target_set exists. Only a yes is cached, so Jac
+    applying the migration lights the feature up without a restart."""
+    if "jobs_target_set" in _TABLE_SEEN:
+        return True
+    found = bool(await get_pool().fetchval("SELECT to_regclass('bedrock.jobs_target_set') IS NOT NULL"))
+    if found:
+        _TABLE_SEEN.add("jobs_target_set")
+    return found
+
+
+async def _flow_target_set(conn, owner_f, slugs: Optional[list] = None) -> Optional[dict]:
+    """The target set, split into processed (any outreach stage, Assigned
+    included) and outstanding (no stage yet). Same owner and campaign cut as
+    Total contact pool. None until the migration runs."""
+    if not await _has_target_set():
+        return None
+    owner = owner_f if owner_f and _SAFE_EMAIL.match(owner_f) else None
+    rows = await conn.fetch(f"""
+        SELECT t.contact_id, (m.contact_id IS NOT NULL) AS processed
+        FROM bedrock.jobs_target_set t
+        JOIN public.contacts c ON c.contact_id = t.contact_id
+        LEFT JOIN bedrock.jobs_contact_membership m ON m.contact_id = t.contact_id
+        WHERE ($1::text IS NULL OR lower({_FLOW_CONTACT_OWNER}) = $1) AND {_campaign_contact_sql(slugs)}
+    """, owner)
+    processed = sorted(str(r["contact_id"]) for r in rows if r["processed"])
+    outstanding = sorted(str(r["contact_id"]) for r in rows if not r["processed"])
+    return {"total": len(rows), "processed": processed, "outstanding": outstanding}
+
+
 async def _flow_universe(conn, owner_f, slugs: Optional[list] = None) -> int:
     owner = owner_f if owner_f and _SAFE_EMAIL.match(owner_f) else None
     n = await conn.fetchval(f"""
@@ -4254,6 +4288,7 @@ async def get_stage_flow(
     prev = await _flow_moved(conn, owner_f, dt_f, p_from - span, p_from, have_history, rt_f, camp_c, camp_o)
     act_rows, has_call_kind = await _flow_activity(conn, owner_f, p_from, p_to, span, slugs)
     universe_n = await _flow_universe(conn, owner_f, slugs)
+    target_set = await _flow_target_set(conn, owner_f, slugs)
     await _flow_mark_advanced(conn, moved)
     moved.sort(key=lambda m: m["at"], reverse=True)
     members.sort(key=lambda m: -m["days"])
@@ -4386,15 +4421,24 @@ async def get_stage_flow(
         "target_weekly": None, "target_source": None, "target_source_label": None,
         "target": None, "delta": None, "conversion": None,
     }
+    # The jobs prospects chosen for outreach, beneath the universe, with how many
+    # have been processed (any stage) and how many are still outstanding.
+    target_row = {
+        **universe, "key": "target_set", "label": "Target set", "depth": 1,
+        "available": target_set is not None,
+        "in_now": {"total": target_set["total"], "cells": None} if target_set else None,
+        "target_set": ({"processed": target_set["processed"], "outstanding": target_set["outstanding"]}
+                       if target_set else None),
+    }
     bands = [
         {"key": "outreach", "label": "Outreach", "unit": "contacts",
-         "rows": [universe] + _outreach_stage_rows()
-                 + [_row("outreach", "contact_closed", "Outreach outcome", True, children=closed_keys)]
+         "rows": [universe, target_row] + _outreach_stage_rows()
+                 + [_row("outreach", "contact_closed", "Contact outcome", True, children=closed_keys)]
                  + [_row("outreach", k, lbl, True, depth=1) for k, lbl in _FLOW_CONTACT_CLOSED]},
         {"key": "pipeline", "label": "Pipeline", "unit": "opportunities",
          "rows": [_row("pipeline", k, STAGE_LABELS.get(k, k), True) for k in OPPORTUNITY_STAGES_ACTIVE]
                  # Closed sums the two outcomes, each indented beneath it, the
-                 # same shape as Outreach outcome (Kwame 2026-10-08).
+                 # same shape as Contact outcome (Kwame 2026-10-08).
                  + [_row("pipeline", "closed", "Closed", False, children=[k for k, _ in _FLOW_DEAL_TERMINAL])]
                  + [_row("pipeline", k, lbl, False, depth=1) for k, lbl in _FLOW_DEAL_TERMINAL]},
     ]
@@ -9730,6 +9774,41 @@ async def bulk_set_contact_owner(
     res = await conn.execute(
         "UPDATE public.contacts SET owner_email = $2, updated_at = now() WHERE contact_id = ANY($1::int[])",
         ids, owner)
+    n = int(res.split()[-1]) if res and res.split()[-1].isdigit() else 0
+    return {"success": True, "data": {"updated": n}}
+
+
+class BulkTargetSet(BaseModel):
+    contact_ids: list[int]
+    value: bool = True   # true = add to the target set; false = remove
+
+
+@router.post("/contacts/bulk-target-set")
+async def bulk_set_target_set(
+    body: BulkTargetSet,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Add contacts to (or remove them from) the target set. Adding also marks
+    them as jobs prospects, so the target set stays inside Total contact pool."""
+    ids = sorted({int(i) for i in body.contact_ids})
+    if not ids:
+        return {"success": True, "data": {"updated": 0}}
+    if not await _has_target_set():
+        raise HTTPException(409, f"Target set needs migration {_TARGET_SET_MIGRATION}")
+    async with conn.transaction():
+        if body.value:
+            res = await conn.execute(
+                "INSERT INTO bedrock.jobs_target_set (contact_id, added_by) "
+                "SELECT contact_id, $2 FROM public.contacts WHERE contact_id = ANY($1::int[]) "
+                "ON CONFLICT (contact_id) DO NOTHING",
+                ids, _user_email(user))
+            await conn.execute(
+                "UPDATE public.contacts SET is_jobs_contact = true, updated_at = now() "
+                "WHERE contact_id = ANY($1::int[]) AND NOT is_jobs_contact", ids)
+        else:
+            res = await conn.execute(
+                "DELETE FROM bedrock.jobs_target_set WHERE contact_id = ANY($1::int[])", ids)
     n = int(res.split()[-1]) if res and res.split()[-1].isdigit() else 0
     return {"success": True, "data": {"updated": n}}
 
