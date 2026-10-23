@@ -292,13 +292,13 @@ function BandHeader({ band, cols, right, pool, netNew, poolTitle, netNewTitle, o
   );
 }
 
-function StageLabel({ row, toggle }: { row: StageFlowRow; toggle?: React.ReactNode }) {
+function StageLabel({ row, toggle, muted }: { row: StageFlowRow; toggle?: React.ReactNode; muted?: boolean }) {
   const depth = row.depth ?? 0;
   const pending = !row.available;
   return (
     <td className={cn("whitespace-nowrap py-2.5 pr-4 text-left",
-      depth === 0 ? "font-semibold" : "font-normal",
-      pending ? "text-ink-4" : "text-ink")}
+      depth === 0 && !muted ? "font-semibold" : "font-normal",
+      pending || muted ? "text-ink-4" : "text-ink")}
       style={{ paddingLeft: `${14 + depth * 20}px` }}>
       {depth > 0 && <span className="mr-1.5 text-ink-4">↳</span>}
       {row.label}
@@ -554,7 +554,7 @@ function UniverseRow({ row, cols, onDrill }: { row: StageFlowRow; cols: number; 
           title={`${all.length} in the target set`} />
         {all.length > 0 && (
           <button type="button" onClick={() => setSummary(!summary)} aria-expanded={summary}
-            className="mt-1 inline-flex items-center gap-0.5 text-[10.5px] font-medium text-ink-3 hover:text-accent">
+            className="mt-1 inline-flex items-center gap-0.5 whitespace-nowrap text-[10.5px] font-medium text-ink-3 hover:text-accent">
             Summarize outreach {summary ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
           </button>
         )}
@@ -563,11 +563,14 @@ function UniverseRow({ row, cols, onDrill }: { row: StageFlowRow; cols: number; 
   } else if (!pending) {
     cell = (row.in_now?.total ?? 0).toLocaleString();
   }
+  // Total contact pool is reference, not a number we index on (Kwame
+  // 2026-10-23): grey label and number, regular weight.
+  const muted = row.key === "total_pool";
   return (
     <>
     <tr className="border-b border-border text-[13.5px]" title={UNIVERSE_TIP[row.key]}>
-      <StageLabel row={row} />
-      <td className={cn(TD, HL, (row.depth ?? 0) === 0 && "font-semibold")}>{cell}</td>
+      <StageLabel row={row} muted={muted} />
+      <td className={cn(TD, HL, muted ? "font-normal text-ink-4" : (row.depth ?? 0) === 0 && "font-semibold")}>{cell}</td>
       <td className={cn(TD, HL_ACT, "border-l-2 border-border-strong")}>{dash}</td>
       <td className={TD}>{dash}</td>
       <td className={TD}>{dash}</td>
@@ -900,7 +903,7 @@ function StageFlowDrill({ drill, data, nameOf, onClose }: {
   if (drill.kind === "ids" && drill.ids) {
     const recs: WorkbenchRecord[] = drill.ids.map((id) => ({ id, stage: "target_set", when: "", extra: [] }));
     return (
-      <StageFlowWorkbench band="outreach" title={drill.label}
+      <StageFlowWorkbench band="outreach" title={drill.label} byAccount
         subtitle={`${recs.length.toLocaleString()} contacts · ${drill.note ?? ""}`}
         isPool={false} contextHead={[]} records={recs} stageLabel={stageLabel} nameOf={nameOf} onClose={onClose} />
     );
