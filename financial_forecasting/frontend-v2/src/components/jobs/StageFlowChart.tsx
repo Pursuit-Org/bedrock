@@ -903,7 +903,7 @@ function StageFlowDrill({ drill, data, nameOf, onClose }: {
   if (drill.kind === "ids" && drill.ids) {
     const recs: WorkbenchRecord[] = drill.ids.map((id) => ({ id, stage: "target_set", when: "", extra: [] }));
     return (
-      <StageFlowWorkbench band="outreach" title={drill.label} byAccount
+      <StageFlowWorkbench band="outreach" title={drill.label}
         subtitle={`${recs.length.toLocaleString()} contacts · ${drill.note ?? ""}`}
         isPool={false} contextHead={[]} records={recs} stageLabel={stageLabel} nameOf={nameOf} onClose={onClose} />
     );
