@@ -1,5 +1,12 @@
 # Bedrock PR Roadmap
 
+## Personal Salesforce client failure containment — October 23, 2026
+
+Extract the identical strict-client guard and regression controls from the reviewed
+lock, opportunity and automation candidates. Preserve explicitly permissive background
+callers. Validate per-request-client tests with the isolated provider/network harness.
+No production calls, migration, merge or deployment.
+
 > Master tracker for all planned PRs. Each PR has a detailed plan in `tasks/prs/`.
 > Update checkboxes as work progresses.
 
