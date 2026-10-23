@@ -3574,6 +3574,10 @@ async def update_task(
                 fields.pop("WhatId", None)  # Strip WhatId to prevent relocation
             else:
                 raise HTTPException(403, "This task's opportunity is locked")
+        else:
+            await _enforce_record_ownership(
+                salesforce, "Task", task_id, user, edit_all_perm="edit_all_tasks"
+            )
 
         await salesforce.update_record("Task", task_id, fields)
         cache.invalidate_prefix("my-tasks:")
@@ -3612,6 +3616,10 @@ async def delete_task(
         lock_info = await resolve_task_lock(task_id, user, db, salesforce)
         if lock_info["is_locked"] and not lock_info["is_lock_owner"] and not lock_info["is_admin"]:
             raise HTTPException(403, "Cannot delete tasks from a locked opportunity")
+        if not lock_info["is_locked"]:
+            await _enforce_record_ownership(
+                salesforce, "Task", task_id, user, edit_all_perm="edit_all_tasks"
+            )
         await salesforce.delete_record("Task", task_id)
         cache.invalidate_prefix("my-tasks:")
         cache.invalidate_prefix("account-tasks:")

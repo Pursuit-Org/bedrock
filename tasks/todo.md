@@ -1,5 +1,19 @@
 # Bedrock PR Roadmap
 
+## bedrock-task-ownership — October 22, 2026
+
+Enforce actual Salesforce ownership for unlocked task updates/deletes using the existing ownership helper. Preserve lock-holder/admin exceptions, task-owner field edits under another lock, edit-all behavior and error semantics.
+
+- [x] Reconcile fresh independent investigation with implementation and callers.
+- [x] Establish focused failing security and legitimate controls.
+- [x] Implement and run focused, alternate-input and neighboring checks.
+- [x] Complete independent read-only candidate review (no actionable findings).
+
+Independent uncommitted security patch; no live provider/database calls or deployment.
+
+Local validation: 108 passed (27 focused, 81 permission/task dependency neighbors). Python syntax and diff checks pass. Independent candidate
+review passed; production/provider acceptance remains unverified.
+
 > Master tracker for all planned PRs. Each PR has a detailed plan in `tasks/prs/`.
 > Update checkboxes as work progresses.
 
