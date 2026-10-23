@@ -3211,7 +3211,7 @@ export interface StageFlowRow {
   unlinked?: number;
   /** Target set row only: contact ids with any outreach stage (processed) and
    *  with none yet (outstanding). Null until its migration runs. */
-  target_set?: { processed: string[]; outstanding: string[] } | null;
+  target_set?: { processed: string[]; outstanding: string[]; by_stage?: Record<string, string[]> } | null;
   /** Of the Net New, how many are further along today. Null on exits,
    *  summaries and activity rows; absent on older APIs. */
   conversion?: { on: number; of: number } | null;

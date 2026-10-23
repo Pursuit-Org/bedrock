@@ -548,15 +548,19 @@ def _no_target_cache():
 
 def test_target_set_sits_under_the_pool_split_processed_and_outstanding(_no_target_cache):
     conn = FakeConn(vals={TS_PROBE: True, POOL: 7745},
-                    lists={TS_ROWS: [{"contact_id": 3, "processed": True}, {"contact_id": 1, "processed": False},
-                                     {"contact_id": 2, "processed": False}]})
+                    lists={TS_ROWS: [{"contact_id": 3, "processed": True, "stage": "not_a_fit"},
+                                     {"contact_id": 4, "processed": True, "stage": "on_hold"},
+                                     {"contact_id": 1, "processed": False, "stage": None},
+                                     {"contact_id": 2, "processed": False, "stage": None}]})
     d = make_jobs_client(conn).get(f"/api/jobs/stage-flow?period_from={P_FROM}&period_to={P_TO}").json()["data"]
     rows = d["bands"][0]["rows"]
     assert [r["key"] for r in rows[:2]] == ["total_pool", "target_set"]
     ts = rows[1]
     assert ts["kind"] == "universe" and ts["available"] is True and ts["depth"] == 0
-    assert ts["in_now"] == {"total": 3, "cells": None}
-    assert ts["target_set"] == {"processed": ["3"], "outstanding": ["1", "2"]}
+    assert ts["in_now"] == {"total": 4, "cells": None}
+    assert ts["target_set"] == {"processed": ["3", "4"], "outstanding": ["1", "2"],
+                                # Retired on_hold reads as Revisit.
+                                "by_stage": {"not_a_fit": ["3"], "revisit": ["4"]}}
     # Processed = any membership stage at all; the universe filters still apply.
     q = next(x[1] for x in conn.calls if TS_ROWS in x[1])
     assert "LEFT JOIN bedrock.jobs_contact_membership m" in q and "m.contact_id IS NOT NULL" in q

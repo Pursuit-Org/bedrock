@@ -4138,7 +4138,7 @@ async def _flow_target_set(conn, owner_f, slugs: Optional[list] = None) -> Optio
         return None
     owner = owner_f if owner_f and _SAFE_EMAIL.match(owner_f) else None
     rows = await conn.fetch(f"""
-        SELECT t.contact_id, (m.contact_id IS NOT NULL) AS processed
+        SELECT t.contact_id, (m.contact_id IS NOT NULL) AS processed, m.stage
         FROM bedrock.jobs_target_set t
         JOIN public.contacts c ON c.contact_id = t.contact_id
         LEFT JOIN bedrock.jobs_contact_membership m ON m.contact_id = t.contact_id
@@ -4146,7 +4146,14 @@ async def _flow_target_set(conn, owner_f, slugs: Optional[list] = None) -> Optio
     """, owner)
     processed = sorted(str(r["contact_id"]) for r in rows if r["processed"])
     outstanding = sorted(str(r["contact_id"]) for r in rows if not r["processed"])
-    return {"total": len(rows), "processed": processed, "outstanding": outstanding}
+    # Where each processed contact sits now, for the Summarize outreach bar
+    # (Kwame 2026-10-23). Retired on_hold folds into revisit.
+    by_stage: dict = {}
+    for r in rows:
+        if r["processed"]:
+            by_stage.setdefault(canon_membership_stage(r["stage"]), []).append(str(r["contact_id"]))
+    return {"total": len(rows), "processed": processed, "outstanding": outstanding,
+            "by_stage": {k: sorted(v) for k, v in by_stage.items()}}
 
 
 async def _flow_universe(conn, owner_f, slugs: Optional[list] = None) -> int:
@@ -4428,8 +4435,8 @@ async def get_stage_flow(
         **universe, "key": "target_set", "label": "Target set",
         "available": target_set is not None,
         "in_now": {"total": target_set["total"], "cells": None} if target_set else None,
-        "target_set": ({"processed": target_set["processed"], "outstanding": target_set["outstanding"]}
-                       if target_set else None),
+        "target_set": ({"processed": target_set["processed"], "outstanding": target_set["outstanding"],
+                        "by_stage": target_set["by_stage"]} if target_set else None),
     }
     bands = [
         {"key": "outreach", "label": "Outreach", "unit": "contacts",

@@ -542,6 +542,7 @@ const UNIVERSE_TIP: Record<string, string> = {
 function UniverseRow({ row, cols, onDrill }: { row: StageFlowRow; cols: number; onDrill: (d: Drill) => void }) {
   const dash = <span className="text-ink-4">—</span>;
   const split = row.target_set;
+  const [summary, setSummary] = useSessionState<boolean>("jobsOverview.stageFlow.targetSummary", false);
   const list = (ids: string[], label: string, note: string) =>
     onDrill({ kind: "ids", band: "outreach", stages: [row.key], label, col: null, ids, note });
   const pending = !row.available || !row.in_now;
@@ -567,12 +568,19 @@ function UniverseRow({ row, cols, onDrill }: { row: StageFlowRow; cols: number; 
             </button>
           </span>
         )}
+        {all.length > 0 && (
+          <button type="button" onClick={() => setSummary(!summary)} aria-expanded={summary}
+            className="mt-1 inline-flex items-center gap-0.5 text-[10.5px] font-medium text-ink-3 hover:text-accent">
+            Summarize outreach {summary ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
+          </button>
+        )}
       </span>
     );
   } else if (!pending) {
     cell = (row.in_now?.total ?? 0).toLocaleString();
   }
   return (
+    <>
     <tr className="border-b border-border text-[13.5px]" title={UNIVERSE_TIP[row.key]}>
       <StageLabel row={row} />
       <td className={cn(TD, HL, (row.depth ?? 0) === 0 && "font-semibold")}>{cell}</td>
@@ -585,6 +593,98 @@ function UniverseRow({ row, cols, onDrill }: { row: StageFlowRow; cols: number; 
         <td key={i} className={cn("px-2 py-2.5", i === 0 && "border-l border-border-strong")} />
       ))}
     </tr>
+    {summary && split && !pending && (
+      <tr className="border-b border-border bg-bg">
+        <td colSpan={7 + cols} className="px-4 py-3">
+          <TargetSetSummary split={split} onList={list} />
+        </td>
+      </tr>
+    )}
+    </>
+  );
+}
+
+// Summarize outreach (Kwame 2026-10-23): where everyone in the target set is
+// now. Four groups that always add up to the Target set number, ordered by how
+// far along they are. One blue ramp, light (not started) to dark (done),
+// validated as an ordinal palette (one hue, monotone lightness, light end
+// clears the surface at 2:1).
+const TS_GROUPS: { key: string; label: string; color: string; stages: string[] | null; hint: string }[] = [
+  { key: "outcome", label: "Contact outcome", color: "#14356B",
+    stages: ["converted_to_opportunity", "revisit", "not_a_fit"], hint: "Converted, Revisit or Not a fit" },
+  { key: "pipeline", label: "In pipeline", color: "#2563C4",
+    stages: ["initial_outreach", "scheduling", "call_booked"], hint: "Initial outreach, Scheduling or Discovery call" },
+  { key: "assigned", label: "Assigned", color: "#4E90E8", stages: ["assigned"], hint: "assigned for outreach, not yet contacted" },
+  { key: "none", label: "Not outreached", color: "#8AB6EF", stages: null, hint: "no outreach stage yet" },
+];
+const TS_STAGE_LABEL: Record<string, string> = {
+  converted_to_opportunity: "Converted", revisit: "Revisit", not_a_fit: "Not a fit",
+  initial_outreach: "Initial outreach", scheduling: "Scheduling", call_booked: "Discovery call",
+};
+
+function TargetSetSummary({ split, onList }: {
+  split: NonNullable<StageFlowRow["target_set"]>;
+  onList: (ids: string[], label: string, note: string) => void;
+}) {
+  const by = split.by_stage ?? {};
+  const known = new Set(TS_GROUPS.flatMap((g) => g.stages ?? []));
+  const groups = TS_GROUPS.map((g) => {
+    let ids: string[];
+    if (g.stages === null) ids = split.outstanding;
+    else {
+      ids = g.stages.flatMap((st) => by[st] ?? []);
+      // Any stage outside the map (a future one) rides with In pipeline, so
+      // the four groups always add up to the target set.
+      if (g.key === "pipeline") ids = ids.concat(Object.entries(by).filter(([st]) => !known.has(st)).flatMap(([, v]) => v));
+    }
+    const parts = (g.stages ?? []).map((st) => ({ label: TS_STAGE_LABEL[st] ?? st, n: (by[st] ?? []).length })).filter((x) => x.n > 0);
+    return { ...g, ids, parts };
+  });
+  const total = groups.reduce((a, g) => a + g.ids.length, 0);
+  const pct = (n: number) => (total ? Math.round((n / total) * 100) : 0);
+  const shown = groups.filter((g) => g.ids.length > 0);
+  return (
+    <div className="flex flex-col gap-2.5">
+      <div className="flex items-baseline justify-between text-[12px]">
+        <span className="font-semibold text-ink">Target set · {total.toLocaleString()} contacts</span>
+        <span className="text-ink-4">
+          {(total - split.outstanding.length).toLocaleString()} processed ({pct(total - split.outstanding.length)}%)
+          {" · "}{split.outstanding.length.toLocaleString()} outstanding ({pct(split.outstanding.length)}%)
+        </span>
+      </div>
+      {/* One 100% bar: segments in progress order, 2px surface gaps, rounded
+          outer ends. Each segment opens its contacts. */}
+      <div className="flex h-4 w-full gap-[2px]" role="img"
+        aria-label={groups.map((g) => `${g.label} ${g.ids.length}`).join(", ")}>
+        {shown.map((g, i) => (
+          <button key={g.key} type="button"
+            onClick={() => onList(g.ids, `Target set · ${g.label}`, g.hint)}
+            title={`${g.label}: ${g.ids.length.toLocaleString()} (${pct(g.ids.length)}%), ${g.hint}. Click to list them.`}
+            className={cn("h-full min-w-[3px] transition-opacity hover:opacity-80",
+              i === 0 && "rounded-l", i === shown.length - 1 && "rounded-r")}
+            style={{ width: `${(g.ids.length / total) * 100}%`, background: g.color }} />
+        ))}
+      </div>
+      {/* Legend: identity never by color alone, and every number is here. */}
+      <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 sm:grid-cols-4">
+        {groups.map((g) => (
+          <button key={g.key} type="button" disabled={g.ids.length === 0}
+            onClick={() => onList(g.ids, `Target set · ${g.label}`, g.hint)}
+            className="flex items-start gap-2 rounded text-left disabled:cursor-default enabled:hover:bg-surface-2">
+            <span className="mt-[3px] h-2.5 w-2.5 shrink-0 rounded-sm" style={{ background: g.color }} />
+            <span className="flex flex-col leading-tight">
+              <span className="text-[12px] font-medium text-ink">
+                {g.label} <span className="tabular-nums text-ink-2">{g.ids.length.toLocaleString()}</span>
+                <span className="ml-1 tabular-nums text-ink-4">{pct(g.ids.length)}%</span>
+              </span>
+              <span className="text-[10.5px] text-ink-4">
+                {(g.stages?.length ?? 0) > 1 && g.parts.length ? g.parts.map((x) => `${x.label} ${x.n}`).join(" · ") : g.hint}
+              </span>
+            </span>
+          </button>
+        ))}
+      </div>
+    </div>
   );
 }
 
