@@ -534,7 +534,7 @@ function ConversionCell({ row, pending, onDrill }: { row: StageFlowRow; pending:
 const UNIVERSE_TIP: Record<string, string> = {
   total_pool: "Contacts flagged as jobs prospects. With campaigns checked: contacts in any of them.",
   target_set: "Jobs prospects chosen for outreach (add them from Contacts › Add to target set). "
-    + "Summarize outreach shows how many have closed, are in pipeline, or haven't been outreached yet.",
+    + "Summarize outreach shows how many have closed, are in pipeline, or aren't in the pipeline yet.",
 };
 
 /** Outreach Pool rows: every jobs prospect, and the target set beneath it with
@@ -591,17 +591,18 @@ function UniverseRow({ row, cols, onDrill }: { row: StageFlowRow; cols: number; 
 
 // Summarize outreach (Kwame 2026-10-23): where everyone in the target set is
 // now. Three groups that always add up to the Target set number, ordered by
-// how far along they are: closed, in pipeline, not outreached yet (Assigned
-// counts here: assigned but not contacted). One blue ramp, light (not started)
+// how far along they are: closed, in pipeline (Assigned included), not in
+// pipeline (no stage at all). One blue ramp, light (not started)
 // to dark (done), validated as an ordinal palette (one hue, monotone
 // lightness, light end clears the surface at 2:1).
 const TS_GROUPS: { key: string; label: string; color: string; stages: string[]; unstaged?: boolean; hint: string }[] = [
   { key: "outcome", label: "Contact outcome", color: "#14356B",
     stages: ["converted_to_opportunity", "revisit", "not_a_fit"], hint: "Converted, Revisit or Not a fit" },
   { key: "pipeline", label: "In pipeline", color: "#2563C4",
-    stages: ["initial_outreach", "scheduling", "call_booked"], hint: "Initial outreach, Scheduling or Discovery call" },
-  { key: "none", label: "Not outreached", color: "#8AB6EF", stages: ["assigned"], unstaged: true,
-    hint: "Assigned but not contacted, or no stage yet" },
+    stages: ["assigned", "initial_outreach", "scheduling", "call_booked"],
+    hint: "Assigned, Initial outreach, Scheduling or Discovery call" },
+  { key: "none", label: "Not in pipeline", color: "#8AB6EF", stages: [], unstaged: true,
+    hint: "no outreach stage yet" },
 ];
 const TS_STAGE_LABEL: Record<string, string> = {
   converted_to_opportunity: "Converted", revisit: "Revisit", not_a_fit: "Not a fit",
@@ -623,7 +624,7 @@ function TargetSetSummary({ split, onList }: {
     const parts = g.stages.map((st) => ({ label: TS_STAGE_LABEL[st] ?? st, n: (by[st] ?? []).length }));
     if (g.unstaged) {
       ids = ids.concat(split.outstanding);
-      parts.push({ label: "No stage", n: split.outstanding.length });
+      parts.push({ label: "No stage yet", n: split.outstanding.length });
     }
     return { ...g, ids, parts };
   });
@@ -659,7 +660,7 @@ function TargetSetSummary({ split, onList }: {
                 <span className="ml-1 tabular-nums text-ink-4">{pct(g.ids.length)}%</span>
               </span>
               <span className="text-[10.5px] text-ink-4">
-                {g.parts.map((x) => `${x.label} ${x.n.toLocaleString()}`).join(" · ")}
+                {g.stages.length ? g.parts.map((x) => `${x.label} ${x.n.toLocaleString()}`).join(" · ") : g.hint}
               </span>
             </span>
           </button>
