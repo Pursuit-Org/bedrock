@@ -1,21 +1,25 @@
--- Target set: the jobs prospects the team has chosen to work (Kwame 2026-10-23).
+-- Target List: the jobs prospects the team has chosen to work (Kwame 2026-10-23).
 --
--- A yes/no on a contact. Present in this table = in the target set. Stage Flow's
--- Outreach Pool band reads it: Total contact pool (every jobs prospect), then
--- Target set beneath it, split into processed (has any outreach stage) and
--- outstanding (no stage yet). Each week the team assigns a slice of the target
--- set for outreach, so outstanding is the backlog still to start.
+-- A yes/no on a contact. Present in this table = on the Target List. Shown as a
+-- checkbox column on Contacts (with bulk Add / Remove) and as a Yes/No field on
+-- the contact panel. Stage Flow's Outreach Pool band reads it: the Target List
+-- count, and Summarize outreach splits it into Contact Outcome, In pipeline and
+-- Not in pipeline, against the total contact pool it is drawn from. Each week
+-- the team assigns a slice of the list for outreach.
 --
--- Its own table rather than a column on public.contacts: contacts is shared with
--- the learning platform, and a Bedrock-only flag belongs in the bedrock schema.
--- Rows are deleted, not soft-deleted, on removal: the flag has no history to
--- report on yet. Add an audit table later if "when did this enter the set"
--- becomes a question.
+-- Adding a contact also sets public.contacts.is_jobs_contact = true (the
+-- Target List is a subset of jobs prospects). Removing does not unset it.
+--
+-- Its own table rather than a column: public.contacts is shared with the
+-- learning platform, and bedrock.jobs_contact_membership only exists while a
+-- contact holds a stage (most of the list has none yet, and clearing a stage
+-- deletes that row). Rows are deleted, not soft-deleted, on removal; added_by
+-- and added_at record who put each contact on the list and when.
 --
 -- Additive only: no existing table or row changes. The app probes for this
--- table on each request; until it exists the Target set row reads "pending
--- migration" and the Add / Remove buttons on Contacts return a 409 naming this
--- file. Applying it needs no redeploy and no restart.
+-- table on each request; until it exists the Target List row reads "pending
+-- migration" and Add / Remove on Contacts return a 409 naming this file.
+-- Applying it needs no redeploy and no restart.
 
 BEGIN;
 
