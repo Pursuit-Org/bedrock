@@ -31,6 +31,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from mcp_client import UnifiedMCPClient
+from services.record_authorization import enforce_record_ownership as _enforce_record_ownership, enforce_opportunity_mutation
 from models import (
     SalesforceOpportunity, SalesforceAccount, IntacctInvoice, IntacctPayment,
     PaymentForecast, CashFlowProjection, ForecastingMetrics, ForecastingReport,
@@ -673,40 +674,8 @@ async def update_opportunity(
     """Update a Salesforce opportunity."""
     validate_salesforce_id(opportunity_id, "opportunity_id")
     try:
-        # Extract permission context (shared by lock, ownership, and reassignment checks)
-        perms = user.get("_permissions", {})
-        sf_user_id = (user.get("_app_user") or {}).get("sf_user_id")
-        is_admin = perms.get("manage_users_roles", False)
-        has_edit_all = perms.get("edit_all_opportunities", False)
         salesforce = client.salesforce
-
-        # Enforce opportunity lock — only owner or admin can edit locked opportunities
-        lock = await db.fetchrow(
-            "SELECT locked_by FROM bedrock.opportunity_lock WHERE sf_opportunity_id = $1", opportunity_id
-        )
-        if lock:
-            is_lock_owner = (lock["locked_by"] == sf_user_id)
-            if not is_lock_owner and not is_admin:
-                raise HTTPException(status_code=403, detail="This opportunity is locked by its owner")
-
-        # Ownership enforcement — edit_own vs edit_all
-        if not is_admin and not has_edit_all:
-            # User only has edit_own — verify they own this opportunity
-            if sf_user_id:
-                current_opp = await salesforce.query(
-                    f"SELECT OwnerId FROM Opportunity WHERE Id = '{opportunity_id}' LIMIT 1"
-                )
-                records = current_opp.get("records", [])
-                if records:
-                    current_owner = records[0].get("OwnerId")
-                    if current_owner != sf_user_id:
-                        raise HTTPException(status_code=403, detail="You can only edit opportunities you own")
-
-        # OwnerId reassignment requires reassign_opportunities permission
-        if "OwnerId" in update_request.updates:
-            if not is_admin:
-                if not perms.get("reassign_opportunities", False):
-                    raise HTTPException(status_code=403, detail="You don't have permission to reassign opportunities")
+        await enforce_opportunity_mutation(salesforce, opportunity_id, user, db, update_request.updates)
 
         success = await salesforce.update_record(
             "Opportunity",
@@ -768,6 +737,7 @@ async def delete_opportunity(
     opportunity_id: str,
     client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user = Depends(check_permission_or_internal("edit_own_opportunities")),
+    db = Depends(get_db),
 ):
     """Delete a Salesforce Opportunity.
 
@@ -776,10 +746,9 @@ async def delete_opportunity(
 
     Auth (PR #169): `check_permission_or_internal("edit_own_opportunities")`
     is the outer gate — matches update_opportunity's permission key so the
-    permission profile already grants the right users. `_enforce_record_ownership`
-    then restricts deletes to the opp's owner, admins, or users with
-    `edit_all_opportunities`. Service callers (is_service=True) short-circuit
-    inside the helper for Pebble CRM-write.
+    permission profile already grants the right users. Human callers must also
+    satisfy the opportunity lock and ownership policy. The explicit internal
+    service contract (is_service=True) remains available for Pebble CRM-write.
 
     Cascade invalidation: child tasks/payments + stage rollups all become
     stale when an opp goes away.
@@ -787,9 +756,8 @@ async def delete_opportunity(
     validate_salesforce_id(opportunity_id, "opportunity_id")
     try:
         salesforce = client.salesforce
-        await _enforce_record_ownership(
-            salesforce, "Opportunity", opportunity_id, user, "edit_all_opportunities",
-        )
+        if not user.get("is_service"):
+            await enforce_opportunity_mutation(salesforce, opportunity_id, user, db)
         success = await salesforce.delete_record("Opportunity", opportunity_id)
         if not success:
             raise HTTPException(400, "Salesforce rejected the delete")
@@ -2241,69 +2209,6 @@ class PaymentCreateRequest(BaseModel):
         return v
 
 
-async def _enforce_record_ownership(
-    salesforce,
-    sobject: str,
-    record_id: str,
-    user: Dict[str, Any],
-    edit_all_perm: Optional[str] = None,
-) -> None:
-    """Raise HTTPException(403/404) unless `user` may mutate `record_id` on `sobject`.
-
-    Generalized 2026-04-21 (PR #169) from the Opp-only helper shipped in PR #163
-    so Account/Contact/Opportunity write endpoints share one ownership path.
-    Payment write endpoints pass `sobject="Opportunity"` + the parent Opp's Id
-    (resolved upstream) + `edit_all_perm="edit_all_opportunities"` — identical
-    behavior to the prior helper.
-
-    Bypass order (first match wins — no SF query):
-      1. Service callers (`is_service=True`). check_permission_or_internal
-         sets this without populating _permissions / _app_user, so the
-         service-account branch MUST come first. Load-bearing for Pebble
-         CRM-write against Account/Contact/Payment endpoints that use
-         check_permission_or_internal; unreachable no-op for any future
-         caller still gated on check_permission.
-      2. Admin (`manage_users_roles`).
-      3. Per-resource "edit-all" permission when the caller opts in
-         (e.g. `edit_all_opportunities` for Opportunity and Payment).
-         Account + Contact have no edit-all key in PERMISSION_KEYS
-         (routes/permissions.py:19-34), so their callers pass `None` and
-         get admin-only bypass.
-
-    Otherwise: SOQL `SELECT OwnerId FROM {sobject} WHERE Id = '{safe_id}'`
-    and compare against the caller's `sf_user_id`. 404 if the record is
-    absent; 403 on OwnerId mismatch or when the user isn't linked to a
-    Salesforce user (can't evaluate ownership — deny, safer than permit).
-    """
-    # 1. Service-account bypass — check_permission_or_internal sets is_service
-    #    without populating _permissions / _app_user, so guard first.
-    if user.get("is_service"):
-        return
-    perms = user.get("_permissions", {})
-    # 2. Admin bypass (manage_users_roles).
-    if perms.get("manage_users_roles", False):
-        return
-    # 3. Per-resource edit-all bypass (caller opt-in).
-    if edit_all_perm and perms.get(edit_all_perm, False):
-        return
-    sf_user_id = (user.get("_app_user") or {}).get("sf_user_id")
-    if not sf_user_id:
-        raise HTTPException(
-            status_code=403,
-            detail=f"Cannot verify {sobject.lower()} ownership — user is not linked to a Salesforce user",
-        )
-    safe_id = escape_soql_string(record_id)
-    result = await salesforce.query(
-        f"SELECT OwnerId FROM {sobject} WHERE Id = '{safe_id}' LIMIT 1"
-    )
-    records = result.get("records", [])
-    if not records:
-        raise HTTPException(status_code=404, detail=f"{sobject} not found")
-    if records[0].get("OwnerId") != sf_user_id:
-        raise HTTPException(
-            status_code=403,
-            detail=f"You can only modify {sobject.lower()}s you own",
-        )
 
 
 @app.put("/api/salesforce/accounts/{account_id}")

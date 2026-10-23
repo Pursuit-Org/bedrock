@@ -16,6 +16,7 @@ from routes.permissions import check_permission
 from security import validate_salesforce_id, escape_soql_string
 from sf_errors import sf_http_error
 from services.awards_service import ensure_for_opp as ensure_award_for_opp
+from services.record_authorization import enforce_opportunity_mutation
 from services.cache import cache, CACHE_TTL_STAGE_HISTORY
 
 logger = logging.getLogger(__name__)
@@ -297,9 +298,9 @@ async def bulk_update_opportunities(
     body: dict,
     client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user=Depends(check_permission("bulk_update_opportunities")),
+    db=Depends(get_db),
 ):
     """Bulk update multiple Salesforce opportunities at once."""
-    # TODO: Phase 3 — use per-user SF tokens when available for write attribution
     try:
         salesforce = client.salesforce
         opp_ids = body.get("opportunity_ids", [])
@@ -314,7 +315,9 @@ async def bulk_update_opportunities(
         for opp_id in opp_ids:
             try:
                 validate_salesforce_id(opp_id, "opportunity_id")
-                await salesforce.update_record("Opportunity", opp_id, updates)
+                await enforce_opportunity_mutation(salesforce, opp_id, user, db, updates)
+                if not await salesforce.update_record("Opportunity", opp_id, updates):
+                    raise HTTPException(502, "Salesforce did not confirm the update")
                 success_count += 1
             except Exception as e:
                 logger.warning(f"Failed to update opportunity {opp_id}: {e}")
@@ -458,13 +461,16 @@ async def update_opportunity_stage(
 
         validate_salesforce_id(opp_id, "opportunity_id")
 
+        await enforce_opportunity_mutation(salesforce, opp_id, user, conn)
+
         # Validate stage change
         validation_result = await _validate_stage_change_logic(opp_id, new_stage, salesforce)
         if not validation_result.get("can_proceed"):
             raise HTTPException(status_code=400, detail=validation_result)
 
         # Update stage
-        await salesforce.update_record("Opportunity", opp_id, {"StageName": new_stage})
+        if not await salesforce.update_record("Opportunity", opp_id, {"StageName": new_stage}):
+            raise HTTPException(502, "Salesforce did not confirm the update")
         cache.invalidate_prefix("opps:")
         cache.invalidate_prefix("stage_history")
         # Account status (Prospect/Pursuing/Stewarding) is derived
