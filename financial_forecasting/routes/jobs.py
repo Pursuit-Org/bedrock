@@ -4421,10 +4421,11 @@ async def get_stage_flow(
         "target_weekly": None, "target_source": None, "target_source_label": None,
         "target": None, "delta": None, "conversion": None,
     }
-    # The jobs prospects chosen for outreach, beneath the universe, with how many
+    # The jobs prospects chosen for outreach, its own row after the universe
+    # (same weight, Kwame 2026-10-23), with how many
     # have been processed (any stage) and how many are still outstanding.
     target_row = {
-        **universe, "key": "target_set", "label": "Target set", "depth": 1,
+        **universe, "key": "target_set", "label": "Target set",
         "available": target_set is not None,
         "in_now": {"total": target_set["total"], "cells": None} if target_set else None,
         "target_set": ({"processed": target_set["processed"], "outstanding": target_set["outstanding"]}

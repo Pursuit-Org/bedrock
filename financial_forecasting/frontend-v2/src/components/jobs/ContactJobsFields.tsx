@@ -127,9 +127,10 @@ export function ContactJobsFields({ contact }: { contact: ContactJobsFieldsValue
           value={stage}
           options={stageChange.options}
           emptyLabel="—"
-          renderValue={(v) => stageChip(v || stage)}
+          clearLabel={stage ? "No stage" : undefined}
+          renderValue={(v) => stageChip(v === "" ? "" : v || stage)}
           onSave={(v) => {
-            if (!v) return Promise.resolve();
+            if (!v) return stage ? stageChange.clear(id, name) : Promise.resolve();
             // With a membership, the shared handler writes the stage (and asks
             // for a date on Revisit). Without one, the membership has to be
             // created first, because PATCH /jobs-membership is update-only.

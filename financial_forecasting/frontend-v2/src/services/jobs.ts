@@ -586,6 +586,22 @@ export function useBulkContactOwner() {
   });
 }
 
+/** Clear one contact's jobs stage: back to no stage. Same DELETE as the
+ *  Contacts bulk "Clear stage"; history logs it as 'unflagged'. The prospect
+ *  flag and target set are untouched. */
+export function useClearContactStage() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (contact_id: number) => { await api.delete(`/api/jobs/contacts/${contact_id}/jobs-membership`); },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["jobs", "contacts"] });
+      qc.invalidateQueries({ queryKey: ["jobs", "accounts"] });
+      qc.invalidateQueries({ queryKey: ["jobs", "stage-flow"] });
+    },
+    onError: () => toast.error("Couldn't clear the stage"),
+  });
+}
+
 export function useUnflagJobsContact() {
   const qc = useQueryClient();
   return useMutation({

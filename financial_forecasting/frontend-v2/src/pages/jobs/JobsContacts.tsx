@@ -449,10 +449,10 @@ export function ContactRow({ contact, expanded, onOpen, visibleCols, selected, o
     // a muted "—" (in pipeline via the prospect checkbox); the picker sets a
     // real stage, creating the membership.
     flag: contact.membership_stage
-      ? <InlineSelect<string> value={contact.membership_stage} options={stageChange.options}
-          renderValue={(v) => <span className="rounded-full bg-accent-soft px-1.5 py-0.5 text-[10.5px] font-medium text-accent-ink">{MEMBERSHIP_STAGE_LABELS[(v ?? contact.membership_stage) as MembershipStage] ?? v}</span>}
+      ? <InlineSelect<string> value={contact.membership_stage} options={stageChange.options} clearLabel="No stage"
+          renderValue={(v) => v === "" ? <span className="text-[11px] text-ink-4">—</span> : <span className="rounded-full bg-accent-soft px-1.5 py-0.5 text-[10.5px] font-medium text-accent-ink">{MEMBERSHIP_STAGE_LABELS[(v ?? contact.membership_stage) as MembershipStage] ?? v}</span>}
           onSave={(v) => {
-            if (!v) return Promise.resolve();
+            if (!v) return stageChange.clear(contact.contact_id, contact.full_name ?? "this contact");
             // Revisit asks for a date first (shared handler); anything else
             // writes straight through.
             if (v === "revisit") return stageChange.change(contact.contact_id, contact.full_name ?? "contact", v);

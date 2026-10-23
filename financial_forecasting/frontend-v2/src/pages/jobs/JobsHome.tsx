@@ -136,7 +136,8 @@ function AssignedRow({ c, staff, expanded, onToggle }: {
   // moves the contact and the row drops out on invalidation.
   const moveStage = (v: string) =>
     new Promise<void>((resolve, reject) => {
-      if (!v || v === "assigned") return resolve();
+      if (!v) return stageChange.clear(c.contact_id, c.full_name ?? "this contact").then(resolve, reject);
+      if (v === "assigned") return resolve();
       // Revisit routes through the shared hook so it asks for a date; every
       // other stage writes straight through.
       if (v === "revisit") return stageChange.change(c.contact_id, c.full_name ?? "contact", v).then(resolve, reject);
@@ -180,6 +181,7 @@ function AssignedRow({ c, staff, expanded, onToggle }: {
           <InlineSelect<string>
             value="assigned"
             options={stageChange.options}
+            clearLabel="No stage"
             onSave={moveStage}
             renderValue={() => (
               <span className="rounded-full bg-accent-soft px-1.5 py-0.5 text-[10.5px] font-medium text-accent-ink">Assigned</span>

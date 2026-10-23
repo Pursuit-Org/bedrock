@@ -554,7 +554,7 @@ def test_target_set_sits_under_the_pool_split_processed_and_outstanding(_no_targ
     rows = d["bands"][0]["rows"]
     assert [r["key"] for r in rows[:2]] == ["total_pool", "target_set"]
     ts = rows[1]
-    assert ts["kind"] == "universe" and ts["available"] is True and ts["depth"] == 1
+    assert ts["kind"] == "universe" and ts["available"] is True and ts["depth"] == 0
     assert ts["in_now"] == {"total": 3, "cells": None}
     assert ts["target_set"] == {"processed": ["3"], "outstanding": ["1", "2"]}
     # Processed = any membership stage at all; the universe filters still apply.
