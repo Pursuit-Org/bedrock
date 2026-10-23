@@ -258,20 +258,22 @@ class TestPermissionBoundaries:
         # This test documents the expected behavior
         pass  # Bulk update uses frontend gating — backend hardening is a follow-up
 
-    def test_allowed_to_edit_own_tasks(self, rm_client, mock_db):
-        """edit_own_tasks is true for RM — should pass permission check."""
+    def test_allowed_to_edit_own_tasks(self, rm_client, mock_db, mock_client):
+        """An owned, unlocked task remains editable with edit_own_tasks."""
         async def smart_fetchrow(query, *args):
             if "opportunity_lock" in query:
                 return None
             return rm_row()
         mock_db.fetchrow = AsyncMock(side_effect=smart_fetchrow)
-
+        mock_client.salesforce.query.return_value = {
+            "records": [{"OwnerId": SF_USER_ID, "WhatId": None, "Subject": "Updated task"}]
+        }
         resp = rm_client.put(
             f"/api/salesforce/tasks/00T000000000001AAA",
             json={"Subject": "Updated task"},
         )
-        # Should pass permission check (200 or 500 from SF mock, NOT 403)
-        assert resp.status_code != 403
+        assert resp.status_code == 200
+        mock_client.salesforce.update_record.assert_awaited_once()
 
     def test_allowed_to_create_opportunities(self, rm_client):
         """create_opportunities is true for RM."""
