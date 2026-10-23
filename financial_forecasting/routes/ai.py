@@ -11,19 +11,22 @@ import logging
 import os
 import re
 import uuid as _uuid
-from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from datetime import date, datetime, timedelta, timezone
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from fastapi import APIRouter, Body, Depends, HTTPException
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from auth import require_auth
 from db import get_db
-from dependencies import get_mcp_client
+from dependencies import get_mcp_client, require_sf_mcp_client
 from mcp_client import UnifiedMCPClient
 from models import ApiResponse
 from security import escape_soql_string, validate_salesforce_id
 from sf_errors import sf_http_error
 from services.crm_parser import parse_crm_message, get_opp_cache
+from services.record_authorization import enforce_opportunity_mutation
+from routes.permissions import get_user_permissions
 
 logger = logging.getLogger(__name__)
 
@@ -462,11 +465,46 @@ async def get_all_reviews(user=Depends(require_auth)):
 # POST /api/automation-review/{item_id}/approve
 # ---------------------------------------------------------------------------
 
+class AutomationAction(BaseModel):
+    """Only these fields may reach an approval's provider mutation."""
+    model_config = ConfigDict(extra="forbid")
+    action: Literal["stage_change", "task", "note"]
+    matched_opportunity: str
+    detail: str = Field(default="Follow up", max_length=32000)
+    stage: Optional[str] = Field(default=None, max_length=255)
+    amount: Optional[float] = Field(default=None, strict=True, allow_inf_nan=False)
+    close_date: Optional[str] = None
+    # The existing edit dialog sends the complete parsed object, including confidence.
+    confidence: Optional[float] = Field(default=None, ge=0, le=1, allow_inf_nan=False)
+
+    @field_validator("close_date")
+    @classmethod
+    def valid_close_date(cls, value):
+        if value is not None:
+            if not _ISO_DATE_RE.fullmatch(value):
+                raise ValueError("close_date must be YYYY-MM-DD")
+            date.fromisoformat(value)
+        return value
+
+
+def _validated_automation_action(parsed: dict, edits: Optional[dict]) -> dict:
+    try:
+        action = AutomationAction.model_validate({**parsed, **(edits or {})})
+    except ValidationError:
+        raise HTTPException(400, "Invalid automation action or edits")
+    validate_salesforce_id(action.matched_opportunity, "matched_opportunity")
+    if action.action == "stage_change" and not (action.stage and action.stage.strip()):
+        raise HTTPException(400, "A target stage is required")
+    if action.action in ("note", "task") and not action.detail.strip():
+        raise HTTPException(400, "Action detail is required")
+    return action.model_dump()
+
+
 @router.post("/api/automation-review/{item_id}/approve")
 async def approve_review(
     item_id: str,
     edits: Optional[Dict[str, Any]] = None,
-    client: UnifiedMCPClient = Depends(get_mcp_client),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user=Depends(require_auth),
     db=Depends(get_db),
 ):
@@ -479,59 +517,75 @@ async def approve_review(
             status_code=400, detail=f"Item already {item['status']}"
         )
 
-    parsed = item["parsed"]
-    if edits:
-        parsed.update(edits)
+    parsed = _validated_automation_action(item["parsed"], edits)
+    # Claim before the first await; reject uses the same pending-state check.
+    item["status"] = "applying"
 
     # Apply to Salesforce
     try:
         salesforce = client.salesforce
-        opp_id = parsed.get("matched_opportunity")
-        if opp_id:
-            validate_salesforce_id(opp_id, "matched_opportunity")
+        opp_id = parsed["matched_opportunity"]
+        resolved = await get_user_permissions(user.get("email", ""), db)
+        perms = resolved.get("permissions") or {}
+        permission = "create_tasks" if parsed["action"] == "task" else "edit_own_opportunities"
+        if not perms.get(permission, False):
+            raise HTTPException(403, f"Permission denied: {permission}")
+        actor = {**user, "_permissions": perms, "_app_user": resolved}
+        if parsed["action"] != "task":
+            await enforce_opportunity_mutation(salesforce, opp_id, actor, db)
 
-        if parsed["action"] == "stage_change" and opp_id and parsed.get("stage"):
+        if parsed["action"] == "stage_change":
             update_fields: Dict[str, Any] = {"StageName": parsed["stage"]}
-            if parsed.get("amount"):
+            if parsed.get("amount") is not None:
                 update_fields["Amount"] = parsed["amount"]
             if parsed.get("close_date"):
                 update_fields["CloseDate"] = parsed["close_date"]
-            await salesforce.update_record("Opportunity", opp_id, update_fields)
+            if not await salesforce.update_record("Opportunity", opp_id, update_fields):
+                raise HTTPException(502, "Salesforce did not confirm the update")
 
-        elif parsed["action"] == "task" and opp_id:
+        elif parsed["action"] == "task":
             # Check if opportunity is locked before creating task via Slack
             opp_lock = await db.fetchrow(
                 "SELECT locked_by FROM bedrock.opportunity_lock WHERE sf_opportunity_id = $1",
                 opp_id,
             )
             if opp_lock:
-                logger.warning(
-                    f"Slack task creation blocked — opportunity {opp_id} is locked"
-                )
-            else:
-                await salesforce.create_record(
-                    "Task",
-                    {
-                        "Subject": parsed.get("detail", "Follow up")[:255],
-                        "WhatId": opp_id,
-                        "Status": "Not Started",
-                        "Priority": "Normal",
-                    },
-                )
+                raise HTTPException(403, "Cannot create an automation task on a locked opportunity")
+            try:
+                parent = await salesforce.query(f"SELECT Id FROM Opportunity WHERE Id = '{opp_id}' LIMIT 1")
+            except Exception:
+                raise HTTPException(503, "Cannot verify task opportunity — try again later")
+            if not parent.get("records"):
+                raise HTTPException(404, "Opportunity not found")
+            result = await salesforce.create_record(
+                "Task",
+                {
+                    "Subject": parsed["detail"][:255],
+                    "WhatId": opp_id,
+                    "Status": "Not Started",
+                    "Priority": "Normal",
+                },
+            )
+            if not result or result.get("success") is False or not (result.get("id") or result.get("Id")):
+                raise HTTPException(502, "Salesforce did not confirm task creation")
 
-        elif parsed["action"] == "note" and opp_id:
+        elif parsed["action"] == "note":
             # Append to Description
             opp = await salesforce.query(
                 f"SELECT Description FROM Opportunity WHERE Id = '{opp_id}' LIMIT 1"
             )
-            existing = (
-                opp.get("records", [{}])[0].get("Description", "") or ""
-            )
+            records = opp.get("records", [])
+            if not records:
+                raise HTTPException(404, "Opportunity not found")
+            existing = records[0].get("Description", "") or ""
             note = f"\n[{datetime.now().strftime('%Y-%m-%d')} via Slack] {parsed['detail']}"
-            await salesforce.update_record(
+            success = await salesforce.update_record(
                 "Opportunity", opp_id, {"Description": existing + note}
             )
+            if not success:
+                raise HTTPException(502, "Salesforce did not confirm the update")
 
+        item["parsed"] = parsed
         item["status"] = "approved"
         item["approved_at"] = datetime.now().isoformat()
         item["approved_by"] = user.get("user_id", "unknown")
@@ -542,6 +596,9 @@ async def approve_review(
     except Exception as e:
         logger.error(f"Failed to apply CRM update {item_id}: {e}")
         raise sf_http_error(e, "CRM update")
+    finally:
+        if item["status"] == "applying":
+            item["status"] = "pending"
 
 
 # ---------------------------------------------------------------------------
