@@ -61,10 +61,8 @@ export interface WorkbenchRecord {
   extra?: string[];
 }
 
-export function StageFlowWorkbench({ band, title, subtitle, isPool, contextHead, records, stageLabel, nameOf, onClose, byAccount }: {
+export function StageFlowWorkbench({ band, title, subtitle, isPool, contextHead, records, stageLabel, nameOf, onClose }: {
   band: "outreach" | "pipeline";
-  /** Contacts only: open on the Accounts view (one row per company). */
-  byAccount?: boolean;
   title: string;
   subtitle: string;
   isPool: boolean;
@@ -79,7 +77,7 @@ export function StageFlowWorkbench({ band, title, subtitle, isPool, contextHead,
   return (
     <Drawer open onClose={onClose} title={title} subtitle={subtitle} width={width}>
       {band === "outreach"
-        ? <ContactsList isPool={isPool} contextHead={contextHead} records={records} stageLabel={stageLabel} nameOf={nameOf} byAccount={byAccount} />
+        ? <ContactsList isPool={isPool} contextHead={contextHead} records={records} stageLabel={stageLabel} nameOf={nameOf} />
         : <OpportunitiesList isPool={isPool} contextHead={contextHead} records={records} stageLabel={stageLabel} nameOf={nameOf} />}
     </Drawer>
   );
@@ -147,21 +145,64 @@ function Empty({ text }: { text: string }) {
   );
 }
 
+/** Company key for the Accounts view: the same trimmed, case-folded name the
+ *  account rollups match on. */
+const accountKey = (company: string | null | undefined) => (company ?? "").trim().toLowerCase();
+
+interface AccountGroup<T> { key: string; label: string; items: T[] }
+
+/** One group per company, biggest first. */
+function groupByAccount<T>(rows: T[], companyOf: (r: T) => string | null | undefined): AccountGroup<T>[] {
+  const m = new Map<string, AccountGroup<T>>();
+  rows.forEach((r) => {
+    const k = accountKey(companyOf(r));
+    const e = m.get(k) ?? { key: k, label: (companyOf(r) ?? "").trim() || "No company", items: [] };
+    e.items.push(r);
+    m.set(k, e);
+  });
+  return [...m.values()].sort((a, b) => b.items.length - a.items.length || a.label.localeCompare(b.label));
+}
+
+type DrillView = "records" | "accounts";
+
+/** Records first and default, Accounts beside it (Kwame 2026-10-23). The same
+ *  strip on contact and opportunity drills; picking an account narrows the
+ *  records tab to it, with a chip to clear. */
+function ViewTabs({ view, onView, recordsLabel, records, accounts, account, onClearAccount }: {
+  view: DrillView; onView: (v: DrillView) => void;
+  recordsLabel: string; records: number; accounts: number;
+  account: { label: string } | null; onClearAccount: () => void;
+}) {
+  return (
+    <div className="flex items-center gap-2 border-b border-border px-4 py-2 text-[12px]">
+      <div className="inline-flex rounded-md border border-border-strong bg-surface p-0.5">
+        {(["records", "accounts"] as const).map((v) => (
+          <button key={v} type="button" onClick={() => onView(v)}
+            className={cn("rounded px-2.5 py-0.5 font-medium", view === v ? "bg-accent-soft text-accent" : "text-ink-2 hover:bg-surface-2")}>
+            {v === "records" ? `${recordsLabel} (${records.toLocaleString()})` : `Accounts (${accounts.toLocaleString()})`}
+          </button>
+        ))}
+      </div>
+      {view === "records" && account && (
+        <span className="inline-flex items-center gap-1 rounded-full bg-surface-2 px-2 py-0.5 text-ink-2">
+          Account: <span className="font-medium text-ink">{account.label}</span>
+          <button type="button" onClick={onClearAccount} className="ml-0.5 text-ink-4 hover:text-ink" aria-label="Clear account">×</button>
+        </span>
+      )}
+    </div>
+  );
+}
+
 // ── Contacts ─────────────────────────────────────────────────────────────────
 
 // Revisit asks for a date per contact, so it isn't offered in bulk.
 const BULK_STAGES = MEMBERSHIP_STAGES.filter((s) => s !== "revisit");
 
-/** Company key for the Accounts view: the same trimmed, case-folded name the
- *  account rollups match on. */
-const accountKey = (company: string | null | undefined) => (company ?? "").trim().toLowerCase();
-
-function ContactsList({ isPool, contextHead, records, stageLabel, nameOf, byAccount }: {
+function ContactsList({ isPool, contextHead, records, stageLabel, nameOf }: {
   isPool: boolean; contextHead?: string[]; records: WorkbenchRecord[];
-  stageLabel: (s: string | null) => string; nameOf: (e: string | null) => string; byAccount?: boolean;
+  stageLabel: (s: string | null) => string; nameOf: (e: string | null) => string;
 }) {
-  // Accounts: one row per company; clicking one lists its contacts (Kwame 2026-10-23).
-  const [view, setView] = useState<"accounts" | "contacts">(byAccount ? "accounts" : "contacts");
+  const [view, setView] = useState<DrillView>("records");
   const [account, setAccount] = useState<{ key: string; label: string } | null>(null);
   const byId = useMemo(() => {
     const m = new Map<number, WorkbenchRecord>();
@@ -190,16 +231,7 @@ function ContactsList({ isPool, contextHead, records, stageLabel, nameOf, byAcco
       && matchesOwner(owner, c.owner_email)
       && (!stage || c.membership_stage === stage));
   }, [all, search, owner, stage]);
-  const accounts = useMemo(() => {
-    const m = new Map<string, { key: string; label: string; contacts: typeof rows }>();
-    rows.forEach((c) => {
-      const k = accountKey(c.current_company);
-      const e = m.get(k) ?? { key: k, label: (c.current_company ?? "").trim() || "No company", contacts: [] };
-      e.contacts.push(c);
-      m.set(k, e);
-    });
-    return [...m.values()].sort((a, b) => b.contacts.length - a.contacts.length || a.label.localeCompare(b.label));
-  }, [rows]);
+  const accounts = useMemo(() => groupByAccount(rows, (c) => c.current_company), [rows]);
   const listed = account ? rows.filter((c) => accountKey(c.current_company) === account.key) : rows;
   const owners = useMemo(() => ownerOptions(all.map((c) => c.owner_email), nameOf), [all, nameOf]);
   const stages = useMemo(() => [...new Set(all.map((c) => c.membership_stage).filter(Boolean) as string[])]
@@ -228,22 +260,9 @@ function ContactsList({ isPool, contextHead, records, stageLabel, nameOf, byAcco
       <Toolbar search={search} onSearch={setSearch} owners={owners} owner={owner} onOwner={setOwner}
         stages={stages} stage={stage} onStage={setStage} shown={rows.length} total={all.length}
         columns={<ColumnChooser allColumns={COLUMN_ORDER} labels={COL_LABELS} visible={visible} required={["name"]} onToggle={toggle} onMove={stepMove(visible, move)} />} />
-      <div className="flex items-center gap-2 border-b border-border px-4 py-2 text-[12px]">
-        <div className="inline-flex rounded-md border border-border-strong bg-surface p-0.5">
-          {(["accounts", "contacts"] as const).map((v) => (
-            <button key={v} type="button" onClick={() => { setView(v); if (v === "accounts") setAccount(null); }}
-              className={cn("rounded px-2.5 py-0.5 font-medium", view === v ? "bg-accent-soft text-accent" : "text-ink-2 hover:bg-surface-2")}>
-              {v === "accounts" ? `Accounts (${accounts.length.toLocaleString()})` : `Contacts (${rows.length.toLocaleString()})`}
-            </button>
-          ))}
-        </div>
-        {view === "contacts" && account && (
-          <span className="inline-flex items-center gap-1 rounded-full bg-surface-2 px-2 py-0.5 text-ink-2">
-            Account: <span className="font-medium text-ink">{account.label}</span>
-            <button type="button" onClick={() => setAccount(null)} className="ml-0.5 text-ink-4 hover:text-ink" aria-label="Clear account">×</button>
-          </span>
-        )}
-      </div>
+      <ViewTabs view={view} onView={(v) => { setView(v); if (v === "accounts") setAccount(null); }}
+        recordsLabel="Contacts" records={rows.length} accounts={accounts.length}
+        account={account} onClearAccount={() => setAccount(null)} />
       {selected.size > 0 && (
         <div className="flex flex-wrap items-center gap-2 border-b border-border-strong bg-accent-soft px-4 py-2 text-[12.5px]">
           <span className="font-semibold text-accent-ink">{selected.size} selected</span>
@@ -265,8 +284,10 @@ function ContactsList({ isPool, contextHead, records, stageLabel, nameOf, byAcco
         </div>
       )}
       {q.isLoading ? <Loading /> : rows.length === 0 ? <Empty text={all.length ? "Nothing matches these filters." : "No contacts here."} /> : view === "accounts" ? (
-        <AccountsTable accounts={accounts} nameOf={nameOf}
-          onOpen={(a) => { setAccount({ key: a.key, label: a.label }); setView("contacts"); }} />
+        <AccountsTable accounts={accounts} unit="Contacts" nameOf={nameOf}
+          stageOf={(c) => (c.membership_stage ? MEMBERSHIP_STAGE_LABELS[c.membership_stage as MembershipStage] ?? c.membership_stage : "No stage")}
+          ownerOf={(c) => c.owner_email}
+          onOpen={(a) => { setAccount({ key: a.key, label: a.label }); setView("records"); }} />
       ) : (
         <div className="min-h-0 flex-1 overflow-auto">
           <table className="w-full border-collapse text-left">
@@ -307,10 +328,13 @@ function ContactsList({ isPool, contextHead, records, stageLabel, nameOf, byAcco
   );
 }
 
-/** Accounts view: one row per company with how many of its contacts are here,
- *  where they sit (stage mix) and who owns them. A row opens its contacts. */
-function AccountsTable({ accounts, nameOf, onOpen }: {
-  accounts: { key: string; label: string; contacts: { membership_stage?: string | null; owner_email?: string | null }[] }[];
+/** Accounts view: one row per company with how many of its records are here,
+ *  where they sit (stage mix) and who owns them. A row opens its records. */
+function AccountsTable<T>({ accounts, unit, stageOf, ownerOf, nameOf, onOpen }: {
+  accounts: AccountGroup<T>[];
+  unit: string;
+  stageOf: (r: T) => string;
+  ownerOf: (r: T) => string | null | undefined;
   nameOf: (e: string | null) => string;
   onOpen: (a: { key: string; label: string }) => void;
 }) {
@@ -320,7 +344,7 @@ function AccountsTable({ accounts, nameOf, onOpen }: {
         <thead className="sticky top-0 z-20 bg-surface-2">
           <tr className="text-[10.5px] uppercase tracking-wider text-ink-3">
             <th className="px-4 py-2 font-semibold">Account</th>
-            <th className="px-3 py-2 text-right font-semibold">Contacts</th>
+            <th className="px-3 py-2 text-right font-semibold">{unit}</th>
             <th className="px-3 py-2 font-semibold">Stages</th>
             <th className="px-3 py-2 font-semibold">Owners</th>
           </tr>
@@ -328,16 +352,13 @@ function AccountsTable({ accounts, nameOf, onOpen }: {
         <tbody>
           {accounts.map((a) => {
             const mix = new Map<string, number>();
-            a.contacts.forEach((c) => {
-              const k = c.membership_stage ? (MEMBERSHIP_STAGE_LABELS[c.membership_stage as MembershipStage] ?? c.membership_stage) : "No stage";
-              mix.set(k, (mix.get(k) ?? 0) + 1);
-            });
-            const owners = [...new Set(a.contacts.map((c) => c.owner_email).filter(Boolean) as string[])];
+            a.items.forEach((r) => { const k = stageOf(r); mix.set(k, (mix.get(k) ?? 0) + 1); });
+            const owners = [...new Set(a.items.map((r) => (ownerOf(r) ?? "").toLowerCase()).filter(Boolean))];
             return (
               <tr key={a.key} onClick={() => onOpen(a)}
                 className="cursor-pointer border-b border-border text-[13px] hover:bg-surface-2/60">
                 <td className="px-4 py-2 font-medium text-ink">{a.label}</td>
-                <td className="px-3 py-2 text-right tabular-nums text-ink">{a.contacts.length}</td>
+                <td className="px-3 py-2 text-right tabular-nums text-ink">{a.items.length}</td>
                 <td className="px-3 py-2 text-[12px] text-ink-2">
                   {[...mix.entries()].sort((x, y) => y[1] - x[1]).map(([k, n]) => `${k} ${n}`).join(" · ")}
                 </td>
@@ -375,6 +396,8 @@ function OpportunitiesList({ isPool, contextHead, records, stageLabel, nameOf }:
   const [placementDeal, setPlacementDeal] = useState<{ id: string; account_name: string; deal_type?: DealType | null } | null>(null);
   const [committedDeal, setCommittedDeal] = useState<{ id: string; account_name: string } | null>(null);
   const [lostDeal, setLostDeal] = useState<{ id: string; account_name: string } | null>(null);
+  const [view, setView] = useState<DrillView>("records");
+  const [account, setAccount] = useState<{ key: string; label: string } | null>(null);
 
   const all = q.data?.data ?? [];
   const rows = useMemo(() => {
@@ -384,6 +407,8 @@ function OpportunitiesList({ isPool, contextHead, records, stageLabel, nameOf }:
       && matchesOwner(owner, o.owner_email)
       && (!stage || o.stage === stage));
   }, [all, search, owner, stage]);
+  const accounts = useMemo(() => groupByAccount(rows, (o) => o.account_name), [rows]);
+  const listed = account ? rows.filter((o) => accountKey(o.account_name) === account.key) : rows;
   const owners = useMemo(() => ownerOptions(all.map((o) => o.owner_email), nameOf), [all, nameOf]);
   const stages = useMemo(() => [...new Set(all.map((o) => o.stage))]
     .map((s) => ({ value: s, label: STAGE_LABELS[s as JobStage] ?? s })), [all]);
@@ -430,7 +455,15 @@ function OpportunitiesList({ isPool, contextHead, records, stageLabel, nameOf }:
       <Toolbar search={search} onSearch={setSearch} owners={owners} owner={owner} onOwner={setOwner}
         stages={stages} stage={stage} onStage={setStage} shown={rows.length} total={all.length}
         columns={<ColumnChooser allColumns={OPP_COLUMN_ORDER} labels={DRILL_OPP_LABELS} visible={visible} required={["company"]} onToggle={toggle} onMove={stepMove(visible, move)} />} />
-      {q.isLoading ? <Loading /> : rows.length === 0 ? <Empty text={all.length ? "Nothing matches these filters." : "No opportunities here."} /> : (
+      <ViewTabs view={view} onView={(v) => { setView(v); if (v === "accounts") setAccount(null); }}
+        recordsLabel="Opportunities" records={rows.length} accounts={accounts.length}
+        account={account} onClearAccount={() => setAccount(null)} />
+      {q.isLoading ? <Loading /> : rows.length === 0 ? <Empty text={all.length ? "Nothing matches these filters." : "No opportunities here."} /> : view === "accounts" ? (
+        <AccountsTable accounts={accounts} unit="Opportunities" nameOf={nameOf}
+          stageOf={(o) => STAGE_LABELS[o.stage as JobStage] ?? o.stage}
+          ownerOf={(o) => o.owner_email}
+          onOpen={(a) => { setAccount({ key: a.key, label: a.label }); setView("records"); }} />
+      ) : (
         <div className="min-h-0 flex-1 overflow-auto">
           <table className="w-full border-collapse text-left">
             <thead className="sticky top-0 z-20 bg-surface-2">
@@ -442,7 +475,7 @@ function OpportunitiesList({ isPool, contextHead, records, stageLabel, nameOf }:
               </tr>
             </thead>
             <tbody>
-              {rows.map((o) => (
+              {listed.map((o) => (
                 <DealRow key={o.id} deal={o} visibleCols={visible}
                   isExpanded={expanded === o.id}
                   onToggle={() => setExpanded(expanded === o.id ? null : o.id)}

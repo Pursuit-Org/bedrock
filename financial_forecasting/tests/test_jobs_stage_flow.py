@@ -610,3 +610,20 @@ def test_campaign_deals_match_by_tag_or_linked_contact_not_company():
     assert "= ANY(o.sf_contact_ids)" in sql
     # A tagged contact merely working at the deal's company no longer counts.
     assert "current_company" not in sql and "account_name" not in sql
+
+
+def test_directory_names_the_contacts_counted_by_id_alone(_no_target_cache):
+    # Target List contacts 1 and 2 have no stage, so no member row carries their
+    # name; contact 3 is a member already and stays out of the directory.
+    conn = FakeConn(vals={TS_PROBE: True},
+                    lists={CONTACTS_NOW: [_contact(3, "not_a_fit", 5)],
+                           TS_ROWS: [{"contact_id": 3, "processed": True, "stage": "not_a_fit"},
+                                     {"contact_id": 1, "processed": False, "stage": None},
+                                     {"contact_id": 2, "processed": False, "stage": None}],
+                           "SELECT contact_id, full_name, current_company FROM public.contacts": [
+                               {"contact_id": 1, "full_name": "Ada Lovelace", "current_company": "Duckbill"},
+                               {"contact_id": 2, "full_name": "Alan Turing", "current_company": None}]})
+    d = make_jobs_client(conn).get(f"/api/jobs/stage-flow?period_from={P_FROM}&period_to={P_TO}").json()["data"]
+    assert {e["id"]: e["detail"] for e in d["directory"]} == {"1": "Duckbill", "2": None}
+    q = next(x for x in conn.calls if "FROM public.contacts WHERE contact_id = ANY" in x[1])
+    assert sorted(q[2][0]) == [1, 2]

@@ -3294,6 +3294,9 @@ export interface StageFlow {
   moved: StageFlowMove[];
   /** Activity rows' drill: one entry per contact touched. Absent on older APIs. */
   activity?: StageFlowActivity[];
+  /** Name and company for contacts counted by id alone (Target List with no
+   *  stage, contacts behind Sends and Calls), for the search box. */
+  directory?: { id: string; name: string | null; detail: string | null }[];
 }
 
 export function useStageFlow(from: string, to: string, owner?: string, dealType?: string, roleType?: string, campaign?: string) {

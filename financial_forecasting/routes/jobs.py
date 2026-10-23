@@ -4458,6 +4458,21 @@ async def get_stage_flow(
                  + [_row("pipeline", "closed", "Closed", False, children=[k for k, _ in _FLOW_DEAL_TERMINAL])]
                  + [_row("pipeline", k, lbl, False, depth=1) for k, lbl in _FLOW_DEAL_TERMINAL]},
     ]
+    # Name and company for the contacts the chart counts by id alone (Target
+    # List entries with no stage, contacts behind Sends and Calls), so the
+    # search box can match them. Members and moves already carry both.
+    named = {m["id"] for m in members + moved if m["band"] == "outreach"}
+    bare = {a["id"] for a in activity}
+    if target_set:
+        bare |= set(target_set["processed"]) | set(target_set["outstanding"])
+    bare -= named
+    directory = []
+    if bare:
+        drows = await conn.fetch(
+            "SELECT contact_id, full_name, current_company FROM public.contacts "
+            "WHERE contact_id = ANY($1::int[])", [int(i) for i in bare])
+        directory = [{"id": str(r["contact_id"]), "name": r["full_name"], "detail": r["current_company"]}
+                     for r in drows]
     return {"success": True, "data": {
         "period": {"from": p_from.date().isoformat(),
                    "to": (p_to - timedelta(days=1)).date().isoformat(), "days": span_days},
@@ -4479,6 +4494,7 @@ async def get_stage_flow(
         "moved": moved,
         # Activity rows' drill: one entry per contact touched, with the count.
         "activity": activity,
+        "directory": directory,
     }}
 
 

@@ -29,7 +29,7 @@
  */
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { format } from "date-fns";
-import { ChevronDown, ChevronRight, ChevronUp, SlidersHorizontal } from "lucide-react";
+import { ChevronDown, ChevronRight, ChevronUp, Search, SlidersHorizontal, X } from "lucide-react";
 
 import {
   useJobsStaff,
@@ -50,6 +50,7 @@ import {
 } from "@/pages/jobs/JobsOpportunitiesOverview";
 import { Trend } from "@/pages/jobs/JobsOutreach";
 import { useSessionState } from "@/lib/useSessionState";
+import { searchStageFlow } from "@/lib/stageFlowSearch";
 import { useCurrentUser } from "@/services/auth";
 import { cn } from "@/lib/utils";
 
@@ -145,7 +146,11 @@ export function StageFlowChart() {
     : "all";
   const personQ = useStageFlow(range[0], range[1], owner, dealTypeParam(dealTypes), roleParam, campaignParam);
   const { data, isLoading, isError } = owner === "all" ? teamQ : personQ;
-  const current = data && data.prev_period && data.stage_labels ? data : null;
+  const loaded = data && data.prev_period && data.stage_labels ? data : null;
+  // Search narrows the whole chart, drills included, to the match and its account.
+  const [search, setSearch] = useState("");
+  const found = useMemo(() => (loaded ? searchStageFlow(loaded, search) : null), [loaded, search]);
+  const current = found?.data ?? loaded;
 
   const tabs = (
     <div className="inline-flex items-center rounded-md border border-border-strong bg-surface p-0.5">
@@ -181,11 +186,40 @@ export function StageFlowChart() {
               {team.map((email) => <option key={email} value={email}>{nameOf(email)}</option>)}
             </select>
           )}
-          <div className="ml-auto">
+          <div className="ml-auto flex items-center gap-2">
+            <label className="relative" title="Search a contact, opportunity or account: the chart narrows to it and everything at the same account">
+              <Search size={13} className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-ink-4" />
+              <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search contact, opportunity, account"
+                aria-label="Search the stage flow"
+                className={cn("h-7 w-64 rounded-md border bg-surface pl-7 pr-7 text-[12px] text-ink outline-none focus:border-accent",
+                  found ? "border-accent/40" : "border-border-strong")} />
+              {search && (
+                <button type="button" onClick={() => setSearch("")} aria-label="Clear search"
+                  className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-ink-4 hover:text-ink">
+                  <X size={12} />
+                </button>
+              )}
+            </label>
             <ViewMenu byTime={byTime} onByTime={setByTime}
               campaigns={campaigns} picked={pickedCampaigns} onPicked={setCampaignPick} />
           </div>
         </div>
+        {found && (
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-border bg-accent-soft/50 px-4 py-2 text-[12px] text-ink-2">
+            {found.contacts + found.opportunities === 0 ? (
+              <span>Nothing in the stage flow matches “{search.trim()}”.</span>
+            ) : (
+              <>
+                <span>
+                  <span className="font-semibold text-ink">{found.contacts.toLocaleString()}</span> {found.contacts === 1 ? "contact" : "contacts"}
+                  {" · "}<span className="font-semibold text-ink">{found.opportunities.toLocaleString()}</span> {found.opportunities === 1 ? "opportunity" : "opportunities"}
+                  {found.accounts.length > 0 && <> at {found.accounts.length <= 3 ? found.accounts.join(", ") : `${found.accounts.length} accounts`}</>}
+                </span>
+                <span className="text-ink-4">Targets and Trend are team-level, so they read — while searching.</span>
+              </>
+            )}
+          </div>
+        )}
         {isLoading && !data ? (
           <div className="m-4 h-72 animate-pulse rounded-lg bg-surface-2" />
         ) : isError || !data ? (
@@ -199,7 +233,7 @@ export function StageFlowChart() {
             The backend is older than this page. Restart it (Ctrl+C, then <code>python main.py</code>) and refresh.
           </div>
         ) : (
-          <StageTable data={current} byTime={byTime} nameOf={nameOf} onDrill={setDrill}
+          <StageTable data={current} byTime={byTime} nameOf={nameOf} onDrill={setDrill} searching={!!found}
             actOpen={actOpen} onToggleAct={toggleAct}
             pipelineFilter={<PipelineFilter dealTypes={dealTypes} onDealTypes={setDealTypes}
               roleTypes={roleTypes} onRoleTypes={setRoleTypes} />} />
@@ -334,8 +368,10 @@ function NumButton({ n, onClick, title, className }: { n: number; onClick: () =>
 
 // ── Stage tab ────────────────────────────────────────────────────────────────
 
-function StageTable({ data, byTime, nameOf, onDrill, pipelineFilter, actOpen, onToggleAct }: {
+function StageTable({ data, byTime, nameOf, onDrill, pipelineFilter, actOpen, onToggleAct, searching }: {
   data: StageFlow; byTime: boolean; nameOf: (e: string | null) => string; onDrill: (d: Drill) => void;
+  /** A search is narrowing the data: Trend and the pool total have no basis. */
+  searching: boolean;
   pipelineFilter: React.ReactNode; actOpen: string[]; onToggleAct: (stage: string) => void;
 }) {
   const cols = byTime ? data.buckets : [];
@@ -404,7 +440,7 @@ function StageTable({ data, byTime, nameOf, onDrill, pipelineFilter, actOpen, on
                 right={null} pool={null} netNew={null}
                 collapsed={folded.includes("pool")} onToggle={() => fold("pool")} />
               {!folded.includes("pool") && universe.map((row) => (
-                <UniverseRow key={row.key} row={row} cols={cols.length} onDrill={onDrill} />
+                <UniverseRow key={row.key} row={row} cols={cols.length} onDrill={onDrill} searching={searching} />
               ))}
             </>
           )}
@@ -437,7 +473,7 @@ function StageTable({ data, byTime, nameOf, onDrill, pipelineFilter, actOpen, on
                   if (row.kind === "activity") {
                     if (!row.parent || !actOpen.includes(row.parent)) return null;
                     const sibs = band.rows.filter((r) => r.kind === "activity" && r.parent === row.parent);
-                    return <ActivityRow key={row.key} row={row} cols={cols.length}
+                    return <ActivityRow key={row.key} row={row} cols={cols.length} searching={searching}
                       last={sibs[sibs.length - 1] === row}
                       onDrill={() => onDrill({ kind: "activity", band: band.key, stages: [row.key], label: row.label, col: null, activity: row })} />;
                   }
@@ -488,7 +524,7 @@ function StageTable({ data, byTime, nameOf, onDrill, pipelineFilter, actOpen, on
                           onDrill={() => onDrill({ kind: "converted", band: band.key, stages, label: row.label, col: null })} />
                       </td>
                       <td className={cn(TD, "text-[12.5px]")}>
-                        {pending ? <span className="text-ink-4">—</span> : <Trend current={row.moved_in} prior={row.prev_moved_in} />}
+                        {pending || searching ? <span className="text-ink-4">—</span> : <Trend current={row.moved_in} prior={row.prev_moved_in} />}
                       </td>
                       {cols.map((c, i) => {
                         const recs = inRow.filter((m) => data.buckets[m.bucket]?.key === c.key);
@@ -538,7 +574,9 @@ const UNIVERSE_TIP: Record<string, string> = {
 
 /** Outreach Pool rows: every jobs prospect, and the Target List beneath it with
  *  where it stands (Summarize outreach). Counts only, no movement. */
-function UniverseRow({ row, cols, onDrill }: { row: StageFlowRow; cols: number; onDrill: (d: Drill) => void }) {
+function UniverseRow({ row, cols, onDrill, searching }: {
+  row: StageFlowRow; cols: number; onDrill: (d: Drill) => void; searching: boolean;
+}) {
   const dash = <span className="text-ink-4">—</span>;
   const split = row.target_set;
   const [summary, setSummary] = useSessionState<boolean>("jobsOverview.stageFlow.targetSummary", false);
@@ -560,7 +598,8 @@ function UniverseRow({ row, cols, onDrill }: { row: StageFlowRow; cols: number; 
         )}
       </span>
     );
-  } else if (!pending) {
+  } else if (!pending && !searching) {
+    // Total contact pool is a count with no ids, so a search can't narrow it.
     cell = (row.in_now?.total ?? 0).toLocaleString();
   }
   // Total contact pool is reference, not a number we index on (Kwame
@@ -676,8 +715,8 @@ function TargetSetSummary({ split, onList }: {
  *  columns as a stage row so the target, gap and trend read across, but a
  *  lighter weight marks it as a count of events: one contact emailed three
  *  times is 3 here and 1 on the stage row above. */
-function ActivityRow({ row, cols, last, onDrill }: {
-  row: StageFlowRow; cols: number; last: boolean; onDrill: () => void;
+function ActivityRow({ row, cols, last, onDrill, searching }: {
+  row: StageFlowRow; cols: number; last: boolean; onDrill: () => void; searching: boolean;
 }) {
   const pending = !row.available;
   const unit = row.key === "outreach_sent" ? "sends" : "calls";
@@ -718,7 +757,7 @@ function ActivityRow({ row, cols, last, onDrill }: {
       </td>
       <td className={cn(TD, "py-2 text-ink-4")}>—</td>
       <td className={cn(TD, "py-2 text-[12px]")}>
-        {pending ? <span className="text-ink-4">—</span> : <Trend current={row.moved_in} prior={row.prev_moved_in} />}
+        {pending || searching ? <span className="text-ink-4">—</span> : <Trend current={row.moved_in} prior={row.prev_moved_in} />}
       </td>
       {Array.from({ length: cols }, (_, i) => (
         <td key={i} className={cn("px-2 py-2", i === 0 && "border-l border-border-strong")} />
