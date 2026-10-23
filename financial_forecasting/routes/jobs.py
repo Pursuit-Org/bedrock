@@ -9964,6 +9964,21 @@ async def _assert_pursuit_scope_allowed(email: str, conn) -> None:
                  f"({' or '.join(_PURSUIT_SCOPE_PROFILES)} profile)")
 
 
+async def _network_actor_and_subject(user, staff_email: Optional[str], conn) -> tuple[str, str]:
+    """Authorize delegation before a subject's mapping can be read or provisioned."""
+    raw_actor = user.get("email") if isinstance(user, dict) else getattr(user, "email", None)
+    if not isinstance(raw_actor, str) or not raw_actor.strip():
+        raise HTTPException(401, "Authenticated email required")
+    actor = raw_actor.strip().lower()
+    subject = (staff_email or "").strip().lower() or actor
+    if subject != actor:
+        from routes.permissions import get_user_permissions
+        resolved = await get_user_permissions(actor, conn)
+        if not (resolved.get("permissions") or {}).get("manage_users_roles", False):
+            raise HTTPException(403, "Admin access required to select another staff member")
+    return actor, subject
+
+
 
 # The vote vocabulary behind the 👍/👎 column. Renamed 2026-08-05 to match what
 # the column actually asks ("Expect a response") rather than what it used to
@@ -10045,9 +10060,9 @@ async def my_network(
     filtered result exceeds `limit`. Seven staff have more than 2,000
     connections, so a filter that only sifted the loaded page would under-report
     without saying so."""
-    email = (staff_email or (user.get("email") if isinstance(user, dict) else getattr(user, "email", None)) or "").lower()
+    actor, email = await _network_actor_and_subject(user, staff_email, conn)
     if scope == "pursuit":
-        await _assert_pursuit_scope_allowed(email, conn)
+        await _assert_pursuit_scope_allowed(actor, conn)
     sid = await _ensure_staff_mapping(email, conn)
     if sid is None:
         # The Pursuit scope doesn't depend on the caller having LinkedIn imports —
@@ -10356,9 +10371,9 @@ async def my_network_facets(
     Headcount and industry are discovered from the data so a new value can't go
     missing from the menu. Tri-state and seniority are the complete output
     domains of two total CASE expressions, so they need no scan at all."""
-    email = (staff_email or (user.get("email") if isinstance(user, dict) else getattr(user, "email", None)) or "").lower()
+    actor, email = await _network_actor_and_subject(user, staff_email, conn)
     if scope == "pursuit":
-        await _assert_pursuit_scope_allowed(email, conn)
+        await _assert_pursuit_scope_allowed(actor, conn)
     sid = await _ensure_staff_mapping(email, conn)
     if sid is None:
         return {"success": True, "data": {"headcount": [], "industry": [], "tristate": [], "seniority": []}}
@@ -10418,7 +10433,7 @@ async def set_connection_status(
 
     Legacy status spellings are accepted and rewritten, so a client that hasn't
     been redeployed still records a usable vote."""
-    email = (staff_email or (user.get("email") if isinstance(user, dict) else getattr(user, "email", None)) or "").lower()
+    actor, email = await _network_actor_and_subject(user, staff_email, conn)
     sid = await _ensure_staff_mapping(email, conn)
     if sid is None:
         raise HTTPException(400, "No connection mapping for this account")
@@ -10457,7 +10472,7 @@ async def set_connection_status(
             VALUES ({insert_vals})
             ON CONFLICT (staff_user_id, contact_id) DO UPDATE
               SET {updates}, updated_by=EXCLUDED.updated_by, updated_at=now()""",
-        sid, body.contact_id, *(sets[c] for c in cols), email)
+        sid, body.contact_id, *(sets[c] for c in cols), actor)
     return {"success": True, "data": {"contact_id": body.contact_id, **sets}}
 
 

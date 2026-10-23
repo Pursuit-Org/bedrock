@@ -1,5 +1,19 @@
 # Bedrock PR Roadmap
 
+## bedrock-network-impersonation — October 22, 2026
+
+Separate authenticated network actor from selected subject across list/facets/update routes. Check actor authority before mapping a delegated subject and attribute writes to the actor.
+
+- [x] Reconcile fresh independent investigation with implementation and callers.
+- [x] Establish focused failing security and legitimate controls.
+- [x] Implement and run focused, alternate-input and neighboring checks.
+- [x] Complete independent read-only candidate review (no actionable findings).
+
+Independent uncommitted security patch; no live provider/database calls or deployment.
+
+Local validation: 52 passed (18 real-handler actor controls plus jobs intro/permissions neighbors). Python syntax and diff checks pass. Independent candidate
+review passed; production/provider acceptance remains unverified.
+
 > Master tracker for all planned PRs. Each PR has a detailed plan in `tasks/prs/`.
 > Update checkboxes as work progresses.
 
