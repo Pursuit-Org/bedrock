@@ -3171,11 +3171,6 @@ export interface StageFlowRow {
   breakdown?: { key: string; label: string; n: number }[] | null;
   /** Activity rows: touches counted with no linked contact (not listable). */
   unlinked?: number;
-  /** Outreach rows: distinct contacts that passed this step since
-   *  `StageFlow.since.date`; never changes with the period. `ids` is null on
-   *  Total contact pool (count only). Null on pipeline rows; absent on
-   *  activity rows and older APIs. */
-  since?: { total: number; ids: string[] | null } | null;
   /** Of the Net New, how many are further along today. Null on exits,
    *  summaries and activity rows; absent on older APIs. */
   conversion?: { on: number; of: number } | null;
@@ -3252,9 +3247,6 @@ export interface StageFlow {
   moved: StageFlowMove[];
   /** Activity rows' drill: one entry per contact touched. Absent on older APIs. */
   activity?: StageFlowActivity[];
-  /** The Since column's fixed start date (YYYY-MM-DD), and whether the
-   *  Scheduling stage can be entered yet and when the first contact did. */
-  since?: { date: string; scheduling_available: boolean; scheduling_launched: string | null };
 }
 
 export function useStageFlow(from: string, to: string, owner?: string, dealType?: string, roleType?: string, campaign?: string) {

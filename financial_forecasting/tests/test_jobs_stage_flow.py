@@ -509,115 +509,26 @@ def test_no_campaign_means_no_campaign_predicate_and_unknown_is_a_400():
     assert r.status_code == 400
 
 
-SINCE_STAMPS = "SELECT 'assigned' AS stage"
-SINCE_HISTORY = "SELECT DISTINCT h.to_stage AS stage"
-SINCE_EVENTS = "AS first_send"
-SINCE_POOL = "WHERE c.is_jobs_contact"
+POOL = "WHERE c.is_jobs_contact"
 
 
-def _since_conn(stamps=(), history=(), events=(), pool=0, lists=None):
-    return FakeConn(vals={"information_schema.columns": 1, SINCE_POOL: pool},
-                    lists={SINCE_STAMPS: list(stamps), SINCE_HISTORY: list(history),
-                           SINCE_EVENTS: list(events), **(lists or {})})
+def test_total_contact_pool_leads_outreach_and_stays_out_of_the_band_total():
+    conn = FakeConn(vals={POOL: 7745}, lists={CONTACTS_NOW: [_contact(1, "assigned", 3)]})
+    d = make_jobs_client(conn).get(f"/api/jobs/stage-flow?period_from={P_FROM}&period_to={P_TO}").json()["data"]
+    pool = d["bands"][0]["rows"][0]
+    assert pool["key"] == "total_pool" and pool["kind"] == "universe"
+    assert pool["in_now"] == {"total": 7745, "cells": None}
+    # Not a stage: no movement, no target.
+    assert pool["moved_in"] == 0 and pool["targetable"] is False
+    # The Since column is gone (Kwame 2026-10-23).
+    assert "since" not in d and all("since" not in r for b in d["bands"] for r in b["rows"])
+    assert _rows(d)[("outreach", "contact_closed")]["label"] == "Outreach outcome"
 
 
-def _ev(cid, first_send_days=None, discovery=False):
-    return {"contact_id": cid, "first_send": ago(first_send_days) if first_send_days is not None else None,
-            "discovery": discovery}
-
-
-def test_since_column_is_fixed_date_distinct_contacts_and_ignores_the_period():
-    from routes import jobs
-    conn = _since_conn(
-        stamps=[{"stage": "assigned", "contact_id": 1}, {"stage": "converted_to_opportunity", "contact_id": 2}],
-        # A contact entering a stage twice, and a retired on_hold, count once as Revisit.
-        history=[{"stage": "assigned", "contact_id": 1}, {"stage": "on_hold", "contact_id": 3},
-                 {"stage": "revisit", "contact_id": 3}, {"stage": "not_a_fit", "contact_id": 2},
-                 {"stage": "call_booked", "contact_id": 4},
-                 # A stage tag into Initial outreach is not a send.
-                 {"stage": "initial_outreach", "contact_id": 9}],
-        # 5's first send is recent; 6's first send predates the start date.
-        events=[_ev(5, 1), {"contact_id": 6, "first_send": datetime(2026, 1, 1, tzinfo=timezone.utc),
-                            "discovery": True}],
-        pool=7745)
-    c = make_jobs_client(conn)
-    a = c.get(f"/api/jobs/stage-flow?period_from={P_FROM}&period_to={P_TO}").json()["data"]
-    b = c.get("/api/jobs/stage-flow?period_from=2026-01-01&period_to=2026-01-07").json()["data"]
-    for d in (a, b):
-        rows = _rows(d)
-        assert d["since"]["date"] == jobs.STAGE_FLOW_SINCE.isoformat()
-        assert rows[("outreach", "assigned")]["since"] == {"total": 1, "ids": ["1"]}
-        assert rows[("outreach", "initial_outreach")]["since"] == {"total": 1, "ids": ["5"]}
-        # Discovery: a stage entry or a call logged as Discovery.
-        assert rows[("outreach", "call_booked")]["since"] == {"total": 2, "ids": ["4", "6"]}
-        assert rows[("outreach", "revisit")]["since"] == {"total": 1, "ids": ["3"]}
-        # Outreach outcome: the union of its three, each contact once.
-        assert rows[("outreach", "contact_closed")]["since"] == {"total": 2, "ids": ["2", "3"]}
-        assert rows[("outreach", "contact_closed")]["label"] == "Outreach outcome"
-        # Pipeline rows and activity rows carry none.
-        assert rows[("pipeline", "engaging")]["since"] is None
-        assert "since" not in rows[("outreach", "outreach_sent")]
-        assert "ever" not in rows[("outreach", "outreach_sent")]
-        # Total contact pool leads the band and is count only.
-        first = d["bands"][0]["rows"][0]
-        assert first["key"] == "total_pool" and first["kind"] == "universe"
-        assert first["since"] == {"total": 7745, "ids": None}
-    # The date is a bound parameter; no period bound reaches these queries.
-    since_qs = [x for x in conn.calls if any(n in x[1] for n in (SINCE_STAMPS, SINCE_HISTORY, SINCE_EVENTS))]
-    start = datetime(2026, 8, 4, tzinfo=timezone.utc)
-    assert since_qs and all(start in x[2] for x in since_qs)
-    assert all(not any(isinstance(v, datetime) and v != start for v in x[2]) for x in since_qs)
-
-
-def test_since_assigned_is_pipeline_entry_only_and_outreach_is_first_send():
-    _, conn = _get({})
-    q = next(x[1] for x in conn.calls if SINCE_STAMPS in x[1])
-    # Entered on/after the date; no catch-all on current membership.
-    assert "m.assigned_at >= $2" in q and "m.stage" not in q
-    ev = next(x[1] for x in conn.calls if SINCE_EVENTS in x[1])
-    assert "min(ts) FILTER (WHERE metric IN ('direct_email_sent', 'linkedin_message_sent', 'text_sent', 'facilitated_intro_sent'))" in ev
-    # Real sends only: never a stage tag or assignment.
-    assert "jobs_contact_membership" not in ev and "first_outreach_at" not in ev
-
-
-def test_since_constant_drives_the_date(monkeypatch):
-    from datetime import date
-    from routes import jobs
-    monkeypatch.setattr(jobs, "STAGE_FLOW_SINCE", date(2026, 7, 22))
-    r, conn = _get({})
-    assert r.json()["data"]["since"]["date"] == "2026-07-22"
-    q = next(x for x in conn.calls if SINCE_STAMPS in x[1])
-    assert datetime(2026, 7, 22, tzinfo=timezone.utc) in q[2]
-
-
-def test_since_follows_the_owner_and_the_campaign_on_every_set():
-    conn = _since_conn(lists={CATALOG: [{"slug": "board"}, {"slug": "operation_35_lt"}]})
-    c = make_jobs_client(conn)
-    c.get(f"/api/jobs/stage-flow?period_from={P_FROM}&period_to={P_TO}"
-          "&owner=a@pursuit.org&campaign=board,operation_35")
-    arr = "ARRAY['board','operation_35_lt']::text[]"
-    for needle in (SINCE_STAMPS, SINCE_HISTORY, SINCE_POOL):
-        call = next(x for x in conn.calls if needle in x[1])
-        assert f"c.tags && {arr}" in call[1], needle
-        assert "a@pursuit.org" in call[2], needle
-    ev = next(x[1] for x in conn.calls if SINCE_EVENTS in x[1])
-    assert f"tags && {arr}" in ev and "from_email ILIKE '%a@pursuit.org%'" in ev
-
-
-def test_total_contact_pool_stays_out_of_the_band_total():
-    r, _ = _get({CONTACTS_NOW: [_contact(1, "assigned", 3)]})
-    rows = r.json()["data"]["bands"][0]["rows"]
-    # Only stage rows carry movement; the universe row carries none.
-    pool = rows[0]
-    assert pool["moved_in"] == 0 and pool["targetable"] is False and pool["in_now"]["cells"] is None
-
-
-def test_scheduling_reads_pending_until_its_migration(monkeypatch):
-    from routes import jobs
-
-    async def no_scheduling(table, constraint, fallback, settles_when=None):
-        return [v for v in fallback if v != "scheduling"]
-    monkeypatch.setattr(jobs, "_writable_stages", no_scheduling)
-    r, _ = _get({})
-    assert r.json()["data"]["since"]["scheduling_available"] is False
-    assert r.json()["data"]["since"]["scheduling_launched"] is None
+def test_total_contact_pool_follows_the_owner_and_the_campaign():
+    conn = FakeConn(vals={POOL: 449}, lists={CATALOG: [{"slug": "board"}, {"slug": "operation_35_lt"}]})
+    make_jobs_client(conn).get(f"/api/jobs/stage-flow?period_from={P_FROM}&period_to={P_TO}"
+                               "&owner=a@pursuit.org&campaign=board,operation_35")
+    call = next(x for x in conn.calls if POOL in x[1])
+    assert "c.tags && ARRAY['board','operation_35_lt']::text[]" in call[1]
+    assert "a@pursuit.org" in call[2]
