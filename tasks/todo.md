@@ -7,6 +7,20 @@ lock, opportunity and automation candidates. Preserve explicitly permissive back
 callers. Validate per-request-client tests with the isolated provider/network harness.
 No production calls, migration, merge or deployment.
 
+## bedrock-opportunity-lock-claim — October 22, 2026
+
+Read the selected opportunity's actual OwnerId through the authenticated user's Salesforce client before inserting a lock. Treat the existing owner_id field as compatibility input only; preserve conflict handling and administrator/holder recovery.
+
+- [x] Reconcile fresh independent investigation with implementation and callers.
+- [x] Establish focused failing security and legitimate controls.
+- [x] Implement and run focused, alternate-input and neighboring checks.
+- [x] Complete independent read-only candidate review (no actionable findings).
+
+Independent uncommitted security patch; no live provider/database calls or deployment.
+
+Local validation: 80 passed (15 lock boundary, 2 strict-session controls, permission and request-client neighbors). Python syntax and diff checks pass. Independent candidate
+review passed; production/provider acceptance remains unverified.
+
 > Master tracker for all planned PRs. Each PR has a detailed plan in `tasks/prs/`.
 > Update checkboxes as work progresses.
 

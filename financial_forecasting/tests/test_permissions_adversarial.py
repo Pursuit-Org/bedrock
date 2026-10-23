@@ -188,9 +188,10 @@ class TestLockBypass:
 class TestLockSpoofing:
     """Only the actual owner should be able to lock their opportunity."""
 
-    def test_cannot_lock_others_opportunity(self, rm_client, mock_db):
+    def test_cannot_lock_others_opportunity(self, rm_client, mock_db, mock_client):
         """POST /api/opportunities/{id}/lock with wrong owner_id → 403."""
         mock_db.fetchrow = AsyncMock(return_value=rm_row())
+        mock_client.salesforce.query.return_value = {"records": [{"OwnerId": OTHER_SF_USER_ID}]}
         resp = rm_client.post(
             f"/api/opportunities/{OPP_ID}/lock",
             json={"owner_id": OTHER_SF_USER_ID},  # Not this user's SF ID
@@ -198,8 +199,9 @@ class TestLockSpoofing:
         assert resp.status_code == 403
         assert "only lock opportunities you own" in resp.json()["detail"]
 
-    def test_can_lock_own_opportunity(self, rm_client, mock_db):
+    def test_can_lock_own_opportunity(self, rm_client, mock_db, mock_client):
         """POST /api/opportunities/{id}/lock with matching owner_id → success."""
+        mock_client.salesforce.query.return_value = {"records": [{"OwnerId": SF_USER_ID}]}
         mock_db.fetchrow = AsyncMock(side_effect=[
             rm_row(),  # Permission check
             MockDBRow(sf_opportunity_id=OPP_ID, locked_by=SF_USER_ID, locked_at="2026-01-01"),
