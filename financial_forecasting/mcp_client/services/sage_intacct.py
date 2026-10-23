@@ -10,6 +10,10 @@ from datetime import datetime, date
 from .base import BaseMCPService
 
 
+class InvalidSageQuery(ValueError):
+    """A filter cannot be represented safely by legacy readByQuery."""
+
+
 class SageIntacctMCPService(BaseMCPService):
     """Sage Intacct MCP service integration."""
 
@@ -280,37 +284,33 @@ class SageIntacctMCPService(BaseMCPService):
         
         return await self._make_api_request(function_xml)
 
+    @staticmethod
+    def _customer_read_xml(control_id: str, object_name: str, customer_id: Optional[str], limit: int) -> str:
+        if customer_id is not None:
+            if not isinstance(customer_id, str) or "\\" in customer_id:
+                # Sage documents apostrophe escaping, but not literal backslashes.
+                raise InvalidSageQuery("customer_id cannot contain backslashes")
+            if any(not (c in "\t\n\r" or " " <= c <= "\ud7ff" or "\ue000" <= c <= "\ufffd" or "\U00010000" <= c <= "\U0010ffff") for c in customer_id):
+                raise InvalidSageQuery("customer_id contains invalid XML characters")
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 1000:
+            raise InvalidSageQuery("limit must be between 1 and 1000")
+        # Encode the query language first; XML text serialization is a separate boundary.
+        literal = customer_id.replace("'", "\\'") if customer_id else ""
+        query = "CUSTOMERID = '" + literal + "'" if customer_id else ""
+        function = ET.Element("function", {"controlid": control_id})
+        read = ET.SubElement(function, "readByQuery")
+        for tag, value in (("object", object_name), ("query", query), ("fields", "*"), ("pagesize", str(limit))):
+            ET.SubElement(read, tag).text = value
+        # XML parsers normalize literal CR to LF; a character reference preserves the ID.
+        return ET.tostring(function, encoding="unicode").replace("\r", "&#13;")
+
     async def get_invoices(self, customer_id: Optional[str] = None, limit: int = 100) -> Dict[str, Any]:
         """Get invoices, optionally filtered by customer."""
-        query = f"CUSTOMERID = '{customer_id}'" if customer_id else ""
-        
-        function_xml = f"""
-        <function controlid="get-invoices">
-            <readByQuery>
-                <object>ARINVOICE</object>
-                <query>{query}</query>
-                <fields>*</fields>
-                <pagesize>{limit}</pagesize>
-            </readByQuery>
-        </function>"""
-        
-        return await self._make_api_request(function_xml)
+        return await self._make_api_request(self._customer_read_xml("get-invoices", "ARINVOICE", customer_id, limit))
 
     async def get_payments(self, customer_id: Optional[str] = None, limit: int = 100) -> Dict[str, Any]:
         """Get payments, optionally filtered by customer."""
-        query = f"CUSTOMERID = '{customer_id}'" if customer_id else ""
-        
-        function_xml = f"""
-        <function controlid="get-payments">
-            <readByQuery>
-                <object>ARPAYMENT</object>
-                <query>{query}</query>
-                <fields>*</fields>
-                <pagesize>{limit}</pagesize>
-            </readByQuery>
-        </function>"""
-        
-        return await self._make_api_request(function_xml)
+        return await self._make_api_request(self._customer_read_xml("get-payments", "ARPAYMENT", customer_id, limit))
 
     async def create_invoice(self, invoice_data: Dict[str, Any]) -> Dict[str, Any]:
         """Create a new invoice."""

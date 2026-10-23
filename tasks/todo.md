@@ -1,5 +1,19 @@
 # Bedrock PR Roadmap
 
+## bedrock-sage-xml — October 22, 2026
+
+Serialize invoice/payment readByQuery functions as XML text nodes and encode documented Sage quoted literals at one shared boundary in both packaged service copies. Preserve unfiltered background reads and reject unrepresentable input before dispatch.
+
+- [x] Reconcile fresh independent investigation with implementation and callers.
+- [x] Establish focused failing security and legitimate controls.
+- [x] Implement and run focused, alternate-input and neighboring checks.
+- [x] Complete independent read-only candidate review (no actionable findings).
+
+Independent uncommitted security patch; no live provider/database calls or deployment.
+
+Local validation: 224 passed, 8 existing skipped (60 focused boundary cases plus service/API neighbors). Python syntax and diff checks pass. Independent candidate
+review passed; production/provider acceptance remains unverified.
+
 > Master tracker for all planned PRs. Each PR has a detailed plan in `tasks/prs/`.
 > Update checkboxes as work progresses.
 
